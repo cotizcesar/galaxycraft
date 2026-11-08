@@ -1,0 +1,4 @@
+# Keep the workspace's build output in engine-rust/target (relative to the
+# repository root).
+[build]
+target-dir = "engine-rust/target"

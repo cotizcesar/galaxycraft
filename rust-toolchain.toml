@@ -1,0 +1,5 @@
+# Local and GitHub-runner toolchain. The Flatpak SDK ships 1.98.0;
+# engine-rust/Cargo.toml's rust-version is the minimum both satisfy.
+[toolchain]
+channel = "1.99.1"
+components = ["rustfmt", "clippy"]

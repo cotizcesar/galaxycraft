@@ -1,0 +1,163 @@
+# Vendored minifb 0.29.0 (MIT OR Apache-2.0, https://github.com/emoon/rust_minifb)
+# with one GalaxyCraft patch: `Window::set_fullscreen` / `Window::backend`
+# (Wayland `xdg_toplevel.set_fullscreen`, X11 `_NET_WM_STATE_FULLSCREEN`).
+# Examples, tests and dev-dependencies of the published crate are left out.
+# Decision: research/docs/decision-log.md, 2026-11-07.
+[package]
+edition = "2018"
+name = "minifb"
+version = "0.29.0"
+authors = ["Daniel Collin <daniel@collin.com>"]
+build = "build.rs"
+exclude = ["examples/resources/"]
+autolib = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
+description = "Cross-platform window setup with optional bitmap rendering"
+documentation = "https://docs.rs/minifb/0.15/minifb"
+readme = "README.md"
+keywords = [
+    "windowing",
+    "window",
+    "framebuffer",
+]
+categories = ["rendering"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/emoon/rust_minifb"
+
+[features]
+default = [
+    "wayland",
+    "x11",
+    "dlopen",
+]
+dlopen = ["wayland-client/dlopen"]
+wayland = [
+    "dlib",
+    "lazy_static",
+    "libc",
+    "tempfile",
+    "wayland-client",
+    "wayland-cursor",
+    "wayland-protocols",
+]
+x11 = [
+    "x11-dl",
+    "libc",
+]
+
+[lib]
+name = "minifb"
+path = "src/lib.rs"
+
+[dependencies.raw-window-handle]
+version = "0.6"
+
+[dependencies.web-time]
+version = "1.1"
+
+[build-dependencies.cc]
+version = "1.0"
+
+[target.'cfg(not(any(target_os = "macos", target_os = "redox", windows, target_arch="wasm32")))'.dependencies.dlib]
+version = "0.5"
+optional = true
+
+[target.'cfg(not(any(target_os = "macos", target_os = "redox", windows, target_arch="wasm32")))'.dependencies.lazy_static]
+version = "1.0"
+optional = true
+
+[target.'cfg(not(any(target_os = "macos", target_os = "redox", windows, target_arch="wasm32")))'.dependencies.libc]
+version = "0.2.107"
+optional = true
+
+[target.'cfg(not(any(target_os = "macos", target_os = "redox", windows, target_arch="wasm32")))'.dependencies.tempfile]
+version = "3.3"
+optional = true
+
+[target.'cfg(not(any(target_os = "macos", target_os = "redox", windows, target_arch="wasm32")))'.dependencies.wayland-client]
+version = "0.31"
+features = ["system"]
+optional = true
+
+[target.'cfg(not(any(target_os = "macos", target_os = "redox", windows, target_arch="wasm32")))'.dependencies.wayland-cursor]
+version = "0.31"
+optional = true
+
+[target.'cfg(not(any(target_os = "macos", target_os = "redox", windows, target_arch="wasm32")))'.dependencies.wayland-protocols]
+version = "0.32"
+features = [
+    "client",
+    "unstable",
+]
+optional = true
+
+[target.'cfg(not(any(target_os = "macos", target_os = "redox", windows, target_arch="wasm32")))'.dependencies.x11-dl]
+version = "2.19.1"
+optional = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies.console_error_panic_hook]
+version = "0.1.7"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies.futures]
+version = "0.3.12"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies.js-sys]
+version = "0.3.56"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies.serde]
+version = "1.0.136"
+features = ["derive"]
+
+[target.'cfg(target_arch = "wasm32")'.dependencies.serde_derive]
+version = "1.0.123"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies.wasm-bindgen]
+version = "0.2.79"
+features = ["serde-serialize"]
+
+[target.'cfg(target_arch = "wasm32")'.dependencies.wasm-bindgen-futures]
+version = "0.4.29"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies.web-sys]
+version = "0.3.56"
+features = [
+    "Blob",
+    "CanvasRenderingContext2d",
+    "CssStyleDeclaration",
+    "Document",
+    "Element",
+    "Gamepad",
+    "GamepadButton",
+    "GamepadEvent",
+    "Headers",
+    "HtmlCanvasElement",
+    "HtmlImageElement",
+    "ImageData",
+    "Navigator",
+    "Node",
+    "Request",
+    "RequestInit",
+    "RequestMode",
+    "Response",
+    "Url",
+    "Window",
+    "console",
+    "KeyboardEvent",
+    "MouseEvent",
+]
+
+[target."cfg(windows)".dependencies.winapi]
+version = "0.3.9"
+features = [
+    "winuser",
+    "wingdi",
+    "libloaderapi",
+    "errhandlingapi",
+    "fileapi",
+]
+
+[target.x86_64-unknown-redox.dependencies.orbclient]
+version = "0.3.20"

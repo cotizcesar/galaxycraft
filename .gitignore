@@ -1,0 +1,80 @@
+# Build outputs (regenerable, never commit)
+target/
+
+# Python bytecode / virtualenvs
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+
+# Retail game data: never commit assets, extracted files or captures.
+# These are regenerated locally from the player's own installation.
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.webm
+*.mp4
+*.avi
+*.smk
+*.ogg
+*.wav
+*.mp3
+*.flac
+*.dds
+*.grp
+*.ttf
+*.otf
+*.woff
+*.woff2
+*.scm
+*.scx
+*.chk
+*.mpq
+*.casc
+*.exe
+*.dll
+*.dat
+*.tbl
+*.bin
+*.vf4
+*.cv5
+*.vr4
+*.vx4ex
+*.wpe
+*.pcx
+*.pal
+*.srt
+engine-rust/assets/
+.galaxycraft-cache/
+reference/
+captures/
+screenshots/
+engine-rust/docs/evidence/
+engine-rust/fixtures/calibration/
+engine-rust/src/menu_masks/
+
+# The only tracked fixture files are the README, the checksums and a
+# synthetic 1 s tone (build.rs substitutes placeholders for the rest).
+engine-rust/fixtures/*
+!engine-rust/fixtures/README.md
+!engine-rust/fixtures/SHA256SUMS
+!engine-rust/fixtures/audio/
+!engine-rust/fixtures/audio/tone.ogg
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*~
+*.swp
+.vscode/
+.idea/
+
+# Secrets
+.env
+!.env.example
+
+# Release packages
+dist/

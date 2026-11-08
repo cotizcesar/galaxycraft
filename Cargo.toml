@@ -1,0 +1,20 @@
+# Repository-root workspace: `cargo build` works from the top folder as well
+# as from `engine-rust/`.  The only crate is `engine-rust` (galaxycraft); its
+# lockfile is `Cargo.lock` here and its build output stays in
+# `engine-rust/target` (`.cargo/config.toml`).
+[workspace]
+members = ["engine-rust"]
+# The vendored window library is a patched dependency, not a member (its
+# dev-dependencies and lints are not ours).
+exclude = ["engine-rust/third_party"]
+resolver = "3"
+
+# minifb with native fullscreen on Wayland and X11
+# (`engine-rust/third_party/minifb/Cargo.toml`; decision log 2026-11-07).
+[patch.crates-io]
+minifb = { path = "engine-rust/third_party/minifb" }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

@@ -1,0 +1,2406 @@
+//! Read-only access to the retail StarCraft installation.
+//!
+//! A decompilation project must not redistribute the game's art, audio, maps
+//! or tables.  Instead this module opens the files that are already on the
+//! player's machine:
+//!
+//! * `Data/data` + `Data/indices` — Blizzard's CASC storage (1.23 Remastered);
+//! * `Maps/**/*.scm|scx` — the shipped MPQ map archives;
+//! * classic `*.mpq` archives, when the user has a pre-Remastered install.
+//!
+//! Nothing in this file contains retail bytes.  `AssetBundle::materialize`
+//! copies the subset the client needs into a local cache, which is derived
+//! from the user's own installation exactly like a decompiler's extracted
+//! resources.
+//!
+//! The CASC implementation follows the on-disk structures documented by
+//! CascLib (MIT): a text `.build.info`/build config names the ENCODING and
+//! ROOT manifests, local `%02x%08x.idx` files map encoded keys to
+//! `data.NNN` offsets, and each file body is a BLTE stream (`N`, `Z`, `E`
+//! frames).  StarCraft's ROOT manifest is the text `path|cKey` list used by
+//! CascLib's `TRootHandler_SC1`.
+
+use std::collections::HashMap;
+use std::fs::{self, File};
+use std::io::{Read, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
+
+use flate2::read::ZlibDecoder;
+
+/// Errors from opening or decoding a retail installation.
+#[derive(Debug)]
+pub enum RetailError {
+    Io(std::io::Error),
+    Missing(String),
+    Format(String),
+    Unsupported(String),
+}
+
+impl std::fmt::Display for RetailError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RetailError::Io(e) => write!(f, "I/O error: {e}"),
+            RetailError::Missing(s) => write!(f, "missing retail file: {s}"),
+            RetailError::Format(s) => write!(f, "bad retail format: {s}"),
+            RetailError::Unsupported(s) => write!(f, "unsupported retail format: {s}"),
+        }
+    }
+}
+
+impl std::error::Error for RetailError {}
+
+impl From<std::io::Error> for RetailError {
+    fn from(e: std::io::Error) -> Self {
+        RetailError::Io(e)
+    }
+}
+
+pub type Result<T> = std::result::Result<T, RetailError>;
+
+/// One file in the CASC index.
+#[derive(Clone, Copy, Debug)]
+struct CascLocation {
+    archive: u16,
+    offset: u64,
+    encoded_size: u32,
+}
+
+#[derive(Clone, Debug)]
+struct EncodingEntry {
+    content_size: u32,
+    encoded_keys: Vec<[u8; 16]>,
+}
+
+/// A map archive shipped under `Maps/`.
+#[derive(Clone, Debug)]
+pub struct RetailMap {
+    pub path: PathBuf,
+    pub relative: PathBuf,
+    pub name: String,
+}
+
+/// Result of copying retail assets into a local cache.
+#[derive(Clone, Debug, Default)]
+pub struct AssetReport {
+    pub files: usize,
+    pub bytes: u64,
+    pub maps: usize,
+    pub campaign_maps: usize,
+    pub briefings: usize,
+    pub glue_files: usize,
+    pub console_files: usize,
+    pub ui_files: usize,
+    pub music_files: usize,
+    pub voice_files: usize,
+    pub video_files: usize,
+    pub missing_sounds: Vec<String>,
+    pub missing_assets: Vec<String>,
+}
+
+/// Read-only view of a StarCraft installation.
+pub struct RetailInstall {
+    root: PathBuf,
+    data_dir: PathBuf,
+    index: HashMap<[u8; 9], CascLocation>,
+    encoding: HashMap<[u8; 16], EncodingEntry>,
+    paths: HashMap<String, [u8; 16]>,
+    index_entries: usize,
+    encoding_entries: usize,
+    build_key: String,
+    encoding_key: String,
+    root_key: String,
+    handles: std::cell::RefCell<HashMap<u16, File>>,
+}
+
+/// `galaxycraft` directory under the platform's per-user cache: derived
+/// retail assets, saves, replays and profiles live there.  `XDG_CACHE_HOME`
+/// wins on every platform; otherwise `%LOCALAPPDATA%` (Windows),
+/// `~/Library/Caches` (macOS) or `~/.cache`, and the temp directory as a
+/// last resort.
+pub fn user_cache_root() -> PathBuf {
+    cache_root_from(&|k| std::env::var(k).ok())
+}
+
+fn cache_root_from(var: &dyn Fn(&str) -> Option<String>) -> PathBuf {
+    let base = var("XDG_CACHE_HOME").map(PathBuf::from).or_else(|| {
+        if cfg!(windows) {
+            var("LOCALAPPDATA").map(PathBuf::from)
+        } else if cfg!(target_os = "macos") {
+            var("HOME").map(|h| PathBuf::from(h).join("Library/Caches"))
+        } else {
+            var("HOME").map(|h| PathBuf::from(h).join(".cache"))
+        }
+    });
+    base.unwrap_or_else(std::env::temp_dir).join("galaxycraft")
+}
+
+/// Where a retail install usually lives on this platform (Battle.net's
+/// default folder, Wine prefixes on Linux).
+fn default_install_candidates(var: &dyn Fn(&str) -> Option<String>) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if cfg!(windows) {
+        for k in ["ProgramFiles(x86)", "ProgramFiles"] {
+            if let Some(p) = var(k) {
+                out.push(PathBuf::from(p).join("StarCraft"));
+            }
+        }
+        out.push(PathBuf::from(r"C:\Program Files (x86)\StarCraft"));
+    } else if cfg!(target_os = "macos") {
+        out.push(PathBuf::from("/Applications/StarCraft"));
+        if let Some(home) = var("HOME") {
+            out.push(PathBuf::from(home).join("Applications/StarCraft"));
+        }
+    } else {
+        out.push(PathBuf::from("/opt/StarCraft"));
+        out.push(PathBuf::from("/usr/local/games/StarCraft"));
+    }
+    if let Some(home) = var("HOME") {
+        let home = PathBuf::from(home);
+        out.extend([
+            home.join("Games/battlenet/drive_c/Program Files (x86)/StarCraft"),
+            home.join(".wine/drive_c/Program Files (x86)/StarCraft"),
+            home.join(".wine/drive_c/Program Files/StarCraft"),
+            home.join("StarCraft"),
+        ]);
+    }
+    out
+}
+
+impl RetailInstall {
+    /// Open `root`, which must contain `StarCraft.exe`'s `Data/` directory.
+    pub fn open(root: impl AsRef<Path>) -> Result<Self> {
+        let root = root.as_ref().to_path_buf();
+        let data_dir = root.join("Data").join("data");
+        if !data_dir.is_dir() {
+            return Err(RetailError::Missing(data_dir.display().to_string()));
+        }
+
+        let build_key = read_build_key(&root)?;
+        let config = read_build_config(&root, &build_key)?;
+        let encoding_key = config
+            .encoding_key
+            .clone()
+            .ok_or_else(|| RetailError::Format("build config has no encoding key".into()))?;
+        let root_key = config
+            .root_key
+            .clone()
+            .ok_or_else(|| RetailError::Format("build config has no root key".into()))?;
+
+        let index = read_local_indexes(&root)?;
+        let index_entries = index.len();
+        let mut install = Self {
+            root,
+            data_dir,
+            index,
+            encoding: HashMap::new(),
+            paths: HashMap::new(),
+            index_entries,
+            encoding_entries: 0,
+            build_key,
+            encoding_key: encoding_key.clone(),
+            root_key: root_key.clone(),
+            handles: std::cell::RefCell::new(HashMap::new()),
+        };
+
+        // The ENCODING manifest is addressed directly by the encoded key in
+        // the build config.  Older configs only carry a content key, in which
+        // case the content key doubles as the local encoded key.
+        let encoding_bytes = install
+            .read_encoded(&encoding_key)
+            .or_else(|_| install.read_encoded(&root_key))
+            .or_else(|_| install.find_encoding_manifest())?;
+        install.parse_encoding(&encoding_bytes)?;
+        install.encoding_entries = install.encoding.len();
+
+        let root_bytes = install.read_by_ckey(&root_key).or_else(|_| {
+            // Some configs carry only the encoded key for ROOT.
+            install.read_encoded(&root_key)
+        })?;
+        install.parse_root(&root_bytes)?;
+
+        Ok(install)
+    }
+
+    /// Open `$SC_INSTALL` or the default Wine/Battle.net location.
+    pub fn from_env() -> Option<Self> {
+        for var in ["SC_INSTALL", "GALAXYCRAFT_INSTALL", "STARCRAFT_HOME"] {
+            if let Ok(path) = std::env::var(var)
+                && let Ok(install) = Self::open(path)
+            {
+                return Some(install);
+            }
+        }
+        for path in default_install_candidates(&|k| std::env::var(k).ok()) {
+            if path.join("Data").join("data").is_dir()
+                && let Ok(install) = Self::open(&path)
+            {
+                return Some(install);
+            }
+        }
+        None
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub fn build_key(&self) -> &str {
+        &self.build_key
+    }
+
+    pub fn encoding_key(&self) -> &str {
+        &self.encoding_key
+    }
+
+    pub fn root_key(&self) -> &str {
+        &self.root_key
+    }
+
+    /// Number of `path|cKey` records in the ROOT manifest.
+    pub fn path_count(&self) -> usize {
+        self.paths.len()
+    }
+
+    /// Number of `data.NNN.idx` entries.
+    pub fn index_count(&self) -> usize {
+        self.index_entries
+    }
+
+    /// Number of CKey→EKey records in the ENCODING manifest.
+    pub fn encoding_count(&self) -> usize {
+        self.encoding_entries
+    }
+
+    /// Return the contents of a CASC path.  Separators are normalised, so
+    /// `TileSet/platform.vf4` and `TileSet\\platform.vf4` both work.
+    pub fn read(&self, path: &str) -> Option<Vec<u8>> {
+        self.read_by_path(path).ok()
+    }
+
+    /// Does the installation contain `path`?
+    pub fn contains(&self, path: &str) -> bool {
+        self.paths.contains_key(&normalise(path))
+    }
+
+    pub fn read_by_path(&self, path: &str) -> Result<Vec<u8>> {
+        let key = normalise(path);
+        let ckey = self
+            .paths
+            .get(&key)
+            .copied()
+            .ok_or_else(|| RetailError::Missing(path.to_string()))?;
+        self.read_by_ckey_bytes(&ckey)
+    }
+
+    fn read_by_ckey(&self, ckey: &str) -> Result<Vec<u8>> {
+        let bytes = hex16(ckey).ok_or_else(|| RetailError::Format("bad CKey".into()))?;
+        self.read_by_ckey_bytes(&bytes)
+    }
+
+    fn read_by_ckey_bytes(&self, ckey: &[u8; 16]) -> Result<Vec<u8>> {
+        let entry = self
+            .encoding
+            .get(ckey)
+            .ok_or_else(|| RetailError::Missing(format!("CKey {}", hex(ckey))))?;
+        let mut last = None;
+        for ekey in &entry.encoded_keys {
+            match self.read_encoded_bytes(ekey) {
+                Ok(data) => return Ok(data),
+                Err(e) => last = Some(e),
+            }
+        }
+        Err(last.unwrap_or_else(|| RetailError::Missing("no encoded key".into())))
+    }
+
+    fn read_encoded(&self, ekey: &str) -> Result<Vec<u8>> {
+        let bytes = hex16(ekey).ok_or_else(|| RetailError::Format("bad EKey".into()))?;
+        self.read_encoded_bytes(&bytes)
+    }
+
+    fn read_encoded_bytes(&self, ekey: &[u8; 16]) -> Result<Vec<u8>> {
+        let mut prefix = [0u8; 9];
+        prefix.copy_from_slice(&ekey[..9]);
+        let loc = self
+            .index
+            .get(&prefix)
+            .copied()
+            .ok_or_else(|| RetailError::Missing(format!("EKey {}", hex(ekey))))?;
+        let mut raw = vec![0u8; loc.encoded_size as usize];
+        let archive = self.data_dir.join(format!("data.{:03}", loc.archive));
+        let mut handles = self.handles.borrow_mut();
+        let file = match handles.get_mut(&loc.archive) {
+            Some(f) => f,
+            None => {
+                let f = File::open(&archive)?;
+                handles.insert(loc.archive, f);
+                handles.get_mut(&loc.archive).unwrap()
+            }
+        };
+        file.seek(SeekFrom::Start(loc.offset))?;
+        file.read_exact(&mut raw)?;
+        blte_decode(&raw)
+    }
+
+    /// Fallback for old build configs that do not name the ENCODING EKey.
+    /// Scan the archives for a BLTE stream whose plaintext starts with `EN`.
+    fn find_encoding_manifest(&self) -> Result<Vec<u8>> {
+        let mut entries: Vec<_> = fs::read_dir(&self.data_dir)?
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|s| s.to_str())
+                    .is_some_and(|s| s.starts_with("data."))
+            })
+            .collect();
+        entries.sort();
+        for path in entries {
+            let data = fs::read(&path)?;
+            let mut from = 0usize;
+            while let Some(pos) = find_bytes(&data[from..], b"BLTE").map(|p| p + from) {
+                let end = (pos + 4 * 1024 * 1024).min(data.len());
+                if let Ok(decoded) = blte_decode(&data[pos..end])
+                    && decoded.len() >= 2
+                    && &decoded[..2] == b"EN"
+                {
+                    return Ok(decoded);
+                }
+                from = pos + 4;
+            }
+        }
+        Err(RetailError::Missing("ENCODING manifest".into()))
+    }
+
+    fn parse_encoding(&mut self, data: &[u8]) -> Result<()> {
+        if data.len() < 22 || &data[..2] != b"EN" || data[2] != 1 {
+            return Err(RetailError::Format("ENCODING header".into()));
+        }
+        let ckey_len = data[3] as usize;
+        let ekey_len = data[4] as usize;
+        if ckey_len != 16 || ekey_len != 16 {
+            return Err(RetailError::Unsupported(format!(
+                "CKey/EKey lengths {ckey_len}/{ekey_len}"
+            )));
+        }
+        let ckey_page_size = be16(&data[5..7]) as usize * 1024;
+        let ckey_pages = be32(&data[9..13]) as usize;
+        let espec_size = be32(&data[18..22]) as usize;
+        let page_table = 22usize + espec_size;
+        let bytes: usize = page_table
+            .checked_add(ckey_pages * 32)
+            .ok_or_else(|| RetailError::Format("ENCODING size".into()))?;
+        if bytes + ckey_pages * ckey_page_size > data.len() {
+            return Err(RetailError::Format("ENCODING pages out of range".into()));
+        }
+        let mut offset = bytes;
+        for _ in 0..ckey_pages {
+            let page = &data[offset..offset + ckey_page_size];
+            offset += ckey_page_size;
+            let mut p = 0usize;
+            while p + 22 <= page.len() {
+                let count = u16::from_le_bytes([page[p], page[p + 1]]) as usize;
+                p += 2;
+                if count == 0 {
+                    break;
+                }
+                let content_size = be32(&page[p..p + 4]);
+                p += 4;
+                if p + 16 + count * 16 > page.len() {
+                    return Err(RetailError::Format("ENCODING entry out of range".into()));
+                }
+                let mut ckey = [0u8; 16];
+                ckey.copy_from_slice(&page[p..p + 16]);
+                p += 16;
+                let mut encoded_keys = Vec::with_capacity(count);
+                for _ in 0..count {
+                    let mut ekey = [0u8; 16];
+                    ekey.copy_from_slice(&page[p..p + 16]);
+                    p += 16;
+                    encoded_keys.push(ekey);
+                }
+                self.encoding.insert(
+                    ckey,
+                    EncodingEntry {
+                        content_size,
+                        encoded_keys,
+                    },
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn parse_root(&mut self, data: &[u8]) -> Result<()> {
+        let text = String::from_utf8_lossy(data);
+        for line in text.lines() {
+            let line = line.trim_end_matches('\r');
+            let Some((path, key)) = line.rsplit_once('|') else {
+                continue;
+            };
+            let Some(ckey) = hex16(key.trim()) else {
+                continue;
+            };
+            self.paths.insert(normalise(path), ckey);
+        }
+        if self.paths.is_empty() {
+            return Err(RetailError::Format("empty ROOT manifest".into()));
+        }
+        Ok(())
+    }
+
+    /// Content size recorded in the ENCODING manifest.
+    pub fn content_size(&self, path: &str) -> Option<u32> {
+        let ckey = self.paths.get(&normalise(path))?;
+        self.encoding.get(ckey).map(|e| e.content_size)
+    }
+
+    /// Paths under `prefix` with `suffix` (case-insensitive), sorted.
+    pub fn list(&self, prefix: &str, suffix: &str) -> Vec<String> {
+        let prefix = normalise(prefix);
+        let suffix = suffix.to_ascii_lowercase();
+        let mut out: Vec<String> = self
+            .paths
+            .keys()
+            .filter(|p| p.starts_with(&prefix) && p.ends_with(&suffix))
+            .cloned()
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// Every `.scm`/`.scx` archive in the installation's `Maps/` tree.
+    pub fn maps(&self) -> Vec<RetailMap> {
+        let mut out = Vec::new();
+        let maps = self.root.join("Maps");
+        walk(&maps, &mut |path| {
+            let ext = path
+                .extension()
+                .and_then(|s| s.to_str())
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            if ext != "scm" && ext != "scx" {
+                return;
+            }
+            let relative = path.strip_prefix(&maps).unwrap_or(path).to_path_buf();
+            let name = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("map")
+                .to_string();
+            out.push(RetailMap {
+                path: path.to_path_buf(),
+                relative,
+                name,
+            });
+        });
+        out.sort_by(|a, b| a.relative.cmp(&b.relative));
+        out
+    }
+
+    /// Extract `staredit\scenario.chk` from a shipped MPQ map.
+    pub fn read_map(&self, map: &RetailMap) -> Result<Vec<u8>> {
+        let archive = MpqArchive::open(&map.path)?;
+        archive
+            .read_file("staredit\\scenario.chk")
+            .ok_or_else(|| RetailError::Missing(format!("{}: scenario.chk", map.path.display())))
+    }
+
+    /// The sound files an MPQ map's triggers can name: every `STR` string
+    /// ending in `.wav` that the archive contains, as `(file name, bytes)`
+    /// (lower-cased name, de-duplicated).
+    pub fn map_sounds(&self, map: &RetailMap, chk: &[u8]) -> Vec<(String, Vec<u8>)> {
+        let Ok(scenario) = crate::map::Scenario::parse(chk) else {
+            return Vec::new();
+        };
+        let Ok(archive) = MpqArchive::open(&map.path) else {
+            return Vec::new();
+        };
+        let mut out: Vec<(String, Vec<u8>)> = Vec::new();
+        for s in &scenario.strings {
+            let s = s.trim();
+            if !s.to_ascii_lowercase().ends_with(".wav") {
+                continue;
+            }
+            let Some(stem) = crate::transmission::wav_stem(s) else {
+                continue;
+            };
+            let name = format!("{stem}.wav");
+            if out.iter().any(|(n, _)| *n == name) {
+                continue;
+            }
+            if let Some(bytes) = archive.read_file(s) {
+                out.push((name, bytes));
+            }
+        }
+        out
+    }
+
+    /// Load the rules tables, scripts and string table from CASC.
+    pub fn game_data(&self) -> Result<crate::data::GameData> {
+        let read = |p: &str| {
+            self.read_by_path(p)
+                .map_err(|e| RetailError::Missing(e.to_string()))
+        };
+        let mut data = crate::data::GameData::parse_all(
+            &read("arr/units.dat")?,
+            &read("arr/weapons.dat")?,
+            &read("arr/flingy.dat")?,
+            &read("arr/orders.dat")?,
+            &read("arr/techdata.dat")?,
+            &read("arr/upgrades.dat")?,
+            &read("arr/sprites.dat")?,
+            &read("arr/images.dat")?,
+            &read("rez/stat_txt.tbl")?,
+        )
+        .map_err(|e| RetailError::Format(e.to_string()))?;
+        data.iscript = crate::iscript::Iscript::parse(&read("scripts/iscript.bin")?)
+            .map_err(|e| RetailError::Format(e.to_string()))?;
+        data.aiscripts = crate::aiscript::parse_aiscript(&read("scripts/aiscript.bin")?);
+        data.bwscripts = crate::aiscript::parse_bwscript(&read("scripts/bwscript.bin")?);
+        Ok(data)
+    }
+
+    /// Command-card button sets read from the install's 32-bit client
+    /// (`x86/StarCraft.exe`, read-only; see [`crate::button_sets::parse_exe`]).
+    pub fn button_sets(&self) -> Option<Vec<Vec<crate::button_sets::Button>>> {
+        crate::button_sets::parse_exe(&fs::read(self.root.join("x86").join("StarCraft.exe")).ok()?)
+    }
+
+    /// Default per-install cache directory.
+    pub fn default_cache_dir(&self) -> PathBuf {
+        if let Ok(path) = std::env::var("GALAXYCRAFT_CACHE") {
+            return PathBuf::from(path);
+        }
+        let tag = &self.build_key[..self.build_key.len().min(8)];
+        user_cache_root().join(format!("retail-{tag}"))
+    }
+
+    /// Materialise once, guarded by a completion marker.
+    pub fn ensure_cache(&self, dest: &Path) -> Result<AssetReport> {
+        let marker = dest.join(".complete");
+        let want =
+            b"galaxycraft retail cache v23 (cinematic subtitles, help / save / load dialogs + help text, startup tips text, end mission menu + prompts, map trigger sounds, creep edges, objectives/tips dialogs, hd console dlg, hd hud art, minimap layout, hd terrain, consoles, menus, cinematics, fonts, ui layouts, campaign console, palcs backdrop, phist popup, campaign prompt, glue small font, create variants, chat + toon registry, login/load list plates, swish-out sound, retail mission titles, rescue sounds, terran ready room + slot frames + projector, score backdrops + icons)\n";
+        if fs::read(&marker)
+            .map(|current| current == want)
+            .unwrap_or(false)
+        {
+            return Ok(AssetReport::default());
+        }
+        let report = self.materialize(dest)?;
+        fs::write(marker, want)?;
+        Ok(report)
+    }
+
+    /// Copy the asset subset used by the client into `dest`:
+    ///
+    /// ```text
+    /// dest/TileSet/<era>.{vf4,cv5,vx4ex,vr4,wpe}
+    /// dest/unit/<race>/<sprite>.grp   + dest/unit.pal
+    /// dest/sound/<effect>.wav
+    /// dest/maps/<relative map>.chk
+    /// ```
+    /// Write the developer fixtures (`engine-rust/fixtures/`) from this
+    /// install: the rules tables, scripts and string tables the unit tests
+    /// read, plus the dialog layouts.  They are Blizzard data, so the
+    /// repository does not carry them.  Returns the files written; the
+    /// caller reports what is missing.
+    pub fn write_fixtures(&self, dest: &Path) -> Result<Vec<String>> {
+        let mut written = Vec::new();
+        for &(name, src) in FIXTURE_SOURCES {
+            if let Ok(bytes) = self.read_by_path(src) {
+                write_file(&dest.join(name), &bytes)?;
+                written.push(name.to_string());
+            }
+        }
+        for name in crate::ui::UI_JSON {
+            let src = format!("locales/enus/assets/rez/{name}.ui.json");
+            if let Ok(bytes) = self.read_by_path(&src) {
+                let rel = format!("ui/{name}.ui.json");
+                write_file(&dest.join(&rel), &bytes)?;
+                written.push(rel);
+            }
+        }
+        if let Ok(bytes) = self.read_by_path("rez/flc.json") {
+            write_file(&dest.join("ui/flc.json"), &bytes)?;
+            written.push("ui/flc.json".to_string());
+        }
+        // Command cards and the hotkey panel, from the same install sources
+        // `sc_view` reads at start-up (the `x86/StarCraft.exe` table; the
+        // CEF bundle + `stat_txt`), so no memory dump or live client is
+        // needed for these two fixtures.
+        if let Some(sets) = self.button_sets() {
+            let text = crate::button_sets::render_fixture(&sets);
+            write_file(&dest.join("button_sets.in"), text.as_bytes())?;
+            written.push("button_sets.in".to_string());
+        }
+        let hotkeys = self
+            .read_by_path("webui/dist/hotkeypanel/hotkeypanel.js")
+            .ok()
+            .and_then(|b| String::from_utf8(b).ok())
+            .zip(
+                self.read_by_path("rez/stat_txt.tbl")
+                    .ok()
+                    .and_then(|b| crate::tables::StringTable::parse(&b).ok()),
+            )
+            .and_then(|(js, tbl)| crate::hotkey_data::fixture_json(&js, &tbl));
+        if let Some(json) = hotkeys {
+            write_file(&dest.join("hotkeys.json"), &json)?;
+            written.push("hotkeys.json".to_string());
+        }
+        Ok(written)
+    }
+
+    pub fn materialize(&self, dest: &Path) -> Result<AssetReport> {
+        let mut report = AssetReport::default();
+        let tiles = dest.join("TileSet");
+        fs::create_dir_all(&tiles)?;
+        for era in [
+            "badlands", "platform", "install", "ashworld", "jungle", "desert", "ice", "twilight",
+        ] {
+            for ext in ["vf4", "cv5", "vx4ex", "vr4", "wpe"] {
+                let name = format!("TileSet/{era}.{ext}");
+                if let Ok(bytes) = self.read_by_path(&name) {
+                    let out = tiles.join(format!("{era}.{ext}"));
+                    write_file(&out, &bytes)?;
+                    report.files += 1;
+                    report.bytes += bytes.len() as u64;
+                }
+            }
+            // 4x HD megatiles (128 px per tile): what retail draws the
+            // terrain from at 1440p.
+            // Plus the creep-edge frames: 4x art and the SD sheet whose
+            // frame offsets place them.
+            for hd in [
+                format!("tileset/{era}.dds.vr4"),
+                format!("tileset/{era}.dds.grp"),
+                format!("tileset/{era}.grp"),
+            ] {
+                if let Ok(bytes) = self.read_by_path(&hd) {
+                    write_file(&dest.join("hd").join(&hd), &bytes)?;
+                    report.files += 1;
+                    report.bytes += bytes.len() as u64;
+                }
+            }
+        }
+
+        let unit = dest.join("unit");
+        for rel in SPRITE_PATHS {
+            if let Ok(bytes) = self.read_by_path(&format!("unit/{rel}")) {
+                let out = unit.join(rel);
+                write_file(&out, &bytes)?;
+                report.files += 1;
+                report.bytes += bytes.len() as u64;
+            }
+        }
+
+        // The retail unit palette is not a standalone CASC file in the 1.23
+        // storage; the Remastered client keeps it in the unit PCX.  Old
+        // installs may expose `units.pal` directly.
+        let palette = ["units.pal", "unit.pal", "arr/units.pal"]
+            .iter()
+            .find_map(|p| self.read(p))
+            .or_else(|| {
+                self.read("game/tunit.pcx")
+                    .and_then(|pcx| pcx_palette(&pcx))
+            });
+        if let Some(bytes) = palette {
+            write_file(&dest.join("unit.pal"), &bytes)?;
+            report.files += 1;
+            report.bytes += bytes.len() as u64;
+        }
+
+        let sound_dir = dest.join("sound");
+        fs::create_dir_all(&sound_dir)?;
+        for (name, candidates) in SOUND_PATHS {
+            let mut found = false;
+            for path in *candidates {
+                if let Ok(bytes) = self.read_by_path(path) {
+                    write_file(&sound_dir.join(format!("{name}.wav")), &bytes)?;
+                    report.files += 1;
+                    report.bytes += bytes.len() as u64;
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                report.missing_sounds.push((*name).to_string());
+            }
+        }
+
+        let map_dir = dest.join("maps");
+        for map in self.maps() {
+            let rel = map.relative.with_extension("chk");
+            let out = map_dir.join(rel);
+            match self.read_map(&map) {
+                Ok(chk) => {
+                    write_file(&out, &chk)?;
+                    report.maps += 1;
+                    report.bytes += chk.len() as u64;
+                    // Trigger sounds (Transmission / Play WAV) stored in the
+                    // archive, beside the cached CHK.
+                    for (name, bytes) in self.map_sounds(&map, &chk) {
+                        let dst = crate::transmission::map_wav_dir(&out).join(name);
+                        write_file(&dst, &bytes)?;
+                        report.files += 1;
+                        report.bytes += bytes.len() as u64;
+                    }
+                }
+                Err(e) => return Err(RetailError::Format(format!("{}: {e}", map.path.display()))),
+            }
+        }
+
+        // Single-player campaign: the missions are loose CASC CHKs under
+        // `sd/campaign/`, not MPQ archives.  Copy them with a manifest so the
+        // client can present the retail episode order, and copy the briefing
+        // scripts plus the backdrop art they name.
+        let campaign_dir = dest.join("campaign");
+        let mut manifest = String::from(
+            "episode\tepisode_name\torder\tkey\tname\trace\tchk\tbriefing\tbackground\n",
+        );
+        for episode in crate::campaign::episodes(self) {
+            for mission in &episode.missions {
+                let Ok(raw) = self.read_by_path(&mission.chk_path) else {
+                    continue;
+                };
+                let rel = format!("{}/{}.chk", episode.key, mission.key);
+                let out = campaign_dir.join(&rel);
+                write_file(&out, &raw)?;
+                report.campaign_maps += 1;
+                report.bytes += raw.len() as u64;
+                // Trigger sounds: the original `.wav` beside the `sd/` CHK and
+                // the Remastered voice-over `.ogg` of `locales/enus/`.
+                let wav_dir = crate::transmission::map_wav_dir(&out);
+                let sd_dir = mission
+                    .chk_path
+                    .strip_suffix("scenario.chk")
+                    .map(|d| format!("{d}wav/"));
+                let enus_dir = format!(
+                    "locales/enus/assets/campaign/{}/{}/staredit/wav/",
+                    episode.key, mission.key
+                );
+                for (dir, ext) in [(sd_dir, ".wav"), (Some(enus_dir), ".ogg")] {
+                    let Some(dir) = dir else { continue };
+                    for src in self.list(&dir, ext) {
+                        let Some(name) = src.rsplit('/').next() else {
+                            continue;
+                        };
+                        if let Ok(bytes) = self.read_by_path(&src) {
+                            write_file(&wav_dir.join(name), &bytes)?;
+                            report.files += 1;
+                            report.bytes += bytes.len() as u64;
+                        }
+                    }
+                }
+
+                let mut briefing_rel = String::new();
+                let mut background_rel = String::new();
+                if let Some(script) = crate::campaign::load_briefing(self, mission) {
+                    if let Some(key) = &mission.briefing_key {
+                        let text_path = format!("briefing/{key}.txt");
+                        if let Some(bytes) =
+                            self.read(&format!("locales/enus/assets/rez/{key}.txt"))
+                        {
+                            write_file(&dest.join(&text_path), &bytes)?;
+                            report.briefings += 1;
+                            report.bytes += bytes.len() as u64;
+                        }
+                        briefing_rel = text_path;
+                    }
+                    // Every path the script references (backdrop, font) is
+                    // copied under `glue/` so the client never needs CASC at
+                    // play time.  Video intermissions are recorded but not
+                    // copied: the .webm files are large and the client has no
+                    // video decoder.
+                    for page in &script.pages {
+                        for path in [&page.background, &page.font].into_iter().flatten() {
+                            // `path` is already the CASC-relative name
+                            // (`glue/palta/terrana.dds`), so it lands under
+                            // `cache/glue/...` and the manifest can serve it.
+                            if page.background.as_deref() == Some(path.as_str()) {
+                                background_rel = path.clone();
+                            }
+                            let out = dest.join(path);
+                            if out.is_file() {
+                                continue;
+                            }
+                            if let Ok(bytes) = self.read_by_path(path) {
+                                write_file(&out, &bytes)?;
+                                report.glue_files += 1;
+                                report.bytes += bytes.len() as u64;
+                            }
+                        }
+                    }
+                }
+                let race = match mission.race {
+                    crate::sim::Race::Zerg => "zerg",
+                    crate::sim::Race::Protoss => "protoss",
+                    _ => "terran",
+                };
+                let name = mission.name.replace(['\t', '\n'], " ");
+                manifest.push_str(&format!(
+                    "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                    episode.key,
+                    episode.name,
+                    mission.order,
+                    mission.key,
+                    name,
+                    race,
+                    rel,
+                    briefing_rel,
+                    background_rel
+                ));
+            }
+        }
+        write_file(&campaign_dir.join("manifest.tsv"), manifest.as_bytes())?;
+        report.files += report.campaign_maps + report.briefings + report.glue_files;
+
+        // Retail WebM cinematics: the title intros plus every briefing
+        // intermission (`interstitials/*.webm`) and campaign disk loop the
+        // `est*.txt` scripts name.  Headers are parsed with the dependency-
+        // free `video::parse_webm` front-end; the client decodes poster
+        // frames with the system ffmpeg on the title/briefing screens.
+        // Full-motion playback outside those screens stays out of scope.
+        {
+            let video_dir = dest.join("videos");
+            let mut vmanifest =
+                String::from("rel\tsize\tcodec\twidth\theight\tduration_ms\tclusters\thas_audio\n");
+            let mut videos: Vec<String> = Vec::new();
+            for rel in [
+                crate::video::BLIZZARD_LOGO,
+                crate::video::INTRO_ORIGINAL,
+                crate::video::INTRO_EXPANSION,
+            ] {
+                videos.push(rel.to_string());
+            }
+            // Every campaign cinematic in the executable's intro table
+            // (`smk\blizzard.webm`, `smk\starintr.webm`, `smk\PreTerran_1.webm`
+            // … `smk\xZerg.webm`, recovered with REA at 0x140ae7ae0).
+            for rel in self.list("smk/", ".webm") {
+                let wanted = rel.rsplit('/').next().is_some_and(|name| {
+                    name.contains("blizzard")
+                        || crate::video::CAMPAIGN_CINEMATICS
+                            .iter()
+                            .any(|c| c.eq_ignore_ascii_case(&rel))
+                });
+                if wanted && !videos.iter().any(|v| v.eq_ignore_ascii_case(&rel)) {
+                    videos.push(rel);
+                }
+            }
+            for rel in self.list("interstitials/", ".webm") {
+                if !videos.contains(&rel) {
+                    videos.push(rel);
+                }
+            }
+            for rel in self.list("glue/campaign/", ".webm") {
+                if !videos.contains(&rel) {
+                    videos.push(rel);
+                }
+            }
+            for rel in self.list("glue/expcampaign/", ".webm") {
+                if !videos.contains(&rel) {
+                    videos.push(rel);
+                }
+            }
+            // HD menu-button animations (the SD `glue/mainmenu` clips are four
+            // times the pixels); drawn with their alpha at the `flc.json`
+            // rectangles.
+            for rel in self.list("hd2/glue/mainmenu/", ".webm") {
+                if let Some(name) = rel.rsplit('/').next() {
+                    let dst = format!("hd2/mainmenu/{name}");
+                    if let Ok(bytes) = self.read_by_path(&rel) {
+                        let out = video_dir.join(&dst);
+                        if write_file(&out, &bytes).is_ok() {
+                            report.video_files += 1;
+                            report.files += 1;
+                            report.bytes += bytes.len() as u64;
+                            if let Ok(info) = crate::video::parse_webm(&bytes) {
+                                vmanifest.push_str(&format!(
+                                    "{dst}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                                    bytes.len(),
+                                    info.codec,
+                                    info.pixel_width,
+                                    info.pixel_height,
+                                    info.duration_ms.map(|d| d.to_string()).unwrap_or_default(),
+                                    info.clusters,
+                                    info.has_audio,
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+            // Cinematic subtitles (`locales/enus/assets/smk/*.srt`) next to
+            // their movie: `videos/smk/<movie>.srt`.
+            for rel in self.list("locales/enus/assets/smk/", ".srt") {
+                if let (Some(name), Ok(bytes)) = (rel.rsplit('/').next(), self.read_by_path(&rel)) {
+                    let out = video_dir.join("smk").join(name.to_ascii_lowercase());
+                    if write_file(&out, &bytes).is_ok() {
+                        report.files += 1;
+                        report.bytes += bytes.len() as u64;
+                    }
+                }
+            }
+            videos.sort();
+            for rel in &videos {
+                let Ok(bytes) = self.read_by_path(rel) else {
+                    report.missing_assets.push(rel.clone());
+                    continue;
+                };
+                let out = video_dir.join(rel);
+                if write_file(&out, &bytes).is_err() {
+                    report.missing_assets.push(rel.clone());
+                    continue;
+                }
+                report.video_files += 1;
+                report.files += 1;
+                report.bytes += bytes.len() as u64;
+                match crate::video::parse_webm(&bytes) {
+                    Ok(info) => {
+                        vmanifest.push_str(&format!(
+                            "{rel}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                            bytes.len(),
+                            info.codec,
+                            info.pixel_width,
+                            info.pixel_height,
+                            info.duration_ms.map(|d| d.to_string()).unwrap_or_default(),
+                            info.clusters,
+                            info.has_audio,
+                        ));
+                    }
+                    Err(e) => {
+                        vmanifest.push_str(&format!(
+                            "{rel}\t{}\tERR:{e}\t0\t0\t\t0\tfalse\n",
+                            bytes.len()
+                        ));
+                    }
+                }
+            }
+            write_file(&video_dir.join("manifest.tsv"), vmanifest.as_bytes())?;
+        }
+
+        // Remastered front-end fonts, the `flc.json` video rectangles and the
+        // screen dialogs the menu uses.  All are read from the player's own
+        // installation and never committed.
+        for src in [
+            "webui/dist/lib/fonts/eurostileext-reg.otf",
+            "webui/dist/lib/fonts/eurostile-reg.otf",
+            "webui/dist/lib/fonts/eurostile-reg.woff",
+            "font/eurostileext-reg.ttf",
+            "font/eurostile-reg.ttf",
+            "font/blizzard-regular.ttf",
+            // BlizzardGlobal: the glue `RC_SMALLTEXT` and plain button face.
+            "font/bl.ttf",
+        ] {
+            let dst = dest.join(src);
+            if dst.is_file() {
+                continue;
+            }
+            if let Ok(bytes) = self.read_by_path(src) {
+                write_file(&dst, &bytes)?;
+                report.files += 1;
+                report.bytes += bytes.len() as u64;
+            }
+        }
+        if let Ok(bytes) = self.read_by_path("rez/flc.json") {
+            write_file(&dest.join("ui/flc.json"), &bytes)?;
+            report.files += 1;
+            report.bytes += bytes.len() as u64;
+        }
+
+        // Table fixtures are useful for offline runs; they are also read
+        // from the installation, never copied into the source tree.
+        let table_dir = dest.join("tables");
+        for path in [
+            "arr/units.dat",
+            "arr/weapons.dat",
+            "arr/flingy.dat",
+            "arr/orders.dat",
+            "arr/techdata.dat",
+            "arr/upgrades.dat",
+            "arr/sprites.dat",
+            "arr/images.dat",
+            "rez/stat_txt.tbl",
+            "scripts/iscript.bin",
+            "scripts/aiscript.bin",
+            "scripts/bwscript.bin",
+        ] {
+            if let Ok(bytes) = self.read_by_path(path) {
+                let out = table_dir.join(path.rsplit('/').next().unwrap());
+                write_file(&out, &bytes)?;
+                report.files += 1;
+                report.bytes += bytes.len() as u64;
+            }
+        }
+
+        // ------------------------------------------------------------------
+        // Retail console, menu, score, music and voice assets.
+        // ------------------------------------------------------------------
+        let copy = |src: &str, dst: &std::path::Path, report: &mut AssetReport| -> bool {
+            let Ok(bytes) = self.read_by_path(src) else {
+                report.missing_assets.push(src.to_string());
+                return false;
+            };
+            match write_file(dst, &bytes) {
+                Ok(()) => {
+                    report.files += 1;
+                    report.bytes += bytes.len() as u64;
+                    true
+                }
+                Err(_) => {
+                    report.missing_assets.push(src.to_string());
+                    false
+                }
+            }
+        };
+
+        for race in ["terran", "zerg", "protoss"] {
+            for file in CONSOLE_FILES {
+                let src = format!("game/consoles/{race}/{file}");
+                let dst = dest.join(&src);
+                if copy(&src, &dst, &mut report) {
+                    report.console_files += 1;
+                }
+            }
+        }
+        for file in ["wirefram.grp", "grpwire.grp", "tranwire.grp"] {
+            let src = format!("unit/wirefram/{file}");
+            let dst = dest.join(&src);
+            if copy(&src, &dst, &mut report) {
+                report.console_files += 1;
+            }
+        }
+        let src = "unit/cmdicons/cmdicons.grp";
+        let dst = dest.join(src);
+        if copy(src, &dst, &mut report) {
+            report.console_files += 1;
+        }
+
+        for src in GLUE_ART {
+            let dst = dest.join(src);
+            if copy(src, &dst, &mut report) {
+                report.glue_files += 1;
+            }
+        }
+
+        let ui_dir = dest.join("ui");
+        fs::create_dir_all(&ui_dir)?;
+        for name in crate::ui::UI_JSON {
+            let src = format!("locales/enus/assets/rez/{name}.ui.json");
+            let dst = ui_dir.join(format!("{name}.ui.json"));
+            if copy(&src, &dst, &mut report) {
+                report.ui_files += 1;
+            }
+        }
+
+        // StarCraft Help keystroke list.
+        if copy(
+            "locales/enus/assets/rez/help_txt.json",
+            &ui_dir.join("help_txt.json"),
+            &mut report,
+        ) {
+            report.ui_files += 1;
+        }
+        // StarCraft Tips texts (in-game startup tips).
+        if copy(
+            "locales/enus/assets/rez/tips_txt.json",
+            &ui_dir.join("tips_txt.json"),
+            &mut report,
+        ) {
+            report.ui_files += 1;
+        }
+
+        let music_dir = dest.join("music");
+        fs::create_dir_all(&music_dir)?;
+        for name in MUSIC_TRACKS {
+            let src = format!("music/{name}.ogg");
+            let dst = music_dir.join(format!("{name}.ogg"));
+            if copy(&src, &dst, &mut report) {
+                report.music_files += 1;
+            }
+        }
+
+        // `sfxdata.tbl` names every voice file.  Copy the whole table so the
+        // client has the complete voice sets, and keep the parallel record
+        // table next to it for the differential test.
+        let sfx_bytes = self.read("arr/sfxdata.tbl");
+        if let Some(bytes) = &sfx_bytes {
+            write_file(&dest.join("tables/sfxdata.tbl"), bytes)?;
+            report.files += 1;
+            report.bytes += bytes.len() as u64;
+        }
+        if let Some(bytes) = self.read("arr/sfxdata.dat") {
+            write_file(&dest.join("tables/sfxdata.dat"), &bytes)?;
+            report.files += 1;
+            report.bytes += bytes.len() as u64;
+        }
+        if let Some(table) = sfx_bytes.as_deref().and_then(crate::sfx::SfxTable::parse) {
+            let voices = dest.join("voices");
+            let mut index = String::from("id\tpath\n");
+            for id in 0..table.len() as u16 {
+                let Some(rel) = table.cache_path(id) else {
+                    continue;
+                };
+                let src = format!("sound/{rel}");
+                let dst = voices.join(&rel);
+                if copy(&src, &dst, &mut report) {
+                    report.voice_files += 1;
+                    index.push_str(&format!("{id}\t{rel}\n"));
+                }
+            }
+            write_file(&voices.join("index.tsv"), index.as_bytes())?;
+        }
+
+        Ok(report)
+    }
+}
+
+/// Unit GRPs used by the playable client (`render::SpriteBank::load`).
+pub const SPRITE_PATHS: &[&str] = &[
+    "terran/marine.grp",
+    "terran/ghost.grp",
+    "terran/vulture.grp",
+    "terran/goliath.grp",
+    "terran/tank.grp",
+    "terran/scv.grp",
+    "terran/wessel.grp",
+    "terran/dropship.grp",
+    "terran/battlecr.grp",
+    "terran/spider.grp",
+    "terran/firebat.grp",
+    "terran/medic.grp",
+    "zerg/zergling.grp",
+    "zerg/hydra.grp",
+    "zerg/ultra.grp",
+    "zerg/brood.grp",
+    "zerg/drone.grp",
+    "zerg/overlord.grp",
+    "zerg/mutalid.grp",
+    "zerg/guardian.grp",
+    "zerg/queen.grp",
+    "zerg/defiler.grp",
+    "zerg/cocoon.grp",
+    "zerg/egg.grp",
+    "zerg/larva.grp",
+    "zerg/lurker.grp",
+    "protoss/corsair.grp",
+    "protoss/dtemplar.grp",
+    "protoss/darchn.grp",
+    "protoss/probe.grp",
+    "protoss/zealot.grp",
+    "protoss/dragoon.grp",
+    "protoss/templar.grp",
+    "protoss/archon.grp",
+    "protoss/shuttle.grp",
+    "protoss/scout.grp",
+    "protoss/arbiter.grp",
+    "protoss/carrier.grp",
+    "protoss/intercep.grp",
+    "protoss/trilob.grp",
+    "protoss/witness.grp",
+    "terran/depot.grp",
+    "terran/refinery.grp",
+    "terran/tbarrack.grp",
+    "terran/academy.grp",
+    "terran/factory.grp",
+    "terran/starport.grp",
+    "terran/missile.grp",
+    "terran/pillbox.grp",
+    "terran/comsat.grp",
+    "terran/nukesilo.grp",
+    "terran/control.grp",
+    "terran/physics.grp",
+    "terran/machines.grp",
+    "neutral/starbase.grp",
+    "protoss/nexus.grp",
+    "protoss/gateway.grp",
+    "protoss/robotic.grp",
+    "protoss/stargate.grp",
+    "protoss/pylon.grp",
+    "protoss/assim.grp",
+    "protoss/forge.grp",
+    "protoss/gencore.grp",
+    "protoss/citadel.grp",
+    "protoss/archives.grp",
+    "protoss/photon.grp",
+    "protoss/sbattery.grp",
+    "zerg/hatchery.grp",
+    "zerg/lair.grp",
+    "zerg/hive.grp",
+    "zerg/extract.grp",
+    "zerg/spire.grp",
+    "zerg/nest.grp",
+    "zerg/nyduspit.grp",
+    "zerg/scolony.grp",
+    "zerg/fcolony.grp",
+    "neutral/min01.grp",
+    "neutral/min02.grp",
+    "neutral/min03.grp",
+    "neutral/geyser.grp",
+];
+
+/// Console plates, command-button GRP and wireframes for one race.
+///
+/// `game/consoles/<race>` holds the three-part bottom console and its
+/// overlays; `unit/wirefram/wirefram.grp` is the 64x64 portrait sheet indexed
+/// by unit type.  The client draws these instead of its old custom bar.
+pub const CONSOLE_FILES: &[&str] = &[
+    "console_center.dds",
+    "console_left.dds",
+    "console_right.dds",
+    "console_time.dds",
+    "console_apm.dds",
+    "conover.dds",
+    "cmdbtns.grp",
+    "cmdbtns.dds.grp",
+    "dlg.grp",
+    // HD console dialog sheet: minimap buttons (frames 0-5) and more.
+    "dlg.dds.grp",
+    "pbrempt.dds",
+    "pbrfull.dds",
+];
+
+/// Fixture file -> CASC path of the developer fixtures written by
+/// [`RetailInstall::write_fixtures`].  The rest of `fixtures/` comes from
+/// other sources (see `fixtures/README.md`).
+pub const FIXTURE_SOURCES: &[(&str, &str)] = &[
+    ("units.dat", "arr/units.dat"),
+    ("weapons.dat", "arr/weapons.dat"),
+    ("flingy.dat", "arr/flingy.dat"),
+    ("sprites.dat", "arr/sprites.dat"),
+    ("images.dat", "arr/images.dat"),
+    ("orders.dat", "arr/orders.dat"),
+    ("techdata.dat", "arr/techdata.dat"),
+    ("upgrades.dat", "arr/upgrades.dat"),
+    ("sfxdata.dat", "arr/sfxdata.dat"),
+    ("sfxdata.tbl", "arr/sfxdata.tbl"),
+    ("stat_txt.tbl", "rez/stat_txt.tbl"),
+    ("iscript.bin", "scripts/iscript.bin"),
+    ("aiscript.bin", "scripts/aiscript.bin"),
+    ("bwscript.bin", "scripts/bwscript.bin"),
+    ("melee.trg", "triggers/melee.trg"),
+];
+
+/// Main-menu, title and score-panel surfaces from the retail glue layer.
+pub const GLUE_ART: &[&str] = &[
+    // Remastered menu entries: animated WebM buttons (idle + hover) that
+    // already carry their glow, so the client draws them instead of text.
+    "glue/mainmenu/single.webm",
+    "glue/mainmenu/singleon.webm",
+    "glue/mainmenu/multi.webm",
+    "glue/mainmenu/multion.webm",
+    "glue/mainmenu/exit.webm",
+    "glue/mainmenu/exiton.webm",
+    "glue/mainmenu/editor.webm",
+    "glue/mainmenu/editoron.webm",
+    "glue/mainmenu/titleframe_bg.dds",
+    "glue/mainmenu/titleframe_overlay.dds",
+    "glue/mainmenu/pintro.dds",
+    "glue/mainmenu/pcredit.dds",
+    "glue/mainmenu/etail.dds",
+    "glue/mainmenu/lock.dds",
+    "glue/title/title.dds",
+    // "Select Game Type" modal: metal frame, red hairline and both logos.
+    "glue/palmm/retail_ex.dds",
+    // Moon-landscape backdrop behind Registry / Saved Games / Create.
+    "glue/palnl/backgnd.dds",
+    // Front-end space backdrop (planet + red nebula) used behind the menu,
+    // options, hotkeys and collections screens.
+    "glue/palmm/backgnd.dds",
+    // 4x HD in-game HUD art: resource icons, command-card glyphs and the
+    // selection wireframes (retail draws them at 0.75 at 1440p).
+    "game/icons.dds.grp",
+    "unit/cmdicons/cmdicons.dds.grp",
+    "unit/wirefram/wirefram.dds.grp",
+    // Episode-select console plates (`glucmpgn.ui.json` ids 1/3), the
+    // edge-anchored `palcs` backdrop halves and the mission-history popup
+    // (`phist.dds` carries the modal frame, list box and Ok/Cancel buttons).
+    "glue/campaign/pbotl.dds",
+    "glue/campaign/pbotr.dds",
+    "glue/campaign/ptopl.dds",
+    "glue/campaign/ptopr.dds",
+    "glue/campaign/phist.dds",
+    // Locked-campaign prompt plate (`glupokcancel`).
+    "glue/palcs/pdpopup.dds",
+    "glue/palcs/backgndl.dds",
+    "glue/palcs/backgndr.dds",
+    // Create-game chrome: map-list plate, player slots, map-info column,
+    // the shared two-button holder and the chat plate.
+    "glue/create/plistmap.dds",
+    "glue/create/plistmap2.dds",
+    "glue/create/plistmaptall.dds",
+    "glue/create/pslots.dds",
+    "glue/create/pinfo.dds",
+    "glue/create/twobtnholder.dds",
+    "glue/chatroom/pchat.dds",
+    // Toon Registry: backdrop and its popup.
+    "glue/battlenet/toonregistry/backgnd.dds",
+    "glue/battlenet/toonregistry/popopup.dds",
+    // Classic list dialogs: Registry (`glulogin`) and Load Saved Game
+    // (`gluload`) plates.
+    "glue/login/plist.dds",
+    "glue/load/plist.dds",
+    // Shared `palnl` Ok/Cancel plates (classic dialogs).
+    "glue/palnl/pok.dds",
+    "glue/palnl/pcancel.dds",
+    // Credits panel frame (`creditsscreen.ui.json` id 2).
+    "glue/battlenet/credits_a.dds",
+    // Metal-room backdrop the credits scroll over.
+    "glue/battlenet/backgnd.dds",
+    // Terran ready room (`glurdyt.ui.json`): metal-room backdrop, the
+    // portrait/objective/button frames and the Start glow clip.
+    "glue/palrt/backgnd.dds",
+    "glue/palrt/pcancel.dds",
+    "glue/readyt/p1terr.dds",
+    "glue/readyt/p2terr.dds",
+    "glue/readyt/p3terr.dds",
+    "glue/readyt/p4terr.dds",
+    "glue/readyt/objterr.dds",
+    "glue/readyt/butterr.dds",
+    "glue/readyt/tutbtn.dds",
+    "glue/readyt/tframe1.dds",
+    "glue/readyt/tframe2.dds",
+    "glue/readyt/tframe3.dds",
+    "glue/readyt/tframe4.dds",
+    "glue/readyt/tframeh1.dds",
+    "glue/readyt/tframeh2.dds",
+    "glue/readyt/tframeh3.dds",
+    "glue/readyt/tframeh4.dds",
+    "glue/readyt/start.webm",
+    "glue/readyt/proj.webm",
+    "glue/readyt/proloop.webm",
+    // Score-screen backdrops: `pal<race><victory|defeat>/backgnd.dds`.
+    "glue/scoretv/iscore.dds.grp",
+    "glue/scoretd/iscore.dds.grp",
+    "glue/scorezv/iscore.dds.grp",
+    "glue/scorezd/iscore.dds.grp",
+    "glue/scorepv/iscore.dds.grp",
+    "glue/scorepd/iscore.dds.grp",
+    "glue/paltv/backgnd.dds",
+    "glue/paltd/backgnd.dds",
+    "glue/palzv/backgnd.dds",
+    "glue/palzd/backgnd.dds",
+    "glue/palpv/backgnd.dds",
+    "glue/palpd/backgnd.dds",
+    "glue/scoretd/pmain.dds",
+    "glue/scoretd/pinset.dds",
+    "glue/scoretd/scorebox.dds",
+    "glue/scoretd/untab.dds",
+    "glue/scoretd/iscore.grp",
+    "glue/scoretv/pmain.dds",
+    "glue/scoretv/pinset.dds",
+    "glue/scoretv/scorebox.dds",
+    "glue/scoretv/untab.dds",
+    "glue/scoretv/iscore.grp",
+    "glue/scorepd/pmain.dds",
+    "glue/scorepd/pinset.dds",
+    "glue/scorepd/scorebox.dds",
+    "glue/scorepd/untab.dds",
+    "glue/scorepd/iscore.grp",
+    "glue/scorepv/pmain.dds",
+    "glue/scorepv/pinset.dds",
+    "glue/scorepv/scorebox.dds",
+    "glue/scorepv/untab.dds",
+    "glue/scorepv/iscore.grp",
+    "glue/scorezd/pmain.dds",
+    "glue/scorezd/pinset.dds",
+    "glue/scorezd/scorebox.dds",
+    "glue/scorezd/untab.dds",
+    "glue/scorezd/iscore.grp",
+    "glue/scorezv/pmain.dds",
+    "glue/scorezv/pinset.dds",
+    "glue/scorezv/scorebox.dds",
+    "glue/scorezv/untab.dds",
+    "glue/scorezv/iscore.grp",
+];
+
+/// Remastered music tracks, shipped as Ogg Vorbis in `music/`.
+pub const MUSIC_TRACKS: &[&str] = &[
+    "title",
+    "trdyroom",
+    "terran1",
+    "terran2",
+    "terran3",
+    "terran4",
+    "tvict",
+    "tdefeat",
+    "zrdyroom",
+    "zerg1",
+    "zerg2",
+    "zerg3",
+    "zerg4",
+    "zvict",
+    "zdefeat",
+    "prdyroom",
+    "protoss1",
+    "protoss2",
+    "protoss3",
+    "protoss4",
+    "pvict",
+    "pdefeat",
+    "radiofreezerg",
+];
+
+/// Retail sources for the thirteen effects mixed by [`crate::audio`].
+pub const SOUND_PATHS: &[(&str, &[&str])] = &[
+    (
+        "ui_click",
+        &["sound/glue/mousedown2.wav", "setupdat/audio/mousedown.wav"],
+    ),
+    ("ui_move", &["sound/glue/mouseover.wav"]),
+    ("ui_swish", &["sound/glue/swishin.wav"]),
+    ("ui_swish_out", &["sound/glue/swishout.wav"]),
+    ("rescue_terran", &["sound/misc/trescue.wav"]),
+    ("rescue_zerg", &["sound/misc/zrescue.wav"]),
+    ("rescue_protoss", &["sound/misc/prescue.wav"]),
+    ("transmission", &["sound/misc/transmission.wav"]),
+    ("terran_yes", &["sound/terran/marine/tmayes00.wav"]),
+    ("zerg_yes", &["sound/zerg/drone/zdryes01.wav"]),
+    ("protoss_yes", &["sound/protoss/probe/ppryes03.wav"]),
+    ("victory", &["sound/misc/youwin.wav"]),
+    ("defeat", &["sound/glue/scorefillend.wav"]),
+];
+
+// ---------------------------------------------------------------------------
+// Build config / local index
+// ---------------------------------------------------------------------------
+
+struct BuildConfig {
+    encoding_key: Option<String>,
+    root_key: Option<String>,
+}
+
+fn read_build_key(root: &Path) -> Result<String> {
+    let path = root.join(".build.info");
+    let text = fs::read_to_string(&path)?;
+    let mut lines = text.lines();
+    let header = lines.next().unwrap_or_default();
+    let columns: Vec<&str> = header.split('|').collect();
+    let index = columns
+        .iter()
+        .position(|c| c.starts_with("Build Key"))
+        .ok_or_else(|| RetailError::Format(".build.info has no Build Key column".into()))?;
+    let row = lines
+        .find(|l| !l.trim().is_empty())
+        .ok_or_else(|| RetailError::Format(".build.info has no build row".into()))?;
+    let value = row.split('|').nth(index).unwrap_or_default().trim();
+    if value.len() != 32 || hex16(value).is_none() {
+        return Err(RetailError::Format(".build.info build key".into()));
+    }
+    Ok(value.to_string())
+}
+
+fn read_build_config(root: &Path, build_key: &str) -> Result<BuildConfig> {
+    let candidates = [
+        root.join("Data/config")
+            .join(&build_key[0..2])
+            .join(&build_key[2..4])
+            .join(build_key),
+        root.join("Data/config")
+            .join(&build_key[0..2])
+            .join(&build_key[2..4])
+            .join(build_key.to_ascii_lowercase()),
+    ];
+    let mut text = None;
+    for path in candidates {
+        if let Ok(t) = fs::read_to_string(&path) {
+            text = Some(t);
+            break;
+        }
+    }
+    let text = match text {
+        Some(t) => t,
+        None => find_build_config_text(&root.join("Data/config"))?,
+    };
+    let mut encoding_key = None;
+    let mut root_key = None;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((name, value)) = line.split_once('=') else {
+            continue;
+        };
+        let name = name.trim();
+        if name.starts_with("encoding") && !name.ends_with("-size") {
+            let hashes = hex_tokens(value);
+            encoding_key = hashes.get(1).or_else(|| hashes.first()).cloned();
+        } else if name.starts_with("root") && !name.ends_with("-size") {
+            let hashes = hex_tokens(value);
+            root_key = hashes.first().cloned();
+        }
+    }
+    Ok(BuildConfig {
+        encoding_key,
+        root_key,
+    })
+}
+
+fn find_build_config_text(dir: &Path) -> Result<String> {
+    let mut found = None;
+    walk(dir, &mut |path| {
+        if found.is_some() {
+            return;
+        }
+        if let Ok(text) = fs::read_to_string(path)
+            && text.contains("encoding")
+            && text.contains("root")
+        {
+            found = Some(text);
+        }
+    });
+    found.ok_or_else(|| RetailError::Missing("build configuration".into()))
+}
+
+fn read_local_indexes(root: &Path) -> Result<HashMap<[u8; 9], CascLocation>> {
+    let dir = root.join("Data/data");
+    let mut versions: HashMap<u8, (u32, PathBuf)> = HashMap::new();
+    for entry in fs::read_dir(&dir)?.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if !name.ends_with(".idx") || name.len() != 14 {
+            continue;
+        }
+        let bucket = u8::from_str_radix(&name[0..2], 16).unwrap_or(0xff);
+        let version = u32::from_str_radix(&name[2..10], 16).unwrap_or(0);
+        if bucket > 0x0f {
+            continue;
+        }
+        match versions.get(&bucket) {
+            Some((v, _)) if *v >= version => {}
+            _ => {
+                versions.insert(bucket, (version, path));
+            }
+        }
+    }
+    let mut index = HashMap::new();
+    for (_, (_, path)) in versions {
+        parse_idx(&path, &mut index)?;
+    }
+    Ok(index)
+}
+
+fn parse_idx(path: &Path, out: &mut HashMap<[u8; 9], CascLocation>) -> Result<()> {
+    let data = fs::read(path)?;
+    if data.len() < 40 {
+        return Err(RetailError::Format(format!(
+            "{}: short idx",
+            path.display()
+        )));
+    }
+    // Guarded header block (8 bytes) followed by FILE_INDEX_HEADER_V2.
+    if le32(&data[0..4]) != 16 {
+        return Err(RetailError::Unsupported(format!(
+            "{}: index header v1",
+            path.display()
+        )));
+    }
+    let revision = u16::from_le_bytes([data[8], data[9]]);
+    if revision != 7 {
+        return Err(RetailError::Unsupported(format!(
+            "{}: index revision {revision}",
+            path.display()
+        )));
+    }
+    let span_size = data[12] as usize;
+    let span_offset = data[13] as usize;
+    let key_bytes = data[14] as usize;
+    let segment_bits = data[15] as u32;
+    if span_size != 4 || span_offset != 5 || key_bytes != 9 {
+        return Err(RetailError::Format(format!(
+            "{}: unexpected index field sizes",
+            path.display()
+        )));
+    }
+    let block_size = le32(&data[32..36]) as usize;
+    let entry_len = key_bytes + span_offset + span_size;
+    if entry_len != 18 || 40 + block_size > data.len() {
+        return Err(RetailError::Format(format!(
+            "{}: bad entry block",
+            path.display()
+        )));
+    }
+    let mut offset = 40;
+    for _ in 0..block_size / entry_len {
+        let mut key = [0u8; 9];
+        key.copy_from_slice(&data[offset..offset + 9]);
+        offset += 9;
+        let field = &data[offset..offset + 5];
+        offset += 5;
+        let mut raw = 0u64;
+        for b in field {
+            raw = (raw << 8) | *b as u64;
+        }
+        let size = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
+        offset += 4;
+        let archive = (raw >> segment_bits) as u16;
+        let file_offset = raw & ((1u64 << segment_bits) - 1);
+        out.insert(
+            key,
+            CascLocation {
+                archive,
+                offset: file_offset,
+                encoded_size: size,
+            },
+        );
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// BLTE
+// ---------------------------------------------------------------------------
+
+fn blte_decode(raw: &[u8]) -> Result<Vec<u8>> {
+    let start = if raw.len() >= 4 && &raw[..4] == b"BLTE" {
+        0
+    } else {
+        find_bytes(raw, b"BLTE").ok_or_else(|| RetailError::Format("no BLTE header".into()))?
+    };
+    let data = &raw[start..];
+    if data.len() < 8 {
+        return Err(RetailError::Format("short BLTE header".into()));
+    }
+    let header_size = be32(&data[4..8]) as usize;
+    let mut out = Vec::new();
+    if header_size == 0 {
+        let frame = &data[8..];
+        decode_frame(frame, &mut out)?;
+    } else {
+        if data.len() < 12 || data[8] != 0x0f {
+            return Err(RetailError::Format("bad BLTE frame table".into()));
+        }
+        let count = be24(&data[9..12]) as usize;
+        if 12 + count * 24 != header_size || header_size > data.len() {
+            return Err(RetailError::Format("bad BLTE frame count".into()));
+        }
+        let mut offset = header_size;
+        for i in 0..count {
+            let f = &data[12 + i * 24..12 + (i + 1) * 24];
+            let encoded = be32(&f[0..4]) as usize;
+            if offset + encoded > data.len() {
+                return Err(RetailError::Format("BLTE frame out of range".into()));
+            }
+            decode_frame(&data[offset..offset + encoded], &mut out)?;
+            offset += encoded;
+        }
+    }
+    Ok(out)
+}
+
+fn decode_frame(frame: &[u8], out: &mut Vec<u8>) -> Result<()> {
+    if frame.is_empty() {
+        return Err(RetailError::Format("empty BLTE frame".into()));
+    }
+    match frame[0] {
+        b'N' => out.extend_from_slice(&frame[1..]),
+        b'Z' => {
+            let mut decoder = ZlibDecoder::new(&frame[1..]);
+            decoder.read_to_end(out)?;
+        }
+        b'E' => {
+            return Err(RetailError::Unsupported(
+                "encrypted BLTE frame (no keyring)".into(),
+            ));
+        }
+        other => {
+            return Err(RetailError::Unsupported(format!(
+                "BLTE frame mode {}",
+                other as char
+            )));
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// MPQ (map archives; also works for classic StarDat/BrooDat/Patch_rt)
+// ---------------------------------------------------------------------------
+
+struct MpqBlock {
+    file_pos: u32,
+    compressed_size: u32,
+    file_size: u32,
+    flags: u32,
+}
+
+struct MpqHash {
+    name1: u32,
+    name2: u32,
+    block: u32,
+}
+
+/// Read-only MPQ v1 archive.  Shipped StarCraft maps are MPQ v1 files whose
+/// only member is `staredit\scenario.chk`.
+pub struct MpqArchive {
+    data: Vec<u8>,
+    base: usize,
+    block_shift: u16,
+    blocks: Vec<MpqBlock>,
+    hashes: Vec<MpqHash>,
+}
+
+impl MpqArchive {
+    pub fn open(path: &Path) -> Result<Self> {
+        let data = fs::read(path)?;
+        let base = find_bytes(&data, b"MPQ\x1a")
+            .ok_or_else(|| RetailError::Format(format!("{}: no MPQ header", path.display())))?;
+        if base + 32 > data.len() {
+            return Err(RetailError::Format("short MPQ header".into()));
+        }
+        let header_size = le32(&data[base + 4..]) as usize;
+        let version = u16::from_le_bytes(data[base + 12..base + 14].try_into().unwrap());
+        if version > 3 {
+            return Err(RetailError::Unsupported(format!(
+                "{}: MPQ version {version}",
+                path.display()
+            )));
+        }
+        let block_shift = u16::from_le_bytes(data[base + 14..base + 16].try_into().unwrap());
+        let hash_pos = le32(&data[base + 16..]) as usize;
+        let block_pos = le32(&data[base + 20..]) as usize;
+        let hash_count_raw = le32(&data[base + 24..]) as usize;
+        let block_count = le32(&data[base + 28..]) as usize;
+        let _ = header_size;
+        // Some protectors inflate the declared hash table size.  The next
+        // table starts immediately after the real one, so derive the count
+        // from the table offsets when the declared size is impossible.
+        let mut hash_count = hash_count_raw;
+        if hash_pos < block_pos {
+            let available = (block_pos - hash_pos) / 16;
+            if hash_count > available {
+                hash_count = available;
+            }
+        }
+        let hash_start = base + hash_pos;
+        let block_start = base + block_pos;
+        if hash_start + hash_count * 16 > data.len() || block_start + block_count * 16 > data.len()
+        {
+            return Err(RetailError::Format("MPQ tables out of range".into()));
+        }
+        // Classic MPQ encrypts both tables with fixed Blizzard keys.
+        let mut hash_bytes = data[hash_start..hash_start + hash_count * 16].to_vec();
+        mpq_decrypt(&mut hash_bytes, 0xC3AF_3770);
+        let mut block_bytes = data[block_start..block_start + block_count * 16].to_vec();
+        mpq_decrypt(&mut block_bytes, 0xEC83_B3A3);
+        let mut hashes = Vec::with_capacity(hash_count);
+        for i in 0..hash_count {
+            let p = i * 16;
+            hashes.push(MpqHash {
+                name1: le32(&hash_bytes[p..]),
+                name2: le32(&hash_bytes[p + 4..]),
+                block: le32(&hash_bytes[p + 12..]),
+            });
+        }
+        let mut blocks = Vec::with_capacity(block_count);
+        for i in 0..block_count {
+            let p = i * 16;
+            blocks.push(MpqBlock {
+                file_pos: le32(&block_bytes[p..]),
+                compressed_size: le32(&block_bytes[p + 4..]),
+                file_size: le32(&block_bytes[p + 8..]),
+                flags: le32(&block_bytes[p + 12..]),
+            });
+        }
+        Ok(Self {
+            data,
+            base,
+            block_shift,
+            blocks,
+            hashes,
+        })
+    }
+
+    /// Read a member by archive path (backslashes or slashes).
+    pub fn read_file(&self, name: &str) -> Option<Vec<u8>> {
+        if self.hashes.is_empty() {
+            return None;
+        }
+        let name = name.replace('/', "\\");
+        let index_hash = mpq_hash(&name, 0);
+        let target1 = mpq_hash(&name, 1);
+        let target2 = mpq_hash(&name, 2);
+        let mask = self.hashes.len() as u32 - 1;
+        let mut index = index_hash & mask;
+        for _ in 0..self.hashes.len() {
+            let h = &self.hashes[index as usize];
+            if h.block == 0xffff_ffff {
+                return None;
+            }
+            if h.name1 == target1 && h.name2 == target2 {
+                let block = self.blocks.get(h.block as usize)?;
+                return self.read_block(block, &name);
+            }
+            index = (index + 1) & mask;
+        }
+        None
+    }
+
+    fn read_block(&self, block: &MpqBlock, name: &str) -> Option<Vec<u8>> {
+        const FILE_COMPRESS: u32 = 0x0000_0200;
+        const FILE_IMPLODE: u32 = 0x0000_0100;
+        const FILE_ENCRYPTED: u32 = 0x0001_0000;
+        const FILE_SINGLE_UNIT: u32 = 0x0100_0000;
+        if block.flags & 0x8000_0000 == 0 {
+            return None;
+        }
+        let start = self.base + block.file_pos as usize;
+        let end = start + block.compressed_size as usize;
+        if end > self.data.len() {
+            return None;
+        }
+        let raw = &self.data[start..end];
+        let compressed = block.flags & (FILE_COMPRESS | FILE_IMPLODE) != 0;
+        let implode_only = block.flags & FILE_IMPLODE != 0 && block.flags & FILE_COMPRESS == 0;
+        let mut bytes = raw.to_vec();
+        // MPQ file keys are derived from the plain file name (no path).
+        let plain = name.rsplit(['\\', '/']).next().unwrap_or(name).to_string();
+        let mut key = if block.flags & FILE_ENCRYPTED != 0 {
+            Some(mpq_hash(&plain, 3))
+        } else {
+            None
+        };
+        if let Some(k) = key.as_mut() {
+            if block.flags & 0x0002_0000 != 0 {
+                *k = k.wrapping_add(block.file_pos) ^ block.file_size;
+            }
+            // Multi-sector files encrypt the offset table and each sector
+            // separately, so don't decrypt the whole buffer here.
+            if !compressed || block.flags & FILE_SINGLE_UNIT != 0 {
+                mpq_decrypt(&mut bytes, *k);
+            }
+        }
+        if !compressed {
+            bytes.truncate(block.file_size as usize);
+            return Some(bytes);
+        }
+        let sector_size = 512usize << self.block_shift;
+        if block.flags & FILE_SINGLE_UNIT != 0 {
+            if implode_only {
+                return pklib_explode(&bytes, block.file_size as usize);
+            }
+            let mut out = Vec::new();
+            decompress_sector(&bytes, block.file_size as usize, &mut out)?;
+            return Some(out);
+        }
+        if bytes.len() < 4 {
+            return None;
+        }
+        let sectors = (block.file_size as usize).div_ceil(sector_size);
+        if bytes.len() < (sectors + 1) * 4 {
+            return None;
+        }
+        if let Some(k) = key {
+            mpq_decrypt(&mut bytes[..(sectors + 1) * 4], k.wrapping_sub(1));
+        }
+        let mut offsets = Vec::with_capacity(sectors + 1);
+        for i in 0..=sectors {
+            offsets.push(le32(&bytes[i * 4..]) as usize);
+        }
+        let mut out = Vec::with_capacity(block.file_size as usize);
+        for i in 0..sectors {
+            let a = offsets[i];
+            let b = offsets[i + 1];
+            if a > b || b > bytes.len() {
+                return None;
+            }
+            let mut sector = bytes[a..b].to_vec();
+            if let Some(k) = key {
+                mpq_decrypt(&mut sector, k.wrapping_add(i as u32));
+            }
+            let expected = (block.file_size as usize - out.len()).min(sector_size);
+            if implode_only {
+                // FILE_IMPLODE sectors are bare PKWARE streams: no method byte.
+                let decoded = pklib_explode(&sector, expected)?;
+                out.extend_from_slice(&decoded[..decoded.len().min(expected)]);
+            } else {
+                decompress_sector(&sector, expected, &mut out)?;
+            }
+        }
+        out.truncate(block.file_size as usize);
+        Some(out)
+    }
+}
+
+unsafe extern "C" {
+    fn sc_pklib_explode(
+        input: *const u8,
+        input_len: u32,
+        output: *mut u8,
+        output_cap: u32,
+        output_len: *mut u32,
+    ) -> i32;
+}
+
+fn pklib_explode(data: &[u8], capacity: usize) -> Option<Vec<u8>> {
+    let mut out = vec![0u8; capacity];
+    let mut len = 0u32;
+    let rc = unsafe {
+        sc_pklib_explode(
+            data.as_ptr(),
+            data.len() as u32,
+            out.as_mut_ptr(),
+            out.len() as u32,
+            &mut len,
+        )
+    };
+    if rc != 0 && len == 0 {
+        return None;
+    }
+    out.truncate(len as usize);
+    Some(out)
+}
+
+fn decompress_sector(sector: &[u8], expected: usize, out: &mut Vec<u8>) -> Option<()> {
+    if sector.is_empty() {
+        return None;
+    }
+    if sector.len() == expected {
+        out.extend_from_slice(sector);
+        return Some(());
+    }
+    let mask = sector[0];
+    let body = &sector[1..];
+    if mask & 0x02 != 0 {
+        let mut decoder = ZlibDecoder::new(body);
+        let mut decoded = Vec::new();
+        decoder.read_to_end(&mut decoded).ok()?;
+        out.extend_from_slice(&decoded[..decoded.len().min(expected)]);
+        return Some(());
+    }
+    if mask & 0x08 != 0 {
+        let decoded = pklib_explode(body, expected)?;
+        out.extend_from_slice(&decoded[..decoded.len().min(expected)]);
+        return Some(());
+    }
+    if mask == 0 {
+        out.extend_from_slice(body);
+        return Some(());
+    }
+    // PkWare/BZip2/ADPCM sectors are rare in the shipped map corpus; report
+    // them instead of silently returning corrupt data.
+    None
+}
+
+fn mpq_hash(name: &str, hash_type: u32) -> u32 {
+    let table = mpq_crypt_table();
+    let mut seed1 = 0x7fed_7fedu32;
+    let mut seed2 = 0xeeee_eeeeu32;
+    for byte in name.bytes() {
+        let ch = byte.to_ascii_uppercase() as usize;
+        seed1 = table[(hash_type as usize * 0x100) + ch] ^ (seed1.wrapping_add(seed2));
+        seed2 = (ch as u32)
+            .wrapping_add(seed1)
+            .wrapping_add(seed2)
+            .wrapping_add(seed2 << 5)
+            .wrapping_add(3);
+    }
+    seed1
+}
+
+fn mpq_crypt_table() -> [u32; 0x500] {
+    let mut table = [0u32; 0x500];
+    let mut seed = 0x0010_0001u32;
+    // The table is interleaved by byte value, not contiguous: entry
+    // `byte + hash_type * 0x100` is what the hash/decrypt loops index.
+    for byte in 0..0x100usize {
+        for i in 0..5usize {
+            seed = (seed * 125 + 3) % 0x2aaaab;
+            let a = (seed & 0xffff) << 16;
+            seed = (seed * 125 + 3) % 0x2aaaab;
+            let b = seed & 0xffff;
+            table[byte + i * 0x100] = a | b;
+        }
+    }
+    table
+}
+
+fn mpq_decrypt(data: &mut [u8], key: u32) {
+    let table = mpq_crypt_table();
+    let mut seed1 = key;
+    let mut seed2 = 0xeeee_eeeeu32;
+    // StormLib rounds the block length down to DWORDs.  The trailing 1..3
+    // bytes of an encrypted sector are stored in the clear.
+    for i in 0..data.len() / 4 {
+        let chunk = &mut data[i * 4..i * 4 + 4];
+        let mut value = 0u32;
+        for (j, b) in chunk.iter().enumerate() {
+            value |= (*b as u32) << (8 * j);
+        }
+        seed2 = seed2.wrapping_add(table[0x400 + (seed1 & 0xff) as usize]);
+        let plain = value ^ seed1.wrapping_add(seed2);
+        for (j, b) in chunk.iter_mut().enumerate() {
+            *b = ((plain >> (8 * j)) & 0xff) as u8;
+        }
+        seed1 = ((!seed1 << 21).wrapping_add(0x1111_1111)) | (seed1 >> 11);
+        seed2 = plain
+            .wrapping_add(seed2)
+            .wrapping_add(seed2 << 5)
+            .wrapping_add(3);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Origin manifest: every materialised file back to its CASC / MPQ source
+// ---------------------------------------------------------------------------
+
+/// Where one materialised file came from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Origin {
+    /// Byte-identical to these CASC ROOT paths (its MD5 is their CKey).
+    Casc(Vec<String>),
+    /// A member of an MPQ map archive (archive path relative to the
+    /// install, member name), byte-identical: its `staredit\scenario.chk`
+    /// or a trigger sound.
+    Mpq {
+        archive: String,
+        member: String,
+    },
+    /// Computed from a CASC file (the transformation is named).
+    Derived(String),
+    /// Index written by `materialize` itself (no retail bytes).
+    Generated,
+    Unknown,
+}
+
+/// One row of [`RetailInstall::origin_manifest`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OriginRow {
+    /// Path relative to the materialised directory, `/`-separated.
+    pub rel: String,
+    pub size: u64,
+    pub sha256: String,
+    pub origin: Origin,
+}
+
+impl OriginRow {
+    /// `rel  size  sha256  kind  source` (tab-separated).
+    pub fn tsv(&self) -> String {
+        let (kind, source) = match &self.origin {
+            Origin::Casc(paths) => ("casc", paths.join(" | ")),
+            Origin::Mpq { archive, member } => ("mpq", format!("{archive}:{member}")),
+            Origin::Derived(how) => ("derived", how.clone()),
+            Origin::Generated => ("generated", String::new()),
+            Origin::Unknown => ("unknown", String::new()),
+        };
+        format!(
+            "{}\t{}\t{}\t{kind}\t{source}",
+            self.rel, self.size, self.sha256
+        )
+    }
+}
+
+/// Header of [`OriginRow::tsv`].
+pub const ORIGIN_TSV_HEADER: &str = "rel\tsize\tsha256\tkind\tsource";
+
+impl RetailInstall {
+    /// Attribute every file under `dir` (a `materialize` output) to its
+    /// source.  CASC is content-addressed (ROOT path → CKey = MD5 of the
+    /// content), so an MD5 match is proof of origin, not a name guess; MPQ
+    /// maps are matched by the SHA-256 of their extracted `scenario.chk`.
+    pub fn origin_manifest(&self, dir: &Path) -> Result<Vec<OriginRow>> {
+        let mut by_ckey: HashMap<[u8; 16], Vec<String>> = HashMap::new();
+        for (path, ckey) in &self.paths {
+            by_ckey.entry(*ckey).or_default().push(path.clone());
+        }
+        for paths in by_ckey.values_mut() {
+            paths.sort();
+        }
+        let mut maps: HashMap<String, (String, String)> = HashMap::new();
+        for map in self.maps() {
+            if let Ok(chk) = self.read_map(&map) {
+                let rel = map.path.strip_prefix(&self.root).unwrap_or(&map.path);
+                let rel = rel.to_string_lossy().replace('\\', "/");
+                for (name, bytes) in self.map_sounds(&map, &chk) {
+                    maps.entry(sha256_hex(&bytes))
+                        .or_insert_with(|| (rel.clone(), format!("staredit\\wav\\{name}")));
+                }
+                maps.entry(sha256_hex(&chk))
+                    .or_insert_with(|| (rel, "staredit\\scenario.chk".into()));
+            }
+        }
+        let palette = self.read("game/tunit.pcx").and_then(|p| pcx_palette(&p));
+        let mut files = Vec::new();
+        walk(dir, &mut |p| files.push(p.to_path_buf()));
+        files.sort();
+        let mut rows = Vec::new();
+        for path in files {
+            let rel = path
+                .strip_prefix(dir)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            if rel == ".complete" {
+                continue;
+            }
+            let bytes = fs::read(&path)?;
+            let sha = sha256_hex(&bytes);
+            let origin = if let Some(paths) = by_ckey.get(&md5(&bytes)) {
+                Origin::Casc(paths.clone())
+            } else if let Some((archive, member)) = maps.get(&sha) {
+                Origin::Mpq {
+                    archive: archive.clone(),
+                    member: member.clone(),
+                }
+            } else if palette.as_deref() == Some(bytes.as_slice()) {
+                Origin::Derived("game/tunit.pcx: trailing 256-colour PCX palette".into())
+            } else if rel.ends_with("manifest.tsv") || rel == "voices/index.tsv" {
+                Origin::Generated
+            } else {
+                Origin::Unknown
+            };
+            rows.push(OriginRow {
+                rel,
+                size: bytes.len() as u64,
+                sha256: sha,
+                origin,
+            });
+        }
+        Ok(rows)
+    }
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// MD5 (RFC 1321): the CASC content key of a file.
+pub fn md5(data: &[u8]) -> [u8; 16] {
+    const S: [u32; 64] = [
+        7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14, 20, 5,
+        9, 14, 20, 5, 9, 14, 20, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 6, 10,
+        15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
+    ];
+    // K[i] = floor(abs(sin(i + 1)) * 2^32).
+    let k: Vec<u32> = (0..64)
+        .map(|i| ((i as f64 + 1.0).sin().abs() * 4_294_967_296.0) as u32)
+        .collect();
+    let mut msg = data.to_vec();
+    let bit_len = (data.len() as u64).wrapping_mul(8);
+    msg.push(0x80);
+    while msg.len() % 64 != 56 {
+        msg.push(0);
+    }
+    msg.extend_from_slice(&bit_len.to_le_bytes());
+    let mut h: [u32; 4] = [0x6745_2301, 0xefcd_ab89, 0x98ba_dcfe, 0x1032_5476];
+    for block in msg.as_chunks::<64>().0 {
+        let m: Vec<u32> = block
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|w| u32::from_le_bytes(*w))
+            .collect();
+        let [mut a, mut b, mut c, mut d] = h;
+        for i in 0..64 {
+            let (f, g) = match i / 16 {
+                0 => ((b & c) | (!b & d), i),
+                1 => ((d & b) | (!d & c), (5 * i + 1) % 16),
+                2 => (b ^ c ^ d, (3 * i + 5) % 16),
+                _ => (c ^ (b | !d), (7 * i) % 16),
+            };
+            let rotated = a
+                .wrapping_add(f)
+                .wrapping_add(k[i])
+                .wrapping_add(m[g])
+                .rotate_left(S[i]);
+            a = d;
+            d = c;
+            c = b;
+            b = b.wrapping_add(rotated);
+        }
+        h = [
+            h[0].wrapping_add(a),
+            h[1].wrapping_add(b),
+            h[2].wrapping_add(c),
+            h[3].wrapping_add(d),
+        ];
+    }
+    let mut out = [0u8; 16];
+    for (i, word) in h.iter().enumerate() {
+        out[i * 4..i * 4 + 4].copy_from_slice(&word.to_le_bytes());
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+fn write_file(path: &Path, bytes: &[u8]) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, bytes)?;
+    Ok(())
+}
+
+fn walk(dir: &Path, callback: &mut impl FnMut(&Path)) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            walk(&path, callback);
+        } else {
+            callback(&path);
+        }
+    }
+}
+
+fn normalise(path: &str) -> String {
+    path.replace('\\', "/").to_ascii_lowercase()
+}
+
+fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack.windows(needle.len()).position(|w| w == needle)
+}
+
+fn be16(bytes: &[u8]) -> u16 {
+    u16::from_be_bytes([bytes[0], bytes[1]])
+}
+fn be24(bytes: &[u8]) -> u32 {
+    ((bytes[0] as u32) << 16) | ((bytes[1] as u32) << 8) | bytes[2] as u32
+}
+fn be32(bytes: &[u8]) -> u32 {
+    u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+}
+fn le32(bytes: &[u8]) -> u32 {
+    u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+}
+
+fn hex16(text: &str) -> Option<[u8; 16]> {
+    if text.len() != 32 {
+        return None;
+    }
+    let mut out = [0u8; 16];
+    for i in 0..16 {
+        out[i] = u8::from_str_radix(&text[i * 2..i * 2 + 2], 16).ok()?;
+    }
+    Some(out)
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn hex_tokens(text: &str) -> Vec<String> {
+    text.split_whitespace()
+        .filter(|t| t.len() == 32 && t.chars().all(|c| c.is_ascii_hexdigit()))
+        .map(|t| t.to_ascii_lowercase())
+        .collect()
+}
+
+/// PCX files end with a 0x0C marker and 768 bytes of VGA palette.
+fn pcx_palette(bytes: &[u8]) -> Option<Vec<u8>> {
+    if bytes.len() < 769 || bytes[bytes.len() - 769] != 0x0c {
+        return None;
+    }
+    Some(bytes[bytes.len() - 768..].to_vec())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    #[test]
+    fn md5_matches_the_rfc_1321_test_suite() {
+        let hex = |d: [u8; 16]| d.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        let cases: [(&str, &str); 7] = [
+            ("", "d41d8cd98f00b204e9800998ecf8427e"),
+            ("a", "0cc175b9c0f1b6a831c399e269772661"),
+            ("abc", "900150983cd24fb0d6963f7d28e17f72"),
+            ("message digest", "f96b697d7cb7938d525a2f31aaf161d0"),
+            (
+                "abcdefghijklmnopqrstuvwxyz",
+                "c3fcd3d76192e4007dfb496cca67e13b",
+            ),
+            (
+                "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789",
+                "d174ab98d277d9f5a5611c2c9f419d9f",
+            ),
+            (
+                "12345678901234567890123456789012345678901234567890123456789012345678901234567890",
+                "57edf4a22be3c955ac49da2e2107b67a",
+            ),
+        ];
+        for (input, want) in cases {
+            assert_eq!(hex(super::md5(input.as_bytes())), want, "{input:?}");
+        }
+    }
+
+    #[test]
+    fn origin_rows_render_as_tsv() {
+        use super::{Origin, OriginRow};
+        let row = |origin| OriginRow {
+            rel: "sound/x.wav".into(),
+            size: 3,
+            sha256: "ab".into(),
+            origin,
+        };
+        assert_eq!(
+            row(Origin::Casc(vec!["a/b.wav".into(), "c.wav".into()])).tsv(),
+            "sound/x.wav\t3\tab\tcasc\ta/b.wav | c.wav"
+        );
+        assert_eq!(
+            row(Origin::Mpq {
+                archive: "Maps/(2)Boxer.scm".into(),
+                member: "staredit\\scenario.chk".into()
+            })
+            .tsv(),
+            "sound/x.wav\t3\tab\tmpq\tMaps/(2)Boxer.scm:staredit\\scenario.chk"
+        );
+        assert!(row(Origin::Unknown).tsv().ends_with("\tunknown\t"));
+    }
+
+    fn env(pairs: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<String> {
+        move |k: &str| {
+            pairs
+                .iter()
+                .find(|(n, _)| *n == k)
+                .map(|(_, v)| v.to_string())
+        }
+    }
+
+    #[test]
+    fn cache_root_follows_the_platform_convention() {
+        let xdg = super::cache_root_from(&env(&[("XDG_CACHE_HOME", "/x"), ("HOME", "/h")]));
+        assert_eq!(xdg, PathBuf::from("/x/galaxycraft"));
+        let plain = super::cache_root_from(&env(&[("HOME", "/h"), ("LOCALAPPDATA", "/l")]));
+        let expect = if cfg!(windows) {
+            "/l/galaxycraft"
+        } else if cfg!(target_os = "macos") {
+            "/h/Library/Caches/galaxycraft"
+        } else {
+            "/h/.cache/galaxycraft"
+        };
+        assert_eq!(plain, PathBuf::from(expect));
+        let none = super::cache_root_from(&env(&[]));
+        assert_eq!(none, std::env::temp_dir().join("galaxycraft"));
+    }
+
+    #[test]
+    fn install_candidates_cover_the_platform_defaults() {
+        let c = super::default_install_candidates(&env(&[
+            ("HOME", "/h"),
+            ("ProgramFiles(x86)", r"D:\Apps"),
+        ]));
+        assert!(c.contains(&PathBuf::from(
+            "/h/.wine/drive_c/Program Files (x86)/StarCraft"
+        )));
+        if cfg!(windows) {
+            assert!(c.contains(&PathBuf::from(r"D:\Apps").join("StarCraft")));
+            assert!(c.contains(&PathBuf::from(r"C:\Program Files (x86)\StarCraft")));
+        } else if cfg!(target_os = "macos") {
+            assert!(c.contains(&PathBuf::from("/Applications/StarCraft")));
+        } else {
+            assert!(c.contains(&PathBuf::from("/opt/StarCraft")));
+        }
+    }
+}
