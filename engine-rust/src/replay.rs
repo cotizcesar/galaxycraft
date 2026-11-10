@@ -21,10 +21,16 @@ use crate::projectile::BulletState;
 use crate::sim::{CarryKind, Order, Race, SimUnit, Spell, SpellTarget, World};
 
 pub const MAGIC: u32 = 0x4743_5331; // "GCS1"
-pub const VERSION: u16 = 3; // v2: commands carry Issue or economy acts;
+pub const VERSION: u16 = 5; // v2: commands carry Issue or economy acts;
 // v3 adds research, upgrade, cancel, rally, add-on and spell acts (tags 4-9)
 // the building cancel (tag 10) and the single unload (tag 11).
-// A v2 file only has tags 0-3 and decodes unchanged.
+// v4 records the direct command-card abilities that used to bypass the log:
+// unit morphs, cloak, nuke, shield battery, hangar units, larva spawn,
+// the add-on / morph cancels, the single-player cheat toggles and the
+// Capture-the-Flag beacon move (tags 12-21).
+// v5 adds the production-queue dequeue (tag 22) and queued waypoint orders
+// (tag 23).
+// Older files only carry their own tags and decode unchanged.
 
 /// One recorded action: a player/AI order or a direct economy call
 /// (`World::train` / `morph` / `morph_building`, used by the AI and the
@@ -87,6 +93,61 @@ pub enum RecAct {
     UnloadOne {
         transport: u32,
         unit: u32,
+    },
+    /// Morph a Hydralisk/Mutalisk into its alternate form (tag 12).
+    MorphUnit {
+        unit: u32,
+        unit_type: u16,
+    },
+    /// Personal cloak toggle (tag 13).
+    Cloak {
+        unit: u32,
+        cloaked: bool,
+    },
+    /// Nuclear strike (tag 14).
+    Nuke {
+        ghost: u32,
+        pos: (i32, i32),
+    },
+    /// Shield Battery recharge (tag 15).
+    ShieldBattery {
+        battery: u32,
+        target: u32,
+    },
+    /// Build one Interceptor / Scarab (tag 16).
+    Hangar {
+        unit: u32,
+    },
+    /// Hatchery / Lair / Hive Spawn Larva (tag 17).
+    SpawnLarva {
+        hatchery: u32,
+    },
+    /// Cancel an add-on under construction on `building` (tag 18).
+    CancelAddon {
+        building: u32,
+    },
+    /// Cancel a Zerg building morph (tag 19).
+    CancelMorph {
+        building: u32,
+    },
+    /// A single-player cheat code (tag 20).
+    Cheat {
+        player: u8,
+        code: u8,
+    },
+    /// Capture the Flag: move a player's beacon (tag 21).
+    Beacon {
+        player: u8,
+        pos: (i32, i32),
+    },
+    /// Remove and refund the newest queued production item (tag 22).
+    Dequeue {
+        building: u32,
+    },
+    /// Append an order to a unit's waypoint queue (tag 23).
+    QueueOrder {
+        unit: u32,
+        order: Order,
     },
 }
 
@@ -546,6 +607,10 @@ impl Recording {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SaveFile {
     pub map_name: String,
+    /// Index into the client's map list at save time.  Only a hint: the
+    /// loader validates it against `map_chk` and otherwise searches for the
+    /// same bytes.  `None` for tool-written and v1-v4 files.
+    pub map_index: Option<usize>,
     pub map_chk: Vec<u8>,
     pub races: Vec<Race>,
     pub local_player: usize,
@@ -557,7 +622,7 @@ pub struct SaveFile {
 }
 
 const SAVE_MAGIC: u32 = 0x4743_5356; // "GCSF"
-const SAVE_VERSION: u16 = 3; // v3: the recording carries v3 acts.
+const SAVE_VERSION: u16 = 5; // v5: appends the map-list index.
 /// Largest encoded [`crate::multiplayer::GameSetup`] (12 slots x 5 + 2).
 const MAX_SETUP_BYTES: usize = 64;
 
@@ -615,6 +680,7 @@ impl SaveFile {
         let setup = self.setup.as_ref().map(|s| s.encode()).unwrap_or_default();
         w_u32(&mut payload, setup.len().min(MAX_SETUP_BYTES) as u32);
         payload.extend_from_slice(&setup[..setup.len().min(MAX_SETUP_BYTES)]);
+        w_u32(&mut payload, self.map_index.map_or(u32::MAX, |i| i as u32));
         let digest = Sha256::digest(&payload);
         let mut out = Vec::with_capacity(4 + 2 + payload.len() + 32);
         out.extend_from_slice(&SAVE_MAGIC.to_le_bytes());
@@ -667,6 +733,14 @@ impl SaveFile {
         } else {
             None
         };
+        let map_index = if version >= 5 {
+            match c.u32()? {
+                u32::MAX => None,
+                i => Some(i as usize),
+            }
+        } else {
+            None
+        };
         if c.o != payload.len() {
             return None;
         }
@@ -675,6 +749,7 @@ impl SaveFile {
         }
         Some(Self {
             map_name,
+            map_index,
             map_chk,
             races,
             local_player,
@@ -776,32 +851,104 @@ fn hash_unit(h: &mut DefaultHasher, u: &SimUnit) {
     u.hp.hash(h);
     u.shields.hash(h);
     u.energy.hash(h);
+    u.energy_frac.hash(h);
     u.x.hash(h);
     u.y.hash(h);
     u.facing.hash(h);
     u.alive.hash(h);
     u.completed.hash(h);
+    u.credited.hash(h);
+    u.lifted.hash(h);
+    u.addon_attached.hash(h);
     u.kills.hash(h);
     u.builder.hash(h);
+    u.invincible.hash(h);
+    u.last_damage_source.hash(h);
+    u.last_damaged.hash(h);
+    u.doodad_enabled.hash(h);
+    hash_opt_u32(h, u.nydus_exit);
+    u.expires_at.hash(h);
+    u.mine_armed_at.hash(h);
+    u.repair_debt.hash(h);
+    u.resource_amount.hash(h);
+    u.morph_to.hash(h);
+    u.larva_timer.hash(h);
+    u.order_carry.hash(h);
+    u.order_wait.hash(h);
+    u.connected_unit.hash(h);
+    u.larva_spawn_side_values.hash(h);
+    u.order_row.hash(h);
+    u.anim_tick.hash(h);
+    u.attacks_fired.hash(h);
     (u.path_stall, u.path_last_dist).hash(h);
     (u.speed, u.moved_tick).hash(h);
-    u.credited.hash(h);
     u.cooldown.hash(h);
+    u.special_cooldown.hash(h);
+    u.hangar_capacity.hash(h);
     hash_order(h, &u.order);
+    match &u.resume_order {
+        None => 0u8.hash(h),
+        Some(o) => {
+            1u8.hash(h);
+            hash_order(h, o);
+        }
+    }
     h.write_usize(u.queue.len());
     for o in &u.queue {
         hash_order(h, o);
     }
     hash_opt_u32(h, u.target);
+    u.rally.hash(h);
+    u.path_goal.hash(h);
+    h.write_usize(u.path.len());
+    for p in &u.path {
+        p.hash(h);
+    }
     u.carry.hash(h);
     carry_tag(u.carry_kind).hash(h);
     u.gather_timer.hash(h);
+    hash_opt_u32(h, u.resource_target);
+    hash_opt_u32(h, u.depot);
+    h.write_usize(u.production.len());
+    for o in &u.production {
+        hash_order(h, o);
+    }
+    hash_opt_u32(h, u.addon);
+    h.write_usize(u.cargo.len());
+    for id in &u.cargo {
+        id.hash(h);
+    }
+    hash_opt_u32(h, u.in_transport);
     u.build_remaining.hash(h);
+    u.build_total.hash(h);
     u.hangar.hash(h);
+    match &u.anim {
+        None => 0u8.hash(h),
+        Some(a) => {
+            1u8.hash(h);
+            a.iscript.hash(h);
+            a.anim.hash(h);
+            a.pc.hash(h);
+            a.wait.hash(h);
+            a.frame.hash(h);
+            a.direction.hash(h);
+            a.flip.hash(h);
+            a.call_stack.hash(h);
+            a.move_speed.hash(h);
+            a.fling_speed.hash(h);
+            a.ended.hash(h);
+            a.ignore_rest.hash(h);
+            a.orders_blocked.hash(h);
+            a.repeat_attack.hash(h);
+            a.signal.hash(h);
+        }
+    }
     // Status effect timers decide future damage/healing: hash them all.
     let s = &u.status;
     s.matrix.hash(h);
+    s.matrix_ticks.hash(h);
     s.acid_spores.hash(h);
+    s.acid_spore_ticks.hash(h);
     s.hallucination.hash(h);
     s.stim_ticks.hash(h);
     s.lockdown_ticks.hash(h);
@@ -835,14 +982,38 @@ pub fn state_hash(w: &World) -> u64 {
         }
     }
     w.next_id.hash(&mut h);
+    w.sudden_death.hash(&mut h);
+    w.greed_goal.hash(&mut h);
+    w.slaughter_deadline.hash(&mut h);
+    w.cheat_no_enemy_spells.hash(&mut h);
+    match &w.ctf {
+        None => 0u8.hash(&mut h),
+        Some(c) => {
+            1u8.hash(&mut h);
+            c.release_at.hash(&mut h);
+            c.move_until.hash(&mut h);
+            c.beacon_moved.hash(&mut h);
+            c.beacons.hash(&mut h);
+            for f in &c.flags {
+                f.owner.hash(&mut h);
+                f.home.hash(&mut h);
+                f.pos.hash(&mut h);
+                f.carrier.hash(&mut h);
+                f.return_at.hash(&mut h);
+                f.released.hash(&mut h);
+            }
+        }
+    }
     for p in &w.players {
         race_tag(p.race).hash(&mut h);
         p.team.hash(&mut h);
+        p.allied_victory.hash(&mut h);
         p.minerals.hash(&mut h);
         p.gas.hash(&mut h);
         p.techs.hash(&mut h);
         p.upgrades.hash(&mut h);
         p.defeated.hash(&mut h);
+        p.cheats.hash(&mut h);
         p.minerals_gathered.hash(&mut h);
         (
             p.units_produced,
@@ -966,6 +1137,42 @@ pub fn apply_act(world: &mut World, act: &RecAct) {
         } => {
             let _ = world.cast(*caster, *spell, *target);
         }
+        RecAct::MorphUnit { unit, unit_type } => {
+            let _ = world.morph_unit(*unit, *unit_type);
+        }
+        RecAct::Cloak { unit, cloaked } => {
+            let _ = world.set_cloak(*unit, *cloaked);
+        }
+        RecAct::Nuke { ghost, pos } => {
+            let _ = world.launch_nuke(*ghost, *pos);
+        }
+        RecAct::ShieldBattery { battery, target } => {
+            let _ = world.shield_battery(*battery, *target);
+        }
+        RecAct::Hangar { unit } => {
+            let _ = world.build_hangar_unit(*unit);
+        }
+        RecAct::SpawnLarva { hatchery } => {
+            let _ = world.spawn_larva(*hatchery);
+        }
+        RecAct::CancelAddon { building } => {
+            let _ = world.cancel_addon(*building);
+        }
+        RecAct::CancelMorph { building } => {
+            let _ = world.cancel_morph(*building);
+        }
+        RecAct::Cheat { player, code } => {
+            let _ = world.apply_cheat(*player, *code);
+        }
+        RecAct::Beacon { player, pos } => {
+            let _ = world.move_beacon(*player, *pos);
+        }
+        RecAct::Dequeue { building } => {
+            let _ = world.dequeue_production(*building);
+        }
+        RecAct::QueueOrder { unit, order } => {
+            let _ = world.queue_order(*unit, order.clone());
+        }
     }
 }
 
@@ -1041,6 +1248,63 @@ pub fn encode_act(out: &mut Vec<u8>, act: &RecAct) {
                 },
             );
         }
+        RecAct::MorphUnit { unit, unit_type } => {
+            w_u8(out, 12);
+            w_u32(out, *unit);
+            w_u16(out, *unit_type);
+        }
+        RecAct::Cloak { unit, cloaked } => {
+            w_u8(out, 13);
+            w_u32(out, *unit);
+            w_u8(out, u8::from(*cloaked));
+        }
+        RecAct::Nuke { ghost, pos } => {
+            w_u8(out, 14);
+            w_u32(out, *ghost);
+            w_u32(out, pos.0 as u32);
+            w_u32(out, pos.1 as u32);
+        }
+        RecAct::ShieldBattery { battery, target } => {
+            w_u8(out, 15);
+            w_u32(out, *battery);
+            w_u32(out, *target);
+        }
+        RecAct::Hangar { unit } => {
+            w_u8(out, 16);
+            w_u32(out, *unit);
+        }
+        RecAct::SpawnLarva { hatchery } => {
+            w_u8(out, 17);
+            w_u32(out, *hatchery);
+        }
+        RecAct::CancelAddon { building } => {
+            w_u8(out, 18);
+            w_u32(out, *building);
+        }
+        RecAct::CancelMorph { building } => {
+            w_u8(out, 19);
+            w_u32(out, *building);
+        }
+        RecAct::Cheat { player, code } => {
+            w_u8(out, 20);
+            w_u8(out, *player);
+            w_u8(out, *code);
+        }
+        RecAct::Beacon { player, pos } => {
+            w_u8(out, 21);
+            w_u8(out, *player);
+            w_u32(out, pos.0 as u32);
+            w_u32(out, pos.1 as u32);
+        }
+        RecAct::Dequeue { building } => {
+            w_u8(out, 22);
+            w_u32(out, *building);
+        }
+        RecAct::QueueOrder { unit, order } => {
+            w_u8(out, 23);
+            w_u32(out, *unit);
+            encode_order(out, order);
+        }
     }
 }
 
@@ -1095,6 +1359,39 @@ pub fn decode_act(c: &mut Cursor<'_>) -> Option<RecAct> {
                 _ => return None,
             }
         }
+        12 => RecAct::MorphUnit {
+            unit: c.u32()?,
+            unit_type: c.u16()?,
+        },
+        13 => RecAct::Cloak {
+            unit: c.u32()?,
+            cloaked: c.u8()? != 0,
+        },
+        14 => RecAct::Nuke {
+            ghost: c.u32()?,
+            pos: (c.u32()? as i32, c.u32()? as i32),
+        },
+        15 => RecAct::ShieldBattery {
+            battery: c.u32()?,
+            target: c.u32()?,
+        },
+        16 => RecAct::Hangar { unit: c.u32()? },
+        17 => RecAct::SpawnLarva { hatchery: c.u32()? },
+        18 => RecAct::CancelAddon { building: c.u32()? },
+        19 => RecAct::CancelMorph { building: c.u32()? },
+        20 => RecAct::Cheat {
+            player: c.u8()?,
+            code: c.u8()?,
+        },
+        21 => RecAct::Beacon {
+            player: c.u8()?,
+            pos: (c.u32()? as i32, c.u32()? as i32),
+        },
+        22 => RecAct::Dequeue { building: c.u32()? },
+        23 => RecAct::QueueOrder {
+            unit: c.u32()?,
+            order: decode_order(c)?,
+        },
         _ => return None,
     })
 }
@@ -1104,7 +1401,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_act_roundtrips_including_the_v3_card_acts() {
+    fn every_act_roundtrips_including_the_v4_card_acts() {
         let acts = vec![
             RecAct::Issue {
                 unit: 1,
@@ -1145,6 +1442,36 @@ mod tests {
                 caster: 11,
                 spell: Spell::StimPacks,
                 target: SpellTarget::None,
+            },
+            RecAct::MorphUnit {
+                unit: 15,
+                unit_type: 43,
+            },
+            RecAct::Cloak {
+                unit: 16,
+                cloaked: true,
+            },
+            RecAct::Nuke {
+                ghost: 17,
+                pos: (-20, 3000),
+            },
+            RecAct::ShieldBattery {
+                battery: 18,
+                target: 19,
+            },
+            RecAct::Hangar { unit: 20 },
+            RecAct::SpawnLarva { hatchery: 21 },
+            RecAct::CancelAddon { building: 22 },
+            RecAct::CancelMorph { building: 23 },
+            RecAct::Cheat { player: 2, code: 9 },
+            RecAct::Beacon {
+                player: 3,
+                pos: (64, 96),
+            },
+            RecAct::Dequeue { building: 24 },
+            RecAct::QueueOrder {
+                unit: 26,
+                order: Order::Move { pos: (10, -20) },
             },
         ];
         for act in acts {

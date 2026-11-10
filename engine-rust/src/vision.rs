@@ -34,6 +34,23 @@ impl Vision {
         }
     }
 
+    /// Build a vision grid from the CHK `MASK` section.  `mask` is one byte
+    /// per 32x32 tile; bit `p` set means fogged for player `p`, clear means
+    /// pre-explored.  Missing trailing tiles are fogged.
+    pub fn from_mask(width: usize, height: usize, mask: &[u8]) -> Self {
+        let mut vision = Self::new(width, height);
+        vision.seed_explored(mask);
+        vision
+    }
+
+    /// Seed only the durable explored mask; current sight is rebuilt from
+    /// units by `World::update_vision`.
+    pub fn seed_explored(&mut self, mask: &[u8]) {
+        for (i, &fog) in mask.iter().take(self.width * self.height).enumerate() {
+            self.explored[i] |= (!fog) as u32 & 0xff;
+        }
+    }
+
     /// Shared vision: for every player `p`, OR its bit into each tile that a
     /// player in `vision_from[p]` sees (and explore it), after the per-owner
     /// pass.  One pass over the tiles; deterministic.
@@ -324,7 +341,7 @@ impl World {
                 continue;
             }
             let ty = self.data.unit(u.type_id);
-            let range = ty.sight_range as i32;
+            let range = self.sight_range(u.owner, u.type_id);
             if range <= 0 {
                 continue;
             }
@@ -340,6 +357,22 @@ impl World {
         let from: Vec<u16> = self.players.iter().map(|p| p.vision_from).collect();
         vision.share(&from);
         self.vision = Some(vision);
+        // `CUnit+0xe4`: cache each unit's per-player visibility mask
+        // (`0x005b4a10`/`0x005b5a40`).
+        let masks: Vec<u32> = (0..self.units.len())
+            .map(|i| {
+                let mut mask = 0u32;
+                for p in 0..self.players.len().min(32) {
+                    if self.can_see_unit(p as u8, i) {
+                        mask |= 1u32 << p;
+                    }
+                }
+                mask
+            })
+            .collect();
+        for (u, mask) in self.units.iter_mut().zip(masks) {
+            u.visibility_mask = mask;
+        }
     }
 
     /// Whether `observer` receives `owner`'s vision (itself, or shared).
@@ -386,6 +419,16 @@ impl World {
         if target.status.revealed_ticks > 0 {
             return true;
         }
+        // Acid Spores reveal a cloaked unit while the stacks last; fog still
+        // hides it from players with no vision of the location.
+        if target.status.cloaked
+            && target.status.acid_spores > 0
+            && !target.status.burrowed
+            && (!self.fog_of_war
+                || self.is_visible_to(observer_owner, target.x / 256, target.y / 256))
+        {
+            return true;
+        }
         if !target.status.cloaked && !target.status.burrowed {
             return !self.fog_of_war
                 || self.is_visible_to(observer_owner, target.x / 256, target.y / 256);
@@ -409,7 +452,7 @@ impl World {
             let range = if dty.is_building() {
                 7 * 32 * 256
             } else {
-                dty.sight_range as i32 * 32 * 256
+                self.sight_range(detector.owner, detector.type_id) * 32 * 256
             };
             let dx = (detector.x - target.x) as i64;
             let dy = (detector.y - target.y) as i64;
@@ -428,6 +471,27 @@ impl World {
 mod tests {
     use super::Vision;
     use crate::map::Terrain;
+
+    #[test]
+    fn sight_upgrades_replace_the_base_range_with_eleven_tiles() {
+        use crate::data::GameData;
+        use crate::ids::{unit as uid, upgrade};
+        use crate::sim::World;
+        use std::sync::Arc;
+
+        let data = Arc::new(GameData::bundled().unwrap());
+        for (unit, upgrade_id, base) in [
+            (uid::GHOST, upgrade::OCULAR_IMPLANTS, 9),
+            (uid::OVERLORD, upgrade::ANTENNAE, 9),
+            (uid::OBSERVER, upgrade::SENSOR_ARRAY, 9),
+            (uid::SCOUT, upgrade::APIAL_SENSORS, 8),
+        ] {
+            let mut w = World::new(Arc::clone(&data), Terrain::open(64, 64), 2);
+            assert_eq!(w.sight_range(0, unit), base, "unit {unit}");
+            w.players[0].upgrades[upgrade_id as usize] = 1;
+            assert_eq!(w.sight_range(0, unit), 11, "unit {unit}");
+        }
+    }
 
     #[test]
     fn sight_masks_propagate_from_earlier_nodes() {
@@ -487,5 +551,25 @@ mod tests {
             !v.is_visible(1, 21 * 32, 20 * 32),
             "other players see nothing"
         );
+    }
+
+    #[test]
+    fn chk_mask_pre_explores_only_cleared_player_bits() {
+        // 2x2 tiles.  Tile 0: P0 clear, P1 fogged.  Tile 1: P1 clear.
+        // Tile 2: all clear.  Tile 3 absent -> fogged.
+        let mut v = super::Vision::from_mask(2, 2, &[0b1111_1110, 0b1111_1101, 0b0000_0000]);
+        assert!(v.is_explored(0, 16, 16));
+        assert!(!v.is_explored(1, 16, 16));
+        assert!(v.is_explored(1, 48, 16));
+        assert!(!v.is_explored(0, 48, 48), "missing MASK bytes are fogged");
+        assert!(
+            !v.is_visible(0, 16, 16),
+            "MASK pre-explores; it does not grant current sight"
+        );
+        let terrain = Terrain::open(2, 2);
+        v.reveal(0, 16, 16, 3, true, &terrain);
+        assert!(v.is_visible(0, 16, 16));
+        v.clear_visible();
+        assert!(v.is_explored(0, 16, 16));
     }
 }

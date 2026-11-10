@@ -81,6 +81,19 @@ pub fn episodes(install: &RetailInstall) -> Vec<Campaign> {
         let mut entries = entries;
         entries.sort_by_key(|a| mission_sort_key(&a.0));
         for (order, (key, chk_path)) in entries.into_iter().enumerate() {
+            // The Remastered install ships a per-locale copy of every
+            // campaign CHK (localized trigger strings and unit names).
+            let localized = format!(
+                "locales/{}/assets/campaign/{}/{}/staredit/scenario.chk",
+                install.locale(),
+                episode,
+                key
+            );
+            let chk_path = if install.locale() != "enus" && install.contains(&localized) {
+                localized
+            } else {
+                chk_path
+            };
             let Some(raw) = install.read(&chk_path) else {
                 continue;
             };
@@ -108,7 +121,7 @@ pub fn episodes(install: &RetailInstall) -> Vec<Campaign> {
                 .unwrap_or_else(|| episode_race(episode));
             let briefing_key = briefing_candidates(episode, &key)
                 .into_iter()
-                .find(|k| install.contains(&format!("locales/enus/assets/rez/{k}.txt")));
+                .find(|k| locale_or_enus(install, &format!("rez/{k}.txt")).is_some());
             // A handful of shipped campaign maps still have the StarEdit
             // default `Untitled Scenario`; the retail title is the quoting
             // line of the establishing-shot script (`"THE JACOBS
@@ -117,7 +130,8 @@ pub fn episodes(install: &RetailInstall) -> Vec<Campaign> {
             if (mission_name.is_empty() || mission_name.eq_ignore_ascii_case("untitled scenario"))
                 && let Some(title) = briefing_key
                     .as_deref()
-                    .and_then(|k| install.read(&format!("locales/enus/assets/rez/{k}.txt")))
+                    .and_then(|k| locale_or_enus(install, &format!("rez/{k}.txt")))
+                    .and_then(|path| install.read(&path))
                     .and_then(|bytes| brief_title(&String::from_utf8_lossy(&bytes)))
             {
                 mission_name = title;
@@ -465,11 +479,21 @@ pub fn resolve_art(install: &RetailInstall, authored: &str) -> Option<String> {
         .find(|candidate| install.contains(candidate))
 }
 
+/// Resolve a file under `locales/<locale>/assets/`, falling back to `enus`.
+fn locale_or_enus(install: &RetailInstall, rel: &str) -> Option<String> {
+    let path = format!("locales/{}/assets/{rel}", install.locale());
+    if install.contains(&path) {
+        return Some(path);
+    }
+    let fallback = format!("locales/enus/assets/{rel}");
+    install.contains(&fallback).then_some(fallback)
+}
+
 /// Load and resolve the briefing script for a mission.  Returns `None` when
 /// the install has no script for it.
 pub fn load_briefing(install: &RetailInstall, mission: &CampaignMission) -> Option<BriefingScript> {
     let key = mission.briefing_key.as_ref()?;
-    let path = format!("locales/enus/assets/rez/{key}.txt");
+    let path = locale_or_enus(install, &format!("rez/{key}.txt"))?;
     let bytes = install.read(&path)?;
     let text = String::from_utf8_lossy(&bytes);
     let mut script = parse_script(&text);

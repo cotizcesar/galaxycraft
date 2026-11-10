@@ -179,6 +179,72 @@ impl StringTable {
         Ok(Self { strings })
     }
 
+    /// Parse the Remastered localization table
+    /// (`locales/<locale>/assets/rez/stat_txt.json`).  Its entries are in the
+    /// same order as `stat_txt.tbl`; `Value` holds the display string, a
+    /// literal `\\u0000` separator and the tooltip/sub-label fields.  Only the
+    /// display field is kept.  The JSON file also carries 12 newer strings
+    /// past the classic 1539, so the table is a superset.
+    pub fn parse_locale_json(d: &[u8]) -> Result<Self, DataError> {
+        let text = String::from_utf8_lossy(d.strip_prefix(b"\xef\xbb\xbf").unwrap_or(d));
+        let entries: Vec<serde_json::Value> =
+            serde_json::from_str(&text).map_err(|e| DataError::Malformed {
+                which: "stat_txt.json",
+                message: e.to_string(),
+            })?;
+        let unescape = |value: &str| -> String {
+            let mut out = String::new();
+            let mut chars = value.chars().peekable();
+            while let Some(c) = chars.next() {
+                if c != '\\' {
+                    out.push(c);
+                    continue;
+                }
+                match chars.peek().copied() {
+                    Some('n') => {
+                        chars.next();
+                        out.push('\n');
+                    }
+                    Some('t') => {
+                        chars.next();
+                        out.push('\t');
+                    }
+                    Some('\\') => {
+                        chars.next();
+                        out.push('\\');
+                    }
+                    Some('u') => {
+                        chars.next();
+                        let hex: String = chars.by_ref().take(4).collect();
+                        if let Ok(code) = u32::from_str_radix(&hex, 16)
+                            && let Some(ch) = char::from_u32(code)
+                        {
+                            out.push(ch);
+                        }
+                    }
+                    _ => out.push(c),
+                }
+            }
+            out
+        };
+        let mut strings = Vec::with_capacity(entries.len());
+        for entry in entries {
+            let value = entry
+                .get("Value")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            let decoded = unescape(value);
+            // The first NUL-separated field is the name/label; the rest are
+            // the Remastered tooltip metadata.
+            strings.push(decoded.split('\0').next().unwrap_or("").to_string());
+        }
+        // Classic ids stop at 1538; the JSON appends Remastered-only APM and
+        // replay strings after that.  Keep the table index-compatible with
+        // `stat_txt.tbl`.
+        strings.truncate(1539);
+        Ok(Self { strings })
+    }
+
     pub fn len(&self) -> usize {
         self.strings.len()
     }
@@ -426,6 +492,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn locale_json_keeps_the_display_field_and_unescapes_it() {
+        let json = br#"[{"Key":"u","Value":"Marine\\u0000*\\u0000Ground"},{"Key":"n","Value":"Line\\nTwo"}]"#;
+        let table = StringTable::parse_locale_json(json).expect("json");
+        assert_eq!(table.text(0), "Marine");
+        assert_eq!(table.text(1), "Line\nTwo");
+    }
+
+    #[test]
     fn remastered_button_strings_keep_their_label_after_the_nul_type_byte() {
         // Three strings as 1.23.10 stores them (ids 664/665): "m\0" + label,
         // "s\0" + label, and a one-letter string followed by its neighbour.
@@ -477,14 +551,19 @@ mod tests {
     }
 
     #[test]
-    fn upgrade_levels_scale_base_and_factor() {
+    fn upgrade_costs_and_times_use_the_current_level() {
         let ups = parse_upgrades(embedded!("fixtures/upgrades.dat")).unwrap();
-        // Infantry Weapons: 100 + 75*level minerals, 100 + 75*level gas.
-        assert_eq!(ups[0].mineral_cost(1), 175);
-        assert_eq!(ups[0].mineral_cost(2), 250);
-        assert_eq!(ups[0].gas_cost(3), 325);
-        assert_eq!(ups[0].max_level, 3);
-        assert_eq!(ups[0].race, 1);
+        // Terran Infantry Weapons: base 100/100 and 4000 ticks; each current
+        // level adds 75/75 and 480 ticks.  Level 1 therefore costs the base.
+        let up = &ups[crate::ids::upgrade::TERRAN_INFANTRY_WEAPONS as usize];
+        assert_eq!((up.mineral_cost(0), up.gas_cost(0)), (100, 100));
+        assert_eq!(up.time_cost(0), 4000);
+        assert_eq!((up.mineral_cost(1), up.gas_cost(1)), (175, 175));
+        assert_eq!(up.time_cost(1), 4480);
+        assert_eq!((up.mineral_cost(2), up.gas_cost(2)), (250, 250));
+        assert_eq!(up.time_cost(2), 4960);
+        assert_eq!(up.max_level, 3);
+        assert_eq!(up.race, 1);
     }
 
     #[test]

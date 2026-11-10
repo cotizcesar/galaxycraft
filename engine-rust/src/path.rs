@@ -192,6 +192,16 @@ impl Rect {
     pub fn contains_point(&self, x: i32, y: i32) -> bool {
         x >= self.left && x < self.right && y >= self.top && y < self.bottom
     }
+
+    /// `0x009308d0`: two intervals of length `len` overlap.
+    pub fn ranges_overlap(a: i32, b: i32, len: i32) -> bool {
+        b < a + len && a < b + len
+    }
+
+    /// `0x00965210`: inclusive bounds test used by the retail point query.
+    pub fn contains_point_inclusive(&self, x: i32, y: i32) -> bool {
+        x >= self.left && x <= self.right && y >= self.top && y <= self.bottom
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -654,6 +664,23 @@ impl RegionMap {
         &self.regions
     }
 
+    /// Neighbour region ids in recovered append order (`FUN_0075d6b0`).
+    /// The retail helper writes the list pointer and returns its count.
+    pub fn neighbours_of(&self, id: u32) -> &[u32] {
+        self.regions
+            .get(id as usize)
+            .map(|r| r.neighbours.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// Region centre in pixels.  `FUN_0075d660` reads the two fixed-point
+    /// centre fields and shifts them right by 8; our walk-cell centre is
+    /// already in 8-pixel units, so the conversion is `centre_cell * 8`.
+    pub fn region_centre_px(&self, id: u32) -> Option<(i32, i32)> {
+        let (cx, cy) = self.regions.get(id as usize)?.centre_cell();
+        Some((cx * 8, cy * 8))
+    }
+
     /// Region id for an 8-pixel walk cell.  The tile grid is four times
     /// coarser, so the cell maps to `cell / 4`.
     pub fn region_at_cell(&self, cell: (i32, i32)) -> Option<u32> {
@@ -714,7 +741,7 @@ impl RegionMap {
             // order in which `FUN_7a3046b0` walks `local_18` (left, up, right,
             // down, up-left, up-right, down-left, down-right) and therefore
             // the order the retail heap sees new nodes.
-            for &nb in &self.regions[cur as usize].neighbours {
+            for &nb in self.neighbours_of(cur) {
                 if closed[nb as usize] {
                     continue;
                 }
@@ -1279,6 +1306,33 @@ mod tests {
     }
 
     #[test]
+    fn region_neighbour_and_centre_lookups_match_the_recovered_helpers() {
+        // `FUN_0075d6b0` returns the neighbour list (pointer + count) and
+        // `FUN_0075d660` returns the region centre in pixels.
+        let regions = RegionMap::from_terrain(&Terrain::open(16, 16));
+        assert!(regions.count() >= 4);
+        let id = 0;
+        let neighbours = regions.neighbours_of(id);
+        assert!(!neighbours.is_empty());
+        assert!(!neighbours.contains(&id));
+        for &nb in neighbours {
+            assert!(nb < regions.count());
+            assert!(
+                regions.neighbours_of(nb).contains(&id),
+                "adjacency is reciprocal"
+            );
+        }
+        assert!(regions.neighbours_of(regions.count()).is_empty());
+
+        let (cx, cy) = regions.region_centre_px(id).unwrap();
+        let (cell_x, cell_y) = regions.region(id).unwrap().centre_cell();
+        assert_eq!((cx, cy), (cell_x * 8, cell_y * 8));
+        assert!((0..16 * 32).contains(&cx));
+        assert!((0..16 * 32).contains(&cy));
+        assert_eq!(regions.region_centre_px(regions.count()), None);
+    }
+
+    #[test]
     fn recovered_edge_masks_accept_orthogonal_neighbours_unconditionally() {
         // The recovered tile classifier accepts cases 0..=3 (the four
         // orthogonal neighbours) before consulting the walk-grid table.
@@ -1424,5 +1478,23 @@ mod tests {
         );
         let (again, _) = astar_cells(&terrain, &obstacles, (10, 10), (18, 18), 4, 4).unwrap();
         assert_eq!(cells, again, "tie-breaking must be deterministic");
+    }
+
+    #[test]
+    fn inclusive_point_test_matches_fun_00965210() {
+        let r = Rect::new(10, 20, 30, 40);
+        assert!(r.contains_point_inclusive(10, 20));
+        assert!(r.contains_point_inclusive(30, 40));
+        assert!(r.contains_point_inclusive(20, 30));
+        assert!(!r.contains_point_inclusive(9, 20));
+        assert!(!r.contains_point_inclusive(30, 41));
+    }
+
+    #[test]
+    fn range_overlap_matches_fun_009308d0() {
+        assert!(Rect::ranges_overlap(0, 5, 10));
+        assert!(Rect::ranges_overlap(5, 0, 10));
+        assert!(!Rect::ranges_overlap(0, 10, 10));
+        assert!(!Rect::ranges_overlap(0, 11, 10));
     }
 }

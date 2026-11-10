@@ -314,6 +314,8 @@ enum AudioMessage {
         music: f32,
         effects: f32,
     },
+    /// "Sound Plays While In Background": false pauses the mixer.
+    Background(bool),
 }
 
 /// Handle used by the client.  `play` is cheap and never blocks the game
@@ -360,6 +362,13 @@ impl AudioPlayer {
     pub fn stop_music(&self) {
         if let Some(tx) = &self.tx {
             let _ = tx.send(AudioMessage::StopMusic);
+        }
+    }
+
+    /// Pause/resume all output for the Sound tab's background checkbox.
+    pub fn set_background(&self, allowed: bool) {
+        if let Some(tx) = &self.tx {
+            let _ = tx.send(AudioMessage::Background(allowed));
         }
     }
 
@@ -830,6 +839,8 @@ struct Mixer {
     music: Option<(std::sync::Arc<Vec<i16>>, usize)>,
     music_gain: f32,
     effect_gain: f32,
+    /// False while the client is unfocused and the background checkbox is off.
+    background: bool,
 }
 
 impl Default for Mixer {
@@ -840,6 +851,7 @@ impl Default for Mixer {
             music: None,
             music_gain: 0.6,
             effect_gain: 1.0,
+            background: true,
         }
     }
 }
@@ -862,15 +874,19 @@ impl Mixer {
                 self.music_gain = music.clamp(0.0, 1.0);
                 self.effect_gain = effects.clamp(0.0, 1.0);
             }
+            AudioMessage::Background(allowed) => self.background = allowed,
         }
     }
 
     fn is_idle(&self) -> bool {
-        self.active.is_empty() && self.music.is_none()
+        !self.background || (self.active.is_empty() && self.music.is_none())
     }
 
     fn mix(&mut self, buf: &mut [i16]) {
         buf.fill(0);
+        if !self.background {
+            return;
+        }
         for (samples, pos) in self.active.iter_mut() {
             for (i, dst) in buf.iter_mut().enumerate() {
                 if *pos + i < samples.len() {
@@ -896,6 +912,24 @@ impl Mixer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn background_switch_pauses_without_advancing_the_mix() {
+        let mut m = Mixer::default();
+        m.apply(AudioMessage::Music(std::sync::Arc::new(vec![10, -10])));
+        let mut buf = [0i16; 2];
+        m.mix(&mut buf);
+        assert_eq!(buf, [6, -6]);
+        m.apply(AudioMessage::Background(false));
+        assert!(m.is_idle(), "a paused mixer waits for messages");
+        let mut silent = [9i16; 2];
+        m.mix(&mut silent);
+        assert_eq!(silent, [0, 0]);
+        m.apply(AudioMessage::Background(true));
+        let mut resumed = [0i16; 2];
+        m.mix(&mut resumed);
+        assert_eq!(resumed, [6, -6], "resumes at the same music position");
+    }
 
     #[test]
     fn mixer_sums_effects_clamps_and_loops_music_at_three_fifths() {

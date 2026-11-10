@@ -22,6 +22,8 @@ finish-args:
   - --socket=pulseaudio
   # LAN games (TCP + UDP discovery).
   - --share=network
+  # Gamepads (gilrs/evdev).
+  - --device=input
   # The StarCraft install (Wine prefixes and Battle.net folders live here).
   - --filesystem=home:ro
 build-options:

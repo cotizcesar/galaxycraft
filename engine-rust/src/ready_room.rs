@@ -15,6 +15,16 @@
 use crate::map::Scenario;
 use crate::trigger::{TriggerAction, TriggerSystem, transmission_ms};
 
+/// `MBRF` action flag 0x02: disabled.  `protoss06` ships six disabled
+/// actions that must not run.
+pub const ACTION_DISABLED: u8 = 0x02;
+/// `MBRF` trigger flag 0x08: disabled.
+pub const TRIGGER_DISABLED: u32 = 0x08;
+/// A briefing trigger must start with the Mission Briefing condition.
+pub const MISSION_BRIEFING: u8 = 13;
+/// `MBRF` uses the 2400-byte `TRIG` record layout.
+pub const RECORD_SIZE: usize = 2400;
+
 /// Briefing action ids (`MBRF`).
 pub mod action {
     pub const WAIT: u8 = 1;
@@ -68,17 +78,31 @@ impl ReadyRoom {
     /// enabled for the player, All Players (17) or the player's force
     /// (18..=21).  `None` when the map has no briefing.
     pub fn from_scenario(scenario: &Scenario, player: usize) -> Option<Self> {
+        if scenario.briefing_triggers.is_empty()
+            || !scenario.briefing_triggers.len().is_multiple_of(RECORD_SIZE)
+        {
+            return None;
+        }
         let system = TriggerSystem::parse(&scenario.briefing_triggers, &[]);
         let force = scenario.forces.get(player).copied().unwrap_or(0) as usize;
         let actions: Vec<TriggerAction> = system
             .triggers
             .iter()
             .filter(|t| {
-                t.enabled.get(player).copied().unwrap_or(false)
-                    || t.enabled[17]
-                    || t.enabled[18 + force.min(3)]
+                t.execution_flags & TRIGGER_DISABLED == 0
+                    && t.conditions
+                        .first()
+                        .is_some_and(|c| c.kind == MISSION_BRIEFING)
+                    && (t.enabled.get(player).copied().unwrap_or(false)
+                        || t.enabled[17]
+                        || t.enabled[18 + force.min(3)])
             })
-            .flat_map(|t| t.actions.iter().filter(|a| a.kind != 0).cloned())
+            .flat_map(|t| {
+                t.actions
+                    .iter()
+                    .filter(|a| a.kind != 0 && a.flags & ACTION_DISABLED == 0)
+                    .cloned()
+            })
             .collect();
         (!actions.is_empty()).then(|| Self {
             actions,
@@ -146,6 +170,12 @@ impl ReadyRoom {
             .is_some_and(|l| now_ms >= l.start_ms + l.ms as u64)
         {
             self.transmission = None;
+        }
+        if self
+            .message
+            .is_some_and(|l| now_ms > l.start_ms + l.ms as u64)
+        {
+            self.message = None;
         }
         events
     }
@@ -216,5 +246,29 @@ mod tests {
     #[test]
     fn maps_without_a_briefing_have_no_ready_room() {
         assert!(ReadyRoom::from_scenario(&Scenario::default(), 0).is_none());
+    }
+
+    #[test]
+    fn disabled_mbrf_actions_are_skipped() {
+        let mut sc = script(&[(2, 0, 9, 0, 0, 0), (2, 0, 10, 0, 0, 0)]);
+        sc.briefing_triggers[320 + 32 + 28] = ACTION_DISABLED;
+        let mut room = ReadyRoom::from_scenario(&sc, 1).expect("briefing");
+        assert_eq!(room.advance(0), vec![ReadyEvent::Wav { string: 9 }]);
+        assert!(room.advance(1).is_empty());
+    }
+
+    #[test]
+    fn mbrf_requires_a_whole_record_and_a_briefing_condition() {
+        let mut broken = script(&[(2, 0, 9, 0, 0, 0)]);
+        broken.briefing_triggers[15] = 0; // Always, not Mission Briefing
+        assert!(ReadyRoom::from_scenario(&broken, 1).is_none());
+
+        let mut partial = script(&[(2, 0, 9, 0, 0, 0)]);
+        partial.briefing_triggers.push(0);
+        assert!(ReadyRoom::from_scenario(&partial, 1).is_none());
+
+        let mut disabled = script(&[(2, 0, 9, 0, 0, 0)]);
+        disabled.briefing_triggers[2368] = TRIGGER_DISABLED as u8;
+        assert!(ReadyRoom::from_scenario(&disabled, 1).is_none());
     }
 }

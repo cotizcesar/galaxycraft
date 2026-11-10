@@ -103,6 +103,11 @@ pub mod unit {
     pub const SUNKEN_COLONY: u16 = 146;
     pub const EXTRACTOR: u16 = 149;
 
+    // Capture the Flag beacons (one per race; neutral-map units).
+    pub const ZERG_FLAG_BEACON: u16 = 197;
+    pub const TERRAN_FLAG_BEACON: u16 = 198;
+    pub const PROTOSS_FLAG_BEACON: u16 = 199;
+
     pub const NEXUS: u16 = 154;
     pub const ROBOTICS_FACILITY: u16 = 155;
     pub const PYLON: u16 = 156;

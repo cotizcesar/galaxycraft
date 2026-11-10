@@ -101,6 +101,9 @@ pub struct AssetReport {
 pub struct RetailInstall {
     root: PathBuf,
     data_dir: PathBuf,
+    /// CASC locale directory (`enus`, `eses`, `zhcn`, ...).  Game data and
+    /// text fall back to `enus` when a locale file is absent.
+    locale: String,
     index: HashMap<[u8; 9], CascLocation>,
     encoding: HashMap<[u8; 16], EncodingEntry>,
     paths: HashMap<String, [u8; 16]>,
@@ -134,8 +137,8 @@ fn cache_root_from(var: &dyn Fn(&str) -> Option<String>) -> PathBuf {
     base.unwrap_or_else(std::env::temp_dir).join("galaxycraft")
 }
 
-/// Where a retail install usually lives on this platform (Battle.net's
-/// default folder, Wine prefixes on Linux).
+/// Where a retail install usually lives on this platform (Wine prefixes
+/// on Linux).
 fn default_install_candidates(var: &dyn Fn(&str) -> Option<String>) -> Vec<PathBuf> {
     let mut out = Vec::new();
     if cfg!(windows) {
@@ -157,7 +160,6 @@ fn default_install_candidates(var: &dyn Fn(&str) -> Option<String>) -> Vec<PathB
     if let Some(home) = var("HOME") {
         let home = PathBuf::from(home);
         out.extend([
-            home.join("Games/battlenet/drive_c/Program Files (x86)/StarCraft"),
             home.join(".wine/drive_c/Program Files (x86)/StarCraft"),
             home.join(".wine/drive_c/Program Files/StarCraft"),
             home.join("StarCraft"),
@@ -191,6 +193,7 @@ impl RetailInstall {
         let mut install = Self {
             root,
             data_dir,
+            locale: "enus".into(),
             index,
             encoding: HashMap::new(),
             paths: HashMap::new(),
@@ -221,7 +224,7 @@ impl RetailInstall {
         Ok(install)
     }
 
-    /// Open `$SC_INSTALL` or the default Wine/Battle.net location.
+    /// Open `$SC_INSTALL` or the default Wine location.
     pub fn from_env() -> Option<Self> {
         for var in ["SC_INSTALL", "GALAXYCRAFT_INSTALL", "STARCRAFT_HOME"] {
             if let Ok(path) = std::env::var(var)
@@ -246,6 +249,40 @@ impl RetailInstall {
 
     pub fn build_key(&self) -> &str {
         &self.build_key
+    }
+
+    /// The CASC locale the install reads (`enus`, `frfr`, `zhcn`, ...).
+    pub fn locale(&self) -> &str {
+        &self.locale
+    }
+
+    /// Select a locale.  Unknown codes fall back to `enus`; the caller can
+    /// still pass any shipped locale code.
+    pub fn set_locale(&mut self, locale: &str) {
+        self.locale = normalize_locale(locale);
+    }
+
+    /// `locales/<locale>/assets/...`, falling back to the `enus` path when
+    /// the selected locale does not ship that file.
+    fn localized_path(&self, rel: &str) -> String {
+        let path = format!("locales/{}/assets/{rel}", self.locale);
+        if self.locale != "enus" && !self.contains(&path) {
+            format!("locales/enus/assets/{rel}")
+        } else {
+            path
+        }
+    }
+
+    /// Like [`Self::localized_path`] for a directory (`campaign/.../wav/`,
+    /// `smk/`): fall back to `enus` when the locale has no file under it.
+    fn localized_dir(&self, rel: &str) -> String {
+        let path = format!("locales/{}/assets/{rel}", self.locale);
+        let prefix = path.to_ascii_lowercase();
+        if self.locale != "enus" && !self.paths.keys().any(|k| k.starts_with(&prefix)) {
+            format!("locales/enus/assets/{rel}")
+        } else {
+            path
+        }
     }
 
     pub fn encoding_key(&self) -> &str {
@@ -553,6 +590,14 @@ impl RetailInstall {
             &read("rez/stat_txt.tbl")?,
         )
         .map_err(|e| RetailError::Format(e.to_string()))?;
+        // Remastered localisation JSON is a superset of the classic .tbl and
+        // uses the same order.  Prefer it, falling back to the shipped .tbl.
+        let locale_path = self.localized_path("rez/stat_txt.json");
+        if let Ok(bytes) = self.read_by_path(&locale_path)
+            && let Ok(strings) = crate::tables::StringTable::parse_locale_json(&bytes)
+        {
+            data = data.with_strings(strings);
+        }
         data.iscript = crate::iscript::Iscript::parse(&read("scripts/iscript.bin")?)
             .map_err(|e| RetailError::Format(e.to_string()))?;
         data.aiscripts = crate::aiscript::parse_aiscript(&read("scripts/aiscript.bin")?);
@@ -572,22 +617,28 @@ impl RetailInstall {
             return PathBuf::from(path);
         }
         let tag = &self.build_key[..self.build_key.len().min(8)];
-        user_cache_root().join(format!("retail-{tag}"))
+        if self.locale == "enus" {
+            user_cache_root().join(format!("retail-{tag}"))
+        } else {
+            user_cache_root().join(format!("retail-{tag}-{}", self.locale))
+        }
     }
 
     /// Materialise once, guarded by a completion marker.
     pub fn ensure_cache(&self, dest: &Path) -> Result<AssetReport> {
         let marker = dest.join(".complete");
-        let want =
-            b"galaxycraft retail cache v23 (cinematic subtitles, help / save / load dialogs + help text, startup tips text, end mission menu + prompts, map trigger sounds, creep edges, objectives/tips dialogs, hd console dlg, hd hud art, minimap layout, hd terrain, consoles, menus, cinematics, fonts, ui layouts, campaign console, palcs backdrop, phist popup, campaign prompt, glue small font, create variants, chat + toon registry, login/load list plates, swish-out sound, retail mission titles, rescue sounds, terran ready room + slot frames + projector, score backdrops + icons)\n";
+        let want = format!(
+            "galaxycraft retail cache v28 (locale {}) (cinematic subtitles, help / save / load dialogs + help text, startup tips text, end mission menu + prompts, map trigger sounds, creep edges, objectives/tips dialogs, hd console dlg, hd hud art, minimap layout, hd terrain, consoles + krc skins, carbot hud, announcers, classic sd voices, menus, cinematics, fonts, ui layouts, campaign console, palcs backdrop, phist popup, campaign prompt, glue small font, create variants, chat + toon registry, login/load list plates, swish-out sound, retail mission titles, rescue sounds, ready rooms, score backdrops + icons)\n",
+            self.locale
+        );
         if fs::read(&marker)
-            .map(|current| current == want)
+            .map(|current| current == want.as_bytes())
             .unwrap_or(false)
         {
             return Ok(AssetReport::default());
         }
         let report = self.materialize(dest)?;
-        fs::write(marker, want)?;
+        fs::write(marker, want.as_bytes())?;
         Ok(report)
     }
 
@@ -774,10 +825,10 @@ impl RetailInstall {
                     .chk_path
                     .strip_suffix("scenario.chk")
                     .map(|d| format!("{d}wav/"));
-                let enus_dir = format!(
-                    "locales/enus/assets/campaign/{}/{}/staredit/wav/",
+                let enus_dir = self.localized_dir(&format!(
+                    "campaign/{}/{}/staredit/wav/",
                     episode.key, mission.key
-                );
+                ));
                 for (dir, ext) in [(sd_dir, ".wav"), (Some(enus_dir), ".ogg")] {
                     let Some(dir) = dir else { continue };
                     for src in self.list(&dir, ext) {
@@ -798,7 +849,7 @@ impl RetailInstall {
                     if let Some(key) = &mission.briefing_key {
                         let text_path = format!("briefing/{key}.txt");
                         if let Some(bytes) =
-                            self.read(&format!("locales/enus/assets/rez/{key}.txt"))
+                            self.read(&self.localized_path(&format!("rez/{key}.txt")))
                         {
                             write_file(&dest.join(&text_path), &bytes)?;
                             report.briefings += 1;
@@ -931,7 +982,7 @@ impl RetailInstall {
             }
             // Cinematic subtitles (`locales/enus/assets/smk/*.srt`) next to
             // their movie: `videos/smk/<movie>.srt`.
-            for rel in self.list("locales/enus/assets/smk/", ".srt") {
+            for rel in self.list(&self.localized_dir("smk/"), ".srt") {
                 if let (Some(name), Ok(bytes)) = (rel.rsplit('/').next(), self.read_by_path(&rel)) {
                     let out = video_dir.join("smk").join(name.to_ascii_lowercase());
                     if write_file(&out, &bytes).is_ok() {
@@ -1062,6 +1113,24 @@ impl RetailInstall {
                 }
             }
         }
+        // Collections console skins: race-independent replacement plates.
+        for skin in ["krc_silver", "krc_gold"] {
+            for file in KRC_CONSOLE_FILES {
+                let src = format!("game/consoles/{skin}/{file}");
+                let dst = dest.join(&src);
+                if copy(&src, &dst, &mut report) {
+                    report.console_files += 1;
+                }
+            }
+        }
+        // Carbot collection: command icons, HUD icons and wireframes.
+        for file in CARBOT_UNIT_FILES {
+            let src = format!("carbot/{file}");
+            let dst = dest.join(&src);
+            if copy(&src, &dst, &mut report) {
+                report.console_files += 1;
+            }
+        }
         for file in ["wirefram.grp", "grpwire.grp", "tranwire.grp"] {
             let src = format!("unit/wirefram/{file}");
             let dst = dest.join(&src);
@@ -1085,7 +1154,7 @@ impl RetailInstall {
         let ui_dir = dest.join("ui");
         fs::create_dir_all(&ui_dir)?;
         for name in crate::ui::UI_JSON {
-            let src = format!("locales/enus/assets/rez/{name}.ui.json");
+            let src = self.localized_path(&format!("rez/{name}.ui.json"));
             let dst = ui_dir.join(format!("{name}.ui.json"));
             if copy(&src, &dst, &mut report) {
                 report.ui_files += 1;
@@ -1094,7 +1163,7 @@ impl RetailInstall {
 
         // StarCraft Help keystroke list.
         if copy(
-            "locales/enus/assets/rez/help_txt.json",
+            &self.localized_path("rez/help_txt.json"),
             &ui_dir.join("help_txt.json"),
             &mut report,
         ) {
@@ -1102,7 +1171,7 @@ impl RetailInstall {
         }
         // StarCraft Tips texts (in-game startup tips).
         if copy(
-            "locales/enus/assets/rez/tips_txt.json",
+            &self.localized_path("rez/tips_txt.json"),
             &ui_dir.join("tips_txt.json"),
             &mut report,
         ) {
@@ -1147,6 +1216,34 @@ impl RetailInstall {
                     index.push_str(&format!("{id}\t{rel}\n"));
                 }
             }
+            // Sound tab "Original 1998 Campaign": optional classic SD voice
+            // bank.  The 1.23.10 CASC install has no such files, so this is a
+            // no-op there; a classic install that ships them gets the bank.
+            for prefix in [
+                format!("locales/{}/assets/sd/sound/", self.locale),
+                format!("locales/{}/assets/sound/", self.locale),
+            ] {
+                for src in self.list(&prefix, ".wav") {
+                    let rel = src.strip_prefix(&prefix).unwrap_or(&src);
+                    let dst = voices.join("sd").join(rel);
+                    if copy(&src, &dst, &mut report) {
+                        report.voice_files += 1;
+                    }
+                }
+            }
+            // Announcer collections: advisor replacements plus the start/gg
+            // lines.  They are not in `sfxdata.tbl`, so they keep their own
+            // `scr/announcers/<dir>/` subtree under `voices/`.
+            for dir in crate::voice::ANNOUNCER_DIRS {
+                let prefix = format!("sound/scr/announcers/{dir}/");
+                for src in self.list(&prefix, ".wav") {
+                    let rel = src.strip_prefix("sound/").unwrap_or(&src);
+                    let dst = voices.join(rel);
+                    if copy(&src, &dst, &mut report) {
+                        report.voice_files += 1;
+                    }
+                }
+            }
             write_file(&voices.join("index.tsv"), index.as_bytes())?;
         }
 
@@ -1180,6 +1277,9 @@ pub const SPRITE_PATHS: &[&str] = &[
     "zerg/defiler.grp",
     "zerg/cocoon.grp",
     "zerg/egg.grp",
+    "zerg/lurkegg.grp",
+    "unit/thingy/tileset/install/crdoor1.grp",
+    "unit/thingy/tileset/install/didoor1.grp",
     "zerg/larva.grp",
     "zerg/lurker.grp",
     "protoss/corsair.grp",
@@ -1254,6 +1354,38 @@ pub const CONSOLE_FILES: &[&str] = &[
     "cmdbtns.dds.grp",
     "dlg.grp",
     // HD console dialog sheet: minimap buttons (frames 0-5) and more.
+    "dlg.dds.grp",
+    "pbrempt.dds",
+    "pbrfull.dds",
+];
+
+/// Files present in the race-independent KRC console skins.  The KRC sets
+/// have no low-resolution `cmdbtns.grp` / `dlg.grp`, so they are listed
+/// separately to keep `AssetReport::missing_assets` honest.
+/// Carbot's HUD replacements: the unit & structure collection changes the
+/// command glyphs, the resource/HUD icons and the wireframes as well as the
+/// unit art.
+pub const CARBOT_UNIT_FILES: &[&str] = &[
+    "unit/cmdicons/cmdicons.grp",
+    "unit/cmdicons/cmdicons.dds.grp",
+    "unit/wirefram/wirefram.grp",
+    "unit/wirefram/wirefram.dds.grp",
+    "unit/wirefram/grpwire.grp",
+    "unit/wirefram/grpwire.dds.grp",
+    "unit/wirefram/tranwire.grp",
+    "unit/wirefram/tranwire.dds.grp",
+    "game/icons.grp",
+    "game/icons.dds.grp",
+];
+
+pub const KRC_CONSOLE_FILES: &[&str] = &[
+    "console_center.dds",
+    "console_left.dds",
+    "console_right.dds",
+    "console_time.dds",
+    "console_apm.dds",
+    "conover.dds",
+    "cmdbtns.dds.grp",
     "dlg.dds.grp",
     "pbrempt.dds",
     "pbrfull.dds",
@@ -1368,6 +1500,52 @@ pub const GLUE_ART: &[&str] = &[
     "glue/readyt/start.webm",
     "glue/readyt/proj.webm",
     "glue/readyt/proloop.webm",
+    // Zerg ready room (`glurdyz.ui.json`): `palrz` backdrop and the
+    // `readyz` portrait/objective/button frames and clips.
+    "glue/palrz/backgnd.dds",
+    "glue/palrz/pcancel.dds",
+    "glue/readyz/butzerg.dds",
+    "glue/readyz/objzerg.dds",
+    "glue/readyz/p1zerg.dds",
+    "glue/readyz/p2zerg.dds",
+    "glue/readyz/p3zerg.dds",
+    "glue/readyz/p4zerg.dds",
+    "glue/readyz/z_cancel.dds",
+    "glue/readyz/z_ok.dds",
+    "glue/readyz/tutbtn.dds",
+    "glue/readyz/zframe1.dds",
+    "glue/readyz/zframe2.dds",
+    "glue/readyz/zframe3.dds",
+    "glue/readyz/zframe4.dds",
+    "glue/readyz/zframeh1.dds",
+    "glue/readyz/zframeh2.dds",
+    "glue/readyz/zframeh3.dds",
+    "glue/readyz/zframeh4.dds",
+    "glue/readyz/start.webm",
+    "glue/readyz/starton.webm",
+    "glue/readyz/drip.webm",
+    // Protoss ready room (`glurdyp.ui.json`): `palrp` backdrop and the
+    // `readyp` portrait/objective/button frames and clips.
+    "glue/palrp/backgnd.dds",
+    "glue/palrp/pcancel.dds",
+    "glue/readyp/butprot.dds",
+    "glue/readyp/objprot.dds",
+    "glue/readyp/p1prot.dds",
+    "glue/readyp/p2prot.dds",
+    "glue/readyp/p3prot.dds",
+    "glue/readyp/p4prot.dds",
+    "glue/readyp/p_cancel.dds",
+    "glue/readyp/p_ok.dds",
+    "glue/readyp/tutbtn.dds",
+    "glue/readyp/pframe1.dds",
+    "glue/readyp/pframe2.dds",
+    "glue/readyp/pframe3.dds",
+    "glue/readyp/pframe4.dds",
+    "glue/readyp/pframeh1.dds",
+    "glue/readyp/pframeh2.dds",
+    "glue/readyp/pframeh3.dds",
+    "glue/readyp/pframeh4.dds",
+    "glue/readyp/ring.webm",
     // Score-screen backdrops: `pal<race><victory|defeat>/backgnd.dds`.
     "glue/scoretv/iscore.dds.grp",
     "glue/scoretd/iscore.dds.grp",
@@ -1467,6 +1645,45 @@ pub const SOUND_PATHS: &[(&str, &[&str])] = &[
 struct BuildConfig {
     encoding_key: Option<String>,
     root_key: Option<String>,
+}
+
+/// Locale directories shipped by the Remastered client.  The first entry is
+/// the fallback used for unknown or unavailable languages.
+pub const LOCALES: &[&str] = &[
+    "enus", "dede", "eses", "esmx", "frfr", "itit", "jajp", "kokr", "nola", "plpl", "ptbr", "ruru",
+    "zhcn", "zhtw",
+];
+
+/// Normalise a locale name (`enUS`, `en-US`, `english`) to a CASC directory.
+pub fn normalize_locale(locale: &str) -> String {
+    let raw = locale.trim().to_ascii_lowercase();
+    let compact = raw.replace(['-', '_'], "");
+    if LOCALES.contains(&compact.as_str()) {
+        return compact;
+    }
+    let key = if raw.contains(' ') || raw.contains('é') || raw.contains('ñ') {
+        raw.as_str()
+    } else {
+        compact.as_str()
+    };
+    match key {
+        "english" | "en" => "enus",
+        "french" | "fr" | "français" | "francais" => "frfr",
+        "italian" | "it" | "italiano" => "itit",
+        "german" | "de" | "deutsch" => "dede",
+        "spanish" | "es" => "eses",
+        "latam" | "esmx" | "es419" | "español - latino" | "espanol - latino" => "esmx",
+        "español - españa" | "espanol - espana" => "eses",
+        "portuguese" | "pt" | "ptbr" | "português" | "portugues" => "ptbr",
+        "chinese" | "zh" | "zhcn" | "zhhans" | "简体中文" => "zhcn",
+        "zhhant" | "zhtw" | "traditional" | "繁體中文" => "zhtw",
+        "korean" | "ko" | "한국어" => "kokr",
+        "japanese" | "ja" | "日本語" => "jajp",
+        "polish" | "pl" | "polski" => "plpl",
+        "russian" | "ru" | "русский" => "ruru",
+        _ => "enus",
+    }
+    .to_string()
 }
 
 fn read_build_key(root: &Path) -> Result<String> {
@@ -2308,6 +2525,15 @@ fn pcx_palette(bytes: &[u8]) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+
+    #[test]
+    fn locale_names_normalise_to_casc_directories() {
+        assert_eq!(super::normalize_locale("enUS"), "enus");
+        assert_eq!(super::normalize_locale("es-MX"), "esmx");
+        assert_eq!(super::normalize_locale("Español - Latino"), "esmx");
+        assert_eq!(super::normalize_locale("zh-Hant"), "zhtw");
+        assert_eq!(super::normalize_locale("ru"), "ruru");
+    }
 
     #[test]
     fn md5_matches_the_rfc_1321_test_suite() {

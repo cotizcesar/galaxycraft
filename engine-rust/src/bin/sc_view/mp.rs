@@ -81,7 +81,6 @@ pub(super) enum MpHit {
     PopupCancel,
     Tab(usize),
     /// A radio row of the Select Connection lower plate.
-    Option(usize),
     /// A lobby team header (moves the local player to that team).
     Team(usize),
     /// The "Observers" header (moves the local player to a seat and back).
@@ -128,7 +127,6 @@ pub(super) struct MapInfo {
 pub(super) struct MpArt {
     conn_list: Option<DdsImage>,
     conn_info: Option<DdsImage>,
-    conn_gateway: Option<DdsImage>,
     games_list: Option<DdsImage>,
     games_info: Option<DdsImage>,
     lobby_list: Option<DdsImage>,
@@ -169,9 +167,6 @@ pub(super) struct MpState {
     /// When the selection changed: the lower plate swishes out and back
     /// (capture 5.8-7.0 s).
     conn_swap: Option<Instant>,
-    /// Select Connection: the checked Battle.net gateway (U.S. West on
-    /// entry, screenshot 2026-11-06 14:15:04).
-    gateway_sel: usize,
     games: Vec<(SocketAddr, Announce, Instant)>,
     games_sel: Option<usize>,
     discovery: Option<UdpSocket>,
@@ -206,11 +201,10 @@ pub(super) struct MpState {
 
 impl MpState {
     pub fn enter_connection(&mut self) {
-        // Both rows are listed; nothing is selected on entry and Ok is grey
-        // (reference 45), so the player picks Local Area Network to play.
+        // The LAN row is the only connection entry; nothing is selected on
+        // entry and Ok is grey until the player picks it.
         self.conn_sel = mpl::CONNECTION_NONE;
         self.conn_swap = None;
-        self.gateway_sel = 0;
         self.registry_next = false;
     }
 
@@ -295,6 +289,16 @@ impl App {
         Self::mp_rect(fb, (320.0 + r.0 * 3.0, r.1 * 3.0, r.2 * 3.0, r.3 * 3.0))
     }
 
+    /// Retail game-type name from the CEF term table
+    /// (`scr.common.terms.gameType.1..13`), with the classic English name as
+    /// the fallback.
+    fn game_type_name(&self, game_type: GameType) -> String {
+        self.cef_text(
+            &format!("scr.common.terms.gameType.{}", game_type.tag() + 1),
+            game_type.name(),
+        )
+    }
+
     fn mp_hit(&mut self, r: (i32, i32, i32, i32), hit: MpHit) {
         self.mp.hits.push((r, hit));
     }
@@ -343,8 +347,10 @@ impl App {
     /// Ok/Cancel labels and hit areas (`PALNL_*_BUTTON`).
     fn mp_okcancel(&mut self, fb: &mut Framebuffer, ok: bool, cancel: bool) {
         use galaxycraft::menu::{PALNL_CANCEL_BUTTON, PALNL_OK_BUTTON};
-        self.draw_glue_button(fb, "Ok", PALNL_OK_BUTTON, ok);
-        self.draw_glue_button(fb, "Cancel", PALNL_CANCEL_BUTTON, cancel);
+        let ok_label = self.ui_text("gluCreat-2", "Ok");
+        let cancel_label = self.ui_text("gluCreat-3", "Cancel");
+        self.draw_glue_button(fb, &ok_label, PALNL_OK_BUTTON, ok);
+        self.draw_glue_button(fb, &cancel_label, PALNL_CANCEL_BUTTON, cancel);
         if ok {
             let r = Self::mp_ui(fb, PALNL_OK_BUTTON);
             self.mp_hit(r, MpHit::Ok);
@@ -608,8 +614,6 @@ impl App {
             Some(i) => MpArt {
                 conn_list: load_dds(i, "glue/selconn/plistsml.dds"),
                 conn_info: load_dds(i, "glue/selconn/pinfo.dds"),
-                conn_gateway: load_dds(i, "glue/battlenet/connection/pgateway.dds")
-                    .or_else(|| load_dds(i, "glue/selconn/pgateway.dds")),
                 games_list: load_dds(i, "glue/gamesel/plistlrg.dds"),
                 games_info: load_dds(i, "glue/gamesel/pjoin.dds"),
                 lobby_list: load_dds(i, "glue/chatroom/plist.dds"),
@@ -716,7 +720,7 @@ impl App {
         }
         self.mp_plate(
             fb,
-            art.conn_gateway.as_ref(),
+            art.conn_list.as_ref(),
             (0.0, 230.0, 340.0, 236.0),
             true,
             l + swap.unwrap_or(0.0),
@@ -767,8 +771,6 @@ impl App {
                 oy,
                 if i == self.mp.conn_sel {
                     ROW_SELECTED
-                } else if i == mpl::CONNECTION_BNET {
-                    TITLE
                 } else {
                     ROW
                 },
@@ -799,8 +801,7 @@ impl App {
         }
         let panel = mpl::connection_panel(self.mp.conn_sel);
         let (scale, ox, oy) = self.ui_metrics(fb);
-        let lan = self.mp.conn_sel == mpl::CONNECTION_LAN;
-        let checked = if lan { 0 } else { self.mp.gateway_sel };
+        let checked = 0usize;
         let w = self.hd_advance_px(panel.list_title, 14.0, scale, true);
         self.draw_hd_text(
             fb,
@@ -862,10 +863,6 @@ impl App {
                 if i == checked { ROW_SELECTED } else { ROW },
                 false,
             );
-            if !lan {
-                let hit = Self::mp_ui(fb, (37.0 + low_dx, top - 2.0, 280.0, PITCH));
-                self.mp_hit(hit, MpHit::Option(i));
-            }
         }
         for (i, line) in panel.help.iter().enumerate() {
             let w = self.hd_advance_px(line, 11.0, scale, false);
@@ -884,9 +881,7 @@ impl App {
                 false,
             );
         }
-        let title = panel
-            .info_title
-            .unwrap_or(mpl::GATEWAYS[self.mp.gateway_sel.min(mpl::GATEWAYS.len() - 1)]);
+        let title = panel.info_title.unwrap_or("Local Area Network");
         let w = self.hd_advance_px(title, 14.0, scale, true);
         self.draw_hd_text(
             fb,
@@ -924,43 +919,6 @@ impl App {
             } else {
                 top += 9.6;
             }
-        }
-        if !lan {
-            // Battle.net profile block (reference 46): name, Change Profile
-            // and the two stat headings.  The service itself is absent, so
-            // the numbers are the empty offline profile.
-            let name = self.active_name();
-            let row = |app: &mut Self,
-                       fb: &mut Framebuffer,
-                       text: &str,
-                       x: f32,
-                       y: f32,
-                       px: f32,
-                       colour: Rgb| {
-                let w = app.hd_advance_px(text, px, scale, false);
-                app.draw_hd_text(
-                    fb,
-                    text,
-                    x + info_dx,
-                    y,
-                    LabelAlign::Left,
-                    w,
-                    px,
-                    scale,
-                    ox,
-                    oy,
-                    colour,
-                    false,
-                );
-            };
-            row(self, fb, &name, 386.0, 198.0, 14.0, VALUE);
-            row(self, fb, "Change Profile", 400.0, 216.0, 9.0, CEF_GREEN);
-            row(self, fb, "CAREER STATS", 374.0, 240.0, 9.0, CEF_INFO);
-            row(self, fb, "0% Win Rate", 386.0, 260.0, 9.0, VALUE);
-            row(self, fb, "0 Wins", 392.0, 278.0, 9.0, VALUE);
-            row(self, fb, "SEASON STATS", 470.0, 240.0, 9.0, CEF_INFO);
-            row(self, fb, "0 Games", 478.0, 260.0, 9.0, VALUE);
-            row(self, fb, "MMR: -", 478.0, 278.0, 9.0, VALUE);
         }
     }
 
@@ -1070,9 +1028,10 @@ impl App {
                 Align::Center,
             );
             if let Some(t) = GameType::from_tag(a.game_type) {
+                let game_type_name = self.game_type_name(t);
                 self.mp_text(
                     fb,
-                    t.name(),
+                    &game_type_name,
                     centre,
                     470.0,
                     35.0,
@@ -1115,7 +1074,8 @@ impl App {
             );
         }
         let create = (44.0, 331.0, 312.0, 22.0);
-        self.draw_glue_button(fb, "Create Game", create, true);
+        let create_game = self.cef_text("createGameScreen_title", "Create Game");
+        self.draw_glue_button(fb, &create_game, create, true);
         let hit = Self::mp_ui(fb, create);
         self.mp_hit(hit, MpHit::CreateGame);
         // Retail line (reference 49).  The LAN implementation still uses
@@ -1356,9 +1316,10 @@ impl App {
                 img.draw_scaled(fb, r.0, r.1, r.2, r.3);
             }
         };
+        let create_title = self.ui_text("gluCreat-1", "Create");
         self.mp_text(
             fb,
-            "Create",
+            &create_title,
             442.0,
             220.0,
             48.0,
@@ -1441,9 +1402,10 @@ impl App {
         Self::mp_border_t(fb, thumb, t4, (9.0 * k) as i32, red);
         // Game options.
         let gt = self.mp.game_type.unwrap_or(GameType::TopVsBottom);
+        let game_type = self.cef_text("infoPane_gameType", "Game Type");
         self.mp_text(
             fb,
-            "Game Type",
+            &game_type,
             494.0,
             795.0,
             35.0,
@@ -1451,10 +1413,11 @@ impl App {
             TITLE,
             Align::Left,
         );
+        let game_type_name = self.game_type_name(gt);
         self.mp_dropdown(
             fb,
             (860.0, 786.0, 514.0, 44.0),
-            gt.name(),
+            &game_type_name,
             CEF_GREEN,
             true,
             Drop::GameType,
@@ -1465,20 +1428,25 @@ impl App {
             GameType::TopVsBottom => {
                 let slots = info.as_ref().map(|i| i.slots).unwrap_or(2);
                 let split = self.mp.split.unwrap_or_else(|| gt.default_teams(slots));
-                Some(("Teams:", gt.teams_label(split), Drop::Teams))
+                let teams = self.cef_text("lobbyScreen_teams", "Teams");
+                Some((format!("{teams}:"), gt.teams_label(split), Drop::Teams))
             }
             t if t.is_team() => {
                 let slots = info.as_ref().map(|i| i.slots).unwrap_or(2);
                 let split = self.mp.split.unwrap_or_else(|| gt.default_teams(slots));
-                Some(("Number of Teams:", split.0.to_string(), Drop::Teams))
+                Some((
+                    "Number of Teams:".to_string(),
+                    split.0.to_string(),
+                    Drop::Teams,
+                ))
             }
             GameType::Greed => Some((
-                "Resources:",
+                "Resources:".to_string(),
                 GREED_RESOURCES[self.mp.greed_resources.min(GREED_RESOURCES.len() - 1)].to_string(),
                 Drop::Resources,
             )),
             GameType::Slaughter => Some((
-                "Minutes:",
+                "Minutes:".to_string(),
                 SLAUGHTER_MINUTES[self.mp.slaughter_minutes.min(SLAUGHTER_MINUTES.len() - 1)]
                     .to_string(),
                 Drop::Minutes,
@@ -1486,7 +1454,16 @@ impl App {
             _ => None,
         };
         if let Some((label, value, which)) = extra {
-            self.mp_text(fb, label, 494.0, 861.0, 35.0, Face::Reg, TITLE, Align::Left);
+            self.mp_text(
+                fb,
+                &label,
+                494.0,
+                861.0,
+                35.0,
+                Face::Reg,
+                TITLE,
+                Align::Left,
+            );
             self.mp_dropdown(
                 fb,
                 (860.0, 852.0, 514.0, 44.0),
@@ -1497,9 +1474,10 @@ impl App {
                 Self::combo_px(which),
             );
         }
+        let speed_label = self.cef_text("gameSPEED", &self.ui_text("gluJoin-7", "Speed:"));
         self.mp_text(
             fb,
-            "Speed:",
+            &speed_label,
             494.0,
             927.0,
             35.0,
@@ -1572,14 +1550,15 @@ impl App {
                 );
             }
             let size = format!("{}x{}", info.size.0, info.size.1);
-            for (i, (label, value)) in [
-                ("Size:", size.as_str()),
-                ("Tileset:", info.tileset),
-                ("Suggested Players:", info.suggested.as_str()),
-            ]
-            .iter()
-            .enumerate()
-            {
+            let size_label = self.cef_text("infoPane_size", "Size");
+            let tileset_label = self.tileset_label(info.tileset);
+            let suggested_label = self.cef_text("infoPane_suggestedPlayers", "Suggested Players");
+            let rows = [
+                (format!("{size_label}:"), size),
+                (format!("{tileset_label}:"), info.tileset.to_string()),
+                (format!("{suggested_label}:"), info.suggested.clone()),
+            ];
+            for (i, (label, value)) in rows.iter().enumerate() {
                 let top = 890.0 + 30.0 * i as f32;
                 self.mp_text(
                     fb,
@@ -1609,9 +1588,10 @@ impl App {
         let r = Self::mp_rect(fb, (752.0, 427.0, 1061.0, 581.0));
         fb.rect(r.0, r.1, r.2, r.3, Rgb::new(0, 0, 0));
         Self::mp_border(fb, (r.0, r.1, r.2, r.3), CEF_BORDER);
+        let creating = self.cef_text("createGameProgressPopup_title", "Creating game...");
         self.mp_text(
             fb,
-            "Creating game...",
+            &creating,
             1280.0,
             466.0,
             48.0,
@@ -1621,9 +1601,10 @@ impl App {
         );
         let b = Self::mp_rect(fb, (1045.0, 885.0, 472.0, 86.0));
         Self::mp_border(fb, b, CEF_BORDER_HOT);
+        let cancel_label = self.ui_text("gluCreat-3", "Cancel");
         self.mp_text(
             fb,
-            "Cancel",
+            &cancel_label,
             1280.0,
             910.0,
             48.0,
@@ -1680,7 +1661,7 @@ impl App {
         // recording, 427 s): the client runs the enUS locale only.
         self.mp_text(
             fb,
-            &format!("| {}", super::input_language_tag()),
+            &format!("| {}", super::input_language_tag(&self.locale_code)),
             1756.0,
             672.7,
             40.0,
@@ -1694,9 +1675,17 @@ impl App {
             fb.rect(caret.0, caret.1, caret.2, caret.3, TITLE);
         }
         let ok = entry.ok_enabled();
+        let ok_label = self.ui_text("gluCreat-2", "Ok");
+        let cancel_label = self.ui_text("gluCreat-3", "Cancel");
         for (x, w, label, hit, on) in [
-            (793.0, 467.0, "Ok", MpHit::Ok, ok),
-            (1300.0, 461.0, "Cancel", MpHit::PopupCancel, true),
+            (793.0, 467.0, ok_label.as_str(), MpHit::Ok, ok),
+            (
+                1300.0,
+                461.0,
+                cancel_label.as_str(),
+                MpHit::PopupCancel,
+                true,
+            ),
         ] {
             let b = Self::mp_rect(fb, (x, 900.0, w, 80.0));
             Self::mp_border(fb, b, EDGE);
@@ -1754,9 +1743,10 @@ impl App {
         } else {
             Rgb::new(0xa8, 0xe6, 0x5a)
         };
+        let ok_label = self.ui_text("gluCreat-2", "Ok");
         self.mp_text(
             fb,
-            "Ok",
+            &ok_label,
             1289.5,
             928.7,
             40.0,
@@ -1966,7 +1956,7 @@ impl App {
                 self.mp_dropdown(
                     fb,
                     (470.0, y, 402.0, 44.0),
-                    slot.occupant.label(),
+                    &self.lobby_label(slot.occupant.label()),
                     CEF_GREEN,
                     editable && (is_host || me) && (!human || me),
                     Drop::Player(i),
@@ -1978,24 +1968,27 @@ impl App {
                     } else {
                         CEF_GREEN
                     };
+                    let race_label = self.lobby_label(slot.race.label());
                     self.mp_dropdown(
                         fb,
                         (892.0, y, 202.0, 44.0),
-                        slot.race.label(),
+                        &race_label,
                         race_colour,
                         editable && (me || is_host && slot.occupant == Occupant::Computer),
                         Drop::Race(i),
                         Self::combo_px(Drop::Race(i)),
                     );
                     let colour = if slot.race == RaceChoice::Unselected {
-                        ""
+                        String::new()
                     } else {
-                        mpl::COLOR_CHOICES[slot.color.min(mpl::COLOR_CHOICES.len() - 1)]
+                        self.lobby_label(
+                            mpl::COLOR_CHOICES[slot.color.min(mpl::COLOR_CHOICES.len() - 1)],
+                        )
                     };
                     self.mp_dropdown(
                         fb,
                         (1114.0, y, 202.0, 44.0),
-                        colour,
+                        &colour,
                         VALUE,
                         editable && (me || is_host && slot.occupant == Occupant::Computer),
                         Drop::Color(i),
@@ -2067,11 +2060,15 @@ impl App {
         if let Some(info) = self.mp_info(self.mp.lobby_map) {
             Self::mp_minimap(fb, &info, (1674.0, 170.0, 312.0, 314.0));
         }
+        let game_name = self.cef_text("infoPane_gameName", "Game Name");
+        let map_name = self.cef_text("infoPane_mapName", "Map Name");
+        let game_type = self.cef_text("infoPane_gameType", "Game Type");
         let speed = SPEED_NAMES[self.mp.speed_index()];
+        let lobby_game_type = self.game_type_name(lobby.game_type);
         for (label, value, top) in [
-            ("Game Name", lobby.game_name.as_str(), 506.0),
-            ("Map Name", lobby.map_name.as_str(), 575.0),
-            ("Game Type", lobby.game_type.name(), 644.0),
+            (game_name.as_str(), lobby.game_name.as_str(), 506.0),
+            (map_name.as_str(), lobby.map_name.as_str(), 575.0),
+            (game_type.as_str(), lobby_game_type.as_str(), 644.0),
         ] {
             self.mp_text(
                 fb,
@@ -2100,16 +2097,21 @@ impl App {
             .as_ref()
             .map(|i| format!("{}x{}", i.size.0, i.size.1))
             .unwrap_or_default();
-        for (i, (label, value)) in [
-            ("Size:", size.as_str()),
-            ("Speed:", speed),
-            ("Turn Rate:", "24"),
-            ("Custom Hotkeys:", "Enabled"),
-            ("Unit Limits:", "Extended"),
-        ]
-        .iter()
-        .enumerate()
-        {
+        let size_label = self.cef_text("infoPane_size", "Size");
+        let speed_label = self.cef_text("infoPane_speed", "Speed");
+        let turn_label = self.cef_text("infoPane_turnRate", "Turn Rate");
+        let hotkeys_label = self.cef_text("createGameScreen_customHotkeys", "Custom Hotkeys");
+        let enabled_label = self.cef_text("createGameScreen_enabled", "Enabled");
+        let limits_label = self.cef_text("createGameScreen_gameLimits", "Unit Limits");
+        let extended_label = self.cef_text("createGameScreen_extended", "Extended");
+        let rows = [
+            (format!("{size_label}:"), size),
+            (format!("{speed_label}:"), speed.to_string()),
+            (format!("{turn_label}:"), "24".to_string()),
+            (format!("{hotkeys_label}:"), enabled_label),
+            (format!("{limits_label}:"), extended_label),
+        ];
+        for (i, (label, value)) in rows.iter().enumerate() {
             let top = 725.0 + 30.0 * i as f32;
             self.mp_text(
                 fb,
@@ -2241,9 +2243,16 @@ impl App {
         };
         let mut map_hash = [0u8; 32];
         map_hash.copy_from_slice(&Sha256::digest(&raw));
-        let addr = format!("0.0.0.0:{}", galaxycraft::net::LOBBY_PORT);
-        if let Ok(l) = galaxycraft::net::Lobby::bind(&addr, map_hash, galaxycraft::net::WORLD_SEED)
+        let port = if self.game_options.network_prefer_6112 {
+            6112
+        } else {
+            galaxycraft::net::LOBBY_PORT
+        };
+        let addr = format!("0.0.0.0:{port}");
+        if let Ok(mut l) =
+            galaxycraft::net::Lobby::bind(&addr, map_hash, galaxycraft::net::WORLD_SEED)
         {
+            l.ticks_per_turn = self.latency_turns();
             let open = self
                 .mp
                 .lobby
@@ -2340,7 +2349,11 @@ impl App {
                 let a = Announce {
                     name: lobby_state.game_name.clone(),
                     map_hash: listener.map_hash,
-                    port: galaxycraft::net::LOBBY_PORT,
+                    port: listener
+                        .listener
+                        .local_addr()
+                        .map(|a| a.port())
+                        .unwrap_or(galaxycraft::net::LOBBY_PORT),
                     players: lobby_state
                         .slots
                         .iter()
@@ -2468,7 +2481,11 @@ impl App {
                     self.mp.open = None;
                 }
                 Ok(Some(Msg::Setup {
-                    races, you, setup, ..
+                    races,
+                    you,
+                    setup,
+                    ticks_per_turn,
+                    ..
                 })) => {
                     let Some(c) = self.mp.client.take() else {
                         return;
@@ -2487,6 +2504,9 @@ impl App {
                         c.addr.to_string(),
                         setup,
                     ) {
+                        if let Some(net) = &mut self.net {
+                            net.lock.ticks_per_turn = ticks_per_turn.max(1);
+                        }
                         self.speed = speed;
                     }
                     return;
@@ -2567,6 +2587,7 @@ impl App {
         hash.copy_from_slice(&Sha256::digest(&raw));
         let save = SaveFile {
             map_name: entry.name.clone(),
+            map_index: Some(index),
             map_chk: raw,
             races: setup.races(),
             local_player: if observing {
@@ -2752,12 +2773,6 @@ impl App {
                     }
                 }
             }
-            MpHit::Option(i) => {
-                if self.mp.conn_sel != mpl::CONNECTION_LAN && i < mpl::GATEWAYS.len() {
-                    self.mp.gateway_sel = i;
-                }
-                self.play("ui_click");
-            }
             MpHit::CreateGame => {
                 self.play("ui_click");
                 self.mp_enter_create();
@@ -2826,7 +2841,7 @@ impl App {
             Drop::GameType => {
                 let items = GameType::MENU
                     .iter()
-                    .map(|g| g.name().to_string())
+                    .map(|g| self.game_type_name(*g))
                     .collect();
                 self.mp_open(which, (860.0, 786.0, 514.0, 44.0), items);
             }
@@ -2859,13 +2874,16 @@ impl App {
                 self.mp_open(which, (860.0, 852.0, 514.0, 44.0), items);
             }
             Drop::Player(i) => {
-                let items = OCCUPANT_CHOICES.iter().map(|s| s.to_string()).collect();
+                let items = OCCUPANT_CHOICES
+                    .iter()
+                    .map(|s| self.lobby_label(s))
+                    .collect();
                 self.mp_open(which, slot_rect(i, 470.0, 402.0), items);
             }
             Drop::Race(i) => {
                 let items = RaceChoice::CHOICES
                     .iter()
-                    .map(|r| r.label().to_string())
+                    .map(|r| self.lobby_label(r.label()))
                     .collect();
                 self.mp_open(which, slot_rect(i, 892.0, 202.0), items);
             }
@@ -2875,7 +2893,7 @@ impl App {
                     .map(|l| l.free_colors(i))
                     .unwrap_or_default()
                     .iter()
-                    .map(|&c| mpl::COLOR_CHOICES[c].to_string())
+                    .map(|&c| self.lobby_label(mpl::COLOR_CHOICES[c]))
                     .collect();
                 self.mp_open(which, slot_rect(i, 1114.0, 202.0), items);
             }
@@ -3312,14 +3330,21 @@ impl App {
             TITLE,
             Align::Left,
         );
+        let save_replay = self.cef_text("saveReplayDialogTitle", "Save Replay");
+        let watch_replay = self.cef_text("scr.profile.matches.btn.replay", "Watch Replay");
+        let ok_label = self.ui_text("gluCreat-2", "Ok");
         for (label, rect, hit) in [
-            ("Save Replay", (40.0, 430.0, 210.0, 30.0), MpHit::SaveReplay),
             (
-                "Watch Replay",
+                save_replay.as_str(),
+                (40.0, 430.0, 210.0, 30.0),
+                MpHit::SaveReplay,
+            ),
+            (
+                watch_replay.as_str(),
                 (260.0, 430.0, 210.0, 30.0),
                 MpHit::WatchReplay,
             ),
-            ("Ok", (480.0, 430.0, 138.0, 30.0), MpHit::Ok),
+            (ok_label.as_str(), (480.0, 430.0, 138.0, 30.0), MpHit::Ok),
         ] {
             self.draw_glue_button(fb, label, rect, true);
             let r = Self::mp_ui(fb, rect);
@@ -3373,11 +3398,20 @@ impl App {
     }
 
     pub(super) fn handle_mp_score(&mut self, window: &Window) {
-        let mouse = window
-            .get_unscaled_mouse_pos(MouseMode::Clamp)
-            .map(|(x, y)| (x as i32, y as i32));
-        let down = window.get_mouse_down(MouseButton::Left);
-        let keys = window.get_keys_pressed(KeyRepeat::No);
+        let mut mouse = if self.pad_control {
+            self.pointer.or(Some(self.pad_cursor))
+        } else {
+            window
+                .get_unscaled_mouse_pos(MouseMode::Clamp)
+                .map(|(x, y)| (x as i32, y as i32))
+        };
+        let mut down = window.get_mouse_down(MouseButton::Left);
+        let mut keys = window.get_keys_pressed(KeyRepeat::No);
+        if self.pad_frame.active {
+            mouse = Some(self.pad_cursor);
+            down |= self.pad_frame.lmb;
+            keys.extend(self.pad_frame.menu_pressed.iter().copied());
+        }
         self.handle_mp_score_input(mouse, down, &keys);
     }
 
@@ -3528,13 +3562,9 @@ impl App {
             self.map_index = i;
         }
         match name {
-            "mp-connection" | "mp-connection-lan" | "mp-connection-bnet" => {
+            "mp-connection" | "mp-connection-lan" => {
                 self.mp.enter_connection();
-                if name.ends_with("lan") {
-                    self.mp.conn_sel = mpl::CONNECTION_LAN;
-                } else if name.ends_with("bnet") {
-                    self.mp.conn_sel = mpl::CONNECTION_BNET;
-                }
+                self.mp.conn_sel = mpl::CONNECTION_LAN;
                 self.menu_screen = MenuScreen::Connection;
             }
             "mp-games" => {

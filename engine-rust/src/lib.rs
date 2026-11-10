@@ -23,6 +23,7 @@ macro_rules! embedded {
 }
 
 pub mod ai;
+pub mod ai_recovered;
 pub mod aiscript;
 pub mod audio;
 pub mod button_sets;
@@ -31,6 +32,7 @@ pub mod calibration;
 pub mod campaign;
 pub mod campaign_progress;
 pub mod cinematic;
+pub mod client;
 pub mod combat;
 pub mod contour;
 pub mod credits;
@@ -60,6 +62,7 @@ pub mod render;
 pub mod replay;
 pub mod retail;
 pub mod retail_replay;
+pub mod runtime;
 pub mod scene;
 pub mod sfx;
 pub mod sim;

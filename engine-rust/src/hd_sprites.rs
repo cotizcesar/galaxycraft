@@ -234,27 +234,59 @@ impl HdImage {
     }
 }
 
-/// Lazily loaded HD images keyed by `images.dat` id.
+/// Lazily loaded HD images keyed by `images.dat` id and skin id.
+type ImageCache = HashMap<(u16, u8), Option<Rc<HdImage>>>;
+
 #[derive(Default)]
 pub struct HdSprites {
-    cache: RefCell<HashMap<u16, Option<Rc<HdImage>>>>,
+    cache: RefCell<ImageCache>,
+}
+
+/// CASC path of an HD animation for skin `skin` (`0` base, `1` PreSale,
+/// `2` Carbot; ids from `anim/skins.json`).
+pub fn skin_anim_path(id: u16, skin: u8) -> String {
+    match skin {
+        1 => format!("anim/presale/main_{id:03}.anim"),
+        2 => format!("anim/carbot/main_{id:03}.anim"),
+        _ => format!("anim/main_{id:03}.anim"),
+    }
 }
 
 impl HdSprites {
     /// Image `id`, fetching `anim/main_NNN.anim` through `fetch` the first
     /// time (a missing or malformed file is remembered as absent).
-    pub fn image(
+    pub fn image(&self, id: u16, fetch: impl Fn(&str) -> Option<Vec<u8>>) -> Option<Rc<HdImage>> {
+        self.image_skin(id, 0, fetch)
+    }
+
+    /// [`Self::image`] for a collection skin: skin 1 reads the shipped
+    /// `anim/presale/main_NNN.anim` container and skin 2 the Carbot set
+    /// (`anim/carbot/main_NNN.anim`).  A skin that lacks an image (the
+    /// Carbot set covers 806 of the 868 shipped HD images) falls back to the
+    /// base art, so a partial collection never blanks a unit.
+    pub fn image_skin(
         &self,
         id: u16,
-        fetch: impl FnOnce(&str) -> Option<Vec<u8>>,
+        skin: u8,
+        fetch: impl Fn(&str) -> Option<Vec<u8>>,
     ) -> Option<Rc<HdImage>> {
-        if let Some(hit) = self.cache.borrow().get(&id) {
+        let key = (id, skin);
+        if let Some(hit) = self.cache.borrow().get(&key) {
             return hit.clone();
         }
-        let img = fetch(&format!("anim/main_{id:03}.anim"))
-            .and_then(|b| HdImage::parse(&b))
-            .map(Rc::new);
-        self.cache.borrow_mut().insert(id, img.clone());
+        let mut img = None;
+        for candidate in [skin, 0] {
+            if let Some(parsed) =
+                fetch(&skin_anim_path(id, candidate)).and_then(|b| HdImage::parse(&b))
+            {
+                img = Some(Rc::new(parsed));
+                break;
+            }
+            if candidate == 0 {
+                break;
+            }
+        }
+        self.cache.borrow_mut().insert(key, img.clone());
         img
     }
 }
@@ -976,5 +1008,15 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn collection_skins_use_the_shipped_animation_directories() {
+        assert_eq!(skin_anim_path(63, 0), "anim/main_063.anim");
+        assert_eq!(skin_anim_path(63, 1), "anim/presale/main_063.anim");
+        assert_eq!(skin_anim_path(275, 1), "anim/presale/main_275.anim");
+        // `anim/skins.json` id 2 names the Carbot collection.
+        assert_eq!(skin_anim_path(63, 2), "anim/carbot/main_063.anim");
+        assert_eq!(skin_anim_path(0, 2), "anim/carbot/main_000.anim");
     }
 }

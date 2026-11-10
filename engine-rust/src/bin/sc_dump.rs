@@ -105,11 +105,13 @@ fn main() -> ExitCode {
             continue;
         }
         // Skip media that cannot be a menu frame/host config; keep the dump
-        // small enough to search quickly.
+        // small enough to search quickly.  An explicit `--include` wins, so
+        // callers can extract a specific animation or sound.
         let lower = path.to_ascii_lowercase();
-        if [".wav", ".ogg", ".webm", ".smk", ".anim", ".chk", ".srt"]
-            .iter()
-            .any(|e| lower.ends_with(e))
+        if includes.is_empty()
+            && [".wav", ".ogg", ".webm", ".smk", ".anim", ".chk", ".srt"]
+                .iter()
+                .any(|e| lower.ends_with(e))
         {
             continue;
         }

@@ -275,6 +275,12 @@ pub struct CampaignAi {
     pub wait_until: u64,
     pub max_units: HashMap<u16, u8>,
     pub attack_group: Vec<u16>,
+    /// `set_attacks` budget for `target_expansion` (melee scripts).
+    pub attacks_left: u8,
+    /// Next `quick_attack` makes the attack deadline five seconds.
+    pub quick_attack: bool,
+    /// Tick at which the current attack force stops counting as active.
+    pub attack_finish: u64,
     pub town_started: bool,
     pub finished: bool,
     call_stack: Vec<usize>,
@@ -327,6 +333,9 @@ impl CampaignAi {
             wait_until: 0,
             max_units: HashMap::new(),
             attack_group: Vec::new(),
+            attacks_left: 0,
+            quick_attack: false,
+            attack_finish: 0,
             town_started: false,
             finished: false,
             call_stack: Vec::new(),
@@ -374,6 +383,7 @@ impl CampaignAi {
 
     pub fn update(&mut self, world: &mut World, enemy_base: Option<(i32, i32)>) {
         self.maintain_town(world);
+        self.keep_workers_mining(world);
         self.maintain_army(world, enemy_base);
         self.update_main(world, enemy_base);
         self.update_subthreads(world, enemy_base);
@@ -450,6 +460,95 @@ impl CampaignAi {
         }
         if self.farms_timing || self.farms_notiming {
             self.maintain_supply(world);
+        }
+    }
+
+    /// The engine-side town manager sends idle workers to a mineral field
+    /// (and up to three to a finished gas building).  The retail campaign
+    /// scripts rely on this; `get_oldpeons` only sets the worker target.
+    fn keep_workers_mining(&self, world: &mut World) {
+        let worker_type = match world.players[self.player as usize].race {
+            crate::sim::Race::Terran => crate::ids::unit::SCV,
+            crate::sim::Race::Protoss => crate::ids::unit::PROBE,
+            crate::sim::Race::Zerg => crate::ids::unit::DRONE,
+            crate::sim::Race::Neutral => return,
+        };
+        let gas = world
+            .units
+            .iter()
+            .find(|u| {
+                u.alive
+                    && u.owner == self.player
+                    && u.completed
+                    && matches!(
+                        u.type_id,
+                        crate::ids::unit::REFINERY
+                            | crate::ids::unit::ASSIMILATOR
+                            | crate::ids::unit::EXTRACTOR
+                    )
+                    && u.resource_amount > 0
+            })
+            .map(|u| u.id);
+        let gas_workers = gas
+            .map(|g| {
+                world
+                    .units
+                    .iter()
+                    .filter(|u| {
+                        u.alive
+                            && u.owner == self.player
+                            && u.type_id == worker_type
+                            && (u.carry_kind == crate::sim::CarryKind::Gas
+                                || u.resource_target == Some(g)
+                                || matches!(u.order, crate::sim::Order::Gather { resource } if resource == g))
+                    })
+                    .count()
+            })
+            .unwrap_or(0);
+        let mut workers: Vec<(bool, u32)> = world
+            .units
+            .iter()
+            .filter(|u| u.alive && u.owner == self.player && u.type_id == worker_type)
+            .filter(|u| {
+                gas.is_none_or(|g| u.resource_target != Some(g))
+                    && u.carry_kind != crate::sim::CarryKind::Gas
+            })
+            .map(|u| (u.order == crate::sim::Order::Idle, u.id))
+            .collect();
+        workers.sort_by_key(|&(idle, id)| (!idle, id));
+        if let Some(g) = gas {
+            for (_, id) in workers.iter().take(3usize.saturating_sub(gas_workers)) {
+                let _ = world.issue(*id, crate::sim::Order::Gather { resource: g });
+            }
+        }
+        for (idle, id) in workers {
+            if !idle {
+                break;
+            }
+            let Some(i) = world.index_of(id) else {
+                continue;
+            };
+            // A worker just sent to gas is no longer idle; do not overwrite
+            // that order with a mineral trip.
+            if world.units[i].order != crate::sim::Order::Idle {
+                continue;
+            }
+            let (wx, wy) = (world.units[i].x, world.units[i].y);
+            let resource = world
+                .units
+                .iter()
+                .filter(|u| {
+                    u.alive && crate::sim::is_resource_type(u.type_id) && u.resource_amount > 0
+                })
+                .min_by_key(|u| {
+                    let dx = (u.x - wx) as i64;
+                    let dy = (u.y - wy) as i64;
+                    dx * dx + dy * dy
+                })
+                .map(|u| u.id);
+            if let Some(r) = resource {
+                let _ = world.issue(id, crate::sim::Order::Gather { resource: r });
+            }
         }
     }
 
@@ -702,8 +801,22 @@ impl CampaignAi {
                 }
             }
             95 => {
-                // if_dif <compare> <difficulty> <address>: no difficulty model.
-                self.pc += 1;
+                // if_dif <compare> <difficulty> <address>.  The internal
+                // difficulty value is 1 for active threads and 0 otherwise;
+                // comparison 0 is "greater than", 1 is "less than".
+                let comparison = ins.byte(0).unwrap_or(0);
+                let wanted = ins.byte(1).unwrap_or(0) as i32;
+                let actual = if self.town_started { 1 } else { 0 };
+                let jump = match comparison {
+                    0 => wanted > actual,
+                    1 => wanted < actual,
+                    _ => false,
+                };
+                if jump {
+                    self.jump_to(ins.word(2));
+                } else {
+                    self.pc += 1;
+                }
             }
             106 => {
                 // if_owned <unit> <address>
@@ -783,6 +896,7 @@ impl CampaignAi {
             11 => {
                 self.attack_group.clear();
                 self.attack_prepared = false;
+                self.clear_attack_regions(world);
                 self.pc += 1;
             }
             13 => {
@@ -909,8 +1023,26 @@ impl CampaignAi {
                 self.finished = true;
                 return false;
             }
-            38 | 39 => {
-                // move_dt / debug: location-targeted command.
+            38 => {
+                // move_dt: send every Dark Templar to the trigger location.
+                let target = self.location_center(world);
+                let ids: Vec<u32> = world
+                    .units
+                    .iter()
+                    .filter(|u| {
+                        u.alive
+                            && u.owner == self.player
+                            && u.type_id == crate::ids::unit::DARK_TEMPLAR
+                    })
+                    .map(|u| u.id)
+                    .collect();
+                for id in ids {
+                    let _ = world.issue(id, crate::sim::Order::Move { pos: target });
+                }
+                self.pc += 1;
+            }
+            39 => {
+                // debug: no-op in the shipped scripts.
                 self.pc += 1;
             }
             40 => {
@@ -948,6 +1080,20 @@ impl CampaignAi {
                 self.pc += 1;
             }
             42 => {
+                // value_area: the trigger region becomes a state 5 town,
+                // unless it already contains an enemy unit.
+                let (x, y) = self.location_center(world);
+                if let Some(id) = self.region_at_tile(world, (x, y)) {
+                    let enemy = world.units.iter().any(|u| {
+                        u.alive
+                            && !u.is_resource()
+                            && world.is_enemy(self.player, u.owner)
+                            && self.region_at_tile(world, (u.x / 256, u.y / 256)) == Some(id)
+                    });
+                    if !enemy {
+                        self.set_region_state(world, id, 5);
+                    }
+                }
                 self.pc += 1;
             }
             43 => {
@@ -1020,6 +1166,18 @@ impl CampaignAi {
                 }
             }
             59 => {
+                // get_oldpeons <count>: keep this many workers in the town
+                // manager (the mining assignment itself runs every tick).
+                let count = ins.byte(0).unwrap_or(1);
+                let worker = match world.players[self.player as usize].race {
+                    crate::sim::Race::Terran => crate::ids::unit::SCV,
+                    crate::sim::Race::Protoss => crate::ids::unit::PROBE,
+                    crate::sim::Race::Zerg => crate::ids::unit::DRONE,
+                    crate::sim::Race::Neutral => 0,
+                };
+                if worker != 0 {
+                    self.max_units.insert(worker, count);
+                }
                 self.pc += 1;
             }
             61 => {
@@ -1100,6 +1258,9 @@ impl CampaignAi {
                 self.pc += 1;
             }
             71 => {
+                // wait_upgrades: this reconstruction starts upgrade
+                // requests immediately, so there is never a queued request
+                // left to wait for.
                 self.pc += 1;
             }
             72 => {
@@ -1121,10 +1282,25 @@ impl CampaignAi {
                 self.pc += 1;
             }
             77 => {
-                self.launch_attack(world, enemy_base, true);
+                // target_expansion: an expansion attack.  Melee scripts
+                // spend one `set_attacks` credit per launch; campaign
+                // scripts (where `set_attacks` is ignored) keep the
+                // one-shot expansion attack.
+                if self.campaign || self.attacks_left > 0 {
+                    self.launch_attack(world, enemy_base, true);
+                    if !self.campaign {
+                        self.attacks_left = self.attacks_left.saturating_sub(1);
+                    }
+                }
                 self.pc += 1;
             }
             79 => {
+                // set_attacks <count>: number of target_expansion launches
+                // left.  The retail interpreter ignores it in campaign
+                // scripts.
+                if !self.campaign {
+                    self.attacks_left = ins.byte(0).unwrap_or(0);
+                }
                 self.pc += 1;
             }
             80 => {
@@ -1239,7 +1415,42 @@ impl CampaignAi {
                 self.harass_factor = self.harass_factor.saturating_add(1);
                 self.pc += 1;
             }
-            91 | 92 => {
+            91 => {
+                // implode: state 4 for every state 0-3 region connected to
+                // at most one other ground region.
+                let count = world.regions.count();
+                let candidates: Vec<usize> = (0..count as usize)
+                    .filter(|&id| {
+                        let state = self.region_state(world, id);
+                        (0..=3).contains(&state)
+                            && world
+                                .regions
+                                .region(id as u32)
+                                .is_some_and(|r| r.neighbours.len() <= 1)
+                    })
+                    .collect();
+                for id in candidates {
+                    self.set_region_state(world, id, 4);
+                }
+                self.pc += 1;
+            }
+            92 => {
+                // guard_all: every region containing one of this player's
+                // units becomes a defended town region.
+                let mut mine = Vec::new();
+                for unit in &world.units {
+                    if unit.alive
+                        && unit.owner == self.player
+                        && let Some(id) = self.region_at_tile(world, (unit.x / 256, unit.y / 256))
+                    {
+                        mine.push(id);
+                    }
+                }
+                mine.sort_unstable();
+                mine.dedup();
+                for id in mine {
+                    self.set_region_state(world, id, 5);
+                }
                 self.pc += 1;
             }
             96 => {
@@ -1262,7 +1473,32 @@ impl CampaignAi {
                 self.killable = true;
                 self.pc += 1;
             }
-            99 | 100 => {
+            99 => {
+                // wait_finishattack: wait for the active attack deadline
+                // and for no state 1/2/8/9 region owned by this thread.
+                let active = (0..world.regions.count() as usize)
+                    .any(|id| matches!(self.region_state(world, id), 1 | 2 | 8 | 9));
+                if self.attack_finish > 0 && world.tick < self.attack_finish {
+                    self.wait_until = self.attack_finish;
+                    return false;
+                }
+                if self.attack_finish > 0 {
+                    // Deadline reached: the retail region states expire.
+                    self.clear_attack_regions(world);
+                    self.pc += 1;
+                    return true;
+                }
+                if active {
+                    // No deadline was set (for example a manually seeded
+                    // state): give the attack one more cycle.
+                    self.wait_until = world.tick + 16;
+                    return false;
+                }
+                self.pc += 1;
+            }
+            100 => {
+                // quick_attack: the next launch's deadline is five seconds.
+                self.quick_attack = true;
                 self.pc += 1;
             }
             101 => {
@@ -1282,6 +1518,8 @@ impl CampaignAi {
                 self.pc += 1;
             }
             102 => {
+                // fake_nuke: reset the AI's nuke launch state.
+                self.nukes = 0;
                 self.pc += 1;
             }
             103 => {
@@ -1324,6 +1562,27 @@ impl CampaignAi {
                 self.pc += 1;
             }
             110 => {
+                // help_iftrouble: allied AIs defend every region this AI
+                // has marked.
+                let mine = world
+                    .ai_region_states
+                    .get(self.player as usize)
+                    .cloned()
+                    .unwrap_or_default();
+                for player in 0..world.players.len() {
+                    if player as u8 == self.player || !world.same_side(self.player, player as u8) {
+                        continue;
+                    }
+                    if let Some(states) = world.ai_region_states.get_mut(player) {
+                        for (id, state) in mine.iter().enumerate() {
+                            if *state != 0
+                                && let Some(slot) = states.get_mut(id)
+                            {
+                                *slot = 4;
+                            }
+                        }
+                    }
+                }
                 self.pc += 1;
             }
             111 => {
@@ -1624,7 +1883,12 @@ impl CampaignAi {
             .collect()
     }
 
-    fn launch_attack(&self, world: &mut World, enemy_base: Option<(i32, i32)>, _group_only: bool) {
+    fn launch_attack(
+        &mut self,
+        world: &mut World,
+        enemy_base: Option<(i32, i32)>,
+        group_only: bool,
+    ) {
         let ids = self.military_ids(world);
         if ids.is_empty() {
             return;
@@ -1635,6 +1899,20 @@ impl CampaignAi {
                     .map(|(x, y)| (x / 256, y / 256))
             })
             .unwrap_or((0, 0));
+        if let Some(id) = self.region_at_tile(world, target) {
+            self.set_region_state(world, id, 2);
+        }
+        let seconds = if self.quick_attack {
+            5
+        } else if group_only {
+            1
+        } else if self.campaign {
+            180
+        } else {
+            120
+        };
+        self.attack_finish = world.tick + seconds * crate::sim::TICKS_PER_SECOND as u64;
+        self.quick_attack = false;
         world.command_attack_move(&ids, target);
     }
 
@@ -1669,7 +1947,12 @@ impl CampaignAi {
     }
 
     fn location_center(&self, world: &World) -> (i32, i32) {
-        self.location.or_else(|| self.base(world)).unwrap_or((0, 0))
+        // Trigger locations are stored in map pixels; orders and nuke/recall
+        // targets use whole tiles.
+        self.location
+            .map(|(x, y)| (x / 256, y / 256))
+            .or_else(|| self.base(world))
+            .unwrap_or((0, 0))
     }
 
     fn spawn_thread(&mut self, target: u16) {
@@ -1688,6 +1971,41 @@ impl CampaignAi {
 
     fn region_count(&self, world: &World) -> i32 {
         world.regions.count() as i32
+    }
+
+    /// Retail region containing a tile, as an index into the state array.
+    fn region_at_tile(&self, world: &World, tile: (i32, i32)) -> Option<usize> {
+        world.regions.region_at_tile(tile).map(|id| id as usize)
+    }
+
+    fn region_state(&self, world: &World, id: usize) -> u8 {
+        world
+            .ai_region_states
+            .get(self.player as usize)
+            .and_then(|states| states.get(id))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    fn set_region_state(&self, world: &mut World, id: usize, state: u8) {
+        if let Some(states) = world.ai_region_states.get_mut(self.player as usize)
+            && let Some(slot) = states.get_mut(id)
+        {
+            *slot = state;
+        }
+    }
+
+    /// `attack_clear` / a finished attack no longer leaves state 1/2/8/9
+    /// regions behind.
+    fn clear_attack_regions(&mut self, world: &mut World) {
+        if let Some(states) = world.ai_region_states.get_mut(self.player as usize) {
+            for state in states {
+                if matches!(*state, 1 | 2 | 8 | 9) {
+                    *state = 0;
+                }
+            }
+        }
+        self.attack_finish = 0;
     }
 
     fn ground_route(&self, world: &World, a: (i32, i32), b: (i32, i32)) -> bool {
@@ -2186,6 +2504,354 @@ mod tests {
         let mut ai = CampaignAi::new(0, &wave);
         ai.update(&mut world, Some((1800, 1800)));
         assert_eq!(attacking(&world), vec![uid::ZERGLING; 2]);
+    }
+
+    #[test]
+    fn set_attacks_budgets_target_expansion_launches() {
+        use crate::data::GameData;
+        use crate::ids::unit as uid;
+        use crate::map::Terrain;
+        use crate::sim::{Order, World};
+        use std::sync::Arc;
+
+        let data = Arc::new(GameData::bundled().unwrap());
+        let mut world = World::new(data.clone(), Terrain::open(64, 64), 2);
+        for k in 0..2 {
+            world.spawn_px(0, uid::MARINE, 300 + k * 20, 300).unwrap();
+        }
+        world.spawn_px(1, uid::COMMAND_CENTER, 1200, 1200).unwrap();
+        let attacking = |w: &World| {
+            w.units
+                .iter()
+                .filter(|u| u.alive && u.owner == 0 && matches!(u.order, Order::AttackMove { .. }))
+                .count()
+        };
+        let script = AiScript {
+            id: *b"Atk1",
+            label: 0,
+            flags: 0,
+            code: vec![79, 1, 77, 36], // set_attacks 1; target_expansion; stop
+            external: false,
+        };
+        let mut ai = CampaignAi::new(0, &script);
+        ai.update(&mut world, Some((40, 40)));
+        assert_eq!(attacking(&world), 2);
+        assert_eq!(ai.attacks_left, 0);
+
+        let mut world = World::new(data, Terrain::open(64, 64), 2);
+        world.spawn_px(0, uid::MARINE, 300, 300).unwrap();
+        let mut ai = CampaignAi::new(
+            0,
+            &AiScript {
+                id: *b"Atk2",
+                label: 0,
+                flags: 0,
+                code: vec![77, 36], // no set_attacks budget
+                external: false,
+            },
+        );
+        ai.update(&mut world, Some((40, 40)));
+        assert_eq!(attacking(&world), 0);
+    }
+
+    #[test]
+    fn move_dt_sends_dark_templar_to_the_trigger_location() {
+        use crate::data::GameData;
+        use crate::ids::unit as uid;
+        use crate::map::Terrain;
+        use crate::sim::{Order, World};
+        use std::sync::Arc;
+
+        let mut world = World::new(
+            Arc::new(GameData::bundled().unwrap()),
+            Terrain::open(64, 64),
+            2,
+        );
+        let dt = world.spawn_px(0, uid::DARK_TEMPLAR, 200, 200).unwrap();
+        let script = AiScript {
+            id: *b"MvTe",
+            label: 0,
+            flags: 0,
+            code: vec![38, 36], // move_dt; stop
+            external: false,
+        };
+        let mut ai = CampaignAi::new(0, &script);
+        ai.location = Some((768, 512));
+        ai.update(&mut world, None);
+        assert_eq!(world.units[dt].order, Order::Move { pos: (3, 2) });
+    }
+
+    #[test]
+    fn if_dif_compares_the_active_thread_difficulty() {
+        use crate::data::GameData;
+        use crate::map::Terrain;
+        use crate::sim::World;
+        use std::sync::Arc;
+
+        let mut world = World::new(
+            Arc::new(GameData::bundled().unwrap()),
+            Terrain::open(32, 32),
+            2,
+        );
+        // start_town; if_dif less-than 0 -> stop; otherwise wait 100; stop
+        let script = AiScript {
+            id: *b"Dif1",
+            label: 0,
+            flags: 0,
+            code: vec![3, 95, 1, 0, 9, 0, 2, 100, 0, 36],
+            external: false,
+        };
+        let mut ai = CampaignAi::new(0, &script);
+        ai.update(&mut world, None);
+        assert!(ai.finished, "active thread difficulty is 1, so 0 < 1");
+    }
+
+    #[test]
+    fn fake_nuke_resets_the_pending_nuke_state() {
+        let script = AiScript {
+            id: *b"Nuk1",
+            label: 0,
+            flags: 0,
+            code: vec![102, 36],
+            external: false,
+        };
+        let mut ai = CampaignAi::new(0, &script);
+        ai.nukes = 5;
+        let mut world = crate::sim::World::new(
+            std::sync::Arc::new(crate::data::GameData::bundled().unwrap()),
+            crate::map::Terrain::open(16, 16),
+            2,
+        );
+        ai.update(&mut world, None);
+        assert_eq!(ai.nukes, 0);
+    }
+
+    #[test]
+    fn region_state_commands_mark_the_retail_region_graph() {
+        use crate::data::GameData;
+        use crate::ids::unit as uid;
+        use crate::map::Terrain;
+        use crate::sim::World;
+        use std::sync::Arc;
+
+        let data = Arc::new(GameData::bundled().unwrap());
+        let mut world = World::new(data.clone(), Terrain::open(64, 64), 2);
+        world.spawn_px(0, uid::SCV, 20, 20).unwrap();
+        let script = AiScript {
+            id: *b"Rgn1",
+            label: 0,
+            flags: 0,
+            code: vec![92, 36], // guard_all; stop
+            external: false,
+        };
+        let mut ai = CampaignAi::new(0, &script);
+        ai.update(&mut world, None);
+        assert!(
+            world.ai_region_states[0].contains(&5),
+            "guard_all marks the unit region as a town"
+        );
+
+        // A single isolated tile has no ground neighbours: implode turns
+        // its state 0 into a defended state 4.
+        let mut terrain = Terrain::open(8, 8);
+        for y in 0..32 {
+            for x in 0..32 {
+                if !(x / 4 == 2 && y / 4 == 2) {
+                    terrain.set_walkable_cell(x, y, false);
+                }
+            }
+        }
+        let mut world = World::new(data.clone(), terrain, 2);
+        let mut ai = CampaignAi::new(
+            0,
+            &AiScript {
+                id: *b"Rgn2",
+                label: 0,
+                flags: 0,
+                code: vec![91, 36], // implode; stop
+                external: false,
+            },
+        );
+        ai.update(&mut world, None);
+        assert!(
+            world.ai_region_states[0].contains(&4),
+            "implode marks low-connectivity regions as defend (regions {}, states {:?})",
+            world.regions.count(),
+            world.ai_region_states[0]
+        );
+
+        let mut world = World::new(data, Terrain::open(64, 64), 2);
+        let mut ai = CampaignAi::new(
+            0,
+            &AiScript {
+                id: *b"Rgn3",
+                label: 0,
+                flags: 0,
+                code: vec![42, 36], // value_area; stop
+                external: false,
+            },
+        );
+        ai.location = Some((20 * 256, 20 * 256));
+        ai.update(&mut world, None);
+        assert!(
+            world.ai_region_states[0].contains(&5),
+            "value_area marks its trigger region as a town"
+        );
+    }
+
+    #[test]
+    fn a_shipped_guard_all_script_marks_regions() {
+        use crate::data::GameData;
+        use crate::ids::unit as uid;
+        use crate::map::Terrain;
+        use crate::sim::World;
+        use std::sync::Arc;
+
+        let ai_set = parse_aiscript(embedded!("fixtures/aiscript.bin"));
+        let bw_set = parse_bwscript(embedded!("fixtures/bwscript.bin"));
+        let script = bw_set
+            .get_str("TB8B")
+            .or_else(|| ai_set.get_str("TB8B"))
+            .expect("shipped guard_all script");
+        let mut world = World::new(
+            Arc::new(GameData::bundled().unwrap()),
+            Terrain::open(64, 64),
+            2,
+        );
+        world.spawn_px(0, uid::COMMAND_CENTER, 20, 20).unwrap();
+        world.spawn_px(0, uid::SCV, 22, 22).unwrap();
+        let mut ai = CampaignAi::new(0, script);
+        for _ in 0..120 {
+            ai.update(&mut world, None);
+            world.step();
+        }
+        assert!(
+            world.ai_region_states[0].contains(&5),
+            "TB8B's guard_all should mark the town region"
+        );
+    }
+
+    #[test]
+    fn help_iftrouble_marks_allied_regions() {
+        use crate::data::GameData;
+        use crate::map::Terrain;
+        use crate::sim::World;
+        use std::sync::Arc;
+
+        let mut world = World::new(
+            Arc::new(GameData::bundled().unwrap()),
+            Terrain::open(64, 64),
+            2,
+        );
+        world.players[1].team = 0;
+        world.ai_region_states[0][0] = 5;
+        let mut ai = CampaignAi::new(
+            0,
+            &AiScript {
+                id: *b"Hlp1",
+                label: 0,
+                flags: 0,
+                code: vec![110, 36], // help_iftrouble; stop
+                external: false,
+            },
+        );
+        ai.update(&mut world, None);
+        assert_eq!(world.ai_region_states[1][0], 4);
+    }
+
+    #[test]
+    fn wait_finishattack_waits_for_the_attack_deadline() {
+        use crate::data::GameData;
+        use crate::map::Terrain;
+        use crate::sim::World;
+        use std::sync::Arc;
+
+        let mut world = World::new(
+            Arc::new(GameData::bundled().unwrap()),
+            Terrain::open(64, 64),
+            2,
+        );
+        world.ai_region_states[0][0] = 2;
+        let mut ai = CampaignAi::new(
+            0,
+            &AiScript {
+                id: *b"Wat1",
+                label: 0,
+                flags: 0,
+                code: vec![99, 36], // wait_finishattack; stop
+                external: false,
+            },
+        );
+        ai.attack_finish = world.tick + 32;
+        ai.update(&mut world, None);
+        assert!(!ai.finished, "the attack deadline has not elapsed");
+        for _ in 0..40 {
+            world.step();
+        }
+        ai.update(&mut world, None);
+        assert!(ai.finished, "the expired attack releases the thread");
+        assert_eq!(world.ai_region_states[0][0], 0);
+    }
+
+    #[test]
+    fn quick_attack_sets_a_five_second_deadline() {
+        use crate::data::GameData;
+        use crate::ids::unit as uid;
+        use crate::map::Terrain;
+        use crate::sim::World;
+        use std::sync::Arc;
+
+        let mut world = World::new(
+            Arc::new(GameData::bundled().unwrap()),
+            Terrain::open(64, 64),
+            2,
+        );
+        for k in 0..2 {
+            world.spawn_px(0, uid::MARINE, 300 + k * 20, 300).unwrap();
+        }
+        world.spawn_px(1, uid::COMMAND_CENTER, 1200, 1200).unwrap();
+        let mut ai = CampaignAi::new(
+            0,
+            &AiScript {
+                id: *b"Qck1",
+                label: 0,
+                flags: 0,
+                code: vec![100, 14, 36], // quick_attack; attack_do; stop
+                external: false,
+            },
+        );
+        ai.update(&mut world, Some((40, 40)));
+        assert!(ai.attack_finish > 0);
+        assert!(
+            ai.attack_finish - world.tick <= 5 * crate::sim::TICKS_PER_SECOND as u64,
+            "quick_attack caps the deadline at five seconds"
+        );
+    }
+
+    #[test]
+    fn the_town_manager_sends_idle_workers_to_the_nearest_field() {
+        let data = std::sync::Arc::new(crate::data::GameData::bundled().expect("tables"));
+        let mut world = World::new(data, crate::map::Terrain::open(64, 64), 2);
+        let mineral = world
+            .spawn_px(0, crate::ids::unit::MINERAL_FIELD, 200, 200)
+            .expect("field");
+        world.units[mineral].resource_amount = 1000;
+        let scv = world
+            .spawn_px(0, crate::ids::unit::SCV, 300, 300)
+            .expect("scv");
+        let script = AiScript {
+            id: *b"Tst1",
+            label: 0,
+            flags: 0,
+            code: Vec::new(),
+            external: false,
+        };
+        let ai = CampaignAi::new(0, &script);
+        ai.keep_workers_mining(&mut world);
+        assert!(matches!(
+            world.units[scv].order,
+            crate::sim::Order::Gather { resource } if resource == world.units[mineral].id
+        ));
     }
 
     #[test]

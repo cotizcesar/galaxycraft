@@ -50,6 +50,24 @@ pub enum Cond {
     /// buildings has its requirements (hidden all through Boot Camp, which
     /// has no Barracks).
     AdvancedBuild,
+    /// `0x7807b0`: Load, while the transport/Bunker has cargo space.
+    Load,
+    /// `0x7807f0`: Unload, while the transport/Bunker carries units.
+    Unload,
+    /// `0x7804d0`: build one Interceptor / Scarab.
+    Hangar,
+    /// `0x780b10`: Nuclear Strike, while a completed Nuclear Silo is
+    /// attached to a Command Center.
+    Nuke,
+    /// `0x7808a0` / `0x780960`: Cloak, while the tech is researched and
+    /// the unit is visible.
+    Cloak,
+    /// `0x780900` / `0x7809d0`: Decloak, while the unit is cloaked.
+    Decloak,
+    /// `0x781030` / `0x781050`: Archon Warp (two High Templars).
+    MergeArchon,
+    /// `0x781090`: Dark Archon Meld (two Dark Templars).
+    MergeDarkArchon,
     Unclassified,
 }
 
@@ -75,6 +93,14 @@ impl Cond {
             0x781320 => Cond::Carrying,
             0x7812d0 => Cond::NotCarrying,
             0x781440 => Cond::AdvancedBuild,
+            0x7807b0 => Cond::Load,
+            0x7807f0 => Cond::Unload,
+            0x7804d0 => Cond::Hangar,
+            0x780b10 => Cond::Nuke,
+            0x7808a0 | 0x780960 => Cond::Cloak,
+            0x780900 | 0x7809d0 => Cond::Decloak,
+            0x781030 | 0x781050 => Cond::MergeArchon,
+            0x781090 => Cond::MergeDarkArchon,
             _ => Cond::Unclassified,
         }
     }
@@ -127,15 +153,43 @@ pub enum Act {
     Unburrow,
     Cloak,
     Decloak,
+    /// `0x74d850`: Stop for ordinary units, Archon Warp / Dark Archon Meld
+    /// when the button's `act_var` names the merge tech (23 / 28).
+    StopOrMerge,
+    /// `0x74d870`: merge two templars into an Archon.
+    MergeArchon,
+    /// `0x74d880`: merge two templars into a Dark Archon.
+    MergeDarkArchon,
+    /// `0x74d3b0`: load nearby units into the selected transport/bunker.
+    Load,
+    /// `0x74dba0`: unload the selected transport/bunker.
+    Unload,
+    /// `0x74d4d0`: Ghost nuclear strike.
+    Nuke,
+    /// `0x74d410`: Medic Heal.
+    Heal,
+    /// `0x74d4e0`: Queen Infestation.
+    Infest,
+    /// `0x74d680`: Hatchery / Lair / Hive Spawn Larva.
+    SpawnLarva,
+    /// `0x74d630`: Shield Battery recharge.
+    RechargeShields,
+    /// `0x74d260`: build an Interceptor (Carrier) or Scarab (Reaver).
+    TrainHangar,
+    /// `0x74d5a0`: flag-beacon placement (campaign map units).
+    PlaceBeacon,
+    /// The ATS/ATA laser battery test units (`0x75c2c0`, `0x75c370`,
+    /// `0x75c420`); no player-facing rule in the reconstruction.
+    Special,
     Unclassified,
 }
 
 impl Act {
     pub fn of(addr: u32) -> Act {
         match addr {
-            0x74d4c0 => Act::Move,
-            0x74d850 => Act::Stop,
-            0x74d1d0 => Act::Attack,
+            0x74d1d0 | 0x74d230 | 0x74d2c0 | 0x74d620 | 0x74db80 => Act::Attack,
+            0x74d4c0 | 0x74d2d0 => Act::Move,
+            0x74d2e0 | 0x74db90 => Act::Stop,
             0x74d500 => Act::Patrol,
             0x74d430 => Act::Hold,
             0x74d640 => Act::Repair,
@@ -145,6 +199,7 @@ impl Act {
             0x74d520 | 0x74d5d0 => Act::Build,
             0x74dc20 => Act::DroneBuild,
             0x74d250 => Act::Train,
+            0x74d260 => Act::TrainHangar,
             0x74d560 => Act::Addon,
             0x74d610 => Act::Rally,
             0x74d790 => Act::StimPacks,
@@ -153,7 +208,8 @@ impl Act {
             0x74d240 => Act::LiftOff,
             0x74d460 => Act::Land,
             0x74d860 => Act::CancelLast,
-            0x74d280 => Act::CancelAddon,
+            0x74d280 | 0x74d2a0 => Act::CancelAddon,
+            0x74d290 => Act::CancelMorph,
             0x74d440 => Act::CancelConstruction,
             0x74d450 => Act::CancelMorph,
             0x6cbec0 | 0x7814e0 | 0x74d2b0 | 0x533f30 => Act::CancelTarget,
@@ -166,7 +222,82 @@ impl Act {
             0x74d390 => Act::Unburrow,
             0x74d2f0 => Act::Cloak,
             0x74d3a0 => Act::Decloak,
+            0x74d850 => Act::StopOrMerge,
+            0x74d870 => Act::MergeArchon,
+            0x74d880 => Act::MergeDarkArchon,
+            0x74d3b0 => Act::Load,
+            0x74dba0 => Act::Unload,
+            0x74d4d0 => Act::Nuke,
+            0x74d410 => Act::Heal,
+            0x74d4e0 => Act::Infest,
+            0x74d680 => Act::SpawnLarva,
+            0x74d630 => Act::RechargeShields,
+            0x74d5a0 => Act::PlaceBeacon,
+            0x75c2c0 | 0x75c370 | 0x75c420 => Act::Special,
             _ => Act::Unclassified,
+        }
+    }
+
+    /// Page of the controller command wheel this action belongs to.  The
+    /// wheel mirrors the retail command card, so the classification only
+    /// groups the same buttons; it never invents an order.
+    pub fn wheel_category(self) -> WheelCategory {
+        match self {
+            Act::Build | Act::DroneBuild | Act::Addon => WheelCategory::Build,
+            Act::Train | Act::TrainHangar | Act::MorphUnit => WheelCategory::Train,
+            Act::Research
+            | Act::Upgrade
+            | Act::StimPacks
+            | Act::TargetTech
+            | Act::MorphBuilding => WheelCategory::Research,
+            Act::Stop
+            | Act::StopOrMerge
+            | Act::Hold
+            | Act::Patrol
+            | Act::Burrow
+            | Act::Unburrow
+            | Act::Siege
+            | Act::Unsiege
+            | Act::Cloak
+            | Act::Decloak => WheelCategory::Stances,
+            _ => WheelCategory::Commands,
+        }
+    }
+}
+
+/// Context pages of the controller command wheel, in display order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WheelCategory {
+    /// Move, attack, repair, gather, rally, transport, cancel, ...
+    Commands,
+    /// Buildings available from the worker's retail build cards.
+    Build,
+    /// Unit production and morphs.
+    Train,
+    /// Research, upgrades and targeted tech.
+    Research,
+    /// Stop / hold / patrol / siege / burrow / cloak.
+    Stances,
+}
+
+impl WheelCategory {
+    /// Every page, in display order.
+    pub const ALL: [WheelCategory; 5] = [
+        WheelCategory::Commands,
+        WheelCategory::Build,
+        WheelCategory::Train,
+        WheelCategory::Research,
+        WheelCategory::Stances,
+    ];
+
+    /// Heading drawn in the middle of the wheel.
+    pub fn title(self) -> &'static str {
+        match self {
+            WheelCategory::Commands => "COMMANDS",
+            WheelCategory::Build => "BUILD",
+            WheelCategory::Train => "TRAIN",
+            WheelCategory::Research => "RESEARCH / UPGRADES",
+            WheelCategory::Stances => "STANCES",
         }
     }
 }
@@ -206,7 +337,13 @@ pub enum ButtonState {
 /// Visibility of one button for `unit` (`None` = hidden).
 pub fn state(world: &World, unit: &SimUnit, b: &Button) -> Option<ButtonState> {
     let player = world.players.get(unit.owner as usize)?;
-    let busy = !unit.completed || !unit.production.is_empty();
+    let busy = !unit.completed
+        || !unit.production.is_empty()
+        || unit.morph_to.is_some()
+        || unit
+            .addon
+            .and_then(|id| world.unit(id))
+            .is_some_and(|a| !a.completed);
     let on = |shown: bool| shown.then_some(ButtonState::Enabled);
     match Cond::of(b.cond) {
         Cond::Always | Cond::Rally | Cond::Upgrade | Cond::Unclassified => on(true),
@@ -229,6 +366,30 @@ pub fn state(world: &World, unit: &SimUnit, b: &Button) -> Option<ButtonState> {
         Cond::AdvancedBuild => on(set_of(242).iter().any(|a| {
             Cond::of(a.cond) == Cond::MakeUnit && world.has_requirements(unit.owner, a.cond_var)
         })),
+        Cond::Load => {
+            let used: i32 = unit
+                .cargo
+                .iter()
+                .filter_map(|id| world.unit(*id))
+                .map(|u| world.data.unit(u.type_id).space_required as i32)
+                .sum();
+            on(world.data.unit(unit.type_id).space_provided as i32 > used)
+        }
+        Cond::Unload => on(!unit.cargo.is_empty()),
+        Cond::Hangar => on(true),
+        Cond::Nuke => on(world.units.iter().any(|u| {
+            u.alive
+                && u.completed
+                && u.owner == unit.owner
+                && u.type_id == crate::ids::unit::NUCLEAR_SILO
+                && u.addon_attached
+        })),
+        Cond::Cloak => on(!unit.status.cloaked
+            && (player.has_tech(b.cond_var as u8)
+                || world.data.unit(unit.type_id).flags & 0x40 != 0)),
+        Cond::Decloak => on(unit.status.cloaked),
+        Cond::MergeArchon => on(unit.type_id == crate::ids::unit::HIGH_TEMPLAR),
+        Cond::MergeDarkArchon => on(unit.type_id == crate::ids::unit::DARK_TEMPLAR),
     }
 }
 
@@ -261,7 +422,7 @@ mod tests {
         // `sc_dump --buttons` on 1.23.10.13515 (SCV card set 7, CC set 106,
         // Terran build card 239).
         assert_eq!(Act::of(0x74d4c0), Act::Move);
-        assert_eq!(Act::of(0x74d850), Act::Stop);
+        assert_eq!(Act::of(0x74d850), Act::StopOrMerge);
         assert_eq!(Act::of(0x74d1d0), Act::Attack);
         assert_eq!(Act::of(0x74d640), Act::Repair);
         assert_eq!(Act::of(0x74d400), Act::Gather);
@@ -340,6 +501,83 @@ mod tests {
         w.units[pool].completed = true;
         let c = card(&w, &w.units[i]);
         assert_eq!(c[6].map(|(_, s)| s), Some(ButtonState::Enabled));
+    }
+
+    #[test]
+    fn controller_wheel_groups_card_actions_without_changing_them() {
+        // Move / attack stay commands; build and train are their own pages;
+        // tech and stance buttons keep the same `Act` used by the card.
+        assert_eq!(Act::Move.wheel_category(), WheelCategory::Commands);
+        assert_eq!(Act::Attack.wheel_category(), WheelCategory::Commands);
+        assert_eq!(Act::Gather.wheel_category(), WheelCategory::Commands);
+        assert_eq!(Act::Load.wheel_category(), WheelCategory::Commands);
+        assert_eq!(Act::Build.wheel_category(), WheelCategory::Build);
+        assert_eq!(Act::DroneBuild.wheel_category(), WheelCategory::Build);
+        assert_eq!(Act::Addon.wheel_category(), WheelCategory::Build);
+        assert_eq!(Act::Train.wheel_category(), WheelCategory::Train);
+        assert_eq!(Act::TrainHangar.wheel_category(), WheelCategory::Train);
+        assert_eq!(Act::MorphUnit.wheel_category(), WheelCategory::Train);
+        assert_eq!(Act::Research.wheel_category(), WheelCategory::Research);
+        assert_eq!(Act::Upgrade.wheel_category(), WheelCategory::Research);
+        assert_eq!(Act::StimPacks.wheel_category(), WheelCategory::Research);
+        assert_eq!(Act::MorphBuilding.wheel_category(), WheelCategory::Research);
+        assert_eq!(Act::Stop.wheel_category(), WheelCategory::Stances);
+        assert_eq!(Act::Hold.wheel_category(), WheelCategory::Stances);
+        assert_eq!(Act::Patrol.wheel_category(), WheelCategory::Stances);
+        assert_eq!(Act::Burrow.wheel_category(), WheelCategory::Stances);
+        assert_eq!(Act::Siege.wheel_category(), WheelCategory::Stances);
+        assert_eq!(Act::Cloak.wheel_category(), WheelCategory::Stances);
+        // The five page headings are distinct and in the documented order.
+        let titles: Vec<&str> = WheelCategory::ALL.iter().map(|p| p.title()).collect();
+        assert_eq!(
+            titles,
+            vec![
+                "COMMANDS",
+                "BUILD",
+                "TRAIN",
+                "RESEARCH / UPGRADES",
+                "STANCES"
+            ]
+        );
+    }
+
+    #[test]
+    fn every_shipped_button_action_is_classified() {
+        // No command-card button may fall into the client's
+        // "not implemented yet" fallback.
+        for uid in 0..crate::button_sets::slots() {
+            for b in set_of(uid) {
+                assert_ne!(
+                    Act::of(b.act),
+                    Act::Unclassified,
+                    "unit {uid} icon {} act {:#x}",
+                    b.icon,
+                    b.act
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_remaining_card_actions_use_their_retail_addresses() {
+        // Addresses recovered from the 1.23.10 button table
+        // (`fixtures/button_sets.in`); the tooltips and the disassembly in
+        // `docs/command-card-re.md` name each one.
+        assert_eq!(Act::of(0x74d2d0), Act::Move);
+        assert_eq!(Act::of(0x74d2e0), Act::Stop);
+        assert_eq!(Act::of(0x74d3b0), Act::Load);
+        assert_eq!(Act::of(0x74dba0), Act::Unload);
+        assert_eq!(Act::of(0x74d4d0), Act::Nuke);
+        assert_eq!(Act::of(0x74d410), Act::Heal);
+        assert_eq!(Act::of(0x74d4e0), Act::Infest);
+        assert_eq!(Act::of(0x74d680), Act::SpawnLarva);
+        assert_eq!(Act::of(0x74d630), Act::RechargeShields);
+        assert_eq!(Act::of(0x74d260), Act::TrainHangar);
+        assert_eq!(Act::of(0x74d2f0), Act::Cloak);
+        assert_eq!(Act::of(0x74d3a0), Act::Decloak);
+        assert_eq!(Act::of(0x74dbe0), Act::MorphBuilding);
+        assert_eq!(Act::of(0x74d870), Act::MergeArchon);
+        assert_eq!(Act::of(0x74d880), Act::MergeDarkArchon);
     }
 
     #[test]

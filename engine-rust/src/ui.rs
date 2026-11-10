@@ -59,8 +59,10 @@ pub const UI_JSON: &[&str] = &[
     "savegame",
     "loadgame",
     "titledlg",
-    // Terran ready room (mission briefing with portraits).
+    // Ready rooms (mission briefing with portraits), one per race.
     "glurdyt",
+    "glurdyz",
+    "glurdyp",
 ];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

@@ -8,32 +8,24 @@
 
 use crate::sim::{Race, World};
 
-/// Rows of the Select Connection list (`gluConn`), in retail order.  The
-/// client has no Battle.net service, but the row is still shown (reference
-/// 47): greyed and non-playable, while Local Area Network is the usable one.
-pub const CONNECTIONS: [&str; 2] = ["Battle.net\u{ae}", "Local Area Network"];
-/// Row of the Battle.net entry in [`CONNECTIONS`].
-pub const CONNECTION_BNET: usize = 0;
+/// Rows of the Select Connection list (`gluConn`).  This build is LAN-only:
+/// the online service and its gateway row are not present.
+pub const CONNECTIONS: [&str; 1] = ["Local Area Network"];
 /// Row of the Local Area Network entry in [`CONNECTIONS`].
-pub const CONNECTION_LAN: usize = 1;
+pub const CONNECTION_LAN: usize = 0;
 /// No row selected on entry (reference 45: both rows green/grey, Ok grey).
 pub const CONNECTION_NONE: usize = usize::MAX;
 
-/// Whether Select Connection's Ok is enabled for row `sel`: only on Local
-/// Area Network (retail greys it while Battle.net is selected, 3.6-5.6 s).
+/// Whether Select Connection's Ok is enabled for row `sel`.
 pub fn connection_ok_enabled(sel: usize) -> bool {
     sel == CONNECTION_LAN
 }
 
-/// Battle.net gateways of the Select Connection lower plate, in retail
-/// order (screenshot 2026-11-06 14:15:04: U.S. West selected on entry).
-pub const GATEWAYS: [&str; 5] = ["U.S. West", "U.S. East", "Europe", "Korea", "Asia"];
-
-/// What Select Connection shows for the selected row (screenshots
-/// 2026-11-06 14:15:04 Battle.net and 14:15:10 Local Area Network).
+/// What Select Connection shows for the selected row (screenshot
+/// 2026-11-06 14:15:10 Local Area Network).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConnectionPanel {
-    /// Title of the lower plate ("Gateway" / "Protocol").
+    /// Title of the lower plate ("Protocol").
     pub list_title: &'static str,
     /// Radio rows of the lower plate.
     pub options: &'static [&'static str],
@@ -45,12 +37,9 @@ pub struct ConnectionPanel {
     pub info: &'static [&'static str],
 }
 
-/// The panel content for connection row `sel`.  FACT (14:15:10): Local
-/// Area Network lists one protocol, UDP, and states the 8-player limit and
-/// the TCP/IP requirement.  FACT (14:15:04): Battle.net lists the five
-/// gateways and a help note; its right plate (server blurb, online count,
-/// profile and ladder stats) comes from the online service, which this
-/// client does not have, so only the gateway name is shown.
+/// The panel content for connection row `sel`.  Local Area Network lists
+/// one protocol, UDP, and states the 8-player limit and the TCP/IP
+/// requirement.
 pub fn connection_panel(sel: usize) -> ConnectionPanel {
     if sel == CONNECTION_NONE {
         ConnectionPanel {
@@ -60,7 +49,7 @@ pub fn connection_panel(sel: usize) -> ConnectionPanel {
             info_title: None,
             info: &[],
         }
-    } else if sel == CONNECTION_LAN {
+    } else {
         ConnectionPanel {
             list_title: "Protocol",
             options: &["UDP"],
@@ -71,21 +60,6 @@ pub fn connection_panel(sel: usize) -> ConnectionPanel {
                 "",
                 "Requires a TCP/IP connection",
                 "between all players.",
-            ],
-        }
-    } else {
-        ConnectionPanel {
-            list_title: "Gateway",
-            options: &GATEWAYS,
-            help: &[
-                "Choose the gateway closest to your",
-                "location for the best connection.",
-            ],
-            info_title: None,
-            info: &[
-                "Online play is not available in this build.",
-                "",
-                "Use Local Area Network to play.",
             ],
         }
     }
@@ -1021,6 +995,7 @@ impl GameSetup {
                 continue;
             };
             p.team = if team_game { s.team } else { i as u8 };
+            p.allied_victory = team_game;
             p.color = Some(s.color);
             p.is_computer = s.occupant == SetupOccupant::Computer;
             if s.occupant == SetupOccupant::Empty {
@@ -1317,10 +1292,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_lan_row_is_the_only_playable_connection() {
-        assert_eq!(CONNECTIONS, ["Battle.net\u{ae}", "Local Area Network"]);
+    fn the_lan_row_is_the_only_connection() {
+        assert_eq!(CONNECTIONS, ["Local Area Network"]);
         assert!(connection_ok_enabled(CONNECTION_LAN));
-        assert!(!connection_ok_enabled(CONNECTION_BNET));
         assert!(!connection_ok_enabled(CONNECTION_NONE));
     }
 
@@ -1375,13 +1349,9 @@ mod tests {
         assert_eq!(lan.info_title, Some("Local Area Network"));
         assert!(lan.info.iter().any(|l| l.contains("8 players")));
         assert!(lan.info.iter().any(|l| l.contains("TCP/IP")));
-        let bnet = connection_panel(CONNECTION_BNET);
-        assert_eq!(bnet.list_title, "Gateway");
-        assert_eq!(bnet.options.first(), Some(&"U.S. West"));
-        assert_eq!(bnet.options.len(), 5);
-        assert!(!bnet.help.is_empty());
-        assert!(bnet.info.iter().any(|l| l.contains("not available")));
-        assert_eq!(bnet.info_title, None);
+        let none = connection_panel(CONNECTION_NONE);
+        assert!(none.options.is_empty());
+        assert!(none.info.is_empty());
     }
 
     #[test]

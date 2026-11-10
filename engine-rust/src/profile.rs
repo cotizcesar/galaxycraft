@@ -913,6 +913,8 @@ mod tests {
         let mut o = GameOptions::default();
         assert!(o.set_pair("portraits", 9.0) && o.portraits == 2);
         assert!(o.set_pair("game_speed", 50.0) && o.game_speed == 3.0);
+        assert!(o.set_pair("apm_threshold", 120.0) && o.apm_threshold == 120.0);
+        assert!(o.set_pair("apm_threshold", 5000.0) && o.apm_threshold == 1000.0);
         assert!(!o.set_pair("music_volume", f32::NAN));
         assert!(!o.set_pair("nope", 1.0));
     }

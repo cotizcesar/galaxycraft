@@ -146,6 +146,7 @@ fn make(args: &[String]) -> ExitCode {
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| "scenario".to_string()),
+        map_index: None,
         map_chk: raw,
         races,
         local_player: 0,

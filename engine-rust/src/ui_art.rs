@@ -60,9 +60,70 @@ const WIREFRAME_ZERG: [[f32; 3]; 4] = [
 const WIREFRAME_GREEN: [f32; 3] = [0.06, 0.97, 0.09];
 const WIREFRAME_SHIELD: [f32; 3] = [12.0, 72.0, 204.0];
 
+/// CASC directory of a console skin.  The KRC sets are race-independent
+/// replacements for all three classic consoles; skin 0 keeps the race art.
+pub fn console_dir(race: Race, skin: u8) -> String {
+    match skin {
+        1 => "game/consoles/krc_silver".to_string(),
+        2 => "game/consoles/krc_gold".to_string(),
+        _ => format!("game/consoles/{}", race_dir(race)),
+    }
+}
+
+/// The KRC sheets carry large transparent/black margins around the plate.
+/// Cropping them keeps the three plates at the native height of the classic
+/// console, so the existing HUD geometry places them correctly.
+fn crop_dark_margins(img: DdsImage) -> DdsImage {
+    let (w, h) = (img.width as i32, img.height as i32);
+    let bright = |p: u32| {
+        let r = (p >> 16) & 0xff;
+        let g = (p >> 8) & 0xff;
+        let b = p & 0xff;
+        r.max(g).max(b) > 8
+    };
+    let (mut x0, mut y0, mut x1, mut y1) = (w, h, -1, -1);
+    for y in 0..h {
+        for x in 0..w {
+            if bright(img.pixel(x as usize, y as usize)) {
+                x0 = x0.min(x);
+                y0 = y0.min(y);
+                x1 = x1.max(x);
+                y1 = y1.max(y);
+            }
+        }
+    }
+    if x1 < x0 || y1 < y0 {
+        return img;
+    }
+    let (cw, ch) = ((x1 - x0 + 1) as usize, (y1 - y0 + 1) as usize);
+    let mut pixels = Vec::with_capacity(cw * ch);
+    for y in y0..=y1 {
+        for x in x0..=x1 {
+            pixels.push(img.pixel(x as usize, y as usize));
+        }
+    }
+    DdsImage {
+        width: cw,
+        height: ch,
+        pixels,
+    }
+}
+
+/// Carbot equips a complete set of command icons, HUD icons and wireframes
+/// under `carbot/`; every other collection uses the base paths.
+pub fn unit_asset_path(unit_skin: u8, base: &str) -> String {
+    if unit_skin == 2 {
+        format!("carbot/{base}")
+    } else {
+        base.to_string()
+    }
+}
+
 /// The three-part bottom console plus its overlays for one race.
 pub struct ConsoleArt {
     pub race: &'static str,
+    /// 0 Default, 1 Silver, 2 Gold.
+    pub skin: u8,
     pub left: DdsImage,
     pub center: DdsImage,
     pub right: DdsImage,
@@ -102,11 +163,20 @@ pub struct ConsoleArt {
 }
 
 impl ConsoleArt {
-    pub fn load(root: &Path, race: Race) -> Option<Self> {
-        let dir = format!("game/consoles/{}", race_dir(race));
+    pub fn load(root: &Path, race: Race, skin: u8, unit_skin: u8) -> Option<Self> {
+        let dir = console_dir(race, skin);
         let left = load_dds(root, &format!("{dir}/console_left.dds"))?;
         let center = load_dds(root, &format!("{dir}/console_center.dds"))?;
         let right = load_dds(root, &format!("{dir}/console_right.dds"))?;
+        let (left, center, right) = if skin != 0 {
+            (
+                crop_dark_margins(left),
+                crop_dark_margins(center),
+                crop_dark_margins(right),
+            )
+        } else {
+            (left, center, right)
+        };
         // Crop of `console_right.dds` that carries the command card.  Swept
         // per race with `cv2`-matched renders scored on the card region
         // (x 2250..3000, y 1040..1440 of the 3440x1440 reference).  Raw NCC
@@ -123,6 +193,14 @@ impl ConsoleArt {
             Race::Protoss => (0.5571, 0.2639, 0.7624, 0.7542),
             _ => (0.5612, 0.2643, 0.7568, 0.7571),
         };
+        // The KRC plates are 2505x750 (right), 2505x822 (left) and 1108x710
+        // (centre); their 3x3 wells sit in a different part of the sheet.
+        // Measured on `krc_silver/console_right.dds` (2505x750).
+        let (right_src, well_src) = if skin != 0 {
+            ((0.46, 0.10, 0.65, 0.75), (0.46, 0.10, 0.65, 0.75))
+        } else {
+            (right_src, well_src)
+        };
         let palette = std::fs::read(root.join("unit.pal"))
             .ok()
             .map(|b| Palette::from_pal(&b))
@@ -137,6 +215,7 @@ impl ConsoleArt {
         }
         Some(Self {
             race: race_dir(race),
+            skin,
             left,
             center,
             right,
@@ -149,13 +228,32 @@ impl ConsoleArt {
             progress_full: load_dds(root, &format!("{dir}/pbrfull.dds")),
             command_buttons: load_grp(root, &format!("{dir}/cmdbtns.grp")),
             command_buttons_hd: load_dds_grp(root, &format!("{dir}/cmdbtns.dds.grp")),
-            command_icons_hd: load_dds_grp(root, "hd2/unit/cmdicons/cmdicons.dds.grp"),
-            command_icons: load_grp(root, "unit/cmdicons/cmdicons.grp"),
-            wireframe: load_grp(root, "unit/wirefram/wirefram.grp"),
-            icons4: load_dds_grp(root, "game/icons.dds.grp"),
+            command_icons_hd: load_dds_grp(
+                root,
+                if unit_skin == 2 {
+                    "carbot/unit/cmdicons/cmdicons.dds.grp"
+                } else {
+                    "hd2/unit/cmdicons/cmdicons.dds.grp"
+                },
+            ),
+            command_icons: load_grp(
+                root,
+                &unit_asset_path(unit_skin, "unit/cmdicons/cmdicons.grp"),
+            ),
+            wireframe: load_grp(
+                root,
+                &unit_asset_path(unit_skin, "unit/wirefram/wirefram.grp"),
+            ),
+            icons4: load_dds_grp(root, &unit_asset_path(unit_skin, "game/icons.dds.grp")),
             dlg4: load_dds_grp(root, &format!("{dir}/dlg.dds.grp")),
-            cmdicons4: load_dds_grp(root, "unit/cmdicons/cmdicons.dds.grp"),
-            wireframe4: load_dds_grp(root, "unit/wirefram/wirefram.dds.grp"),
+            cmdicons4: load_dds_grp(
+                root,
+                &unit_asset_path(unit_skin, "unit/cmdicons/cmdicons.dds.grp"),
+            ),
+            wireframe4: load_dds_grp(
+                root,
+                &unit_asset_path(unit_skin, "unit/wirefram/wirefram.dds.grp"),
+            ),
             palette,
             layouts,
         })
@@ -167,7 +265,7 @@ impl ConsoleArt {
 
     /// Draw the plate triptych across the bottom `hud_h` pixels.
     pub fn draw_plates(&self, fb: &mut crate::render::Framebuffer, hud_top: i32, hud_h: i32) {
-        self.draw_plates_in(fb, hud_top, hud_h, 0, fb.width);
+        self.draw_plates_in(fb, hud_top, hud_h, 0, fb.width, false);
     }
 
     /// Draw the 3x3 command-well block of the right plate into `dest`, scaled
@@ -267,10 +365,19 @@ impl ConsoleArt {
         hud_h: i32,
         x0: i32,
         w: i32,
+        minimap_standard: bool,
     ) {
         let bottom = hud_top + hud_h;
         let s = console_scale(bottom);
-        let [l, c, r] = self.piece_rects(x0, w, bottom, s);
+        let [mut l, c, r] = self.piece_rects(x0, w, bottom, s);
+        if minimap_standard {
+            // "Mini-Map Position: Standard" centres the classic 640-px
+            // console block instead of anchoring it to the left corner:
+            // the left plate and the minimap move right by the spare
+            // widescreen width, exposing terrain at the lower left.
+            let extra = (w as f32 / s - 640.0).max(0.0) / 2.0;
+            l.0 += (2.0 * extra * s).round() as i32;
+        }
         self.left.draw_scaled(fb, l.0, l.1, l.2, l.3);
         self.right.draw_scaled(fb, r.0, r.1, r.2, r.3);
         self.center.draw_scaled(fb, c.0, c.1, c.2, c.3);
@@ -287,12 +394,19 @@ impl ConsoleArt {
     ) -> (i32, i32, i32, i32) {
         let bottom = hud_top + hud_h;
         let [_, (cx, cy, dw, dh), _] = self.piece_rects(x0, w, bottom, console_scale(bottom));
-        // Interior of console_center.dds: x 52..1086, y 87..509 of 1156x512.
-        let (nw, nh) = (self.center.width as f32, self.center.height as f32);
-        let ix = cx + (52.0 / nw * dw as f32).round() as i32;
-        let iy = cy + (87.0 / nh * dh as f32).round() as i32;
-        let iw = ((1086.0 - 52.0) / nw * dw as f32).round() as i32;
-        let ih = ((509.0 - 87.0) / nh * dh as f32).round() as i32;
+        // Interior of console_center.dds: x 52..1086, y 87..509 of 1156x512
+        // for the race art; the KRC plate is 1108x710 and its black info
+        // panel starts below the header, x 60..1045, y 275..655.
+        let (u0, v0, u1, v1) = if self.skin != 0 {
+            // Cropped KRC centre sheet (1105x511): black info panel.
+            (0.054, 0.151, 0.946, 0.896)
+        } else {
+            (52.0 / 1156.0, 87.0 / 512.0, 1086.0 / 1156.0, 509.0 / 512.0)
+        };
+        let ix = cx + (u0 * dw as f32).round() as i32;
+        let iy = cy + (v0 * dh as f32).round() as i32;
+        let iw = ((u1 - u0) * dw as f32).round() as i32;
+        let ih = ((v1 - v0) * dh as f32).round() as i32;
         (ix, iy, iw, ih)
     }
 
@@ -759,6 +873,16 @@ pub struct GlueArt {
     /// Portrait-slot frames over each portrait: `tframe<n>` idle and
     /// `tframeh<n>` (bright red) while the slot speaks.
     pub ready_slot_frames: Vec<(Option<DdsImage>, Option<DdsImage>)>,
+    /// Zerg ready room (`glurdyz.ui.json`, `palrz` backdrop, `readyz` art).
+    pub ready_z: Option<UiDialog>,
+    pub ready_backdrop_z: Option<DdsImage>,
+    pub ready_art_z: Vec<(i32, DdsImage)>,
+    pub ready_slot_frames_z: Vec<(Option<DdsImage>, Option<DdsImage>)>,
+    /// Protoss ready room (`glurdyp.ui.json`, `palrp` backdrop, `readyp` art).
+    pub ready_p: Option<UiDialog>,
+    pub ready_backdrop_p: Option<DdsImage>,
+    pub ready_art_p: Vec<(i32, DdsImage)>,
+    pub ready_slot_frames_p: Vec<(Option<DdsImage>, Option<DdsImage>)>,
 }
 
 impl GlueArt {
@@ -819,6 +943,32 @@ impl GlueArt {
                         .collect()
                 })
                 .unwrap_or_default(),
+            ready_z: load_ui(root, "glurdyz"),
+            ready_backdrop_z: load_dds(root, "glue/palrz/backgnd.dds"),
+            ready_art_z: load_ui(root, "glurdyz")
+                .map(|d| ready_rect_art(root, &d))
+                .unwrap_or_default(),
+            ready_slot_frames_z: (1..=4)
+                .map(|n| {
+                    (
+                        load_dds(root, &format!("glue/readyz/zframe{n}.dds")),
+                        load_dds(root, &format!("glue/readyz/zframeh{n}.dds")),
+                    )
+                })
+                .collect(),
+            ready_p: load_ui(root, "glurdyp"),
+            ready_backdrop_p: load_dds(root, "glue/palrp/backgnd.dds"),
+            ready_art_p: load_ui(root, "glurdyp")
+                .map(|d| ready_rect_art(root, &d))
+                .unwrap_or_default(),
+            ready_slot_frames_p: (1..=4)
+                .map(|n| {
+                    (
+                        load_dds(root, &format!("glue/readyp/pframe{n}.dds")),
+                        load_dds(root, &format!("glue/readyp/pframeh{n}.dds")),
+                    )
+                })
+                .collect(),
         }
     }
 
@@ -887,6 +1037,17 @@ pub fn glue_dds_path(authored: &str) -> Option<String> {
     Some(format!("{}.dds", lower.strip_suffix(".pcx")?))
 }
 
+/// Load the HD art of every `RECT` control in a ready-room dialog, in
+/// layout order (the `glue\Ready?` `.pcx` names map to `.dds`).
+fn ready_rect_art(root: &Path, dialog: &UiDialog) -> Vec<(i32, DdsImage)> {
+    dialog
+        .controls
+        .iter()
+        .filter(|c| c.kind == "RECT")
+        .filter_map(|c| Some((c.id, load_dds(root, &glue_dds_path(&c.content)?)?)))
+        .collect()
+}
+
 /// Draw a UI rectangle after scaling the classic 640x480 coordinate space.
 pub fn scaled_rect(
     rect: crate::ui::UiRect,
@@ -932,6 +1093,38 @@ mod tests {
     }
 
     #[test]
+    fn carbot_unit_assets_live_under_the_carbot_tree() {
+        assert_eq!(
+            unit_asset_path(0, "unit/wirefram/wirefram.grp"),
+            "unit/wirefram/wirefram.grp"
+        );
+        assert_eq!(
+            unit_asset_path(1, "unit/frame/frame.grp"),
+            "unit/frame/frame.grp",
+            "PreSale only changes unit art, not HUD chrome"
+        );
+        assert_eq!(
+            unit_asset_path(2, "unit/cmdicons/cmdicons.dds.grp"),
+            "carbot/unit/cmdicons/cmdicons.dds.grp"
+        );
+        assert_eq!(
+            unit_asset_path(2, "game/icons.dds.grp"),
+            "carbot/game/icons.dds.grp"
+        );
+    }
+
+    #[test]
+    fn console_skins_use_the_shipped_krc_sets() {
+        assert_eq!(console_dir(Race::Terran, 0), "game/consoles/terran");
+        assert_eq!(console_dir(Race::Zerg, 0), "game/consoles/zerg");
+        assert_eq!(console_dir(Race::Protoss, 0), "game/consoles/protoss");
+        for race in [Race::Terran, Race::Zerg, Race::Protoss] {
+            assert_eq!(console_dir(race, 1), "game/consoles/krc_silver");
+            assert_eq!(console_dir(race, 2), "game/consoles/krc_gold");
+        }
+    }
+
+    #[test]
     fn score_panel_paths_follow_the_race_and_result() {
         let root = Path::new("/cache");
         assert_eq!(
@@ -974,6 +1167,7 @@ mod wireframe_tests {
         // must be remapped onto green or the info panel shows blue blobs.
         let mut console = ConsoleArt {
             race: "terran",
+            skin: 0,
             left: crate::dds::DdsImage {
                 width: 1,
                 height: 1,

@@ -52,7 +52,13 @@ fn mirror_embedded(out: &Path) {
         let bytes = match std::fs::read(rel) {
             Ok(bytes) => bytes,
             Err(_) => {
-                missing.push(rel);
+                // The `src/menu_masks/*.bin` files are optional local
+                // calibration captured from the front end; `sc_assets` does
+                // not generate them.  Their absence is normal and must not
+                // produce a missing-retail-data warning.
+                if !rel.starts_with("src/menu_masks/") {
+                    missing.push(rel);
+                }
                 placeholder.as_bytes().to_vec()
             }
         };
