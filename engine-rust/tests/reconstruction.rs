@@ -6,9 +6,10 @@ use std::sync::Arc;
 use galaxycraft::ai::SimpleAi;
 use galaxycraft::data::GameData;
 use galaxycraft::ids::{tech, unit as uid, upgrade};
-use galaxycraft::map::{Scenario, Terrain};
+use galaxycraft::map::{Scenario, TechRestrictions, Terrain, TileData, UpgradeRestrictions};
 use galaxycraft::sim::{
-    MAX_ORDER_QUEUE, Order, Race, SimError, World, build_ticks, research_ticks, upgrade_ticks,
+    MAX_ORDER_QUEUE, Order, Race, SimError, Spell, World, build_ticks, research_ticks,
+    spell_energy_cost, spell_for_order_row, upgrade_ticks,
 };
 use galaxycraft::tech as tree;
 use galaxycraft::trigger::TriggerSystem;
@@ -387,6 +388,7 @@ fn time_units_are_game_frames() {
 fn upgrade_costs_are_base_plus_factor_per_level() {
     let g = data();
     let up = g.upgrade(upgrade::TERRAN_INFANTRY_WEAPONS).unwrap();
+    assert_eq!((up.mineral_cost(0), up.gas_cost(0)), (100, 100));
     assert_eq!((up.mineral_cost(1), up.gas_cost(1)), (175, 175));
     assert_eq!((up.mineral_cost(2), up.gas_cost(2)), (250, 250));
     assert_eq!(up.max_level, 3);
@@ -733,11 +735,56 @@ fn ability_order_rows_dispatch_to_the_recovered_casts() {
     let z = world.spawn_px(1, uid::ZERGLING, 11 * 32, 16 * 32).unwrap();
     let z_id = world.units[z].id;
     let hp0 = world.units[z].hp;
-    world.issue_order_id(bc_id, 112, Some(z_id), None).unwrap();
+    world.issue_order_id(bc_id, 113, Some(z_id), None).unwrap();
     assert!(
         !world.units[z].alive || world.units[z].hp < hp0,
-        "row 112 fires Yamato Gun"
+        "row 113 fires Yamato Gun"
     );
+}
+
+#[test]
+fn spell_order_rows_match_the_shipped_tech_column() {
+    let g = data();
+    let rows: &[(u8, Spell, u8, i32)] = &[
+        (113, Spell::YamatoGun, tech::YAMATO_GUN, 150),
+        (115, Spell::Lockdown, tech::LOCKDOWN, 100),
+        (119, Spell::DarkSwarm, tech::DARK_SWARM, 100),
+        (120, Spell::Parasite, tech::PARASITE, 75),
+        (121, Spell::SpawnBroodlings, tech::SPAWN_BROODLINGS, 150),
+        (122, Spell::EmpShockwave, tech::EMP_SHOCKWAVE, 100),
+        (137, Spell::Recall, tech::RECALL, 150),
+        (139, Spell::ScannerSweep, tech::SCANNER_SWEEP, 50),
+        (141, Spell::DefensiveMatrix, tech::DEFENSIVE_MATRIX, 100),
+        (142, Spell::PsionicStorm, tech::PSIONIC_STORM, 75),
+        (143, Spell::Irradiate, tech::IRRADIATE, 75),
+        (144, Spell::Plague, tech::PLAGUE, 150),
+        (145, Spell::Consume, tech::CONSUME, 0),
+        (146, Spell::Ensnare, tech::ENSNARE, 75),
+        (147, Spell::StasisField, tech::STASIS_FIELD, 100),
+        (148, Spell::Hallucination, tech::HALLUCINATION, 100),
+        (176, Spell::Healing, tech::HEALING, 1),
+        (180, Spell::Restoration, tech::RESTORATION, 50),
+        (181, Spell::DisruptionWeb, tech::DISRUPTION_WEB, 125),
+        (182, Spell::MindControl, tech::MIND_CONTROL, 150),
+        (183, Spell::DarkArchonMeld, tech::DARK_ARCHON_MELD, 100),
+        (184, Spell::Feedback, tech::FEEDBACK, 50),
+        (185, Spell::OpticalFlare, tech::OPTICAL_FLARE, 75),
+        (186, Spell::Maelstrom, tech::MAELSTROM, 100),
+    ];
+    for &(row, spell, tech_id, energy) in rows {
+        assert_eq!(spell_for_order_row(row), Some(spell), "row {row}");
+        assert_eq!(spell.tech_id(), tech_id, "row {row}");
+        assert_eq!(
+            g.tech(tech_id).expect("tech row").energy_cost as i32,
+            energy,
+            "row {row}"
+        );
+        assert_eq!(spell_energy_cost(&g, spell), energy, "row {row}");
+    }
+    // The old label-based shift must no longer dispatch a spell.
+    for row in [112u8, 118, 140, 149, 175] {
+        assert_eq!(spell_for_order_row(row), None, "shifted row {row}");
+    }
 }
 
 #[test]
@@ -888,6 +935,7 @@ fn terran_addons_attach_to_their_parent_and_die_with_it() {
         .spawn_px(0, uid::COMMAND_CENTER, 16 * 32, 16 * 32)
         .unwrap();
     let cc_id = world.units[cc].id;
+    world.spawn_px(0, uid::ACADEMY, 12 * 32, 16 * 32).unwrap();
     assert_eq!(
         world.build_addon(cc_id, uid::MACHINE_SHOP),
         Err(SimError::InvalidTarget),
@@ -993,7 +1041,7 @@ fn lurker_aspect_morphs_a_hydralisk_through_an_egg() {
     world
         .cast(id, Spell::LurkerAspect, SpellTarget::Unit(id))
         .unwrap();
-    assert_eq!(world.units[hydra].type_id, uid::EGG);
+    assert_eq!(world.units[hydra].type_id, uid::LURKER_EGG);
     assert_eq!(world.units[hydra].morph_to, Some(uid::LURKER));
     let ticks = world.units[hydra].build_total;
     for _ in 0..ticks {
@@ -1173,10 +1221,16 @@ fn bunker_holds_four_infantry_and_kills_them_when_destroyed() {
     let hp = world.units[bunker].hp;
     world.damage_unit(b_id, hp).unwrap();
     assert!(!world.units[bunker].alive);
+    assert!(world.units[bunker].cargo.is_empty());
     for (k, &m) in marines.iter().take(4).enumerate() {
         assert!(
             !world.units[m].alive,
             "bunker occupant {k} dies with the bunker"
+        );
+        assert_eq!(world.units[m].hp, 0, "bunker occupant {k} loses all HP");
+        assert_eq!(
+            world.units[m].in_transport, None,
+            "bunker occupant {k} is unlinked"
         );
     }
 }
@@ -2483,4 +2537,69 @@ fn evidence_present() -> bool {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("docs/evidence")
         .is_dir()
+}
+
+#[test]
+#[allow(clippy::field_reassign_with_default)]
+fn scenario_tech_and_upgrade_restrictions_seed_and_gate_the_world() {
+    let mut ptec = TechRestrictions::default();
+    ptec.count = 24;
+    ptec.player_available = vec![1; 12 * 24];
+    ptec.player_researched = vec![0; 12 * 24];
+    ptec.global_available = vec![1; 24];
+    ptec.global_researched = vec![0; 24];
+    ptec.use_global = vec![0; 12 * 24];
+    ptec.player_available[0] = 0; // player 0 cannot research Stim
+    ptec.player_researched[1] = 1; // player 0 starts with Lockdown
+
+    let mut upgr = UpgradeRestrictions::default();
+    upgr.count = 46;
+    upgr.player_max = vec![0; 12 * 46];
+    upgr.player_start = vec![0; 12 * 46];
+    upgr.global_max = vec![0; 46];
+    upgr.global_start = vec![0; 46];
+    upgr.use_global = vec![0; 12 * 46];
+    upgr.player_max[7] = 2;
+    upgr.player_start[7] = 1;
+
+    let sc = Scenario {
+        width: 16,
+        height: 16,
+        tiles: vec![0; 16 * 16],
+        mask: vec![0xFF; 16 * 16],
+        ptec: Some(ptec),
+        upgr: Some(upgr),
+        ..Scenario::default()
+    };
+    let w = World::from_scenario(
+        Arc::new(data()),
+        &sc,
+        &TileData::synthetic(&[0u8; 96]),
+        &[Race::Terran, Race::Terran],
+    );
+    assert!(w.players[0].techs[tech::LOCKDOWN as usize]);
+    assert_eq!(
+        w.players[0].upgrades[upgrade::TERRAN_INFANTRY_WEAPONS as usize],
+        1
+    );
+    assert!(!w.tech_available(0, tech::STIM_PACKS));
+    assert!(w.tech_available(1, tech::STIM_PACKS));
+    assert_eq!(w.upgrade_max_level(0, upgrade::TERRAN_INFANTRY_WEAPONS), 2);
+    assert_eq!(
+        w.upgrade_start_level(0, upgrade::TERRAN_INFANTRY_WEAPONS),
+        1
+    );
+}
+
+#[test]
+fn build_spot_search_moves_off_an_occupied_centre() {
+    let mut w = World::new(Arc::new(data()), Terrain::open(64, 64), 2);
+    let cc = w
+        .spawn_px(0, uid::COMMAND_CENTER, 16 * 32, 16 * 32)
+        .unwrap();
+    w.units[cc].completed = true;
+    let spot = w
+        .find_build_spot(uid::BARRACKS, (16 * 32, 16 * 32))
+        .expect("open map has another spot");
+    assert_ne!(spot, (16 * 32, 16 * 32), "occupied centre must move");
 }

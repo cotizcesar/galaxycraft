@@ -28,6 +28,11 @@ the platform's default folder, or takes `--install DIR` / `SC_INSTALL`.
 galaxycraft --install "/path/to/StarCraft"
 # or
 SC_INSTALL="/path/to/StarCraft" galaxycraft
+
+# Pick a shipped locale (`enus`, `frfr`, `dede`, `eses`, `esmx`, `ptbr`,
+# `zhcn`, `zhtw`, `kokr`, `jajp`, `plpl`, `ruru`):
+galaxycraft --install "/path/to/StarCraft" --language esmx
+# or GALAXYCRAFT_LOCALE=esmx galaxycraft
 ```
 
 ## Build from source
@@ -61,10 +66,33 @@ SC_NO_AUDIO=1 cargo run --release --bin sc_view -- \
 ## Features
 
 - Deterministic fixed-tick simulation: units, weapons, orders, movement,
-  economy, production, tech, spells, triggers and campaign AI.
+  economy, production, tech, spells, triggers and campaign AI with the
+  retail region-state defense/attack graph.
+- Complete race command cards: transport load/unload, nuclear strikes,
+  cloak/decloak, Archon merges, Zerg morphs and Spawn Larva, Shield Battery,
+  Carrier/Reaver hangars and every shipped cancel button.  Transport cargo
+  packs 1-, 2- and 4-space units into the shipped selection-panel slots.
+- Optional Game Timer and APM plates from the shipped `console_time` /
+  `console_apm` art, plus speech/acknowledgment, scroll-speed, HD,
+  environment particles, smooth unit turning, shadow stacking, lighting,
+  FPS-cap, VSync, pillarbox, SD filtering, HD/SD color cycling, minimap
+  position, mouse sensitivity/scaling, hardware cursor, bonus skins, LAN
+  port/latency, friend-presence text, hidden ShowFPS, a Linux js fallback
+  for physical pads and mature-language filtering wired into the client.
 - Playable Remastered-style front end: menus, campaign flow, briefings,
-  ready room, HUD per race, minimap, hotkeys, fog of war and score screens.
-- Campaign, skirmish against the AI, saves and replays.
+  race-specific Terran/Zerg/Protoss ready rooms, HUD per race, minimap,
+  hotkeys, fog of war and score screens.
+- Collections: the shipped Carbot unit and structure set can be equipped
+  from the Collections screen and applies to every unit, with base art as
+  the fallback for HD images the set does not cover.
+- Campaign, skirmish against the AI, saves and replays; Greed, Slaughter,
+  Sudden Death and Capture the Flag lobby rules; single-player cheat codes.
+- Controller play through `gilrs` (virtual cursor, smart commands, camera,
+  menus) and 13-language install support via `--language`/`--locale`,
+  including the Remastered CEF chrome from `gluall.json`.
+- LAN lockstep with `scripts/lan_two_machines.sh`; timeline gate against the
+  available retail recordings and a reusable recording-onset extractor for
+  new (including later-campaign) footage.
 - LAN multiplayer: command-only lockstep over TCP or UDP, discovery, lobby
   and resync.
 - Window sizes from 1280x720 through 4K, 16:9 and ultrawide pillarboxing.
@@ -76,6 +104,22 @@ SC_NO_AUDIO=1 cargo run --release --bin sc_view -- \
 cargo test
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
+
+# Retail recording timeline gate (Boot Camp, Wasteland, Backwater,
+# Desperate Alliance) and the generic onset extractor for new recordings:
+python3 scripts/timeline_gate.py --install "$SC_INSTALL"
+python3 scripts/recording_text_onsets.py RECORDING.webm
+# Later-campaign footage: map index -> [speaker, text prefix, seconds]
+python3 scripts/timeline_gate.py --install "$SC_INSTALL" \
+  --recordings-json my-recordings.json
+
+# Two-machine LAN check (run host on A, join on B):
+scripts/lan_two_machines.sh host
+scripts/lan_two_machines.sh join 192.168.1.20
+
+# Controller backend: a physical pad, or a temporary uinput pad:
+python3 scripts/virtual_gamepad_test.py --physical
+python3 scripts/virtual_gamepad_test.py
 ```
 
 The full suite reads retail-derived fixtures, which are gitignored and must
@@ -120,8 +164,9 @@ exact toolchain and dependency setup used by CI.
 | `engine-rust/third_party/` | Vendored minifb and PKWARE DCL decoder |
 | `engine-rust/packaging/` | Desktop entry, AppStream metadata, Flatpak manifest and macOS plist |
 | `engine-rust/fixtures/` | Fixture generator documentation; only synthetic data is tracked |
+| `engine-rust/docs/` | Reverse-engineering evidence and change notes |
 | `engine-rust/tools/` | Fixture, oracle and table-inspection helpers |
-| `scripts/` | Clean staging and release packaging scripts |
+| `scripts/` | Packaging, two-machine LAN and retail-recording timeline tools |
 
 ## Data and copyright
 

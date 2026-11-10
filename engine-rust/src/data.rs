@@ -105,28 +105,85 @@ impl UnitType {
         self.flags & 0x0000_0004 != 0
     }
 
+    /// `0x005b64c0`: worker flag (`units.dat` bit 0x8, ids <= 0xe3).
     pub fn is_worker(&self) -> bool {
         self.flags & 0x0000_0008 != 0
     }
 
+    /// `0x005b6370`: `units.dat` subunit flag 0x10.
     pub fn is_subunit(&self) -> bool {
         self.flags & 0x0000_0010 != 0
     }
 
+    /// `0x005b6b20`: `units.dat` energy flag 0x200000 (spellcasters and
+    /// energy-bearing heroes).  Retail additionally requires status bit 30
+    /// (dying) to be clear; callers pass live units.
+    pub fn has_energy(&self) -> bool {
+        self.flags & 0x0020_0000 != 0
+    }
+
+    /// `0x005b57b0`: `units.dat` addon flag 0x2.
+    pub fn is_addon(&self) -> bool {
+        self.flags & 0x0000_0002 != 0
+    }
+
+    /// `0x005b3a50`: `units.dat` regeneration flag 0x80.
     pub fn regenerates(&self) -> bool {
         self.flags & 0x0000_0080 != 0
     }
 
+    /// `0x005b5950`: `units.dat` cloak-capable flag 0x200 (Ghost, Wraith
+    /// and the cloaking hero rows).
+    pub fn can_cloak(&self) -> bool {
+        self.flags & 0x0000_0200 != 0
+    }
+
+    /// `0x005b61d0`: `units.dat` resource-container flag 0x2000
+    /// (refineries, mineral fields, caves and geysers).
+    pub fn is_resource_container(&self) -> bool {
+        self.flags & 0x0000_2000 != 0
+    }
+
+    /// `0x005b5a50`: units.dat detector flag 0x8000 (the retail routine
+    /// also checks the unit's cloak/detection state).
     pub fn is_detector(&self) -> bool {
         self.flags & 0x0000_8000 != 0
     }
 
+    /// `0x005b5e70`: `units.dat` mechanical flag 0x40000000.
     pub fn is_mechanical(&self) -> bool {
         self.flags & 0x4000_0000 != 0
     }
 
+    /// `0x005b5ea0`: `units.dat` flying-building flag 0x20.
+    pub fn is_flying_building(&self) -> bool {
+        self.flags & 0x0000_0020 != 0
+    }
+
+    /// `0x005b5ff0`: `units.dat` flag 0x800 (powerups and resource chunks).
+    pub fn is_powerup_flag(&self) -> bool {
+        self.flags & 0x0000_0800 != 0
+    }
+
+    /// `0x005b5850`: `units.dat` flag 0x100000 marks Zerg units.
+    pub fn is_zerg_flag(&self) -> bool {
+        self.flags & 0x0010_0000 != 0
+    }
+
+    /// `0x005b5c20`: organic flag (`units.dat` bit 0x10000).
     pub fn is_organic(&self) -> bool {
         self.flags & 0x0001_0000 != 0
+    }
+
+    /// `0x005b6230`: `units.dat` flag 0x4000 (robotic), rejected by
+    /// weapons with target flag 0x20.
+    pub fn is_robotic(&self) -> bool {
+        self.flags & 0x0000_4000 != 0
+    }
+
+    /// `0x005b5d30`: `units.dat` flag 0x40 (hero).
+    pub fn is_hero(&self) -> bool {
+        self.flags & 0x0000_0040 != 0
     }
 
     /// Supply in whole points, as displayed by the game (half-points / 2).
@@ -183,10 +240,41 @@ impl WeaponType {
         self.target_flags & 0x0010 == 0
     }
 
+    /// Target flag 0x20: reject robotic units (`units.dat` flag 0x4000).
+    pub fn requires_non_robotic(&self) -> bool {
+        self.target_flags & 0x0020 != 0
+    }
+
+    /// Target flag 0x0080: organic or mechanical only.
+    pub fn requires_organic_or_mechanical(&self) -> bool {
+        self.target_flags & 0x0080 != 0
+    }
+
+    /// Target flag 0x0100: same owner as the caster.
+    pub fn requires_own(&self) -> bool {
+        self.target_flags & 0x0100 != 0
+    }
+
+    /// Target flag 0x0040: the order can target a location.
+    pub fn can_target_location(&self) -> bool {
+        self.target_flags & 0x0040 != 0
+    }
+
     /// Damage in whole points for a given upgrade level.
     pub fn damage_for_upgrade(&self, upgrade_level: u8) -> u32 {
         self.damage as u32 + self.damage_bonus as u32 * upgrade_level as u32
     }
+}
+
+/// Runtime target state passed to [`GameData::weapon_target_ok`].
+#[derive(Clone, Copy, Debug)]
+pub struct WeaponTarget<'a> {
+    pub unit: &'a UnitType,
+    pub owner: u8,
+    /// `CUnit+0xdc` bit 2: natively flying or a lifted building.
+    pub flying: bool,
+    /// `CUnit+0xdc` bit 26: invincible, in stasis, dead or removed.
+    pub untargetable: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -280,6 +368,27 @@ pub struct Box16 {
     pub bottom: i16,
 }
 
+impl Box16 {
+    /// The four directional extents around a unit centre.  `units.dat` stores
+    /// positive half-extents; the path initialiser `FUN_007654a0` reads them
+    /// through `FUN_005b6a80/aa0/90/60` and stores `[-left, -top, right,
+    /// bottom]` in its context.
+    pub fn extents(&self) -> (i32, i32, i32, i32) {
+        (
+            self.left as i32,
+            self.top as i32,
+            self.right as i32,
+            self.bottom as i32,
+        )
+    }
+
+    /// Bounding rectangle `(left, top, right, bottom)` around `centre`.
+    pub fn rect_at(&self, centre: (i32, i32)) -> (i32, i32, i32, i32) {
+        let (l, t, r, b) = self.extents();
+        (centre.0 - l, centre.1 - t, centre.0 + r, centre.1 + b)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DataError {
     ShortFile {
@@ -295,6 +404,10 @@ pub enum DataError {
         unit: usize,
         value: u8,
     },
+    Malformed {
+        which: &'static str,
+        message: String,
+    },
 }
 
 impl fmt::Display for DataError {
@@ -308,6 +421,9 @@ impl fmt::Display for DataError {
                 f,
                 "{which} is too short: expected at least {expected} bytes, got {actual}"
             ),
+            DataError::Malformed { which, message } => {
+                write!(f, "{which}: {message}")
+            }
             DataError::InvalidDamageType { weapon, value } => {
                 write!(
                     f,
@@ -395,12 +511,67 @@ impl GameData {
         Ok(data)
     }
 
+    /// Replace the string table (localised names/tooltips) after parsing.
+    pub fn with_strings(mut self, strings: StringTable) -> Self {
+        self.strings = strings;
+        self
+    }
+
     pub fn unit(&self, id: u16) -> &UnitType {
         &self.units[id as usize]
     }
 
     pub fn weapon(&self, id: u8) -> Option<&WeaponType> {
         self.weapons.get(id as usize)
+    }
+
+    /// `FUN_0059ca70`: can weapon `weapon_id` target this unit?  `None`
+    /// selects the retail null-target branch, which returns the 0x40
+    /// location flag.
+    pub fn weapon_target_ok(
+        &self,
+        weapon_id: u8,
+        caster_owner: u8,
+        target: Option<WeaponTarget<'_>>,
+    ) -> bool {
+        let Some(weapon) = self.weapon(weapon_id) else {
+            return false;
+        };
+        let Some(target) = target else {
+            return weapon.can_target_location();
+        };
+        if target.untargetable {
+            return false;
+        }
+        if target.flying {
+            if !weapon.can_target_air() {
+                return false;
+            }
+        } else if !weapon.can_target_ground() {
+            return false;
+        }
+        if weapon.requires_mechanical() && !target.unit.is_mechanical() {
+            return false;
+        }
+        if weapon.requires_non_robotic() && target.unit.is_robotic() {
+            return false;
+        }
+        if weapon.requires_organic() && !target.unit.is_organic() {
+            return false;
+        }
+        if !weapon.can_target_buildings() && target.unit.is_building() {
+            return false;
+        }
+        if weapon.requires_organic_or_mechanical()
+            && !target.unit.is_organic()
+            && !target.unit.is_mechanical()
+        {
+            return false;
+        }
+        if weapon.requires_own() && target.owner != caster_owner {
+            return false;
+        }
+        true
     }
 
     pub fn flingy(&self, id: u16) -> Option<&FlingyType> {
@@ -945,6 +1116,27 @@ mod tests {
         assert_eq!(u.build_time, 360);
         assert_eq!(u.supply_required, 2);
         assert_eq!(u.sight_range, 7);
+    }
+
+    #[test]
+    fn box_extents_are_the_four_directional_half_extents() {
+        // `FUN_007654a0` stores `[-left, -top, right, bottom]`; the four
+        // accessors read exactly these `units.dat` words.
+        let g = GameData::bundled().unwrap();
+        assert_eq!(g.unit(unit_ids::MARINE).dimensions.extents(), (8, 9, 8, 10));
+        assert_eq!(g.unit(unit_ids::SCV).dimensions.extents(), (11, 11, 11, 11));
+        assert_eq!(
+            g.unit(crate::ids::unit::WRAITH).dimensions.extents(),
+            (19, 15, 18, 14)
+        );
+        assert_eq!(
+            g.unit(crate::ids::unit::BUNKER).dimensions.extents(),
+            (32, 24, 32, 16)
+        );
+        assert_eq!(
+            g.unit(unit_ids::MARINE).dimensions.rect_at((100, 200)),
+            (92, 191, 108, 210)
+        );
     }
 
     #[test]

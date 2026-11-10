@@ -58,6 +58,11 @@ pub mod hit {
     pub const AIR_SPLASH: u8 = 24;
 }
 
+/// Persistent bullets (`weapons.dat` `bullet_type` 3) re-apply their hit
+/// every seven updates (`0x568aa5`).  Psionic Storm is the only shipped
+/// weapon with this behaviour.
+pub const PERSIST_DAMAGE_INTERVAL: i64 = 7;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BulletState {
     /// Straight line toward the last known target position.
@@ -117,6 +122,37 @@ impl Projectile {
                 | behavior::ATTACK_TARGET_POS
                 | behavior::EXTEND_TO_MAX_RANGE
         )
+    }
+
+    /// Build the stationary field used by Psionic Storm (`0x568a5a`).
+    pub fn persistent(
+        id: u32,
+        owner: u8,
+        source: u32,
+        weapon_id: u8,
+        weapon: &WeaponType,
+        pos: (i32, i32),
+        created_at: i64,
+    ) -> Self {
+        Self {
+            id,
+            owner,
+            source,
+            weapon: weapon_id,
+            behavior: weapon.bullet_type,
+            hit_type: weapon.explosion,
+            state: BulletState::Persist,
+            x: pos.0,
+            y: pos.1,
+            target: None,
+            target_pos: pos,
+            speed: 0,
+            remaining_time: weapon.lifetime.max(1) as i32,
+            bounces_left: 0,
+            hit_flags: 0,
+            previous_target: None,
+            last_dot_tick: created_at,
+        }
     }
 
     /// The divisor applied to a direct hit.  Glave Wurm/Venom bounce damage is

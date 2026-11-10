@@ -28,8 +28,9 @@ pub struct UnitProperties {
     /// Bit set of special states (cloak 0x01, burrow 0x02, in transit 0x04,
     /// hallucination 0x08, invincible 0x10).
     pub state_flags: u16,
-    /// Bit set of fields the slot applies (owner 0x01, HP 0x02, shields
-    /// 0x04, energy 0x08, resources 0x10, hangar 0x20).
+    /// Bit set of fields the slot applies (owner bit 0x01 is defined but
+    /// not read by `0x00712ce0`; HP 0x02, shields 0x04, energy 0x08,
+    /// resources 0x10, hangar 0x20).
     pub field_flags: u16,
     pub owner: u8,
     pub hit_points_percent: u8,
@@ -38,6 +39,16 @@ pub struct UnitProperties {
     pub resource_amount: u32,
     pub hangar: u16,
     pub states: u16,
+}
+
+/// One 10-byte `THG2` record (unit/doodad sprite).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MapThingy {
+    pub unit_id: u16,
+    pub x: i32,
+    pub y: i32,
+    pub player: u8,
+    pub flags: u16,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -82,6 +93,244 @@ impl Location {
     }
 }
 
+/// `UNIS` / `UNIx` per-unit overrides.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct UnitSettings {
+    pub use_default: Vec<u8>,
+    pub hit_points: Vec<u32>,
+    pub shields: Vec<u16>,
+    pub armor: Vec<u8>,
+    pub build_time: Vec<u16>,
+    pub mineral_cost: Vec<u16>,
+    pub gas_cost: Vec<u16>,
+    pub string_id: Vec<u16>,
+    pub weapon_damage: Vec<u16>,
+    pub weapon_bonus: Vec<u16>,
+}
+
+impl UnitSettings {
+    fn parse(raw: &[u8], weapons: usize) -> Option<Self> {
+        if raw.len() != if weapons == 130 { 0x1048 } else { 0xFD0 } {
+            return None;
+        }
+        let mut out = Self {
+            use_default: raw[0..228].to_vec(),
+            hit_points: (0..228).map(|i| u32_at(raw, 0x0E4 + 4 * i)).collect(),
+            shields: (0..228).map(|i| u16_at(raw, 0x474 + 2 * i)).collect(),
+            armor: raw[0x63C..0x63C + 228].to_vec(),
+            build_time: (0..228).map(|i| u16_at(raw, 0x720 + 2 * i)).collect(),
+            mineral_cost: (0..228).map(|i| u16_at(raw, 0x8E8 + 2 * i)).collect(),
+            gas_cost: (0..228).map(|i| u16_at(raw, 0xAB0 + 2 * i)).collect(),
+            string_id: (0..228).map(|i| u16_at(raw, 0xC78 + 2 * i)).collect(),
+            weapon_damage: (0..weapons).map(|i| u16_at(raw, 0xE40 + 2 * i)).collect(),
+            weapon_bonus: (0..weapons)
+                .map(|i| u16_at(raw, 0xE40 + weapons * 2 + 2 * i))
+                .collect(),
+        };
+        out.use_default.truncate(228);
+        Some(out)
+    }
+}
+
+/// `UPGS` / `UPGx` upgrade cost columns.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct UpgradeSettings {
+    pub use_default: Vec<u8>,
+    pub mineral_base: Vec<u16>,
+    pub mineral_factor: Vec<u16>,
+    pub gas_base: Vec<u16>,
+    pub gas_factor: Vec<u16>,
+    pub time_base: Vec<u16>,
+    pub time_factor: Vec<u16>,
+}
+
+/// `TECS` / `TECx` technology cost columns.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TechSettings {
+    pub use_default: Vec<u8>,
+    pub mineral_cost: Vec<u16>,
+    pub gas_cost: Vec<u16>,
+    pub research_time: Vec<u16>,
+    pub energy_cost: Vec<u16>,
+}
+
+/// `PUNI` per-player unit availability.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct UnitAvailability {
+    /// 12 players x 228 units, player-major.
+    pub player: Vec<u8>,
+    pub global: Vec<u8>,
+    /// 12 players x 228 units: use the global byte instead.
+    pub use_global: Vec<u8>,
+}
+
+impl UnitAvailability {
+    fn parse(raw: &[u8]) -> Option<Self> {
+        if raw.len() != 0x1644 {
+            return None;
+        }
+        Some(Self {
+            player: raw[0..0xAB0].to_vec(),
+            global: raw[0xAB0..0xB94].to_vec(),
+            use_global: raw[0xB94..0x1644].to_vec(),
+        })
+    }
+
+    pub fn available(&self, player: usize, unit: u16) -> bool {
+        if player >= 12 || unit as usize >= 228 {
+            return true;
+        }
+        let i = player * 228 + unit as usize;
+        let raw = if self.use_global.get(i).copied().unwrap_or(0) != 0 {
+            self.global.get(unit as usize).copied().unwrap_or(1)
+        } else {
+            self.player.get(i).copied().unwrap_or(1)
+        };
+        raw != 0
+    }
+}
+
+/// `PTEC`/`PTEx`: per-player technology availability/researched.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TechRestrictions {
+    pub player_available: Vec<u8>,
+    pub player_researched: Vec<u8>,
+    pub global_available: Vec<u8>,
+    pub global_researched: Vec<u8>,
+    pub use_global: Vec<u8>,
+    pub count: usize,
+}
+
+impl TechRestrictions {
+    fn parse(raw: &[u8], count: usize) -> Option<Self> {
+        let expected = if count == 44 { 0x688 } else { 0x390 };
+        if raw.len() != expected || count == 0 {
+            return None;
+        }
+        let per = 12 * count;
+        let a = 0;
+        let r = per;
+        let ga = 2 * per;
+        let gr = 2 * per + count;
+        let ug = 2 * per + 2 * count;
+        Some(Self {
+            player_available: raw[a..a + per].to_vec(),
+            player_researched: raw[r..r + per].to_vec(),
+            global_available: raw[ga..ga + count].to_vec(),
+            global_researched: raw[gr..gr + count].to_vec(),
+            use_global: raw[ug..ug + per].to_vec(),
+            count,
+        })
+    }
+
+    pub fn available(&self, player: usize, tech: u8) -> bool {
+        if player >= 12 || tech as usize >= self.count {
+            return true;
+        }
+        let i = player * self.count + tech as usize;
+        let raw = if self.use_global.get(i).copied().unwrap_or(0) != 0 {
+            self.global_available
+                .get(tech as usize)
+                .copied()
+                .unwrap_or(1)
+        } else {
+            self.player_available.get(i).copied().unwrap_or(1)
+        };
+        raw != 0
+    }
+
+    pub fn researched(&self, player: usize, tech: u8) -> bool {
+        if player >= 12 || tech as usize >= self.count {
+            return false;
+        }
+        let i = player * self.count + tech as usize;
+        let raw = if self.use_global.get(i).copied().unwrap_or(0) != 0 {
+            self.global_researched
+                .get(tech as usize)
+                .copied()
+                .unwrap_or(0)
+        } else {
+            self.player_researched.get(i).copied().unwrap_or(0)
+        };
+        raw != 0
+    }
+}
+
+/// `UPGR`/`PUPx`: per-player upgrade start/max levels.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct UpgradeRestrictions {
+    pub player_max: Vec<u8>,
+    pub player_start: Vec<u8>,
+    pub global_max: Vec<u8>,
+    pub global_start: Vec<u8>,
+    pub use_global: Vec<u8>,
+    pub count: usize,
+}
+
+impl UpgradeRestrictions {
+    fn parse(raw: &[u8], count: usize) -> Option<Self> {
+        let expected = if count == 61 { 0x90E } else { 0x6D4 };
+        if raw.len() != expected || count == 0 {
+            return None;
+        }
+        let per = 12 * count;
+        let max = 0;
+        let start = per;
+        let gmax = 2 * per;
+        let gstart = 2 * per + count;
+        let ug = 2 * per + 2 * count;
+        Some(Self {
+            player_max: raw[max..max + per].to_vec(),
+            player_start: raw[start..start + per].to_vec(),
+            global_max: raw[gmax..gmax + count].to_vec(),
+            global_start: raw[gstart..gstart + count].to_vec(),
+            use_global: raw[ug..ug + per].to_vec(),
+            count,
+        })
+    }
+
+    pub fn max_level(&self, player: usize, upgrade: u8) -> u8 {
+        if player >= 12 || upgrade as usize >= self.count {
+            return u8::MAX;
+        }
+        let i = player * self.count + upgrade as usize;
+        if self.use_global.get(i).copied().unwrap_or(0) != 0 {
+            self.global_max
+                .get(upgrade as usize)
+                .copied()
+                .unwrap_or(u8::MAX)
+        } else {
+            self.player_max.get(i).copied().unwrap_or(u8::MAX)
+        }
+    }
+
+    pub fn start_level(&self, player: usize, upgrade: u8) -> u8 {
+        if player >= 12 || upgrade as usize >= self.count {
+            return 0;
+        }
+        let i = player * self.count + upgrade as usize;
+        if self.use_global.get(i).copied().unwrap_or(0) != 0 {
+            self.global_start
+                .get(upgrade as usize)
+                .copied()
+                .unwrap_or(0)
+        } else {
+            self.player_start.get(i).copied().unwrap_or(0)
+        }
+    }
+}
+
+/// Selected scenario sections for a map version.
+#[derive(Clone, Debug, Default)]
+pub struct ScenarioRules {
+    pub unit_settings: Option<UnitSettings>,
+    pub upgrade_settings: Option<UpgradeSettings>,
+    pub tech_settings: Option<TechSettings>,
+    pub unit_availability: Option<UnitAvailability>,
+    pub tech_restrictions: Option<TechRestrictions>,
+    pub upgrade_restrictions: Option<UpgradeRestrictions>,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Scenario {
     pub width: usize,
@@ -90,6 +339,9 @@ pub struct Scenario {
     pub tiles: Vec<u16>,
     pub mask: Vec<u8>,
     pub units: Vec<MapUnit>,
+    /// `THG2` records in file order.  `0x1000` records are static sprites;
+    /// the rest are unit doodads (doors, traps) realized by the simulation.
+    pub thingies: Vec<MapThingy>,
     pub locations: Vec<Location>,
     /// The 64 `UPRP` property slots (empty when the section is absent).
     pub unit_properties: Vec<UnitProperties>,
@@ -110,6 +362,18 @@ pub struct Scenario {
     /// map's title and description, as the map browser shows them.
     pub title_id: u16,
     pub description_id: u16,
+    pub version: u16,
+    pub unis: Option<UnitSettings>,
+    pub unix: Option<UnitSettings>,
+    pub upgs: Option<UpgradeSettings>,
+    pub upgx: Option<UpgradeSettings>,
+    pub tecs: Option<TechSettings>,
+    pub tecx: Option<TechSettings>,
+    pub puni: Option<UnitAvailability>,
+    pub ptec: Option<TechRestrictions>,
+    pub ptex: Option<TechRestrictions>,
+    pub upgr: Option<UpgradeRestrictions>,
+    pub pupx: Option<UpgradeRestrictions>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -166,8 +430,8 @@ fn i32_at(d: &[u8], o: usize) -> i32 {
 const KNOWN_SECTIONS: &[&str] = &[
     "TYPE", "VER", "IVER", "IVE2", "VCOD", "OWNR", "ERA", "DIM", "SIDE", "MTXM", "TILE", "MASK",
     "UNIT", "PUNI", "PUPx", "UPGR", "UPRP", "UPUS", "UPRe", "PTEC", "PTEx", "ISOM", "DD2", "THG2",
-    "STR", "MRGN", "TRIG", "MBRF", "FORC", "SPRP", "WAV", "CMP", "UNIS", "UNIx", "UPGS", "UPGx",
-    "TECS", "TECx", "COLR", "CRGB",
+    "STR", "STRx", "MRGN", "TRIG", "MBRF", "FORC", "SPRP", "WAV", "CMP", "UNIS", "UNIx", "UPGS",
+    "UPGx", "TECS", "TECx", "COLR", "CRGB",
 ];
 
 /// Locate one section by scanning for its four-byte name.
@@ -334,10 +598,28 @@ impl Scenario {
             .map(|k| u16_at(tiles_raw, k * 2))
             .collect::<Vec<_>>();
 
-        let mask = sections
-            .get("MASK")
-            .map(|s| s.to_vec())
-            .unwrap_or_else(|| vec![0u8; tile_count]);
+        // MASK is the initial per-player fog layer.  Missing trailing
+        // bytes are fogged in retail (`0xFF`), never pre-explored.
+        let mask = {
+            let raw = sections.get("MASK").copied().unwrap_or(&[]);
+            let mut mask = vec![0xFFu8; tile_count];
+            let n = raw.len().min(tile_count);
+            mask[..n].copy_from_slice(&raw[..n]);
+            mask
+        };
+
+        let mut thingies = Vec::new();
+        if let Some(raw) = sections.get("THG2") {
+            for c in raw.as_chunks::<10>().0 {
+                thingies.push(MapThingy {
+                    unit_id: u16_at(c, 0),
+                    x: u16_at(c, 2) as i32,
+                    y: u16_at(c, 4) as i32,
+                    player: c[6],
+                    flags: u16_at(c, 8),
+                });
+            }
+        }
 
         let mut units = Vec::new();
         if let Some(raw) = sections.get("UNIT") {
@@ -393,7 +675,27 @@ impl Scenario {
         }
 
         let mut strings = Vec::new();
-        if let Some(raw) = sections.get("STR")
+        if let Some(raw) = sections.get("STRx").or_else(|| sections.get("STRx ")) {
+            // Remastered STRx: u32 count followed by u32 offsets and
+            // NUL-terminated UTF-8 strings.  Forty-eight shipped ladder maps
+            // carry STRx with no STR.
+            if raw.len() >= 4 {
+                let count = u32_at(raw, 0) as usize;
+                let table_end = 4 + count.saturating_mul(4);
+                if raw.len() >= table_end {
+                    for k in 0..count {
+                        let start = u32_at(raw, 4 + k * 4) as usize;
+                        match raw.get(start..) {
+                            Some(bytes) => {
+                                let nul = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+                                strings.push(String::from_utf8_lossy(&bytes[..nul]).into_owned());
+                            }
+                            None => strings.push(String::new()),
+                        }
+                    }
+                }
+            }
+        } else if let Some(raw) = sections.get("STR")
             && raw.len() >= 2
         {
             let count = u16_at(raw, 0) as usize;
@@ -441,6 +743,85 @@ impl Scenario {
             }
         }
 
+        let version = sections
+            .get("VER")
+            .filter(|b| b.len() >= 2)
+            .map(|b| u16_at(b, 0))
+            .unwrap_or(0);
+        let unis = sections
+            .get("UNIS")
+            .and_then(|b| UnitSettings::parse(b, 100));
+        let unix = sections
+            .get("UNIx")
+            .and_then(|b| UnitSettings::parse(b, 130));
+        let upgs = sections.get("UPGS").and_then(|b| {
+            if b.len() != 0x256 {
+                return None;
+            }
+            Some(UpgradeSettings {
+                use_default: b[0..46].to_vec(),
+                mineral_base: (0..46).map(|i| u16_at(b, 0x02E + 2 * i)).collect(),
+                mineral_factor: (0..46).map(|i| u16_at(b, 0x08A + 2 * i)).collect(),
+                gas_base: (0..46).map(|i| u16_at(b, 0x0E6 + 2 * i)).collect(),
+                gas_factor: (0..46).map(|i| u16_at(b, 0x142 + 2 * i)).collect(),
+                time_base: (0..46).map(|i| u16_at(b, 0x19E + 2 * i)).collect(),
+                time_factor: (0..46).map(|i| u16_at(b, 0x1FA + 2 * i)).collect(),
+            })
+        });
+        let upgx = sections.get("UPGx").and_then(|b| {
+            if b.len() != 0x31A {
+                return None;
+            }
+            Some(UpgradeSettings {
+                use_default: b[0..61].to_vec(),
+                mineral_base: (0..61).map(|i| u16_at(b, 0x03E + 2 * i)).collect(),
+                mineral_factor: (0..61).map(|i| u16_at(b, 0x0B8 + 2 * i)).collect(),
+                gas_base: (0..61).map(|i| u16_at(b, 0x132 + 2 * i)).collect(),
+                gas_factor: (0..61).map(|i| u16_at(b, 0x1AC + 2 * i)).collect(),
+                time_base: (0..61).map(|i| u16_at(b, 0x226 + 2 * i)).collect(),
+                time_factor: (0..61).map(|i| u16_at(b, 0x2A0 + 2 * i)).collect(),
+            })
+        });
+        let tecs = sections.get("TECS").and_then(|b| {
+            if b.len() != 0xD8 {
+                return None;
+            }
+            Some(TechSettings {
+                use_default: b[0..24].to_vec(),
+                mineral_cost: (0..24).map(|i| u16_at(b, 0x18 + 2 * i)).collect(),
+                gas_cost: (0..24).map(|i| u16_at(b, 0x48 + 2 * i)).collect(),
+                research_time: (0..24).map(|i| u16_at(b, 0x78 + 2 * i)).collect(),
+                energy_cost: (0..24).map(|i| u16_at(b, 0xA8 + 2 * i)).collect(),
+            })
+        });
+        let tecx = sections.get("TECx").and_then(|b| {
+            if b.len() != 0x18C {
+                return None;
+            }
+            Some(TechSettings {
+                use_default: b[0..44].to_vec(),
+                mineral_cost: (0..44).map(|i| u16_at(b, 0x2C + 2 * i)).collect(),
+                gas_cost: (0..44).map(|i| u16_at(b, 0x84 + 2 * i)).collect(),
+                research_time: (0..44).map(|i| u16_at(b, 0xDC + 2 * i)).collect(),
+                energy_cost: (0..44).map(|i| u16_at(b, 0x134 + 2 * i)).collect(),
+            })
+        });
+        let puni = sections
+            .get("PUNI")
+            .and_then(|b| UnitAvailability::parse(b));
+        let ptec = sections
+            .get("PTEC")
+            .and_then(|b| TechRestrictions::parse(b, 24));
+        let ptex = sections
+            .get("PTEx")
+            .and_then(|b| TechRestrictions::parse(b, 44));
+        let upgr = sections
+            .get("UPGR")
+            .and_then(|b| UpgradeRestrictions::parse(b, 46));
+        let pupx = sections
+            .get("PUPx")
+            .and_then(|b| UpgradeRestrictions::parse(b, 61));
+
         let sprp = sections.get("SPRP").filter(|b| b.len() >= 4);
         let title_id = sprp.map(|b| u16_at(b, 0)).unwrap_or(0);
         let description_id = sprp.map(|b| u16_at(b, 2)).unwrap_or(0);
@@ -448,6 +829,18 @@ impl Scenario {
         Ok(Self {
             title_id,
             description_id,
+            version,
+            unis,
+            unix,
+            upgs,
+            upgx,
+            tecs,
+            tecx,
+            puni,
+            ptec,
+            ptex,
+            upgr,
+            pupx,
             width,
             height,
             era: sections
@@ -458,6 +851,7 @@ impl Scenario {
             tiles,
             mask,
             units,
+            thingies,
             locations,
             unit_properties,
             strings,
@@ -468,6 +862,39 @@ impl Scenario {
             force_names,
             briefing_triggers: sections.get("MBRF").map(|s| s.to_vec()).unwrap_or_default(),
         })
+    }
+
+    /// Select base or Brood War sections by map version and mode.
+    pub fn rules(&self) -> ScenarioRules {
+        let extended = self.version != 59;
+        ScenarioRules {
+            unit_settings: if extended {
+                self.unix.clone().or_else(|| self.unis.clone())
+            } else {
+                self.unis.clone()
+            },
+            upgrade_settings: if extended {
+                self.upgx.clone().or_else(|| self.upgs.clone())
+            } else {
+                self.upgs.clone()
+            },
+            tech_settings: if extended {
+                self.tecx.clone().or_else(|| self.tecs.clone())
+            } else {
+                self.tecs.clone()
+            },
+            unit_availability: self.puni.clone(),
+            tech_restrictions: if extended {
+                self.ptex.clone().or_else(|| self.ptec.clone())
+            } else {
+                self.ptec.clone()
+            },
+            upgrade_restrictions: if extended {
+                self.pupx.clone().or_else(|| self.upgr.clone())
+            } else {
+                self.upgr.clone()
+            },
+        }
     }
 
     pub fn tile(&self, tx: i32, ty: i32) -> Option<u16> {
@@ -725,7 +1152,8 @@ impl<'a> TileData<'a> {
 
     /// Megatile of an MTXM entry.
     pub fn megatile(&self, mtxm: u16) -> usize {
-        let group = (mtxm >> 4) as usize;
+        // Bit 15 is the creep marker; bits 4..14 are the CV5 group.
+        let group = ((mtxm >> 4) & 0x7ff) as usize;
         match self.cv5 {
             Some(cv5) => u16_at(cv5, group * 52 + 20 + (mtxm & 0x0f) as usize * 2) as usize,
             None => group,
@@ -735,9 +1163,10 @@ impl<'a> TileData<'a> {
     /// cv5 group flag 0x80: the tile is unbuildable (OpenBW
     /// `tile_t::flag_unbuildable`).  Synthetic tables have no flags.
     pub fn unbuildable(&self, mtxm: u16) -> bool {
-        let group = (mtxm >> 4) as usize;
+        let group = ((mtxm >> 4) & 0x7ff) as usize;
         self.cv5.is_some_and(|cv5| {
-            group * 52 + 4 <= cv5.len() && u16_at(cv5, group * 52 + 2) & 0x80 != 0
+            cv5.get(group * 52 + 2)
+                .is_some_and(|&buildability| buildability & 0x80 != 0)
         })
     }
 }
@@ -778,17 +1207,19 @@ impl Terrain {
                 let tile = scenario.tiles[ty * scenario.width + tx];
                 let record = tiles.megatile(tile) * 32;
                 let unbuildable = tiles.unbuildable(tile);
+                let mut walkable_count = 0u8;
                 for my in 0..4 {
                     for mx in 0..4 {
                         let idx = (ty * 4 + my) * walk_width + tx * 4 + mx;
                         if record + 32 <= vf4.len() {
                             let flag = u16_at(vf4, record + (my * 4 + mx) * 2);
                             walk[idx] = flag & 1 != 0;
+                            walkable_count += (flag & 1 != 0) as u8;
                             // Bit 1/2 are elevation (middle/high), not a
-                            // buildability veto.  Buildability starts from
-                            // walkability and is narrowed by the scenario
-                            // MASK below.
-                            build[idx] = flag & 1 != 0 && !unbuildable;
+                            // buildability veto.  Buildability is a whole
+                            // 32x32 tile: partially walkable tiles are not
+                            // buildable (OpenBW can_place_building).
+                            build[idx] = false;
                             view_block[idx] = flag & 8 != 0;
                             elevation[idx] = if flag & 4 != 0 {
                                 2
@@ -800,24 +1231,19 @@ impl Terrain {
                         }
                     }
                 }
-            }
-        }
-        // The scenario's MASK is a 32x32-tile authoring hint.  Treat a clear
-        // mask cell as unbuildable, matching StarEdit's behaviour.
-        if scenario.mask.len() == scenario.width * scenario.height {
-            for ty in 0..scenario.height {
-                for tx in 0..scenario.width {
-                    if scenario.mask[ty * scenario.width + tx] == 0 {
-                        for my in 0..4 {
-                            for mx in 0..4 {
-                                let idx = (ty * 4 + my) * walk_width + tx * 4 + mx;
-                                build[idx] = false;
-                            }
+                if walkable_count == 16 && !unbuildable {
+                    for my in 0..4 {
+                        for mx in 0..4 {
+                            let idx = (ty * 4 + my) * walk_width + tx * 4 + mx;
+                            build[idx] = true;
                         }
                     }
                 }
             }
         }
+        // CHK MASK is the initial fog layer, not a buildability veto.
+        // A clear bit means pre-explored; terrain buildability remains
+        // walkability minus the CV5 unbuildable flag.
         Self {
             width: scenario.width,
             height: scenario.height,
@@ -1021,6 +1447,26 @@ impl Terrain {
     }
 
     /// Query by absolute pixel position.
+    /// `0x00750ae0`: a unit rectangle is inside the map when its left/top
+    /// are non-negative, its right is below the map width and its bottom is
+    /// below `height - 0x20` (the retail bottom margin).
+    pub fn rect_in_bounds(&self, rect: (i32, i32, i32, i32)) -> bool {
+        let (left, top, right, bottom) = rect;
+        left >= 0
+            && right < self.width as i32 * TILE_PX
+            && top >= 0
+            && bottom < self.height as i32 * TILE_PX - 0x20
+    }
+
+    /// `0x00750aec`: upper/right bounds variant used by the placement
+    /// search.  It checks the right edge, top and bottom margin.
+    pub fn rect_upper_in_bounds(&self, rect: (i32, i32, i32, i32)) -> bool {
+        let (_, top, right, bottom) = rect;
+        right < self.width as i32 * TILE_PX
+            && top > -1
+            && bottom < self.height as i32 * TILE_PX - 0x20
+    }
+
     pub fn walkable_px(&self, x: i32, y: i32) -> bool {
         if x < 0 || y < 0 {
             return false;
@@ -1210,6 +1656,32 @@ mod tests {
     }
 
     #[test]
+    fn strx_strings_use_32_bit_offsets() {
+        let mut strx = Vec::new();
+        let one = b"Name\0";
+        let two = b"Briefing\0";
+        strx.extend_from_slice(&2u32.to_le_bytes());
+        let base = 4 + 2 * 4;
+        strx.extend_from_slice(&(base as u32).to_le_bytes());
+        strx.extend_from_slice(&((base + one.len()) as u32).to_le_bytes());
+        strx.extend_from_slice(one);
+        strx.extend_from_slice(two);
+        let mut chk = tiny_chk();
+        chk.extend_from_slice(b"STRx");
+        chk.extend_from_slice(&(strx.len() as u32).to_le_bytes());
+        chk.extend_from_slice(&strx);
+        chk.extend_from_slice(b"SPRP");
+        chk.extend_from_slice(&4u32.to_le_bytes());
+        chk.extend_from_slice(&2u16.to_le_bytes());
+        chk.extend_from_slice(&1u16.to_le_bytes());
+        let s = Scenario::parse(&chk).unwrap();
+        assert_eq!(s.string(1), Some("Name"));
+        assert_eq!(s.string(2), Some("Briefing"));
+        assert_eq!(s.title(), Some("Briefing"));
+        assert_eq!(s.description(), Some("Name"));
+    }
+
+    #[test]
     fn parses_dimensions_and_tiles() {
         let s = Scenario::parse(&tiny_chk()).unwrap();
         assert_eq!((s.width, s.height), (2, 2));
@@ -1303,5 +1775,198 @@ mod tests {
         assert!(t.walkable_px(0, 0));
         assert!(t.walkable_px(127, 127));
         assert!(!t.walkable_px(128, 0));
+    }
+
+    #[test]
+    fn fog_mask_does_not_veto_terrain_buildability() {
+        // tiny_chk's tile is megatile group 2, record 64.  Make all 16
+        // minitiles walkable; a clear MASK cell must not disable them.
+        let mut s = Scenario::parse(&tiny_chk()).unwrap();
+        s.mask = vec![0; 4];
+        let mut vf4 = vec![0u8; 96];
+        for i in 0..16 {
+            vf4[64 + i * 2] = 1;
+        }
+        let t = Terrain::from_scenario(&s, &TileData::synthetic(&vf4));
+        assert!(t.buildable_px(0, 0));
+        assert!(t.buildable_px(31, 31));
+        assert!(t.buildable_px(63, 63));
+    }
+
+    #[test]
+    fn unis_unix_upgs_tecs_and_puni_parse_at_their_retail_offsets() {
+        let mut chk = tiny_chk();
+        let mut unis = vec![1u8; 0xFD0];
+        unis[0] = 0;
+        unis[0x0E4..0x0E8].copy_from_slice(&5120u32.to_le_bytes());
+        unis[0x474..0x476].copy_from_slice(&50u16.to_le_bytes());
+        unis[0x63C] = 2;
+        unis[0x720..0x722].copy_from_slice(&300u16.to_le_bytes());
+        unis[0x8E8..0x8EA].copy_from_slice(&25u16.to_le_bytes());
+        unis[0xC78..0xC7A].copy_from_slice(&5u16.to_le_bytes());
+        unis[0xE40..0xE42].copy_from_slice(&8u16.to_le_bytes());
+        unis[0xE40 + 100 * 2..0xE40 + 100 * 2 + 2].copy_from_slice(&2u16.to_le_bytes());
+        chk.extend_from_slice(b"UNIS");
+        chk.extend_from_slice(&(unis.len() as u32).to_le_bytes());
+        chk.extend_from_slice(&unis);
+
+        let mut unix = vec![1u8; 0x1048];
+        unix[0] = 0;
+        unix[0xE40 + 129 * 2..0xE40 + 129 * 2 + 2].copy_from_slice(&77u16.to_le_bytes());
+        unix[0xE40 + 130 * 2 + 129 * 2..0xE40 + 130 * 2 + 129 * 2 + 2]
+            .copy_from_slice(&9u16.to_le_bytes());
+        chk.extend_from_slice(b"UNIx");
+        chk.extend_from_slice(&(unix.len() as u32).to_le_bytes());
+        chk.extend_from_slice(&unix);
+
+        let mut upgs = vec![1u8; 0x256];
+        upgs[7] = 0;
+        upgs[0x02E + 2 * 7..0x02E + 2 * 7 + 2].copy_from_slice(&100u16.to_le_bytes());
+        upgs[0x08A + 2 * 7..0x08A + 2 * 7 + 2].copy_from_slice(&10u16.to_le_bytes());
+        chk.extend_from_slice(b"UPGS");
+        chk.extend_from_slice(&(upgs.len() as u32).to_le_bytes());
+        chk.extend_from_slice(&upgs);
+
+        let mut tecs = vec![1u8; 0xD8];
+        tecs[0] = 0;
+        tecs[0x18..0x1A].copy_from_slice(&150u16.to_le_bytes());
+        tecs[0xA8..0xAA].copy_from_slice(&50u16.to_le_bytes());
+        chk.extend_from_slice(b"TECS");
+        chk.extend_from_slice(&(tecs.len() as u32).to_le_bytes());
+        chk.extend_from_slice(&tecs);
+
+        let mut puni = vec![1u8; 0x1644];
+        puni[37] = 0; // player 0, unit 37 denied
+        puni[0xB94 + 37] = 0; // but this player uses the per-player byte
+        chk.extend_from_slice(b"PUNI");
+        chk.extend_from_slice(&(puni.len() as u32).to_le_bytes());
+        chk.extend_from_slice(&puni);
+
+        let s = Scenario::parse(&chk).unwrap();
+        let u = s.unis.expect("UNIS");
+        assert_eq!(u.use_default[0], 0);
+        assert_eq!(u.hit_points[0], 5120);
+        assert_eq!(u.shields[0], 50);
+        assert_eq!(u.armor[0], 2);
+        assert_eq!(u.build_time[0], 300);
+        assert_eq!(u.mineral_cost[0], 25);
+        assert_eq!(u.string_id[0], 5);
+        assert_eq!(u.weapon_damage[0], 8);
+        assert_eq!(u.weapon_bonus[0], 2);
+        let x = s.unix.expect("UNIx");
+        assert_eq!(x.weapon_damage.len(), 130);
+        assert_eq!(x.weapon_damage[129], 77);
+        assert_eq!(x.weapon_bonus[129], 9);
+        assert_eq!(s.upgs.as_ref().unwrap().mineral_base[7], 100);
+        assert_eq!(s.tecs.as_ref().unwrap().mineral_cost[0], 150);
+        assert_eq!(s.tecs.as_ref().unwrap().energy_cost[0], 50);
+        assert!(!s.puni.as_ref().unwrap().available(0, 37));
+        assert!(s.puni.as_ref().unwrap().available(1, 37));
+    }
+
+    #[test]
+    fn ptec_ptex_upgr_and_pupx_parse_per_player_blocks() {
+        let mut chk = tiny_chk();
+        let mut ptec = vec![1u8; 0x390];
+        ptec[0] = 0; // player 0 tech 0 unavailable
+        ptec[24] = 1; // player 0 tech 0 researched
+        ptec[0x270] = 0; // player 0 tech 0 uses its own byte
+        chk.extend_from_slice(b"PTEC");
+        chk.extend_from_slice(&(ptec.len() as u32).to_le_bytes());
+        chk.extend_from_slice(&ptec);
+
+        let mut ptex = vec![1u8; 0x688];
+        ptex[43] = 0; // player 0 tech 43 unavailable
+        ptex[0x478 + 43] = 0; // use the per-player byte
+        chk.extend_from_slice(b"PTEx");
+        chk.extend_from_slice(&(ptex.len() as u32).to_le_bytes());
+        chk.extend_from_slice(&ptex);
+
+        let mut upgr = vec![1u8; 0x6D4];
+        upgr[7] = 2; // player 0 upgrade 7 max
+        upgr[0x228 + 7] = 1; // player 0 upgrade 7 start
+        upgr[0x4AC + 7] = 0; // use per-player
+        chk.extend_from_slice(b"UPGR");
+        chk.extend_from_slice(&(upgr.len() as u32).to_le_bytes());
+        chk.extend_from_slice(&upgr);
+
+        let mut pupx = vec![1u8; 0x90E];
+        pupx[60] = 4;
+        pupx[0x2DC + 60] = 3;
+        pupx[0x632 + 60] = 0;
+        chk.extend_from_slice(b"PUPx");
+        chk.extend_from_slice(&(pupx.len() as u32).to_le_bytes());
+        chk.extend_from_slice(&pupx);
+
+        let s = Scenario::parse(&chk).unwrap();
+        let t = s.ptec.as_ref().unwrap();
+        assert!(!t.available(0, 0));
+        assert!(t.researched(0, 0));
+        assert!(t.available(1, 0));
+        let tx = s.ptex.as_ref().unwrap();
+        assert!(!tx.available(0, 43));
+        assert!(tx.available(0, 42));
+        let u = s.upgr.as_ref().unwrap();
+        assert_eq!(u.max_level(0, 7), 2);
+        assert_eq!(u.start_level(0, 7), 1);
+        let ux = s.pupx.as_ref().unwrap();
+        assert_eq!(ux.max_level(0, 60), 4);
+        assert_eq!(ux.start_level(0, 60), 3);
+    }
+
+    #[test]
+    fn cv5_buildability_uses_the_byte_at_offset_two_and_ignores_creep_bit() {
+        let mut cv5 = vec![0u8; 52 * 2];
+        cv5[52 + 2] = 0x80;
+        for slot in 0..16 {
+            let at = 52 + 20 + slot * 2;
+            cv5[at..at + 2].copy_from_slice(&7u16.to_le_bytes());
+        }
+        let tiles = TileData::new(&cv5, &[]);
+        assert!(!tiles.unbuildable(0x0000));
+        assert!(tiles.unbuildable(0x0010));
+        assert!(tiles.unbuildable(0x8010), "bit 15 is the creep marker");
+        assert_eq!(tiles.megatile(0x8010), 7);
+    }
+
+    #[test]
+    fn thg2_records_are_ten_bytes_and_keep_their_flags() {
+        let mut chk = tiny_chk();
+        let mut thg2 = Vec::new();
+        for (id, flags) in [(0xcdu16, 0x6280u16), (0x00cbu16, 0xa280u16)] {
+            thg2.extend_from_slice(&id.to_le_bytes());
+            thg2.extend_from_slice(&320u16.to_le_bytes());
+            thg2.extend_from_slice(&320u16.to_le_bytes());
+            thg2.push(0);
+            thg2.push(0);
+            thg2.extend_from_slice(&flags.to_le_bytes());
+        }
+        chk.extend_from_slice(b"THG2");
+        chk.extend_from_slice(&(thg2.len() as u32).to_le_bytes());
+        chk.extend_from_slice(&thg2);
+        let s = Scenario::parse(&chk).unwrap();
+        assert_eq!(s.thingies.len(), 2);
+        assert_eq!(s.thingies[0].unit_id, 0xcd);
+        assert_eq!(s.thingies[0].flags, 0x6280);
+        assert_eq!(s.thingies[1].unit_id, 0xcb);
+        assert_eq!(s.thingies[1].flags, 0xa280);
+    }
+
+    #[test]
+    fn rect_in_bounds_matches_the_retail_margin() {
+        let t = Terrain::open(64, 64);
+        assert!(t.rect_in_bounds((0, 0, 32, 32)));
+        assert!(!t.rect_in_bounds((-1, 0, 32, 32)));
+        assert!(!t.rect_in_bounds((0, 0, 64 * 32, 32)));
+        assert!(!t.rect_in_bounds((0, 0, 32, 64 * 32 - 1)));
+    }
+
+    #[test]
+    fn rect_upper_in_bounds_matches_the_second_retail_check() {
+        let t = Terrain::open(64, 64);
+        assert!(t.rect_upper_in_bounds((-100, 0, 32, 32)));
+        assert!(!t.rect_upper_in_bounds((0, -1, 32, 32)));
+        assert!(!t.rect_upper_in_bounds((0, 0, 64 * 32, 32)));
+        assert!(!t.rect_upper_in_bounds((0, 0, 32, 64 * 32 - 1)));
     }
 }

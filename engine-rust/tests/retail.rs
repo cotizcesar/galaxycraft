@@ -305,6 +305,137 @@ fn campaign_transmissions_resolve_to_text_and_playable_map_audio() {
 }
 
 #[test]
+fn later_campaign_missions_open_with_their_authored_cues() {
+    let Some(install) = install() else {
+        eprintln!("skipping: set SC_INSTALL to a StarCraft installation");
+        return;
+    };
+    use galaxycraft::trigger::TriggerCue;
+    let episodes = campaign::episodes(&install);
+    let data = Arc::new(install.game_data().expect("retail game data"));
+    // Opening cues from later campaigns after the Terran Episode I sample
+    // used by `campaign_transmissions_resolve_to_text_and_playable_map_audio`:
+    // Zerg 01 (Daggoth's transmissions), Protoss 07 (the Fenix countdown),
+    // Brood War Zerg 02 and Brood War Protoss 03.  Several other openings
+    // (Protoss 01, Brood War Zerg 01/Protoss 01) have no time-based cue in
+    // the shipped CHK.  Later-campaign retail *recordings* are not present
+    // on this machine, so this is the authoritative shipped-trigger
+    // comparison available locally.
+    for (episode, key) in [
+        ("zerg", "zerg01"),
+        ("protoss", "protoss07"),
+        ("expzerg", "zerg02"),
+        ("expprotoss", "protoss03"),
+    ] {
+        let mission = episodes
+            .iter()
+            .find(|e| e.key == episode)
+            .and_then(|e| e.missions.iter().find(|m| m.key == key))
+            .unwrap_or_else(|| panic!("{episode}/{key} is shipped"));
+        let raw = install.read(&mission.chk_path).expect("chk");
+        let scenario = Scenario::parse(&raw).expect("valid CHK");
+        let era = era_name(scenario.era);
+        let vf4 = install.read(&format!("TileSet/{era}.vf4")).expect("vf4");
+        let cv5 = install.read(&format!("TileSet/{era}.cv5")).expect("cv5");
+        let mut world = World::from_scenario(
+            data.clone(),
+            &scenario,
+            &galaxycraft::map::TileData::new(&cv5, &vf4),
+            &[mission.race; 8],
+        );
+        for _ in 0..24 * 30 {
+            world.step();
+        }
+        let cues = world.triggers.as_ref().expect("triggers").cues.clone();
+        let texts: Vec<String> = cues
+            .iter()
+            .filter_map(|c| match *c {
+                TriggerCue::Text { string, .. } => scenario.string(string),
+                TriggerCue::Wav { .. } => None,
+            })
+            .flat_map(galaxycraft::transmission::clean_lines)
+            .collect();
+        let wavs = cues
+            .iter()
+            .filter(|c| matches!(c, TriggerCue::Wav { .. }))
+            .count();
+        assert!(
+            !texts.is_empty(),
+            "{episode}/{key}: no trigger text in 30 s: {cues:?}"
+        );
+        assert!(
+            wavs > 0,
+            "{episode}/{key}: no trigger sound in 30 s: {cues:?}"
+        );
+        eprintln!(
+            "{episode}/{key}: {} cues, {} text lines, first: {:?}",
+            cues.len(),
+            texts.len(),
+            texts.first()
+        );
+    }
+}
+
+#[test]
+fn all_campaign_missions_load_and_step() {
+    let Some(install) = install() else {
+        eprintln!("skipping: set SC_INSTALL to a StarCraft installation");
+        return;
+    };
+    let data = Arc::new(install.game_data().expect("retail game data"));
+    let episodes = campaign::episodes(&install);
+    let mut tiles: std::collections::HashMap<u16, (Vec<u8>, Vec<u8>)> =
+        std::collections::HashMap::new();
+    let mut missions = 0usize;
+    for episode in &episodes {
+        for mission in &episode.missions {
+            let raw = install.read(&mission.chk_path).expect("campaign chk");
+            let scenario = Scenario::parse(&raw).expect("valid campaign CHK");
+            let era = scenario.era;
+            let (vf4, cv5) = tiles.entry(era).or_insert_with(|| {
+                let name = era_name(era);
+                (
+                    install.read(&format!("TileSet/{name}.vf4")).expect("vf4"),
+                    install.read(&format!("TileSet/{name}.cv5")).expect("cv5"),
+                )
+            });
+            let mut world = World::from_scenario(
+                data.clone(),
+                &scenario,
+                &galaxycraft::map::TileData::new(cv5, vf4),
+                &[mission.race; 8],
+            );
+            for _ in 0..30 {
+                world.step();
+            }
+            assert!(
+                !world.players.is_empty(),
+                "{}/{} has no players",
+                episode.key,
+                mission.key
+            );
+            missions += 1;
+        }
+    }
+    assert_eq!(missions, 68, "the install ships 68 campaign missions");
+    eprintln!("{missions} campaign missions loaded and stepped");
+}
+
+#[test]
+fn localized_stat_txt_uses_the_selected_locale() {
+    let Some(mut install) = install() else {
+        eprintln!("skipping: set SC_INSTALL to a StarCraft installation");
+        return;
+    };
+    // The Spanish strings ship in `locales/esmx/assets/rez/stat_txt.json`.
+    install.set_locale("esmx");
+    let data = install.game_data().expect("localized game data");
+    assert_eq!(data.unit_name(0), "Marine terran");
+    assert!(data.unit_name(106).contains("Centro de mando"));
+    assert_eq!(install.locale(), "esmx");
+}
+
+#[test]
 fn retail_tables_drive_a_world_from_an_mpq_map() {
     let Some(install) = install() else {
         eprintln!("skipping: set SC_INSTALL to a StarCraft installation");
@@ -409,11 +540,12 @@ fn materialised_assets_load_without_the_bundled_asset_directory() {
         "{} console files",
         report.console_files
     );
-    // 33 dialogs (with the `glurdyt` ready room) + `minimap`, `objctdlg`
-    // and `tips_dlg` (in-game HUD) + the End Mission menu and its three
-    // prompts (`abrtmenu`, `quit`, `quit2mnu`, `restart`) + `tips_txt.json`.
-    // + `helpmenu`, `help`, `savegame`, `loadgame` + `help_txt.json`.
-    assert_eq!(report.ui_files, 46);
+    // 35 dialogs (with the `glurdyt` / `glurdyz` / `glurdyp` ready rooms) +
+    // `minimap`, `objctdlg` and `tips_dlg` (in-game HUD) + the End Mission
+    // menu and its three prompts (`abrtmenu`, `quit`, `quit2mnu`,
+    // `restart`) + `tips_txt.json` + `helpmenu`, `help`, `savegame`,
+    // `loadgame` + `help_txt.json`.
+    assert_eq!(report.ui_files, 48);
     assert_eq!(report.music_files, 23);
     assert!(report.voice_files > 1000, "{} voices", report.voice_files);
     assert!(report.missing_sounds.is_empty());
@@ -442,7 +574,7 @@ fn materialised_assets_load_without_the_bundled_asset_directory() {
     assert_eq!(sounds.len(), 13);
 
     // Retail console plates, command icons, wireframes and the UI layouts.
-    let console = ConsoleArt::load(&dir, Race::Terran).expect("terran console");
+    let console = ConsoleArt::load(&dir, Race::Terran, 0, 0).expect("terran console");
     assert_eq!(console.race, "terran");
     assert!(console.left.width > 1000 && console.left.height > 600);
     assert!(console.center.width > 1000);

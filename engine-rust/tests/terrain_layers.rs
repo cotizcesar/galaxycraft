@@ -11,7 +11,7 @@ use std::collections::BTreeSet;
 
 #[test]
 fn every_shipped_map_tile_is_fully_opaque() {
-    let raw = std::fs::read("assets/maps/Boxer.chk").expect("bundled Boxer");
+    let raw = std::fs::read("assets/maps/(2)Challenger.chk").expect("bundled badlands map");
     let sc = Scenario::parse(&raw).expect("parse");
     let ts = Tileset::load(std::path::Path::new("assets/TileSet"), sc.era, &sc)
         .expect("bundled tileset");
@@ -40,4 +40,33 @@ fn every_shipped_map_tile_is_fully_opaque() {
         holes.is_empty(),
         "tiles with transparent holes (tile, painted): {holes:?}"
     );
+}
+
+#[test]
+fn the_retail_colour_cycles_rotate_the_terrain_palette() {
+    let raw = std::fs::read("assets/maps/(2)Challenger.chk").expect("bundled badlands map");
+    let sc = Scenario::parse(&raw).expect("parse");
+    let mut ts = Tileset::load(std::path::Path::new("assets/TileSet"), sc.era, &sc)
+        .expect("bundled tileset");
+    let before: Vec<Rgb> = ts.palette.colors[1..=13].to_vec();
+    // Badlands rotates 1..6, 7..13 and 248..254 every three game ticks.
+    ts.update_color_cycle(3, true);
+    assert_eq!(ts.palette.colors[2], before[0]);
+    assert_eq!(ts.palette.colors[1], before[5], "6 wraps to 1");
+    assert_eq!(ts.palette.colors[8], before[6], "second range rotates");
+    // Turning the option off restores the base palette exactly.
+    ts.update_color_cycle(6, false);
+    assert_eq!(ts.palette.colors[1..=13], before[..]);
+}
+
+#[test]
+fn platforms_and_installations_do_not_cycle_colours() {
+    let raw = std::fs::read("assets/maps/(2)Space Madness.chk").expect("bundled map");
+    let sc = Scenario::parse(&raw).expect("parse");
+    assert_eq!(sc.era, 1, "Space Madness is a platform map");
+    let mut ts = Tileset::load(std::path::Path::new("assets/TileSet"), sc.era, &sc)
+        .expect("bundled tileset");
+    let before = ts.palette.colors;
+    ts.update_color_cycle(300, true);
+    assert_eq!(ts.palette.colors, before);
 }

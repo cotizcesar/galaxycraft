@@ -25,6 +25,7 @@
 //! fixed-point representation used by the game.
 
 use crate::data::{DamageType, GameData, UnitSize, UnitType, WeaponType};
+use crate::ids::unit as uid;
 
 pub const FP: i32 = 256;
 /// Damage cannot be reduced below half a point.
@@ -67,6 +68,22 @@ impl Defense {
             shield_points: shields,
             shield_upgrade: 0,
         }
+    }
+}
+
+/// `units.dat` flag 0x40 marks a hero unit.
+pub const UNIT_FLAG_HERO: u32 = 0x40;
+/// The hero Ultralisk.  The stock Torrasque is excluded by the hero flag.
+const TORRASQUE: u16 = 48;
+
+/// Chitinous Plating's flat armour bonus (`0x5d9ef0`): two points on a
+/// normal Ultralisk, zero on every other unit (including stock Torrasque).
+pub fn chitinous_plating_bonus(type_id: u16, unit_flags: u32, has_plating: bool) -> u32 {
+    let is_ultralisk = type_id == uid::ULTRALISK || type_id == TORRASQUE;
+    if has_plating && is_ultralisk && unit_flags & UNIT_FLAG_HERO == 0 {
+        2
+    } else {
+        0
     }
 }
 
@@ -216,6 +233,18 @@ pub fn resolve_damage_status(
         matrix_absorbed = damage.min(status.matrix).max(0);
         damage -= matrix_absorbed;
     }
+    if matrix_absorbed > 0 && damage == 0 {
+        // The matrix consumed the whole hit.  The shield/armour/size stages
+        // and the 0x80 floor must not chip HP or shields afterwards
+        // (`FUN_005d2300` only touches the matrix pool).
+        return StatusDamageResult {
+            damage: DamageResult {
+                shield_damage: 0,
+                hp_damage: 0,
+            },
+            matrix_absorbed,
+        };
+    }
 
     let mut shield_damage = 0;
     if defense.has_shields && defense.shield_points >= SHIELD_ABSORB_THRESHOLD {
@@ -263,6 +292,8 @@ pub struct PlayerUpgrades {
     pub armor: [u8; 32],
     /// Protoss Plasma Shields upgrade level.
     pub plasma_shields: u8,
+    /// Chitinous Plating (upgrade 52) researched.
+    pub chitinous_plating: bool,
 }
 
 impl PlayerUpgrades {
@@ -546,8 +577,9 @@ impl CombatSim {
 
     fn fire(&mut self, attacker: usize, target: usize, weapon: WeaponType) {
         // A damage factor of 2 means two shots per attack.  Other values only
-        // affect the displayed damage.
-        let shots = if weapon.bullet_count == 2 { 2 } else { 1 };
+        // affect the displayed damage.  Translation batch 01 (`0x005a0720` /
+        // `0x005a077a`).
+        let shots = crate::sim::a01_weapon_effect_repetitions(&weapon);
         for _ in 0..shots {
             self.apply_hit(attacker, target, &weapon, 1);
         }
@@ -594,9 +626,14 @@ impl CombatSim {
         let a_up =
             self.upgrades[self.units[attacker].owner as usize].weapon_level(weapon.damage_upgrade);
         let t_armor_up = self.upgrades[t_owner as usize].armor_level(t_ty.armor_upgrade) as u32;
+        let plating = chitinous_plating_bonus(
+            self.units[target].type_id,
+            t_ty.flags,
+            self.upgrades[t_owner as usize].chitinous_plating,
+        );
         let defense = Defense {
             size: t_ty.size,
-            armor_level: t_ty.armor as u32 + t_armor_up,
+            armor_level: t_ty.armor as u32 + t_armor_up + plating,
             has_shields: t_ty.has_shields,
             shield_points: self.units[target].shields,
             shield_upgrade: self.upgrades[t_owner as usize].plasma_shields,
@@ -782,6 +819,99 @@ mod tests {
     }
 
     #[test]
+    fn acid_spores_add_one_point_each_before_matrix_and_the_floor() {
+        // Recovered branch 3 of the damage routine: `spores * 256` is added to
+        // weapon damage/divisor before the 0x80 floor, and Defensive Matrix
+        // absorbs the resulting total first.
+        let g = data();
+        let w = g.weapon(weapon_ids::GAUSS_RIFLE).unwrap();
+        let d = defense(UnitSize::Small, 0);
+        let base = resolve_damage_status(w, 0, d, 1, StatusDamage::default());
+        let spored = resolve_damage_status(
+            w,
+            0,
+            d,
+            1,
+            StatusDamage {
+                acid_spores: 3,
+                ..StatusDamage::default()
+            },
+        );
+        assert_eq!(spored.damage.hp_damage - base.damage.hp_damage, fp(3));
+        let matrixed = resolve_damage_status(
+            w,
+            0,
+            d,
+            1,
+            StatusDamage {
+                acid_spores: 3,
+                matrix: fp(1),
+                ..StatusDamage::default()
+            },
+        );
+        assert_eq!(matrixed.matrix_absorbed, fp(1));
+        assert_eq!(matrixed.damage.hp_damage, spored.damage.hp_damage - fp(1));
+    }
+
+    #[test]
+    fn fully_absorbed_matrix_hit_does_not_chip_hp_or_shields() {
+        let g = data();
+        let w = g.weapon(weapon_ids::GAUSS_RIFLE).unwrap();
+        let base = defense(UnitSize::Small, 0);
+        let r = resolve_damage_status(
+            w,
+            0,
+            base,
+            1,
+            StatusDamage {
+                matrix: fp(100),
+                ..StatusDamage::default()
+            },
+        );
+        assert_eq!(r.matrix_absorbed, fp(6));
+        assert_eq!(r.damage.hp_damage, 0);
+        assert_eq!(r.damage.shield_damage, 0);
+
+        let shielded = Defense {
+            size: UnitSize::Small,
+            armor_level: 0,
+            has_shields: true,
+            shield_points: fp(10),
+            shield_upgrade: 0,
+        };
+        let r = resolve_damage_status(
+            w,
+            0,
+            shielded,
+            1,
+            StatusDamage {
+                matrix: fp(100),
+                ..StatusDamage::default()
+            },
+        );
+        assert_eq!(r.damage.shield_damage, 0);
+        assert_eq!(r.damage.hp_damage, 0);
+    }
+
+    #[test]
+    fn partially_absorbed_matrix_keeps_the_remaining_damage() {
+        let g = data();
+        let w = g.weapon(weapon_ids::GAUSS_RIFLE).unwrap();
+        let r = resolve_damage_status(
+            w,
+            0,
+            defense(UnitSize::Small, 0),
+            1,
+            StatusDamage {
+                matrix: fp(4),
+                ..StatusDamage::default()
+            },
+        );
+        assert_eq!(r.matrix_absorbed, fp(4));
+        assert_eq!(r.damage.hp_damage, fp(2));
+    }
+
+    #[test]
     fn shields_below_one_point_do_not_absorb() {
         let g = data();
         let w = g.weapon(weapon_ids::GAUSS_RIFLE).unwrap();
@@ -910,5 +1040,27 @@ mod tests {
         assert!(u.has_shields);
         assert_eq!(u.shield_points, 60);
         assert_eq!(u.size, UnitSize::Small);
+    }
+
+    #[test]
+    fn chitinous_plating_adds_two_armour_to_an_ultralisk() {
+        let g = data();
+        let weapon = g.weapon(weapon_ids::GAUSS_RIFLE).unwrap().clone();
+        let mut sim = CombatSim::new(g);
+        let ultralisk = sim.spawn(1, unit_ids::ULTRALISK, 0, 0);
+        let marine = sim.spawn(0, unit_ids::MARINE, 0, 0);
+        let hp = sim.units[ultralisk].hp;
+        sim.apply_hit(marine, ultralisk, &weapon, 1);
+        assert_eq!(sim.units[ultralisk].hp, hp - fp(5), "base armour is 1");
+        sim.units[ultralisk].hp = hp;
+        sim.upgrades[1].chitinous_plating = true;
+        sim.apply_hit(marine, ultralisk, &weapon, 1);
+        assert_eq!(sim.units[ultralisk].hp, hp - fp(3), "plating adds +2");
+        assert_eq!(chitinous_plating_bonus(unit_ids::ULTRALISK, 0, true), 2);
+        assert_eq!(
+            chitinous_plating_bonus(48, UNIT_FLAG_HERO, true),
+            0,
+            "stock Torrasque is excluded by the units.dat hero flag"
+        );
     }
 }

@@ -10,7 +10,7 @@
 //! owns that mapping and the lazy WAV cache; [`crate::audio::SoundBank`] still
 //! owns the small UI/effect bank.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -185,6 +185,28 @@ pub fn selection_cue(streak: u32, pissed_takes: usize) -> (VoiceCue, usize, bool
     }
 }
 
+/// Shipped announcer collections in Collections order, after Default.
+/// The directory names are the commentators' names: Um Jae-kyung, Jeon
+/// Yong-jun, Kim Jung-min, the three together, and HeyJini (INFERENCE from
+/// the Korean names; the CASC paths are the shipped ones).
+pub const ANNOUNCER_DIRS: [&str; 5] = ["jaekyung", "yongjun", "jungmin", "umjeonkim", "jini"];
+
+/// `1..=5` is a shipped announcer; `0` is the default race advisor.
+pub fn announcer_dir(id: u8) -> Option<&'static str> {
+    ANNOUNCER_DIRS.get(id.checked_sub(1)? as usize).copied()
+}
+
+/// Rewrite an advisor path (`terran/advisor/taderr02.wav`) to the custom
+/// announcer set (`scr/announcers/<dir>/taderr02.wav`).  The sets keep the
+/// per-race `t…` / `p…` / `z…` stems and live directly under their directory;
+/// non-advisor voices are left alone.
+pub fn announcer_advisor_path(path: &str, id: u8) -> Option<String> {
+    let dir = announcer_dir(id)?;
+    let (_, tail) = path.split_once("/advisor/")?;
+    let file = tail.rsplit('/').next()?;
+    Some(format!("scr/announcers/{dir}/{file}"))
+}
+
 /// Lazily decoded voice clips.  Files live under `root/<race>/<unit>/...`
 /// in the materialised cache.
 pub struct VoiceBank {
@@ -192,6 +214,8 @@ pub struct VoiceBank {
     table: SfxTable,
     cache: RefCell<HashMap<u16, Option<Vec<i16>>>>,
     hits: RefCell<Vec<u16>>,
+    announcer: Cell<u8>,
+    classic: Cell<bool>,
 }
 
 impl VoiceBank {
@@ -201,7 +225,46 @@ impl VoiceBank {
             table,
             cache: RefCell::new(HashMap::new()),
             hits: RefCell::new(Vec::new()),
+            announcer: Cell::new(0),
+            classic: Cell::new(false),
         }
+    }
+
+    /// Equip an announcer collection (`0` Default, `1..=5` shipped sets).
+    pub fn set_announcer(&self, id: u8) {
+        if self.announcer.get() != id {
+            self.announcer.set(id);
+            self.cache.borrow_mut().clear();
+        }
+    }
+
+    pub fn announcer(&self) -> u8 {
+        self.announcer.get()
+    }
+
+    /// Sound tab "Original 1998 Campaign": prefer `voices/sd/<rel>` when the
+    /// install provides classic voices, otherwise keep the current set.
+    pub fn set_classic(&self, classic: bool) {
+        if self.classic.get() != classic {
+            self.classic.set(classic);
+            self.cache.borrow_mut().clear();
+        }
+    }
+
+    /// First existing file in the selected announcer set (`gamestart_1.wav`,
+    /// then `gamestart.wav`, for example).
+    pub fn announcer_clip(&self, names: &[&str]) -> Option<Vec<i16>> {
+        let dir = announcer_dir(self.announcer.get())?;
+        for name in names {
+            let path = self.root.join("scr/announcers").join(dir).join(name);
+            let Ok(bytes) = std::fs::read(path) else {
+                continue;
+            };
+            if let Some(wav) = Wav::parse(&bytes) {
+                return Some(wav.to_mono_44k());
+            }
+        }
+        None
     }
 
     pub fn table(&self) -> &SfxTable {
@@ -212,14 +275,28 @@ impl VoiceBank {
         &self.root
     }
 
-    /// Load (once) the WAV for a `sfxdata.tbl` id.
+    /// Load (once) the WAV for a `sfxdata.tbl` id.  With a custom announcer
+    /// equipped, advisor lines come from its set and fall back to the race
+    /// advisor when the set has no matching file.
     pub fn clip(&self, id: u16) -> Option<Vec<i16>> {
         if let Some(hit) = self.cache.borrow().get(&id) {
             return hit.clone();
         }
-        let path = self.table.cache_path(id).map(|p| self.root.join(p));
-        let decoded = path
-            .and_then(|p| std::fs::read(p).ok())
+        let mut candidates = Vec::new();
+        if let Some(path) = self.table.cache_path(id)
+            && let Some(over) = announcer_advisor_path(&path, self.announcer.get())
+        {
+            candidates.push(self.root.join(over));
+        }
+        if let Some(path) = self.table.cache_path(id) {
+            if self.classic.get() {
+                candidates.push(self.root.join("sd").join(&path));
+            }
+            candidates.push(self.root.join(path));
+        }
+        let decoded = candidates
+            .into_iter()
+            .find_map(|p| std::fs::read(p).ok())
             .and_then(|b| Wav::parse(&b))
             .map(|w| w.to_mono_44k());
         self.cache.borrow_mut().insert(id, decoded.clone());
@@ -344,6 +421,127 @@ mod tests {
                 .as_deref(),
             Some("protoss/zealot/pzerdy00.wav")
         );
+    }
+
+    #[test]
+    fn announcer_sets_follow_the_collection_order() {
+        assert_eq!(announcer_dir(0), None, "Default keeps the race advisor");
+        assert_eq!(announcer_dir(1), Some("jaekyung"), "Um");
+        assert_eq!(announcer_dir(2), Some("yongjun"), "Jeon");
+        assert_eq!(announcer_dir(3), Some("jungmin"), "Kim");
+        assert_eq!(announcer_dir(4), Some("umjeonkim"), "UmJeonKim");
+        assert_eq!(announcer_dir(5), Some("jini"), "HeyJini");
+        assert_eq!(announcer_dir(6), None);
+    }
+
+    #[test]
+    fn announcer_sets_rewrite_advisor_paths_only() {
+        assert_eq!(
+            announcer_advisor_path("terran/advisor/taderr02.wav", 1).as_deref(),
+            Some("scr/announcers/jaekyung/taderr02.wav")
+        );
+        assert_eq!(
+            announcer_advisor_path("zerg/advisor/zadupd04.wav", 5).as_deref(),
+            Some("scr/announcers/jini/zadupd04.wav")
+        );
+        assert_eq!(
+            announcer_advisor_path("protoss/advisor/paderr00.wav", 4).as_deref(),
+            Some("scr/announcers/umjeonkim/paderr00.wav")
+        );
+        assert_eq!(
+            announcer_advisor_path("terran/marine/tmardy00.wav", 1),
+            None
+        );
+        assert_eq!(
+            announcer_advisor_path("terran/advisor/taderr02.wav", 0),
+            None
+        );
+    }
+
+    fn tiny_wav(samples: &[i16]) -> Vec<u8> {
+        let data = samples.len() as u32 * 2;
+        let mut b = Vec::new();
+        b.extend_from_slice(b"RIFF");
+        b.extend_from_slice(&(36 + data).to_le_bytes());
+        b.extend_from_slice(b"WAVEfmt ");
+        b.extend_from_slice(&16u32.to_le_bytes());
+        b.extend_from_slice(&1u16.to_le_bytes()); // PCM
+        b.extend_from_slice(&1u16.to_le_bytes()); // mono
+        b.extend_from_slice(&44_100u32.to_le_bytes());
+        b.extend_from_slice(&88_200u32.to_le_bytes());
+        b.extend_from_slice(&2u16.to_le_bytes());
+        b.extend_from_slice(&16u16.to_le_bytes());
+        b.extend_from_slice(b"data");
+        b.extend_from_slice(&data.to_le_bytes());
+        for s in samples {
+            b.extend_from_slice(&s.to_le_bytes());
+        }
+        b
+    }
+
+    #[test]
+    fn announcer_set_overrides_advisor_voices_and_start_lines() {
+        let root = std::env::temp_dir().join(format!(
+            "gc-announcer-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let table = SfxTable::bundled();
+        let id = (0..table.len() as u16)
+            .find(|&id| table.cache_path(id).as_deref() == Some("protoss/advisor/paderr00.wav"))
+            .expect("advisor sound id");
+        let base = root.join("protoss/advisor");
+        let custom = root.join("scr/announcers/jini");
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::create_dir_all(&custom).unwrap();
+        std::fs::write(base.join("paderr00.wav"), tiny_wav(&[1, 1])).unwrap();
+        std::fs::write(custom.join("paderr00.wav"), tiny_wav(&[9, 9])).unwrap();
+        std::fs::write(custom.join("gamestart_1.wav"), tiny_wav(&[7, 7])).unwrap();
+
+        let bank = VoiceBank::new(&root, table);
+        assert_eq!(bank.clip(id).unwrap()[0], 1, "default advisor first");
+        assert!(bank.announcer_clip(&["gamestart_1.wav"]).is_none());
+        bank.set_announcer(5);
+        assert_eq!(bank.clip(id).unwrap()[0], 9, "custom advisor first");
+        assert_eq!(
+            bank.announcer_clip(&["gamestart_1.wav"]).unwrap()[0],
+            7,
+            "custom start line"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn classic_campaign_prefers_the_sd_bank_and_falls_back() {
+        let root = std::env::temp_dir().join(format!(
+            "gc-classic-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let base = root.join("terran/marine");
+        let sd = root.join("sd/terran/marine");
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::create_dir_all(&sd).unwrap();
+        let table = SfxTable::bundled();
+        let id = (0..table.len() as u16)
+            .find(|&id| table.cache_path(id).as_deref() == Some("terran/marine/tmardy00.wav"))
+            .expect("marine ready id");
+        std::fs::write(base.join("tmardy00.wav"), tiny_wav(&[1, 1])).unwrap();
+        let bank = VoiceBank::new(&root, table);
+        assert_eq!(bank.clip(id).unwrap()[0], 1);
+        bank.set_classic(true);
+        assert_eq!(bank.clip(id).unwrap()[0], 1, "fallback without sd file");
+        std::fs::write(sd.join("tmardy00.wav"), tiny_wav(&[9, 9])).unwrap();
+        bank.set_classic(false);
+        bank.set_classic(true);
+        assert_eq!(bank.clip(id).unwrap()[0], 9, "classic sd bank");
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]

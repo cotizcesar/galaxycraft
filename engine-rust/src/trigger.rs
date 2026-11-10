@@ -115,6 +115,10 @@ pub struct TriggerState {
     /// next action)`.  StarCraft resumes the same trigger after a wait rather
     /// than restarting it, so this must survive the 30-tick trigger cadence.
     resume: Vec<Option<(usize, usize)>>,
+    /// `(player, trigger)` that executed action 5 (Pause Game).  Only that
+    /// trigger may resume its pending Wait/Transmission while paused, and
+    /// finishing it lifts the pause.  Action 6 clears it early.
+    pause_source: Option<(usize, usize)>,
 }
 
 /// One leaderboard request (actions 17..=21 and 33..=37).  The headless
@@ -343,10 +347,23 @@ impl TriggerSystem {
     }
 
     pub fn process(&mut self, world: &mut World) {
-        // The countdown runs on game seconds, independently of the
-        // trigger cadence, unless action 54 (Pause Timer) is in force.
-        if world.tick > 0 && world.tick.is_multiple_of(GAME_SECOND_TICKS) && !self.timer_paused {
+        // The countdown runs on game seconds, independently of the trigger
+        // cadence, unless action 54 (Pause Timer) or action 5 (Pause Game)
+        // is in force.
+        if world.tick > 0
+            && world.tick.is_multiple_of(GAME_SECOND_TICKS)
+            && !self.timer_paused
+            && !self.paused
+        {
             self.countdown_timer = self.countdown_timer.saturating_sub(1);
+        }
+        // A pause belongs to the trigger that issued it.  If that player
+        // leaves the game the trigger can never finish, so lift the pause.
+        if let Some((owner, _)) = self.state.pause_source
+            && world.players.get(owner).is_none_or(|p| p.defeated)
+        {
+            self.paused = false;
+            self.state.pause_source = None;
         }
         // Triggers first run at game start (elapsed time 0: `terran04`
         // sets its objectives on "Elapsed Time at most 0"), then on the
@@ -359,13 +376,26 @@ impl TriggerSystem {
         if !cycle {
             if self.state.fired.len() == world.players.len() {
                 for player in 0..world.players.len() {
+                    // While paused only the trigger that paused may resume
+                    // its Wait or Transmission; every other player is held.
+                    if self.paused
+                        && self
+                            .state
+                            .pause_source
+                            .is_some_and(|(owner, _)| owner != player)
+                    {
+                        continue;
+                    }
                     if world.tick < self.state.wait_until[player] {
                         continue;
                     }
-                    if let Some((ti, start)) = self.state.resume[player].take()
-                        && let Some(trigger) = self.triggers.get(ti).cloned()
+                    if let Some((ti, start)) = self.state.resume[player]
+                        && (!self.paused || self.state.pause_source == Some((player, ti)))
                     {
-                        self.run_actions(world, player, ti, &trigger, start);
+                        self.state.resume[player] = None;
+                        if let Some(trigger) = self.triggers.get(ti).cloned() {
+                            self.run_actions(world, player, ti, &trigger, start);
+                        }
                     }
                 }
             }
@@ -385,14 +415,30 @@ impl TriggerSystem {
             if world.players[player].defeated {
                 continue;
             }
+            // While paused no new trigger starts.  The player whose trigger
+            // paused the game may still resume its own Wait/Transmission.
+            if self.paused
+                && self
+                    .state
+                    .pause_source
+                    .is_some_and(|(owner, _)| owner != player)
+            {
+                continue;
+            }
             if world.tick < self.state.wait_until[player] {
                 continue;
             }
             // A previous Wait action resumes the rest of that trigger first.
-            if let Some((ti, start)) = self.state.resume[player].take() {
-                if let Some(trigger) = self.triggers.get(ti).cloned() {
-                    self.run_actions(world, player, ti, &trigger, start);
+            if let Some((ti, start)) = self.state.resume[player] {
+                if !self.paused || self.state.pause_source == Some((player, ti)) {
+                    self.state.resume[player] = None;
+                    if let Some(trigger) = self.triggers.get(ti).cloned() {
+                        self.run_actions(world, player, ti, &trigger, start);
+                    }
                 }
+                continue;
+            }
+            if self.paused {
                 continue;
             }
             for ti in 0..self.triggers.len() {
@@ -459,15 +505,21 @@ impl TriggerSystem {
                     // (`The Trump Card` opens with three).  INFERENCE from
                     // the public CHK trigger spec; falsifier: a retail
                     // recording where the lines overlap.
-                    self.execute(world, player, trigger, action);
+                    self.execute(world, player, trigger_index, action);
                     let ms = transmission_ms(action) as u64;
                     let ticks = (ms * crate::sim::TICKS_PER_SECOND as u64 / 1000).max(1);
                     self.state.wait_until[player] = world.tick + ticks;
                     self.state.resume[player] = Some((trigger_index, ai + 1));
                     return;
                 }
-                _ => self.execute(world, player, trigger, action),
+                _ => self.execute(world, player, trigger_index, action),
             }
+        }
+        // StarEdit: if the trigger that paused the game has no matching
+        // Unpause Game action, the game unpauses when that trigger finishes.
+        if self.state.pause_source == Some((player, trigger_index)) {
+            self.paused = false;
+            self.state.pause_source = None;
         }
     }
 
@@ -816,18 +868,6 @@ impl TriggerSystem {
             .collect()
     }
 
-    fn select_owner(&self, group: u32, current: usize) -> Option<usize> {
-        match group {
-            0..=11 => Some(group as usize),
-            13 => Some(current),
-            _ => None,
-        }
-    }
-
-    /// All players a trigger argument selects.  Group 12 is "All players";
-    /// group 13 is the current player.  Force groups are resolved to their
-    /// member players when the force bytes are present, otherwise they are
-    /// treated like "all".
     fn select_owners(&self, group: u32, current: usize) -> Vec<usize> {
         match group {
             0..=11 => vec![group as usize],
@@ -929,14 +969,52 @@ impl TriggerSystem {
         out
     }
 
+    fn next_doodad_state(current: bool, state: u8) -> bool {
+        match state {
+            0 | 5 => false,
+            4 => true,
+            6 => !current,
+            _ => current,
+        }
+    }
+
+    fn collect_doodads(
+        world: &World,
+        unit: u16,
+        location: u32,
+        locations: &[(i32, i32, i32, i32)],
+    ) -> Vec<usize> {
+        let mut out = Vec::new();
+        for (i, u) in world.units.iter().enumerate() {
+            if !u.alive || u.doodad_enabled.is_none() {
+                continue;
+            }
+            if !Self::unit_matches(world, u.type_id, unit) {
+                continue;
+            }
+            if location != 0 && location != 64 {
+                let Some(l) = locations.get(location as usize - 1) else {
+                    continue;
+                };
+                let x = u.x / 256;
+                let y = u.y / 256;
+                if !(x >= l.0 && x < l.2 && y >= l.1 && y < l.3) {
+                    continue;
+                }
+            }
+            out.push(i);
+            break;
+        }
+        out
+    }
+
     fn execute(
         &mut self,
         world: &mut World,
         player: usize,
-        _trigger: &Trigger,
+        trigger_index: usize,
         action: &TriggerAction,
     ) {
-        let owner = self.select_owner(action.group, player);
         match action.kind {
             // Victory and Defeat take no player argument: they end the game
             // for the player running the trigger (CHK `TRIG` spec).  Reading
@@ -1128,8 +1206,17 @@ impl TriggerSystem {
                 }
             }
             5 | 6 | 54 | 55 => match action.kind {
-                5 => self.paused = true,
-                6 => self.paused = false,
+                5 => {
+                    // Pause Game has no effect for computer players.
+                    if world.players.get(player).is_some_and(|p| !p.is_computer) {
+                        self.paused = true;
+                        self.state.pause_source = Some((player, trigger_index));
+                    }
+                }
+                6 => {
+                    self.paused = false;
+                    self.state.pause_source = None;
+                }
                 54 => self.timer_paused = true,
                 55 => self.timer_paused = false,
                 _ => {}
@@ -1238,8 +1325,8 @@ impl TriggerSystem {
                             world.units[i].hp = (max * percent / 100).max(1);
                         }
                         50 => {
-                            world.units[i]
-                                .set_energy_fixed(crate::sim::MAX_ENERGY * 256 * percent / 100);
+                            let cap = world.units[i].energy_cap;
+                            world.units[i].set_energy_fixed(cap * percent / 100);
                         }
                         51 => {
                             let ty = world.data.unit(world.units[i].type_id);
@@ -1384,24 +1471,28 @@ impl TriggerSystem {
                 });
             }
             41 => self.next_scenario = Some(action.text_id.saturating_sub(1)),
-            42 | 43 => {
+            42 => {
+                let targets =
+                    Self::collect_doodads(world, action.extra, action.location, &self.locations);
+                if let Some(&i) = targets.first() {
+                    let current = world.units[i].doodad_enabled.unwrap_or(false);
+                    world.units[i].doodad_enabled =
+                        Some(Self::next_doodad_state(current, action.num));
+                }
+            }
+            43 => {
                 let owners = self.select_owners(action.group, player);
                 let targets = Self::collect_targets(
                     world,
                     &owners,
                     action.extra,
-                    if action.kind == 42 { 1 } else { 0 },
+                    0,
                     action.location,
                     &self.locations,
                 );
                 for i in targets {
-                    if action.kind == 42 {
-                        let current = world.units[i].doodad_enabled.unwrap_or(false);
-                        world.units[i].doodad_enabled = Some(Self::next_state(current, action.num));
-                    } else {
-                        world.units[i].invincible =
-                            Self::next_state(world.units[i].invincible, action.num);
-                    }
+                    world.units[i].invincible =
+                        Self::next_state(world.units[i].invincible, action.num);
                 }
             }
             58 | 59 => {
@@ -1413,30 +1504,26 @@ impl TriggerSystem {
                 world.winner = None;
             }
             57 => {
-                // Set Alliance Status: group=player the trigger runs for,
-                // extra=0 enemy / 1 ally / 2 allied victory.
-                let Some(o) = owner else {
-                    return;
-                };
-                let targets = self.select_owners(action.group2, player);
-                let status = action.extra;
-                // Ally/allied-victory also converts every player already
-                // allied with the trigger's player (retail rule).
-                let old_team = world.players[o].team;
-                for target in targets {
-                    if target >= world.players.len() || target == o {
+                // Set Alliance Status: `group` is the Player argument and
+                // `group2` is unused (zero in every shipped use).  `extra`
+                // is 0 enemy / 1 ally / 2 allied victory; any other value
+                // is an enemy.
+                let old_team = world.players[player].team;
+                let ally = action.extra == 1 || action.extra == 2;
+                let mut matched = false;
+                for target in self.select_owners(action.group, player) {
+                    if target >= world.players.len() || target == player {
                         continue;
                     }
-                    if status == 0 {
-                        world.players[target].team = old_team.wrapping_add(1);
-                    } else {
+                    if ally {
                         world.players[target].team = old_team;
-                        for p in 0..world.players.len() {
-                            if p != o && world.players[p].team == old_team {
-                                world.players[p].team = old_team;
-                            }
-                        }
+                    } else if world.players[target].team == old_team {
+                        world.players[target].team = old_team.wrapping_add(1);
                     }
+                    matched = true;
+                }
+                if matched {
+                    world.players[player].allied_victory = action.extra == 2;
                 }
             }
             _ => {}
@@ -1776,7 +1863,10 @@ mod tests {
         let max = w.data.unit(crate::ids::unit::MARINE).hit_points_raw as i32;
         for u in marines {
             assert_eq!(u.hp, (max * 50 / 100).max(1));
-            assert_eq!(u.resource_amount, 123);
+            assert_eq!(
+                u.resource_amount, 0,
+                "only units.dat flag 0x2000 takes resources"
+            );
             assert!(u.invincible);
         }
     }
@@ -2006,11 +2096,11 @@ mod tests {
 
     #[test]
     fn set_alliance_status_stops_two_players_fighting() {
-        // Player 1 (index 0) allies with player 2 (index 1): action 57,
-        // group 13 (current player), group2 = player 2, extra 1 (ally).
+        // Shipped layout: Player argument is `group` (player 2); `group2`
+        // is unused; extra 1 allies the target with the trigger's player.
         let mut r = record(22, 57, 0);
-        r[320 + 16..320 + 20].copy_from_slice(&13u32.to_le_bytes());
-        r[320 + 20..320 + 24].copy_from_slice(&1u32.to_le_bytes());
+        r[320 + 16..320 + 20].copy_from_slice(&1u32.to_le_bytes());
+        r[320 + 20..320 + 24].copy_from_slice(&0u32.to_le_bytes());
         r[320 + 24..320 + 26].copy_from_slice(&1u16.to_le_bytes());
         let mut t = TriggerSystem::parse(&r, &[]);
         let mut w = world();
@@ -2071,13 +2161,15 @@ mod tests {
         let locations = vec![(0, 0, 64, 64), (64, 64, 128, 128)];
         let mut r = record(22, 42, 0);
         r[320..320 + 4].copy_from_slice(&1u32.to_le_bytes());
-        r[320 + 24..320 + 26].copy_from_slice(&crate::ids::unit::MARINE.to_le_bytes());
-        r[320 + 27] = 5; // disable
+        r[320 + 24..320 + 26].copy_from_slice(&0xcdu16.to_le_bytes());
+        r[320 + 27] = 5; // disable/open
         let mut t = TriggerSystem::parse(&r, &locations);
         let mut w = world();
-        let id = w.spawn_px(0, crate::ids::unit::MARINE, 32, 32).unwrap();
+        let door = w.spawn_px(0, 0xcd, 32, 32).unwrap();
+        w.units[door].doodad_enabled = Some(true);
         t.process(&mut w);
-        assert_eq!(w.units[id].doodad_enabled, Some(false));
+        assert_eq!(w.units[door].doodad_enabled, Some(false));
+        let id = w.spawn_px(0, crate::ids::unit::MARINE, 32, 32).unwrap();
 
         let mut o = record(22, 46, 0);
         o[320..320 + 4].copy_from_slice(&1u32.to_le_bytes());

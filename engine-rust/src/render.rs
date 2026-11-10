@@ -295,8 +295,39 @@ impl Framebuffer {
 }
 
 /// 256-colour palette.  WPE files are stored as RGBX; `Units.pal` is RGB.
+#[derive(Clone)]
 pub struct Palette {
     pub colors: [Rgb; 256],
+}
+
+/// Palette ranges the retail engine cycles for each tileset.  From the
+/// classic rotator sets: badlands/jungle have three rotators, ashworld
+/// three, desert/ice/twilight two and platform/installation none.
+fn color_cycle_ranges(name: &str) -> &'static [(usize, usize)] {
+    match name {
+        "badlands" | "jungle" => &[(1, 6), (7, 13), (248, 254)],
+        "ashworld" => &[(1, 4), (5, 8), (9, 13)],
+        "desert" | "ice" | "twilight" => &[(1, 13), (248, 254)],
+        _ => &[],
+    }
+}
+
+/// Rotate `colors[min..=max]` right by `rotations` positions: the retail
+/// colour cycle wraps the rightmost entry back to `min`.
+fn rotate_palette(colors: &mut [Rgb; 256], min: usize, max: usize, rotations: u64) {
+    if max >= 256 || max <= min {
+        return;
+    }
+    let len = max - min + 1;
+    let n = (rotations % len as u64) as usize;
+    if n == 0 {
+        return;
+    }
+    let mut old = [Rgb(0); 256];
+    old[min..=max].copy_from_slice(&colors[min..=max]);
+    for i in 0..len {
+        colors[min + (i + n) % len] = old[min + i];
+    }
 }
 
 impl Palette {
@@ -463,6 +494,11 @@ pub struct Tileset {
     hd: Option<Vec<Option<Box<[u32]>>>>,
     pub minimap: Vec<Rgb>,
     pub minimap_size: (usize, usize),
+    /// Terrain palette before colour cycling, restored when the option is
+    /// off or the animation phase is recomputed.
+    base_palette: Palette,
+    /// Number of palette rotations already applied.
+    cycle_rotations: u64,
     /// SD creep-edge frames (`tileset/<era>.grp`, 37 palette-indexed frames
     /// with their offsets inside the 32 px tile), when the install has them.
     creep_grp: Option<Grp>,
@@ -527,6 +563,8 @@ pub struct HdTerrain {
     /// `(offset, len)` of each megatile's DDS payload.
     records: Vec<(usize, usize)>,
     cache: std::cell::RefCell<HashMap<(usize, usize), TilePixels>>,
+    /// Megatiles whose SD pixels use a colour-cycled palette range.
+    water: std::cell::RefCell<HashMap<usize, bool>>,
     /// 4x creep-edge frames (`tileset/<era>.dds.grp`) with their SD
     /// placement (`tileset/<era>.grp`: x/y offset inside the 32 px tile).
     creep_edges: Vec<(crate::dds::DdsImage, u8, u8)>,
@@ -606,6 +644,7 @@ impl HdTerrain {
             bytes,
             records,
             cache: Default::default(),
+            water: Default::default(),
             creep_edges: Vec::new(),
         })
     }
@@ -665,6 +704,16 @@ impl HdTerrain {
         Some(t)
     }
 
+    /// Cached "does this HD megatile overlay animated water/lava" lookup.
+    fn is_water(&self, tileset: &Tileset, mega: usize) -> bool {
+        if let Some(v) = self.water.borrow().get(&mega) {
+            return *v;
+        }
+        let v = tileset.megatile_cycles(mega);
+        self.water.borrow_mut().insert(mega, v);
+        v
+    }
+
     /// Draw the terrain of `scenario` into the screen rectangle `dest`
     /// (`x, y, w, h`), with the camera at game px `cam` and `s` screen px per
     /// game px.  `tileset` resolves MTXM entries to megatiles; tiles for
@@ -680,6 +729,7 @@ impl HdTerrain {
         dest: (i32, i32, i32, i32),
         s: f32,
         creep: &dyn Fn(i32, i32) -> Option<u16>,
+        cycle: Option<u64>,
     ) {
         let size = (TILE_PX as f32 * s).round().max(1.0) as usize;
         let (dx, dy, dw, dh) = dest;
@@ -692,7 +742,7 @@ impl HdTerrain {
         // Tile list first (the megatile cache is single-threaded), then the
         // blits in parallel horizontal bands (`par_bands`), then the creep
         // edges.  Draw order inside a band is unchanged.
-        let mut tiles: Vec<(i32, i32, TilePixels)> = Vec::new();
+        let mut tiles: Vec<(i32, i32, TilePixels, bool)> = Vec::new();
         let mut edges: Vec<(i32, i32, i32, i32)> = Vec::new();
         for ty in first_y..last_y {
             for tx in first_x..last_x {
@@ -705,34 +755,31 @@ impl HdTerrain {
                 let sx = dx + ((tx * TILE_PX - cam.0) as f32 * s).round() as i32;
                 let sy = dy + ((ty * TILE_PX - cam.1) as f32 * s).round() as i32;
                 let mtxm = creep(tx, ty).unwrap_or(mtxm);
-                let group = ((mtxm >> 4) & 0x7ff) as usize;
-                let bg = tileset.background_megatile(group) as usize;
                 let mega = tileset.megatile(mtxm) as usize;
-                // Group background first, then the tile's own megatile
-                // (its cut-out alpha reveals the background), as in SD.
-                let layers: &[usize] = if mega == bg { &[bg] } else { &[bg, mega] };
-                for &m in layers {
-                    if let Some(px) = self.tile(m, size) {
-                        tiles.push((sx, sy, px));
-                    }
+                if let Some(px) = self.tile(mega, size) {
+                    let water = cycle.is_some() && self.is_water(tileset, mega);
+                    tiles.push((sx, sy, px, water));
                 }
                 edges.push((tx, ty, sx, sy));
             }
         }
         let clip = (dx, dy, dx + dw, dy + dh);
-        let draws: Vec<(i32, i32, &[u32])> =
-            tiles.iter().map(|(x, y, p)| (*x, *y, &p[..])).collect();
+        let phase = cycle.unwrap_or(0);
+        let draws: Vec<(i32, i32, &[u32], Option<f32>)> = tiles
+            .iter()
+            .map(|(x, y, p, water)| (*x, *y, &p[..], water.then(|| water_tint(phase))))
+            .collect();
         let (fw, fh) = (fb.width, fb.height);
         let stride = fw as usize;
         par_bands(&mut fb.pixels, stride, |first, band| {
             let rows = (band.len() / stride) as i32;
             let (b0, b1) = (first as i32, first as i32 + rows);
-            for &(sx, sy, px) in &draws {
+            for &(sx, sy, px, tint) in &draws {
                 if sy + size as i32 <= b0 || sy >= b1 {
                     continue;
                 }
                 let band_clip = (clip.0, clip.1.max(b0), clip.2, clip.3.min(b1));
-                blit_tile_rows(band, stride, fw, fh, b0, px, size, sx, sy, band_clip);
+                blit_tile_rows(band, stride, fw, fh, b0, px, size, sx, sy, band_clip, tint);
             }
         });
         for (tx, ty, sx, sy) in edges {
@@ -755,6 +802,15 @@ impl HdTerrain {
             }
         }
     }
+}
+
+/// Brightness factor for HD water pixels at a colour-cycle phase.  The HD
+/// megatiles are pre-coloured DDS, so the SD palette rotation cannot be
+/// applied directly; a small luminance wave on the blue texels reproduces
+/// the visible classic water animation at the same 8-rotations/second rate.
+fn water_tint(phase: u64) -> f32 {
+    let t = (phase % 16) as f32 / 16.0 * std::f32::consts::TAU;
+    1.0 + 0.08 * t.sin()
 }
 
 /// Retail draws the HD terrain darker than the raw texels: lit grass and
@@ -1162,6 +1218,7 @@ fn blit_tile_rows(
     sx: i32,
     sy: i32,
     clip: (i32, i32, i32, i32),
+    tint: Option<f32>,
 ) {
     let x_lo = clip.0.max(sx).max(0);
     let x_hi = clip.2.min(sx + size as i32).min(fw);
@@ -1178,7 +1235,18 @@ fn blit_tile_rows(
             if a == 0 {
                 continue;
             }
-            let fg = Rgb(p & 0x00ff_ffff);
+            let mut fg = Rgb(p & 0x00ff_ffff);
+            if let Some(factor) = tint {
+                let r = (fg.0 >> 16) & 0xff;
+                let g = (fg.0 >> 8) & 0xff;
+                let b = fg.0 & 0xff;
+                // Only the blue water/lava texels shimmer; cliffs and shore
+                // art in the same megatile keep their colour.
+                if b > r && b >= g {
+                    let scale = |c: u32| ((c as f32 * factor).round().clamp(0.0, 255.0)) as u32;
+                    fg = Rgb((scale(r) << 16) | (scale(g) << 8) | scale(b));
+                }
+            }
             let d = &mut dst[x as usize];
             *d = if a == 255 {
                 fg.0
@@ -1266,7 +1334,9 @@ impl Tileset {
         let palette = Palette::from_wpe(&load("wpe")?);
         let mut ts = Self {
             name: name.to_string(),
+            base_palette: palette.clone(),
             palette,
+            cycle_rotations: 0,
             cv5,
             vx4,
             vr4,
@@ -1290,6 +1360,56 @@ impl Tileset {
         Some(ts)
     }
 
+    /// Apply the retail terrain colour cycles (water, lava and the
+    /// `248..254` glow range) at `game_ticks`.  One rotation happens every
+    /// eight classic 15.615 ms ticks (125 ms), i.e. every three simulation
+    /// ticks at 24 Hz.  Disabling the option restores the base palette.
+    pub fn update_color_cycle(&mut self, game_ticks: u64, enabled: bool) {
+        if !enabled {
+            if self.cycle_rotations != 0 {
+                self.palette = self.base_palette.clone();
+                self.cycle_rotations = 0;
+            }
+            return;
+        }
+        let rotations = game_ticks / 3;
+        if rotations == self.cycle_rotations {
+            return;
+        }
+        self.cycle_rotations = rotations;
+        self.palette = self.base_palette.clone();
+        for &(min, max) in color_cycle_ranges(&self.name) {
+            rotate_palette(&mut self.palette.colors, min, max, rotations);
+        }
+    }
+
+    /// Whether a megatile's SD art uses one of this tileset's colour-cycled
+    /// palette ranges: the HD terrain uses this to animate water/lava even
+    /// though its megatiles are pre-coloured DDS surfaces.
+    pub fn megatile_cycles(&self, mega: usize) -> bool {
+        let ranges = color_cycle_ranges(&self.name);
+        if ranges.is_empty() {
+            return false;
+        }
+        for k in 0..16 {
+            let Some(vid) = u32_at(&self.vx4, mega * 64 + k * 4) else {
+                continue;
+            };
+            let vr = (vid >> 1) as usize;
+            let Some(slice) = self.vr4.get(vr * 64..vr * 64 + 64) else {
+                continue;
+            };
+            if slice.iter().any(|c| {
+                ranges
+                    .iter()
+                    .any(|&(min, max)| (*c as usize) >= min && (*c as usize) <= max)
+            }) {
+                return true;
+            }
+        }
+        false
+    }
+
     /// The tileset's `cv5` group table (MTXM entry -> megatile).
     pub fn cv5(&self) -> &[u8] {
         &self.cv5
@@ -1300,16 +1420,6 @@ impl Tileset {
         let group = ((mtxm >> 4) & 0x7ff) as usize;
         let index = (mtxm & 0x0f) as usize;
         u16_at(&self.cv5, group * 52 + 20 + index * 2).unwrap_or(0)
-    }
-
-    /// Megatile painted underneath a group's 16 tiles.
-    ///
-    /// CV5 stores a group background at `+10`; the per-tile megatiles are
-    /// mostly transparent (cliffs, edges, space), so without this layer the
-    /// holes show whatever was in the framebuffer (black).
-    #[inline]
-    pub fn background_megatile(&self, group: usize) -> u16 {
-        u16_at(&self.cv5, group * 52 + 10).unwrap_or(0)
     }
 
     /// Paint one megatile (4x4 minitiles, 32x32 px) at `(sx, sy)`.
@@ -1329,9 +1439,6 @@ impl Tileset {
                         let Some(&c) = self.vr4.get(src) else {
                             continue;
                         };
-                        if c == 0 {
-                            continue;
-                        }
                         fb.put(
                             sx + mx as i32 * 8 + px as i32,
                             sy + my as i32 * 8 + py as i32,
@@ -1349,19 +1456,10 @@ impl Tileset {
     /// the tile's own megatile (whose transparent pixels reveal the
     /// background).
     pub fn draw_tile(&self, fb: &mut Framebuffer, mtxm: u16, sx: i32, sy: i32) {
-        let group = ((mtxm >> 4) & 0x7ff) as usize;
-        let bg = self.background_megatile(group) as usize;
-        if self.hd.is_some() {
-            self.draw_hd_megatile(fb, bg, sx, sy);
-            let mega = self.megatile(mtxm) as usize;
-            if mega != bg {
-                self.draw_hd_megatile(fb, mega, sx, sy);
-            }
-            return;
-        }
-        self.draw_megatile(fb, bg, sx, sy);
         let mega = self.megatile(mtxm) as usize;
-        if mega != bg {
+        if self.hd.is_some() {
+            self.draw_hd_megatile(fb, mega, sx, sy);
+        } else {
             self.draw_megatile(fb, mega, sx, sy);
         }
     }
@@ -1669,8 +1767,11 @@ fn sprite_path(type_id: u16) -> Option<&'static str> {
         uid::DEFILER => "zerg/defiler.grp",
         uid::COCOON => "zerg/cocoon.grp",
         uid::EGG => "zerg/egg.grp",
+        uid::LURKER_EGG => "zerg/lurkegg.grp",
         uid::LARVA => "zerg/larva.grp",
         uid::LURKER => "zerg/lurker.grp",
+        0xcd | 0xce => "unit/thingy/tileset/install/crdoor1.grp",
+        0xcf | 0xd0 => "unit/thingy/tileset/install/didoor1.grp",
         uid::CORSAIR => "protoss/corsair.grp",
         uid::DARK_TEMPLAR => "protoss/dtemplar.grp",
         uid::DARK_ARCHON => "protoss/darchn.grp",
@@ -1889,8 +1990,13 @@ impl SpriteBank {
             uid::DEFILER,
             uid::COCOON,
             uid::EGG,
+            uid::LURKER_EGG,
             uid::LARVA,
             uid::LURKER,
+            0xcd,
+            0xce,
+            0xcf,
+            0xd0,
             uid::CORSAIR,
             uid::DARK_TEMPLAR,
             uid::DARK_ARCHON,
@@ -1994,16 +2100,34 @@ impl SpriteBank {
         tick: u64,
         pose: Option<u16>,
     ) -> bool {
+        self.draw_unit_turned(fb, unit, screen, tick, pose, unit.facing)
+    }
+
+    /// [`Self::draw_unit_posed`] with a render-only facing, used by the
+    /// Video option "Smooth Unit Turning": the simulation keeps its exact
+    /// byte facing while the drawn sprite turns through the intermediate
+    /// GRP directions.
+    pub fn draw_unit_turned(
+        &self,
+        fb: &mut Framebuffer,
+        unit: &SimUnit,
+        screen: (i32, i32),
+        tick: u64,
+        pose: Option<u16>,
+        facing: u8,
+    ) -> bool {
         let Some(grp) = self.grps.get(&unit.type_id) else {
             return false;
         };
-        let index = sd_frame_index(
-            grp.frames.len(),
-            unit.facing,
-            pose,
-            !unit.path.is_empty(),
-            tick,
-        );
+        let index = if matches!(unit.type_id, 0xcd..=0xd0) {
+            if unit.doodad_enabled == Some(false) {
+                grp.frames.len().saturating_sub(1)
+            } else {
+                0
+            }
+        } else {
+            sd_frame_index(grp.frames.len(), facing, pose, !unit.path.is_empty(), tick)
+        };
         let Some(frame) = grp.frame(index) else {
             return false;
         };
@@ -2357,7 +2481,7 @@ mod par_bands_tests {
 
 #[cfg(test)]
 mod sd_pose_tests {
-    use super::sd_frame_index;
+    use super::{Rgb, color_cycle_ranges, rotate_palette, sd_frame_index, water_tint};
 
     #[test]
     fn the_sd_view_uses_the_iscript_pose_when_it_has_one() {
@@ -2384,5 +2508,78 @@ mod sd_pose_tests {
             "out of range pose ignored"
         );
         assert_eq!(sd_frame_index(4, 0, Some(34), true, 3), 0, "static GRP");
+    }
+
+    #[test]
+    fn hd_megatiles_mark_their_colour_cycled_water() {
+        use crate::map::Scenario;
+        let raw = std::fs::read("assets/maps/(2)Challenger.chk").expect("bundled map");
+        let sc = Scenario::parse(&raw).expect("parse");
+        let ts = super::Tileset::load(std::path::Path::new("assets/TileSet"), sc.era, &sc)
+            .expect("tileset");
+        assert!(
+            (0..ts.vx4.len() / 64).any(|m| ts.megatile_cycles(m)),
+            "the badlands tileset has water megatiles"
+        );
+        let raw = std::fs::read("assets/maps/(2)Space Madness.chk").expect("platform map");
+        let sc = Scenario::parse(&raw).expect("parse");
+        let ts = super::Tileset::load(std::path::Path::new("assets/TileSet"), sc.era, &sc)
+            .expect("tileset");
+        assert!(
+            !(0..ts.vx4.len() / 64).any(|m| ts.megatile_cycles(m)),
+            "platform tilesets have no rotator set"
+        );
+        assert!(water_tint(4) > 1.0);
+        assert!(water_tint(12) < 1.0);
+        assert!((water_tint(0) - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn color_cycle_rotates_the_retail_ranges() {
+        let mut colors = [Rgb(0); 256];
+        for (i, c) in colors.iter_mut().enumerate() {
+            *c = Rgb::new(i as u8, 0, 0);
+        }
+        rotate_palette(&mut colors, 1, 6, 1);
+        assert_eq!(colors[1], Rgb::new(6, 0, 0), "max wraps to min");
+        assert_eq!(colors[2], Rgb::new(1, 0, 0));
+        assert_eq!(colors[7], Rgb::new(7, 0, 0), "other ranges untouched");
+        rotate_palette(&mut colors, 248, 254, 2);
+        assert_eq!(colors[249], Rgb::new(254, 0, 0), "max wraps by two");
+        assert_eq!(colors[250], Rgb::new(248, 0, 0));
+
+        assert_eq!(
+            color_cycle_ranges("badlands"),
+            &[(1, 6), (7, 13), (248, 254)]
+        );
+        assert_eq!(color_cycle_ranges("ashworld"), &[(1, 4), (5, 8), (9, 13)]);
+        assert_eq!(
+            color_cycle_ranges("ice"),
+            &[(1, 13), (248, 254)],
+            "desert, ice and twilight share the long range"
+        );
+        assert!(color_cycle_ranges("platform").is_empty());
+        assert!(color_cycle_ranges("installation").is_empty());
+    }
+
+    #[test]
+    fn door_types_use_the_install_thingy_grps() {
+        use crate::render::sprite_path;
+        assert_eq!(
+            sprite_path(0xcd),
+            Some("unit/thingy/tileset/install/crdoor1.grp")
+        );
+        assert_eq!(
+            sprite_path(0xce),
+            Some("unit/thingy/tileset/install/crdoor1.grp")
+        );
+        assert_eq!(
+            sprite_path(0xcf),
+            Some("unit/thingy/tileset/install/didoor1.grp")
+        );
+        assert_eq!(
+            sprite_path(0xd0),
+            Some("unit/thingy/tileset/install/didoor1.grp")
+        );
     }
 }

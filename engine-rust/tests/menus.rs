@@ -137,10 +137,9 @@ fn sc_view_supports_every_menu_shot_screen() {
 #[test]
 fn main_menu_and_options_match_the_2026_11_08_captures() {
     let src = include_str!("../src/bin/sc_view.rs");
-    // The retail frame prints the account tag above the title frame, and
-    // the offline news panel shows a loading ring instead of the
-    // reconstruction introduction the earlier build put there.
-    assert!(src.contains("cotizcesar#1532"));
+    // The retail frame prints the build footer, but this build must not
+    // hard-code a Blizzard account tag.
+    assert!(!src.contains("ACCOUNT_TAG"));
     assert!(src.contains("MENU_SPINNER_RADIUS_UI"));
     assert!(!src.contains("Welcome, Commander"));
     // Video → Display Mode and Game → Language open-select states.

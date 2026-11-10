@@ -21,8 +21,8 @@
 //!   Ctrl/Alt-C centre, Shift-F2..F4 / F2..F4 map locations
 //! * `--display wayland|x11` (or `GALAXYCRAFT_DISPLAY`): display backend
 //!
-//! Headless screens: `--shot FILE --shot-screen
-//! intro|menu|briefing|mission|selection|pause|leaderboard|stats|victory|defeat|score`.
+//! Headless screens: `--shot FILE --shot-screen`
+//! `intro|menu|episode|briefing|mission|ready|collections|collections-carbot|pause|leaderboard|stats|victory|defeat|score`.
 
 // A player-facing window on Windows: no console (stderr goes nowhere; the
 // missing-install case shows its own message window).
@@ -32,6 +32,37 @@ use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Video option "Pillarbox": the game screens draw into a centred 4:3 box.
+/// Stored outside `App::content_rect`, which is called from free helpers and
+/// tests without an `App`; the frame update sets it from the option.
+static GAME_PILLARBOX: AtomicBool = AtomicBool::new(false);
+
+/// Unit ids covered by the shipped PreSale bonus skin (`anim/presale/`):
+/// Scourge, Command Center, Infested Command Center, Hatchery, Lair, Hive
+/// and Nexus (`hd2/anim/presale/skin.json`).
+const PRESALE_SKIN_UNITS: [u16; 7] = [
+    uid::SCOURGE,
+    uid::COMMAND_CENTER,
+    uid::INFESTED_COMMAND_CENTER,
+    uid::HATCHERY,
+    uid::LAIR,
+    uid::HIVE,
+    uid::NEXUS,
+];
+
+/// HD skin id for `type_id`: the Carbot unit collection (2) covers every
+/// unit while it is equipped; otherwise "Show Bonus Skins" selects the
+/// shipped PreSale set (1) for its seven units, and 0 is the base art.
+fn unit_skin_id(type_id: u16, options: &GameOptions) -> u8 {
+    if options.game_unit_skin == 2 {
+        2
+    } else if options.game_bonus_skins && PRESALE_SKIN_UNITS.contains(&type_id) {
+        1
+    } else {
+        0
+    }
+}
 use std::sync::mpsc::{Receiver, SyncSender};
 use std::time::{Duration, Instant};
 
@@ -51,8 +82,8 @@ use galaxycraft::menu::{
     GameDialog, GameDialogAction, GameOptions, HotkeyRace, LobbyRace, MenuScreen, OptionsTab,
 };
 use galaxycraft::net::{
-    Announce, DEFAULT_TICKS_PER_TURN, Lobby, Lockstep, Msg, TcpTransport, Transport, announcer,
-    broadcast, client_turn, discover, discovery_socket,
+    Announce, Lobby, Lockstep, Msg, TcpTransport, Transport, announcer, broadcast, client_turn,
+    discover, discovery_socket,
 };
 use galaxycraft::render::{
     Framebuffer, Rgb, SpriteBank, TILE_PX, Tileset, asset_root, draw_unit_box, era_name,
@@ -67,6 +98,9 @@ use galaxycraft::ui_art::{ConsoleArt, GlueArt};
 use galaxycraft::video::{PosterFrame, RgbaFrame, VideoInfo, VideoStore};
 use galaxycraft::voice::{VoiceBank, VoiceCue};
 
+/// Optional gamepad backend (turns a controller into mouse/keyboard intent).
+#[path = "sc_view/gamepad.rs"]
+mod gamepad;
 /// Multiplayer front end (Select Connection, Games, Create, lobby, score).
 #[path = "sc_view/mp.rs"]
 mod mp;
@@ -380,6 +414,117 @@ fn save_dirs() -> (PathBuf, PathBuf) {
     (base.join("saves"), base.join("replays"))
 }
 
+/// Decode a classic glue string (`rc3.json`): the value encodes the hotkey
+/// before `\\u0004` and its position with `\\u0001`.
+fn decode_glue_string(value: &str) -> String {
+    let unescape = |value: &str| -> String {
+        let mut out = String::new();
+        let mut chars = value.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c != '\\' {
+                out.push(c);
+                continue;
+            }
+            match chars.peek().copied() {
+                Some('n') => {
+                    chars.next();
+                    out.push('\n');
+                }
+                Some('t') => {
+                    chars.next();
+                    out.push('\t');
+                }
+                Some('\\') => {
+                    chars.next();
+                    out.push('\\');
+                }
+                Some('u') => {
+                    chars.next();
+                    let hex: String = chars.by_ref().take(4).collect();
+                    if let Ok(code) = u32::from_str_radix(&hex, 16)
+                        && let Some(ch) = char::from_u32(code)
+                    {
+                        out.push(ch);
+                    }
+                }
+                _ => out.push(c),
+            }
+        }
+        out
+    };
+    let decoded = unescape(value);
+    if let Some(pos) = decoded.find('\u{4}') {
+        let prefix = &decoded[..pos];
+        let suffix = &decoded[pos + 1..];
+        let mut text: String = prefix.chars().skip(1).collect();
+        text.extend(suffix.chars().filter(|c| *c != '\u{1}'));
+        text
+    } else {
+        decoded
+            .chars()
+            .filter(|c| !c.is_control() || *c == '\n')
+            .collect()
+    }
+}
+
+/// Decode a `locales/<locale>/assets/rez/<file>` string list into
+/// `Key -> display text`, falling back to `enus` when the locale has no file.
+fn load_json_strings(
+    install: Option<&RetailInstall>,
+    file: &str,
+) -> std::collections::HashMap<String, String> {
+    let Some(install) = install else {
+        return Default::default();
+    };
+    let path = format!("locales/{}/assets/rez/{file}", install.locale());
+    let bytes = install
+        .read_by_path(&path)
+        .or_else(|_| install.read_by_path(&format!("locales/enus/assets/rez/{file}")));
+    match bytes {
+        Ok(bytes) => parse_json_strings(&bytes),
+        Err(_) => Default::default(),
+    }
+}
+
+/// Parse one shipped `[{"Key","Value"}]` string list (`rc3.json`,
+/// `gluall.json`) into decoded display text.
+fn parse_json_strings(bytes: &[u8]) -> std::collections::HashMap<String, String> {
+    let text = String::from_utf8_lossy(bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes));
+    let Ok(entries) = serde_json::from_str::<Vec<serde_json::Value>>(&text) else {
+        return Default::default();
+    };
+    entries
+        .into_iter()
+        .filter_map(|entry| {
+            let key = entry.get("Key")?.as_str()?.to_string();
+            let value = entry.get("Value")?.as_str()?;
+            Some((key, decode_glue_string(value)))
+        })
+        .collect()
+}
+
+/// Classic `rc3.json` labels for the selected locale (`gluMain-*`, dialog
+/// buttons, in-game menu entries).
+fn load_ui_strings(install: Option<&RetailInstall>) -> std::collections::HashMap<String, String> {
+    load_json_strings(install, "rc3.json")
+}
+
+/// Remastered CEF chrome strings (`gluall.json`): the Options panel, Create
+/// Game, lobby and Hotkeys labels that the classic `rc3.json` lacks.
+fn load_cef_strings(install: Option<&RetailInstall>) -> std::collections::HashMap<String, String> {
+    load_json_strings(install, "gluall.json")
+}
+
+/// Last language chosen in Options; read on the next launch because retail
+/// requires a restart to change the locale.
+fn saved_locale_path() -> PathBuf {
+    save_dirs()
+        .0
+        .parent()
+        .map(|p| p.join("locale.txt"))
+        .unwrap_or_else(|| galaxycraft::retail::user_cache_root().join("locale.txt"))
+}
+
 /// Pre-`GCPF` per-profile campaign progress (`GCPR`); read once to migrate.
 fn progress_save_path() -> Option<PathBuf> {
     save_dirs().0.parent().map(|p| p.join("campaign.bin"))
@@ -628,6 +773,41 @@ fn cursor_scale_for_height(height: i32) -> f32 {
     (height.max(1) as f32 / CURSOR_ASSET_HEIGHT).max(0.02)
 }
 
+/// Which retail target cursor matches the unit under the pointer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CursorTarget {
+    /// Own unit or building (`cursor/targg.dds.grp`).
+    Own,
+    /// Hostile unit or building (`cursor/targr.dds.grp`).
+    Enemy,
+    /// Neutral unit or resource (`cursor/targy.dds.grp`).
+    Neutral,
+}
+
+/// Retail pointer skins.  The executable's cursor table (x86/StarCraft.exe
+/// `0x00f07450..0x00f07480`) lists `TargY`, `TargR`, `TargG` and `TargN`
+/// with two frames, animation enabled and a centred `(0.5, 0.5)` hotspot;
+/// the scroll cursors use edge hotspots in the same table.  The target art is
+/// therefore centred on the pointer, unlike the arrow whose tip is its
+/// top-left corner.
+#[derive(Clone, Debug, Default)]
+struct CursorArt {
+    arrow: Option<galaxycraft::dds::DdsGrp>,
+    own: Option<galaxycraft::dds::DdsGrp>,
+    enemy: Option<galaxycraft::dds::DdsGrp>,
+    neutral: Option<galaxycraft::dds::DdsGrp>,
+}
+
+impl CursorArt {
+    fn target(&self, target: CursorTarget) -> Option<&galaxycraft::dds::DdsGrp> {
+        match target {
+            CursorTarget::Own => self.own.as_ref(),
+            CursorTarget::Enemy => self.enemy.as_ref(),
+            CursorTarget::Neutral => self.neutral.as_ref(),
+        }
+    }
+}
+
 /// Authored-frame timeline for a menu layer: `(aligned_start, remaining
 /// frames, playback seconds at 10.5 fps)`.  Kept pure so the retail rates
 /// measured on the live client are unit-tested without a video decoder.
@@ -707,6 +887,73 @@ fn blit_cursor_scaled(
                     a8,
                 ),
             );
+        }
+    }
+}
+
+/// Paint the virtual pointer: the retail animated target cursor over a unit
+/// or resource, the retail arrow over terrain, otherwise the 12x18 fallback
+/// arrow.  Kept as a free function so the rendering path is covered without
+/// constructing the whole `App`.
+fn draw_virtual_cursor(
+    fb: &mut Framebuffer,
+    pointer: Option<(i32, i32)>,
+    art: Option<&CursorArt>,
+    target: Option<CursorTarget>,
+    elapsed: Duration,
+) {
+    let Some((mx, my)) = pointer else {
+        return;
+    };
+    let scale = cursor_scale_for_height(fb.height);
+    // `TargG/TargR/TargY` carry a `(0.5, 0.5)` hotspot in the executable's
+    // cursor table, so the oval pulses around the pointer instead of hanging
+    // below it.  Their two frames share the 6 fps cursor clock measured for
+    // the arrow (ten 60 Hz samples per authored frame).
+    if let Some(grp) = art.and_then(|a| target.and_then(|t| a.target(t)))
+        && !grp.frames.is_empty()
+    {
+        let frame = cursor_frame_index(elapsed, grp.frames.len());
+        if let Some(img) = grp.frames.get(frame) {
+            let w = (img.width as f32 * scale).round().max(1.0) as i32;
+            let h = (img.height as f32 * scale).round().max(1.0) as i32;
+            blit_cursor_scaled(fb, img, mx - w / 2, my - h / 2, scale);
+            return;
+        }
+    }
+    // Retail arrow when the install provides it; the drawn arrow below is
+    // only the fallback for runs without assets.
+    if let Some(grp) = art.and_then(|a| a.arrow.as_ref())
+        && !grp.frames.is_empty()
+    {
+        let frame = cursor_frame_index(elapsed, grp.frames.len());
+        if let Some(img) = grp.frames.get(frame) {
+            blit_cursor_scaled(fb, img, mx, my, scale);
+            return;
+        }
+    }
+    // 12x18 arrow.
+    let shape: [&str; 12] = [
+        "X...........",
+        "XX..........",
+        "X.X.........",
+        "X..X........",
+        "X...X.......",
+        "X....X......",
+        "X.....X.....",
+        "X......X....",
+        "X....XXXX...",
+        "X..X...X....",
+        "X.X.....X...",
+        "XX......X...",
+    ];
+    for (dy, row) in shape.iter().enumerate() {
+        for (dx, c) in row.chars().enumerate() {
+            if c == 'X' {
+                let (x, y) = (mx + dx as i32, my + dy as i32);
+                fb.put(x, y, Rgb::new(0, 0, 0));
+                fb.put(x + 1, y, Rgb::new(240, 240, 240));
+            }
         }
     }
 }
@@ -1114,6 +1361,396 @@ struct CreditMask {
     shadow: Vec<u8>,
 }
 
+/// One cargo cell of the selection panel: the `statdata` control that draws
+/// it.  `cargo_slots` packs the loaded units into the 4 x 2 grid.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CargoSlot {
+    control: i32,
+}
+
+/// Lay out a transport's cargo the way the selection panel does: small units
+/// take 1 x 1 cells (`statdata` 25-32), two-space units a 1 x 2 column
+/// (21-24), four-space units a 2 x 2 block (18-20).  The scan is
+/// column-major, which keeps the one-space order the retail Bunker and
+/// Dropship captures show.  A capacity-4 Bunker uses its centred 2 x 2 block
+/// (27-30).
+#[allow(clippy::needless_range_loop)]
+fn cargo_slots(sizes: &[u8], capacity: u8) -> Vec<CargoSlot> {
+    if capacity <= 4 {
+        return sizes
+            .iter()
+            .take(4)
+            .enumerate()
+            .map(|(n, _)| CargoSlot {
+                control: 27 + n as i32,
+            })
+            .collect();
+    }
+    let mut used = [[false; 4]; 2];
+    let mut out = Vec::new();
+    for &size in sizes {
+        let (w, h) = match size {
+            2 => (1, 2),
+            4 | 8 => (2, 2),
+            _ => (1, 1),
+        };
+        let mut placed = None;
+        if (w, h) == (1, 1) {
+            for col in 0..4 {
+                for row in 0..2 {
+                    if !used[row][col] {
+                        placed = Some((col, row));
+                        break;
+                    }
+                }
+                if placed.is_some() {
+                    break;
+                }
+            }
+        } else if w == 1 {
+            for col in 0..4 {
+                if !used[0][col] && !used[1][col] {
+                    placed = Some((col, 0));
+                    break;
+                }
+            }
+        } else {
+            for col in 0..=2 {
+                if !used[0][col] && !used[0][col + 1] && !used[1][col] && !used[1][col + 1] {
+                    placed = Some((col, 0));
+                    break;
+                }
+            }
+        }
+        let Some((col, row)) = placed else {
+            continue;
+        };
+        for dy in 0..h {
+            for dx in 0..w {
+                used[row + dy][col + dx] = true;
+            }
+        }
+        let control = if (w, h) == (1, 1) {
+            25 + col as i32 * 2 + row as i32
+        } else if h == 2 && w == 1 {
+            21 + col as i32
+        } else {
+            match col {
+                0 => 18,
+                1 => 20,
+                _ => 19,
+            }
+        };
+        out.push(CargoSlot { control });
+    }
+    out
+}
+
+/// Facing units per game tick while "Smooth Unit Turning" rotates a sprite:
+/// 24 leaves about 0.22 s for a 180-degree turn.
+const SMOOTH_TURN_RATE: f32 = 24.0;
+
+/// Move `current` towards `target` on the 256-step facing circle, taking the
+/// shorter way around 0/256.  Returns a value in `0..256`.
+fn smooth_step_facing(current: f32, target: u8, max_delta: f32) -> f32 {
+    let current = current.rem_euclid(256.0);
+    let target = target as f32;
+    let mut diff = (target - current).rem_euclid(256.0);
+    if diff > 128.0 {
+        diff -= 256.0;
+    }
+    (current + diff.clamp(-max_delta, max_delta)).rem_euclid(256.0)
+}
+
+/// One integer hash for the deterministic environment particle field.
+fn env_hash(seed: u32) -> u32 {
+    let mut x = seed.wrapping_mul(0x9e37_79b9).wrapping_add(0x85eb_ca6b);
+    x ^= x >> 15;
+    x = x.wrapping_mul(0x2545_f491);
+    x ^= x >> 13;
+    x
+}
+
+/// Per-era look of the Environment Effects overlay.
+#[derive(Clone, Copy)]
+struct EnvSpec {
+    colour: Rgb,
+    alpha: u8,
+    /// Vertical speed in screen px per game tick (negative rises).
+    fall: f32,
+    /// Horizontal wind in screen px per game tick.
+    drift: f32,
+    /// Sine sway amplitude in screen px.
+    sway: f32,
+    /// Base particle size in screen px at 1440p.
+    size: f32,
+}
+
+fn env_spec(era: u16) -> EnvSpec {
+    match era {
+        // Badlands: warm dust motes.
+        0 => EnvSpec {
+            colour: Rgb::new(206, 184, 138),
+            alpha: 70,
+            fall: 0.12,
+            drift: 0.35,
+            sway: 5.0,
+            size: 3.0,
+        },
+        // Space platform: sparse cool sparks.
+        1 => EnvSpec {
+            colour: Rgb::new(190, 208, 236),
+            alpha: 55,
+            fall: -0.08,
+            drift: 0.12,
+            sway: 3.0,
+            size: 2.5,
+        },
+        // Installation: rising grey smoke.
+        2 => EnvSpec {
+            colour: Rgb::new(165, 163, 160),
+            alpha: 45,
+            fall: -0.18,
+            drift: 0.20,
+            sway: 9.0,
+            size: 4.0,
+        },
+        // Ashworld: falling ash.
+        3 => EnvSpec {
+            colour: Rgb::new(158, 152, 146),
+            alpha: 105,
+            fall: 0.55,
+            drift: 0.22,
+            sway: 10.0,
+            size: 3.0,
+        },
+        // Jungle: drifting spores.
+        4 => EnvSpec {
+            colour: Rgb::new(184, 232, 146),
+            alpha: 60,
+            fall: 0.12,
+            drift: 0.16,
+            sway: 13.0,
+            size: 2.5,
+        },
+        // Desert: blowing sand.
+        5 => EnvSpec {
+            colour: Rgb::new(210, 190, 148),
+            alpha: 85,
+            fall: 0.06,
+            drift: -1.5,
+            sway: 2.0,
+            size: 3.0,
+        },
+        // Ice: snowfall.
+        6 => EnvSpec {
+            colour: Rgb::new(236, 243, 255),
+            alpha: 150,
+            fall: 0.62,
+            drift: 0.28,
+            sway: 14.0,
+            size: 3.0,
+        },
+        // Twilight: floating blue motes.
+        _ => EnvSpec {
+            colour: Rgb::new(176, 184, 240),
+            alpha: 70,
+            fall: 0.14,
+            drift: 0.30,
+            sway: 12.0,
+            size: 2.5,
+        },
+    }
+}
+
+/// Blend one Environment Effects particle: the shipped texture supplies the
+/// soft circular coverage, the era supplies colour.
+fn draw_env_particle(
+    fb: &mut Framebuffer,
+    img: &galaxycraft::dds::DdsImage,
+    x: i32,
+    y: i32,
+    size: i32,
+    colour: Rgb,
+    alpha: u8,
+) {
+    if size <= 0 || img.width == 0 || img.height == 0 {
+        return;
+    }
+    let size = size.min(16);
+    for dy in 0..size {
+        for dx in 0..size {
+            let sx = (((dx as f32 + 0.5) / size as f32) * img.width as f32) as usize;
+            let sy = (((dy as f32 + 0.5) / size as f32) * img.height as f32) as usize;
+            let tex = (img.pixel(sx.min(img.width - 1), sy.min(img.height - 1)) >> 24) & 0xff;
+            let a = (tex * alpha as u32 / 255) as u8;
+            if a == 0 {
+                continue;
+            }
+            let px = x + dx;
+            let py = y + dy;
+            let dst = fb.get(px, py);
+            fb.put(px, py, dst.blend(colour, a));
+        }
+    }
+}
+
+/// Words the retail "Mature Language Filter" masks.  There is no server-side
+/// filter in this build, so this is a conservative local list used for
+/// campaign text, subtitles and LAN chat; whole words only, case-insensitive.
+const MATURE_WORDS: &[&str] = &[
+    "ass", "asshole", "bastard", "bitch", "bollocks", "bullshit", "cock", "crap", "cunt", "damn",
+    "dick", "douche", "fag", "faggot", "fuck", "goddamn", "hell", "nigger", "piss", "prick",
+    "pussy", "shit", "slut", "twat", "whore",
+];
+
+fn censor_word(out: &mut String, word: &mut String) {
+    if word.is_empty() {
+        return;
+    }
+    let lower = word.to_ascii_lowercase();
+    if MATURE_WORDS.contains(&lower.as_str()) {
+        out.extend(word.chars().map(|_| '*'));
+    } else {
+        out.push_str(word);
+    }
+    word.clear();
+}
+
+/// Mask mature words in `text`, preserving punctuation, spacing and length.
+fn mature_language_filter(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut word = String::new();
+    for c in text.chars() {
+        if c.is_ascii_alphabetic() {
+            word.push(c);
+        } else {
+            censor_word(&mut out, &mut word);
+            out.push(c);
+        }
+    }
+    censor_word(&mut out, &mut word);
+    out
+}
+
+/// Collections cells 0-2 are the Default/Silver/Gold console skins.
+fn collection_console_skin(cell: usize) -> Option<u8> {
+    match cell {
+        0..=2 => Some(cell as u8),
+        _ => None,
+    }
+}
+
+/// Collections cells 5-10 are the announcer collections, Default first.
+fn collection_announcer(cell: usize) -> Option<u8> {
+    match cell {
+        5..=10 => Some((cell - 5) as u8),
+        _ => None,
+    }
+}
+
+/// Hidden `ShowFPS` overlay text.
+fn fps_label(fps: f32) -> String {
+    format!("FPS {}", fps.round().max(0.0) as u32)
+}
+
+/// Sound tab "Building Sounds": gate voices emitted by structures.
+fn building_sound_allowed(options: &GameOptions, is_building: bool) -> bool {
+    options.building_sounds || !is_building
+}
+
+/// Hidden `ShowTurnRate` overlay text; `None` means no selected flingy.
+fn turn_rate_label(rate: Option<u8>) -> String {
+    match rate {
+        Some(value) => format!("TURN {value}"),
+        None => "TURN -".to_string(),
+    }
+}
+
+/// APM from the command count and mission ticks.  The display stays at zero
+/// during the opening minute, then uses the real elapsed minutes so an
+/// opening flurry cannot read as 300 APM.
+fn apm_value(actions: u32, ticks: u64) -> i64 {
+    let seconds = galaxycraft::sim::real_seconds(ticks);
+    if seconds < 60 {
+        return 0;
+    }
+    (actions as f64 / (seconds as f64 / 60.0)).round() as i64
+}
+
+/// Window polling rate for the Video options.  minifb has no native VSync
+/// switch, so "VSync" uses the common 60 Hz rate when the FPS cap is off;
+/// both off means no sleep (0).
+fn target_fps(options: &GameOptions) -> usize {
+    if options.video_fps_cap {
+        (100.0 + 200.0 * options.video_fps_limit.clamp(0.0, 1.0)).round() as usize
+    } else if options.video_vsync {
+        60
+    } else {
+        0
+    }
+}
+
+/// Mouse Speed / Mouse Scaling factor for the software pointer.  The Speed
+/// tab's sensitivity slider (0..1) maps to 0.5..1.5 around the retail
+/// default, and "Use Mouse Scaling" compensates for resolutions above the
+/// original 480-line playfield.  A factor of exactly 1 keeps the system
+/// pointer position untouched.
+fn mouse_move_factor(options: &GameOptions, surface: (i32, i32)) -> f32 {
+    let base = if options.use_mouse_sensitivity {
+        0.5 + options.mouse_sensitivity.clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    let scaled = if options.mouse_scaling {
+        base * (surface.1.max(1) as f32 / 480.0).clamp(0.5, 4.0)
+    } else {
+        base
+    };
+    scaled.clamp(0.25, 4.0)
+}
+
+/// The operating-system pointer is visible only when there is no virtual
+/// pointer to draw.  With the mouse inside the game, the retail/fallback
+/// cursor is drawn instead, so the player never sees two pointers.
+fn system_cursor_visible_for(pointer_present: bool) -> bool {
+    !pointer_present
+}
+
+/// StarCraft 1 selection normalisation: a building is selected alone, and
+/// mobile units stop at twelve.  `(id, is_building)` pairs are consumed in
+/// selection order.
+fn normalize_selection(entries: impl IntoIterator<Item = (u32, bool)>) -> Vec<u32> {
+    let mut out = Vec::new();
+    for (id, building) in entries {
+        if building {
+            return vec![id];
+        }
+        if out.len() < 12 {
+            out.push(id);
+        }
+    }
+    out
+}
+
+/// Advance a virtual pointer by the raw movement delta times `factor`.
+/// Only used when the factor differs from 1; the cursor remains inside the
+/// drawing surface.
+fn advance_virtual_pointer(
+    current: (f32, f32),
+    last: (f32, f32),
+    raw: (f32, f32),
+    factor: f32,
+    bounds: (i32, i32),
+) -> (f32, f32) {
+    let x = current.0 + (raw.0 - last.0) * factor;
+    let y = current.1 + (raw.1 - last.1) * factor;
+    (
+        x.clamp(0.0, (bounds.0 - 1).max(0) as f32),
+        y.clamp(0.0, (bounds.1 - 1).max(0) as f32),
+    )
+}
+
 /// One frame of in-game input in surface pixels (`App::handle_game_input`).
 #[derive(Clone, Debug, Default)]
 struct GameInput {
@@ -1126,9 +1763,13 @@ struct GameInput {
     up: bool,
     down: bool,
     wheel: f32,
+    /// Analog camera pan from a controller (game px this frame).
+    pan: (i32, i32),
     mouse: Option<(i32, i32)>,
     lmb: bool,
     rmb: bool,
+    /// Controller edges and stick aim for the same frame.
+    pad: gamepad::PadFrame,
 }
 
 struct MenuInput {
@@ -1140,6 +1781,283 @@ struct MenuInput {
     wheel: i32,
     /// A Shift key is held (capitals in text fields).
     shift: bool,
+}
+
+/// One selectable sector of the controller command wheel.  It points at the
+/// exact retail command-card slot the mouse and hotkeys already use.
+#[derive(Clone, Debug)]
+struct WheelEntry {
+    /// Card set the slot lives in (`None` = the unit's own card, else a
+    /// build card such as 239/242).
+    set: Option<u16>,
+    /// Zero-based card slot (0..9).
+    slot: usize,
+    /// Action the slot dispatches; kept for classification tests.
+    #[allow(dead_code)]
+    act: galaxycraft::buttons::Act,
+    label: String,
+    /// Tooltip text for the focused command (already stripped of the
+    /// hotkey control byte).
+    tooltip: String,
+    icon: u16,
+    enabled: bool,
+}
+
+/// One context page of the command wheel (Commands, Build, Train, ...).
+#[derive(Clone, Debug)]
+struct WheelPage {
+    title: &'static str,
+    entries: Vec<WheelEntry>,
+}
+
+/// Label of a command-card button for the wheel.  Retail stores the hotkey
+/// as the first character of the tooltip, but the text table is not present
+/// in every install, so use the data names of the unit/tech the action acts
+/// on and short English labels for the orders.
+fn wheel_label(
+    world: &World,
+    b: &galaxycraft::button_sets::Button,
+    act: galaxycraft::buttons::Act,
+) -> String {
+    use galaxycraft::buttons::Act;
+    let data = &world.data;
+    let unit_label = |id: u16| {
+        let name = data.unit_name(id);
+        if name.is_empty() {
+            "Action".to_string()
+        } else {
+            name.to_string()
+        }
+    };
+    let tech_label = |id: u16| {
+        let name = data.tech_name(id as u8);
+        if name.is_empty() {
+            "Upgrade".to_string()
+        } else {
+            name.to_string()
+        }
+    };
+    match act {
+        Act::Build
+        | Act::DroneBuild
+        | Act::Train
+        | Act::TrainHangar
+        | Act::Addon
+        | Act::MorphUnit
+        | Act::MorphBuilding => unit_label(b.act_var),
+        Act::Research | Act::TargetTech | Act::StimPacks => tech_label(b.act_var),
+        Act::Upgrade => {
+            let name = data.upgrade_name(b.act_var as u8);
+            if name.is_empty() {
+                "Upgrade".to_string()
+            } else {
+                name.to_string()
+            }
+        }
+        Act::Move => "Move".into(),
+        Act::Stop | Act::StopOrMerge => "Stop".into(),
+        Act::Attack => "Attack".into(),
+        Act::Patrol => "Patrol".into(),
+        Act::Hold => "Hold Position".into(),
+        Act::Repair => "Repair".into(),
+        Act::Gather => "Gather".into(),
+        Act::ReturnCargo => "Return Cargo".into(),
+        Act::Rally => "Set Rally Point".into(),
+        Act::LiftOff => "Lift Off".into(),
+        Act::Land => "Land".into(),
+        Act::Load => "Load".into(),
+        Act::Unload => "Unload".into(),
+        Act::Siege => "Siege Mode".into(),
+        Act::Unsiege => "Unsiege".into(),
+        Act::Burrow => "Burrow".into(),
+        Act::Unburrow => "Unburrow".into(),
+        Act::Cloak => "Cloak".into(),
+        Act::Decloak => "Decloak".into(),
+        Act::MergeArchon => "Warp Archon".into(),
+        Act::MergeDarkArchon => "Meld Dark Archon".into(),
+        Act::Nuke => "Nuclear Strike".into(),
+        Act::Heal => "Heal".into(),
+        Act::Infest => "Infest".into(),
+        Act::SpawnLarva => "Spawn Larva".into(),
+        Act::RechargeShields => "Recharge Shields".into(),
+        Act::PlaceBeacon => "Place Beacon".into(),
+        Act::CancelLast
+        | Act::CancelAddon
+        | Act::CancelConstruction
+        | Act::CancelMorph
+        | Act::CancelTarget => "Cancel".into(),
+        Act::Card | Act::Special | Act::Unclassified => "Action".into(),
+    }
+}
+
+/// Build the single wheel page for the current selection.  A single unit
+/// (or building) uses its current retail card; a group uses only the
+/// commands every selected unit shares.  The result is capped at the nine
+/// card slots, so the wheel never grows beyond the 3x3 layout.
+fn wheel_page_for_selection(world: &World, units: &[SimUnit], card_set: Option<u16>) -> WheelPage {
+    use galaxycraft::buttons::{Act, ButtonState, card_of_set};
+    let title = if units.len() > 1 {
+        "Group Commands"
+    } else if units
+        .first()
+        .is_some_and(|u| world.data.unit(u.type_id).is_building())
+    {
+        "Building Commands"
+    } else {
+        "Unit Commands"
+    };
+    if units.is_empty() {
+        return WheelPage {
+            title,
+            entries: Vec::new(),
+        };
+    }
+    let single = units.len() == 1;
+    let set_for = |_: &SimUnit| {
+        if single {
+            card_set.filter(|s| *s != 228)
+        } else {
+            None
+        }
+    };
+    let cards: Vec<[Option<(galaxycraft::button_sets::Button, ButtonState)>; 9]> = units
+        .iter()
+        .map(|u| card_of_set(world, u, set_for(u)))
+        .collect();
+    let key = |b: &galaxycraft::button_sets::Button| (b.act, b.act_var, b.cond_var);
+    let mut keys: Vec<(u32, u16, u16)> = Vec::new();
+    for (b, _) in cards[0].iter().flatten() {
+        let k = key(b);
+        if !keys.contains(&k) {
+            keys.push(k);
+        }
+    }
+    keys.retain(|k| {
+        cards
+            .iter()
+            .skip(1)
+            .all(|card| card.iter().flatten().any(|(b, _)| key(b) == *k))
+    });
+    let mut entries = Vec::new();
+    for k in keys.into_iter().take(9) {
+        let Some((slot, b, _)) = cards[0].iter().enumerate().find_map(|(slot, e)| {
+            e.as_ref()
+                .map(|(b, st)| (slot, b, st))
+                .filter(|(_, b, _)| key(b) == k)
+        }) else {
+            continue;
+        };
+        let enabled = cards.iter().all(|card| {
+            card.iter()
+                .flatten()
+                .any(|(candidate, st)| key(candidate) == k && *st == ButtonState::Enabled)
+        });
+        let string_id = if !enabled && b.disabled_string != 0 {
+            b.disabled_string
+        } else {
+            b.enabled_string
+        };
+        let raw = world
+            .data
+            .strings
+            .get(string_id.saturating_sub(1))
+            .unwrap_or("");
+        entries.push(WheelEntry {
+            set: set_for(&units[0]),
+            slot,
+            act: Act::of(b.act),
+            label: wheel_label(world, b, Act::of(b.act)),
+            tooltip: button_tooltip_text(raw),
+            icon: b.icon,
+            enabled,
+        });
+    }
+    WheelPage { title, entries }
+}
+
+#[cfg(test)]
+fn wheel_pages_for(world: &World, unit: &SimUnit) -> Vec<WheelPage> {
+    use galaxycraft::button_sets::set_of;
+    use galaxycraft::buttons::{Act, ButtonState, WheelCategory, card_of_set, state};
+    let base = card_of_set(world, unit, None);
+    let mut buckets: [Vec<WheelEntry>; 5] = Default::default();
+    let index = |category: WheelCategory| {
+        WheelCategory::ALL
+            .iter()
+            .position(|c| *c == category)
+            .unwrap_or(0)
+    };
+    let entry = |set: Option<u16>, slot: usize, b: &galaxycraft::button_sets::Button| {
+        let act = Act::of(b.act);
+        let enabled = state(world, unit, b) == Some(ButtonState::Enabled);
+        let string_id = if !enabled && b.disabled_string != 0 {
+            b.disabled_string
+        } else {
+            b.enabled_string
+        };
+        let raw = world
+            .data
+            .strings
+            .get(string_id.saturating_sub(1))
+            .unwrap_or("");
+        WheelEntry {
+            set,
+            slot,
+            act,
+            label: wheel_label(world, b, act),
+            tooltip: button_tooltip_text(raw),
+            icon: b.icon,
+            enabled,
+        }
+    };
+    // Build-card sets reachable from the unit's own card.
+    let mut build_sets: Vec<u16> = Vec::new();
+    for (b, _) in base.iter().flatten() {
+        if Act::of(b.act) == Act::Card && b.act_var != 228 && !build_sets.contains(&b.act_var) {
+            let set = card_of_set(world, unit, Some(b.act_var));
+            if set
+                .iter()
+                .flatten()
+                .any(|(b, _)| matches!(Act::of(b.act), Act::Build | Act::DroneBuild))
+            {
+                build_sets.push(b.act_var);
+            }
+        }
+    }
+    for (slot, entry_) in base.iter().enumerate() {
+        let Some((b, _)) = entry_ else { continue };
+        let act = Act::of(b.act);
+        if act == Act::Card {
+            continue;
+        }
+        let category = act.wheel_category();
+        buckets[index(category)].push(entry(None, slot, b));
+    }
+    // The base card's build actions come first; then the real build cards
+    // (all their entries are Build/DroneBuild; the Cancel card is skipped).
+    for set_id in build_sets {
+        for b in set_of(set_id as usize) {
+            let act = Act::of(b.act);
+            let slot = (b.pos as usize).wrapping_sub(1);
+            if matches!(act, Act::Build | Act::DroneBuild)
+                && slot < 9
+                && state(world, unit, b).is_some()
+            {
+                buckets[index(WheelCategory::Build)].push(entry(Some(set_id), slot, b));
+            }
+        }
+    }
+    let mut pages = Vec::new();
+    for (i, category) in WheelCategory::ALL.iter().enumerate() {
+        if buckets[i].is_empty() {
+            continue;
+        }
+        pages.push(WheelPage {
+            title: category.title(),
+            entries: std::mem::take(&mut buckets[i]),
+        });
+    }
+    pages
 }
 
 /// Control under the pointer on a sub-screen (shared by every branch so
@@ -1155,6 +2073,8 @@ enum MenuHit {
     Cell(usize),
     OptSlider(usize),
     OptCheck(usize),
+    /// The APM alert threshold field.
+    OptInput,
     OptDrop(OptionsDrop),
     OptDropItem(usize),
     Race(usize),
@@ -1213,6 +2133,33 @@ const LANGUAGES: [&str; 13] = [
     "Polski",
     "Русский",
 ];
+/// CASC locale directory for each row of [`LANGUAGES`].
+const LANGUAGE_CODES: [&str; 13] = [
+    "enus", "frfr", "itit", "dede", "eses", "esmx", "ptbr", "zhcn", "zhtw", "kokr", "jajp", "plpl",
+    "ruru",
+];
+
+fn language_index(code: &str) -> usize {
+    LANGUAGE_CODES.iter().position(|c| *c == code).unwrap_or(0)
+}
+
+/// Retail footer/input tag: `enUS`, `esMX`, `zhCN`, ...
+fn locale_tag(code: &str) -> String {
+    let bytes = code.as_bytes();
+    if bytes.len() >= 4 {
+        format!(
+            "{}{}",
+            code[..2].to_ascii_lowercase(),
+            code[2..4].to_ascii_uppercase()
+        )
+    } else {
+        code.to_ascii_uppercase()
+    }
+}
+
+/// Cache key of the Collections plate: window size, scroll offset, selected
+/// cell and equipped unit skin (all change pixels baked into the layer).
+type CollectionsLayerKey = (i32, i32, i32, usize, u8);
 
 struct App {
     data: Arc<GameData>,
@@ -1222,6 +2169,8 @@ struct App {
     sprites: SpriteBank,
     sounds: SoundBank,
     audio: AudioPlayer,
+    /// Last value sent to the mixer for the background-audio checkbox.
+    audio_background: bool,
     /// Materialised retail root (tileset, unit art, console, glue, music).
     assets_root: PathBuf,
     /// Retail console art for the human player's race.
@@ -1272,6 +2221,10 @@ struct App {
     /// Offset of the drawing surface inside the window (`letterbox`): the
     /// pointer is read in window pixels and moved into surface pixels.
     present_offset: (i32, i32),
+    /// Software-pointer position when the Speed tab scales mouse movement.
+    virtual_pointer: Option<(f32, f32)>,
+    /// Previous raw surface pointer, for [`Self::update_pointer`].
+    last_raw_pointer: Option<(i32, i32)>,
     intro_fit: Option<(usize, usize, DdsImage)>,
     /// Backdrop resampled once to the 16:9 content box (the 3412x1920 art is
     /// 25 MB decoded; bilinear-scaling it every frame is wasted work).
@@ -1281,7 +2234,7 @@ struct App {
     /// Options plate per (window size, active tab).
     options_plate: Option<((i32, i32, usize), LayerCache)>,
     /// Collections chrome per window size and scroll offset.
-    collections_layer: Option<((i32, i32, i32), LayerCache)>,
+    collections_layer: Option<(CollectionsLayerKey, LayerCache)>,
     /// Episode screen static layer per (window size, expansion).
     episode_static: Option<((i32, i32, bool), Framebuffer)>,
     /// The same layer without the console plates, for their slide-in.
@@ -1328,6 +2281,8 @@ struct App {
     unit_types_seen: std::collections::HashMap<u32, u16>,
     /// Player orders/commands issued, used for the APM plate.
     actions: u32,
+    /// Last one-second FPS measurement for the hidden `ShowFPS` overlay.
+    fps: f32,
     selected: Vec<u32>,
     groups: [Vec<u32>; 10],
     ais: Vec<SimpleAi>,
@@ -1356,6 +2311,8 @@ struct App {
     /// The running ready room, after the establishing shot.
     ready: Option<galaxycraft::ready_room::ReadyRoom>,
     ready_epoch: Instant,
+    /// Race whose ready-room art (Terran / Zerg / Protoss) is shown.
+    ready_race: galaxycraft::sim::Race,
     /// Ready-room button under the pointer (its hotkey), for the hover tick.
     ready_hover: Option<Key>,
     /// Script time pinned by `--menu-script ready-at:<ms>` / captures.
@@ -1507,6 +2464,14 @@ struct App {
     /// Poses (game px x, y, facing) recorded from a reference capture, by
     /// unit id; drawing only, the simulation is untouched.
     unit_poses: std::collections::HashMap<u32, (i32, i32, u8)>,
+    /// Render-only smoothed facings for `video_smooth_turning`, by unit id.
+    smooth_facing: std::collections::HashMap<u32, f32>,
+    /// World tick the smoothed facings were last advanced to.
+    smooth_facing_tick: u64,
+    /// Shipped `hd2/effect/particle.dds`, loaded once from the install and
+    /// used by the Environment Effects overlay.
+    env_particle: Option<galaxycraft::dds::DdsImage>,
+    env_particle_loaded: bool,
     /// Idle portrait clip (`...fid0N`) and second shown by a reference
     /// capture: the client picks idle clips at random (capture state).
     portrait_pick: Option<(u8, f32)>,
@@ -1666,10 +2631,20 @@ struct App {
     options_reset: bool,
     /// Options drop-down whose list is open, if any.
     options_drop: Option<OptionsDrop>,
+    /// Text being typed into the APM alert threshold field.
+    apm_input: Option<String>,
+    /// An APM alert has already fired for the current below-threshold run.
+    apm_alerted: bool,
     /// Video tab display mode (index into `DISPLAY_MODES`).
     display_mode: u8,
     /// Game tab language (index into `LANGUAGES`).
     language: usize,
+    /// Locale the client loaded (`enus`, `frfr`, `zhcn`, ...).
+    locale_code: String,
+    /// Classic `rc3.json` labels for `locale_code`.
+    ui_strings: std::collections::HashMap<String, String>,
+    /// Remastered CEF chrome labels for `locale_code` (`gluall.json`).
+    cef_strings: std::collections::HashMap<String, String>,
     /// "Changing Language" restart dialog is open.
     changing_language: bool,
     /// Live loop request to change the window fullscreen state.
@@ -1694,13 +2669,54 @@ struct App {
     last_key: Option<String>,
     /// Last known pointer position (window pixels), for the software cursor.
     pointer: Option<(i32, i32)>,
+    /// Optional controller backend and this frame's mapped intent.
+    gamepad: gamepad::Gamepad,
+    pad_frame: gamepad::PadFrame,
+    pad_cursor: (i32, i32),
+    /// The controller owns the pointer: draw the virtual cursor and hide the
+    /// system arrow until the mouse is moved again.
+    pad_control: bool,
+    /// A physical mouse move suspends pad control until the controller goes
+    /// neutral, so both devices can share the session without fighting.
+    pad_suppressed: bool,
+    /// LB group key currently held: slot, press time, long-press assigned.
+    pad_group: Option<(usize, Instant, bool)>,
+    /// Last completed group tap, used for double-tap camera centring.
+    pad_group_tap: Option<(usize, Instant)>,
+    /// A held A started in the playfield; released as a click or a box.
+    pad_drag: Option<(i32, i32, bool)>,
+    /// Last local unit that lost hit points, for the D-pad up alert jump.
+    last_alert_pos: Option<(i32, i32)>,
+    /// Previous local-unit hit points, sampled to detect damage.
+    last_health: Vec<(u32, i32)>,
+    /// Controller command wheel: focus state and the pages built from the
+    /// current selection's retail command card.
+    pad_wheel: gamepad::WheelState,
+    pad_wheel_pages: Vec<WheelPage>,
+    /// A/A double-tap tracker (same-type selection).
+    pad_tap: gamepad::TapTracker,
+    /// Clock for double taps.
+    pad_started: Instant,
+    /// Wall-clock time of the previous pad poll, so stick cursor movement is
+    /// frame-rate independent (the briefing screens render slower than the
+    /// main menu).
+    pad_last_poll: Instant,
+    /// Previous RT state, so the ring opens on the press edge and stays
+    /// closed after a selection until RT is released and pressed again.
+    pad_rt_was_held: bool,
+    /// Controller button hints stay visible briefly after the last input.
+    pad_hint_until: Instant,
+    /// Reused 16:9 box for the briefing/score screens, avoiding a full
+    /// framebuffer allocation every frame.
+    boxed_fb: Option<Framebuffer>,
     /// Modal overlay over the world (0 none, 1 objectives, 2 tips, 3 menu).
     overlay: u8,
     /// Retail install handle, used to read portrait videos on demand.
     install: Option<RetailInstall>,
-    /// Retail cursor art (`cursor/arrow.dds.grp`, five animated frames),
-    /// drawn in place of the system pointer so the front-end keeps its skin.
-    cursor_art: Option<galaxycraft::dds::DdsGrp>,
+    /// Retail pointer skins (`cursor/arrow.dds.grp` plus the animated
+    /// `cursor/targ{g,r,y}.dds.grp` target cursors), drawn in place of the
+    /// system pointer so the game keeps its skin.
+    cursor_art: Option<CursorArt>,
     /// Wall clock that drives the 6 fps cursor animation.
     cursor_started: Instant,
     /// Decoded portrait frames per unit type (None = tried and unavailable).
@@ -3205,11 +4221,6 @@ const GLUE_BIG_PX: f32 = 47.4;
 /// (unit name), `RC_SMALLTEXT` 25.4 px/em (stat rows), colour (223,223,255).
 /// Face of the in-game HUD text (see `GlueFace::Hud`).
 const HUD_FONT: &str = "font/blizzard-regular.ttf";
-/// The Battle.net account tag the retail client prints above the title
-/// frame.  This offline reconstruction has no online account; the label is
-/// the account from the person's reference captures (2026-11-08), shown so
-/// the front end matches their game.
-const ACCOUNT_TAG: &str = "cotizcesar#1532";
 /// Panel interior in 640x480 UI px (inside the red border of
 /// `titleframe_bg`, control 22 at 413,66 205x205).
 const MENU_PANEL_RECT: (f32, f32, f32, f32) = (421.0, 76.0, 189.0, 186.0);
@@ -3218,13 +4229,6 @@ const MENU_PANEL_RECT: (f32, f32, f32, f32) = (421.0, 76.0, 189.0, 186.0);
 /// dark-green left side and a bright-green right side.
 const MENU_SPINNER_RADIUS_UI: f32 = 9.5;
 const MENU_SPINNER_STROKE_UI: f32 = 2.0;
-/// Retail build footer of the main menu (reference 130637).
-const BUILD_FOOTER: &str = "1.23.10.13515 | enUS | 64-bit";
-/// Account tag: same face and colour as the build footer, top-right of the
-/// title frame (reference picture-7: ink 231x22 px at 3440x1440).
-const ACCOUNT_TAG_PX: f32 = 31.0 / 3.0;
-const ACCOUNT_TAG_TOP: f32 = 2.5;
-const ACCOUNT_TAG_RIGHT: f32 = 634.33;
 
 /// Typed film caption (1440p content px, Backwater recording 655 s).
 /// INFERENCE: face and exact size; colour sampled by eye.
@@ -3327,14 +4331,10 @@ fn save_file_stem(name: &str) -> String {
     }
 }
 
-/// Locale the client reads (`locales/enus`), as in the footer.
-const CLIENT_LOCALE: &str = "enUS";
-
 /// Two-letter input-language tag retail shows in text fields ("EN" for
 /// enUS, Registry New ID at 427 s of the 2026-11-07 recording).
-fn input_language_tag() -> String {
-    CLIENT_LOCALE
-        .chars()
+fn input_language_tag(code: &str) -> String {
+    code.chars()
         .take(2)
         .collect::<String>()
         .to_ascii_uppercase()
@@ -3738,7 +4738,6 @@ const SCORE_FILL_INSET: f32 = 2.0;
 const SCORE_TOTAL_BASE: f32 = 55.0;
 const SCORE_ELAPSED_BASE: f32 = 60.0;
 const SCORE_BUTTON_BASE: f32 = 64.0;
-const SCORE_DISABLED: Rgb = Rgb::new(0x80, 0x80, 0x80);
 
 /// `wmission` message: baselines from the CTEXT top and the pale lavender
 /// of the recording ("Congratulations!" / "You are victorious!").
@@ -3851,6 +4850,17 @@ const MENU_PLATE_SHIFT: (f32, f32) = (-3.0, 0.0);
 /// right-hand dialogs and the glue dialogs over the playfield (`objctdlg`,
 /// `tips_dlg`) keep the fractional screen-px widening: integer there
 /// worsens 135020 / 134919 / 134931.
+/// Game-tab "Mini-Map Position": `Standard` moves the minimap and its
+/// buttons from the screen's left corner towards the centre of a widescreen
+/// playfield, matching the retail `MinimapPosition` setting.  At 4:3 the
+/// shift is zero.
+fn minimap_centering_shift(position: u8, dialog: &str, content_w: i32, s: f32) -> f32 {
+    if position != 1 || dialog != "minimap" {
+        return 0.0;
+    }
+    ((content_w as f32 / s - 640.0) / 2.0).max(0.0)
+}
+
 fn console_dialog_shift(dialog: &str, view_w: i32, content_w: i32, s: f32) -> f32 {
     let screen_extra = content_w as f32 / s - 640.0;
     match dialog {
@@ -4036,6 +5046,20 @@ fn draw_rounded_box(
     fill: Rgb,
     rim_color: Rgb,
 ) {
+    draw_rounded_box_alpha(fb, rect, radius, rim, fill, rim_color, 255);
+}
+
+/// [`draw_rounded_box`] with a coverage multiplier, so a plate can be
+/// translucent without changing the anti-aliased edge.
+fn draw_rounded_box_alpha(
+    fb: &mut Framebuffer,
+    rect: (i32, i32, i32, i32),
+    radius: f32,
+    rim: f32,
+    fill: Rgb,
+    rim_color: Rgb,
+    alpha: u8,
+) {
     let (x0, y0, w, h) = rect;
     let (fw, fh) = (w as f32, h as f32);
     let r = radius.min(fw / 2.0).min(fh / 2.0);
@@ -4070,7 +5094,8 @@ fn draw_rounded_box(
             let colour = rim_color.blend(fill, (core * 255 / inside.max(1)) as u8);
             let (qx, qy) = (x0 + x, y0 + y);
             let bg = fb.get(qx, qy);
-            fb.put(qx, qy, bg.blend(colour, (inside * 255 / 16) as u8));
+            let coverage = (inside * 255 / 16) * alpha as u32 / 255;
+            fb.put(qx, qy, bg.blend(colour, coverage as u8));
         }
     }
 }
@@ -5056,12 +6081,26 @@ fn blit_scaled_keyed(src: &Framebuffer, dst: &mut Framebuffer, scale: f32, x0: i
     }
 }
 
-fn blit_scaled_at(src: &Framebuffer, dst: &mut Framebuffer, scale: f32, x0: i32) {
+fn blit_scaled_at(src: &Framebuffer, dst: &mut Framebuffer, scale: f32, x0: i32, filter: f32) {
     let s = scale.max(0.5);
     let dw = ((src.width as f32 * s).round() as i32).min(dst.width);
     let dh = ((src.height as f32 * s).round() as i32).min(dst.height);
     let max_sx = (src.width - 1) as f32;
     let max_sy = (src.height - 1) as f32;
+    // The Video tab's SD Graphics Filter: the sharp end is nearest-neighbour
+    // (the classic 640x480 look), while the filtered stops use the bilinear
+    // upscale measured on the retail HD screenshots.
+    let sharp = filter <= 0.01;
+    if sharp {
+        for y in 0..dh {
+            let sy = (y as f32 / s).floor().clamp(0.0, max_sy) as i32;
+            for x in 0..dw {
+                let sx = (x as f32 / s).floor().clamp(0.0, max_sx) as i32;
+                dst.put(x0 + x, y, src.get(sx, sy));
+            }
+        }
+        return;
+    }
     // Bilinear, like the retail client's HD upscale: the SD art is magnified
     // smoothly there, while a nearest-neighbour blit leaves hard 3 px steps
     // that the references do not have.
@@ -5334,6 +6373,12 @@ fn run_game_script(app: &mut App, fb: &mut Framebuffer, script: &str) {
                 );
                 frame(app, fb, base(mouse));
             }
+            "cheat" => {
+                // `cheat:<code>`: the same prompt path as a typed cheat.
+                let text = parts[1..].join(":");
+                app.send_chat(text);
+                frame(app, fb, base(mouse));
+            }
             "hold" => {
                 // `hold:<Left|Right|Up|Down>:<frames>`: an arrow key held
                 // down, as the window reports it (camera scrolling).
@@ -5573,7 +6618,16 @@ fn run_game_script(app: &mut App, fb: &mut Framebuffer, script: &str) {
                     .unit(*app.selected.first().unwrap_or(&0))
                     .and_then(|t| {
                         let ty = app.data.unit(t.type_id).clone();
-                        app.cargo_slot_rect(&ty, num(1).max(0) as usize)
+                        let sizes: Vec<u8> = t
+                            .cargo
+                            .iter()
+                            .filter_map(|id| app.world.unit(*id))
+                            .map(|u| app.data.unit(u.type_id).space_required)
+                            .collect();
+                        let slot = cargo_slots(&sizes, ty.space_provided)
+                            .get(num(1).max(0) as usize)
+                            .copied()?;
+                        Some(app.cargo_slot_rect(slot.control))
                     });
                 if let Some(r) = rect {
                     mouse = click(app, fb, (r.x + r.w / 2, r.y + r.h / 2), false, false);
@@ -6005,6 +7059,34 @@ fn main() {
     let mut import_characters: Option<PathBuf> = None;
     let mut no_intro = false;
     let mut no_fog = false;
+    // `--hud-stats`: force Game Timer + Display APM on for captures and
+    // option checks without touching the player's profile.
+    let mut hud_stats = false;
+    // Capture/acceptance overrides for the remaining Video/Game options.
+    let mut pillarbox = false;
+    let mut sd_graphics = false;
+    let mut no_color_cycling = false;
+    let mut minimap_standard = false;
+    let mut no_bonus_skins = false;
+    let mut show_fps = false;
+    let mut show_turn_rate = false;
+    // `--console-skin default|silver|gold`: equip a Collections console skin
+    // for captures and acceptance checks (the screen stores the same value).
+    let mut console_skin: Option<u8> = None;
+    // `--announcer default|um|jeon|kim|umjeonkim|heyjini`: equip a Collections
+    // announcer set for captures and acceptance checks.
+    let mut announcer_arg: Option<u8> = None;
+    // `--carbot`: equip the Carbot unit collection for captures and
+    // acceptance checks (the Collections screen stores the same setting).
+    let mut carbot = false;
+    // `--language <code>` / `GALAXYCRAFT_LOCALE`: CASC locale directory
+    // (`enus`, `frfr`, `zhcn`, ...).  Without either, the last language
+    // picked in Options is read from the user cache.
+    let mut locale_arg: Option<String> = None;
+    // `--gamepad-probe SECONDS`: print the mapped frames the real gilrs
+    // backend produces, then exit.  Used by `scripts/virtual_gamepad_test.py`
+    // and for checking a physical controller without starting a match.
+    let mut gamepad_probe: Option<f32> = None;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -6119,8 +7201,71 @@ fn main() {
                 i += 2;
             }
 
+            "--language" | "--locale" => {
+                locale_arg = Some(args[i + 1].clone());
+                i += 2;
+            }
+            "--gamepad-probe" => {
+                gamepad_probe = args[i + 1].parse().ok();
+                i += 2;
+            }
             "--no-fog" => {
                 no_fog = true;
+                i += 1;
+            }
+            "--hud-stats" => {
+                hud_stats = true;
+                i += 1;
+            }
+            "--pillarbox" => {
+                pillarbox = true;
+                i += 1;
+            }
+            "--sd" => {
+                sd_graphics = true;
+                i += 1;
+            }
+            "--no-color-cycling" => {
+                no_color_cycling = true;
+                i += 1;
+            }
+            "--minimap-standard" => {
+                minimap_standard = true;
+                i += 1;
+            }
+            "--no-bonus-skins" => {
+                no_bonus_skins = true;
+                i += 1;
+            }
+            "--show-fps" => {
+                show_fps = true;
+                i += 1;
+            }
+            "--show-turn-rate" => {
+                show_turn_rate = true;
+                i += 1;
+            }
+            "--console-skin" => {
+                console_skin = Some(match args[i + 1].as_str() {
+                    "silver" => 1,
+                    "gold" => 2,
+                    _ => 0,
+                });
+                i += 2;
+            }
+            "--announcer" => {
+                announcer_arg = Some(match args[i + 1].as_str() {
+                    "um" => 1,
+                    "jeon" => 2,
+                    "kim" => 3,
+                    "umjeonkim" => 4,
+                    "heyjini" => 5,
+                    _ => 0,
+                });
+                i += 2;
+            }
+            "--carbot" => {
+                carbot = true;
                 i += 1;
             }
             "--no-intro" => {
@@ -6134,17 +7279,96 @@ fn main() {
         }
     }
 
+    if let Some(seconds) = gamepad_probe {
+        // Exercise the same backend the game loop uses.  The probe does not
+        // need a window or an install, so it also serves as a quick
+        // "is the controller seen?" check on a new machine.
+        let mut pad = gamepad::Gamepad::new();
+        println!("gamepad: {}", pad.describe());
+        let started = Instant::now();
+        let mut active = 0u32;
+        let mut presses = 0u32;
+        let mut cursor = (0.0f32, 0.0f32);
+        while started.elapsed().as_secs_f32() < seconds {
+            let frame = pad.poll();
+            if frame.active {
+                active += 1;
+                cursor.0 += frame.cursor.0;
+                cursor.1 += frame.cursor.1;
+                for key in &frame.pressed {
+                    presses += 1;
+                    println!("gamepad: pressed {key:?}");
+                }
+                for key in &frame.menu_pressed {
+                    if !frame.pressed.contains(key) {
+                        println!("gamepad: menu {key:?}");
+                    }
+                }
+                if frame.lmb {
+                    println!("gamepad: south held (left click)");
+                }
+                if frame.primary {
+                    println!("gamepad: primary (A)");
+                }
+                if frame.smart_order {
+                    println!("gamepad: smart order (X)");
+                }
+                if frame.attack_move {
+                    println!("gamepad: attack-move (Y)");
+                }
+                if let Some(slot) = frame.command_slot {
+                    println!("gamepad: command slot {slot} (RT)");
+                }
+                if frame.command_layer {
+                    println!("gamepad: command layer (RT)");
+                }
+                if let Some(group) = frame.group_pressed {
+                    println!("gamepad: group {} (LB)", group + 1);
+                }
+                if let Some(slot) = frame.camera_slot {
+                    println!("gamepad: camera {} (D-pad)", slot + 1);
+                }
+                if let Some(slot) = frame.camera_save_slot {
+                    println!("gamepad: save camera {} (LT+D-pad)", slot + 1);
+                }
+                if frame.last_alert {
+                    println!("gamepad: last alert (D-pad up)");
+                }
+                if frame.minimap_hold {
+                    println!("gamepad: minimap cursor (RB)");
+                }
+                if frame.pan != (0, 0) {
+                    println!("gamepad: pan {:?}", frame.pan);
+                }
+            }
+            std::thread::sleep(Duration::from_millis(16));
+        }
+        println!(
+            "gamepad: {active} active frames, {presses} edge presses, cursor moved ({:.0}, {:.0})",
+            cursor.0, cursor.1
+        );
+        std::process::exit(if active > 0 { 0 } else { 3 });
+    }
+    let locale_code = galaxycraft::retail::normalize_locale(
+        &locale_arg
+            .or_else(|| std::env::var("GALAXYCRAFT_LOCALE").ok())
+            .or_else(|| std::fs::read_to_string(saved_locale_path()).ok())
+            .unwrap_or_else(|| "enus".into()),
+    );
     let mut retail_data: Option<Arc<GameData>> = None;
     let mut install_handle: Option<RetailInstall> = None;
+    let mut ui_strings: std::collections::HashMap<String, String> = Default::default();
+    let mut cef_strings: std::collections::HashMap<String, String> = Default::default();
     let mut campaign_maps: Vec<MapEntry> = Vec::new();
     // Without `--install`: `SC_INSTALL` & co., then the platform's default
     // folders (a packaged build is started without arguments).
     let install = install.or_else(|| RetailInstall::from_env().map(|i| i.root().to_path_buf()));
     if let Some(path) = install {
-        let install = RetailInstall::open(&path).unwrap_or_else(|e| {
+        let mut install = RetailInstall::open(&path).unwrap_or_else(|e| {
             eprintln!("cannot open retail install {}: {e}", path.display());
             std::process::exit(2);
         });
+        install.set_locale(&locale_code);
         let cache = cache.unwrap_or_else(|| install.default_cache_dir());
         if let Err(e) = install.ensure_cache(&cache) {
             eprintln!(
@@ -6177,15 +7401,17 @@ fn main() {
         let hotkeys = install
             .read("webui/dist/hotkeypanel/hotkeypanel.js")
             .and_then(|b| String::from_utf8(b).ok())
-            .zip(
+            .zip(retail_data.as_ref().map(|d| d.strings.clone()).or_else(|| {
                 install
                     .read("rez/stat_txt.tbl")
-                    .and_then(|b| galaxycraft::tables::StringTable::parse(&b).ok()),
-            );
+                    .and_then(|b| galaxycraft::tables::StringTable::parse(&b).ok())
+            }));
         if !hotkeys.is_some_and(|(js, tbl)| hotkey_data::HotkeyData::use_install(&js, &tbl)) {
             eprintln!("hotkeys: install panel data not found; using the embedded one");
         }
         install_handle = Some(install);
+        ui_strings = load_ui_strings(install_handle.as_ref());
+        cef_strings = load_cef_strings(install_handle.as_ref());
     }
     let Some(data) = retail_data.or_else(|| GameData::bundled().ok().map(Arc::new)) else {
         // A build without the developer fixtures needs the player's game.
@@ -6286,7 +7512,8 @@ fn main() {
         .find(|s| s.slot == local_player)
         .map(|s| s.race(Race::Terran))
         .unwrap_or(Race::Terran);
-    let console = ConsoleArt::load(&assets, console_race);
+    // Replaced after the profile is read, so the saved console skin applies.
+    let console = ConsoleArt::load(&assets, console_race, 0, 0);
     let glue = {
         let art = GlueArt::load(&assets);
         (art.has_art() || art.menu.is_some() || art.score.is_some()).then_some(art)
@@ -6342,11 +7569,20 @@ fn main() {
         }
     };
     let intro = menu && !no_intro && glue.is_some();
-    // Retail pointer skin: `cursor/arrow.dds.grp` frame 0.  Without it the
-    // front-end falls back to the system cursor.
-    let cursor_art = install_handle.as_ref().and_then(|inst| {
-        let bytes = inst.read_by_path("cursor/arrow.dds.grp").ok()?;
-        galaxycraft::dds::DdsGrp::parse(&bytes)
+    // Retail pointer skins: the arrow plus the three relation-coded target
+    // cursors (`TargG/TargR/TargY` in the executable's cursor table).
+    let cursor_art = install_handle.as_ref().map(|inst| {
+        let load = |path: &str| {
+            inst.read_by_path(path)
+                .ok()
+                .and_then(|bytes| galaxycraft::dds::DdsGrp::parse(&bytes))
+        };
+        CursorArt {
+            arrow: load("cursor/arrow.dds.grp"),
+            own: load("cursor/targg.dds.grp"),
+            enemy: load("cursor/targr.dds.grp"),
+            neutral: load("cursor/targy.dds.grp"),
+        }
     });
     let mut hotkey_bindings = hotkey_data::HotkeyData::get().default_bindings();
     if let Some(path) = hotkey_save_path()
@@ -6382,6 +7618,7 @@ fn main() {
         sprites,
         sounds,
         audio,
+        audio_background: true,
         assets_root: assets.clone(),
         console,
         glue,
@@ -6405,6 +7642,8 @@ fn main() {
         minimap_cache: None,
         plates_layer: None,
         present_offset: (0, 0),
+        virtual_pointer: None,
+        last_raw_pointer: None,
         intro_fit: None,
         backdrop_fit: None,
         moon_fit: None,
@@ -6491,6 +7730,7 @@ fn main() {
         select_streak: None,
         unit_types_seen: std::collections::HashMap::new(),
         actions: 0,
+        fps: 0.0,
         selected: Vec::new(),
         groups: Default::default(),
         ais: Vec::new(),
@@ -6514,6 +7754,7 @@ fn main() {
         ready_script: None,
         ready: None,
         ready_epoch: Instant::now(),
+        ready_race: galaxycraft::sim::Race::Terran,
         ready_hover: None,
         ready_at: None,
         ready_players: std::array::from_fn(|i| {
@@ -6561,6 +7802,10 @@ fn main() {
         portrait_epoch: Instant::now(),
         portrait_pick: None,
         unit_poses: Default::default(),
+        smooth_facing: Default::default(),
+        smooth_facing_tick: 0,
+        env_particle: None,
+        env_particle_loaded: false,
         geyser_smoke: None,
         races: race_override,
         camera: (0, 0),
@@ -6629,8 +7874,13 @@ fn main() {
         hotkey_reset: false,
         options_reset: false,
         options_drop: None,
+        apm_input: None,
+        apm_alerted: false,
         display_mode: 1,
-        language: 0,
+        language: language_index(&locale_code),
+        locale_code,
+        ui_strings,
+        cef_strings,
         changing_language: false,
         window_fullscreen: None,
         language_font: None,
@@ -6644,6 +7894,24 @@ fn main() {
         debug_input,
         last_key: None,
         pointer: None,
+        gamepad: gamepad::Gamepad::new(),
+        pad_frame: gamepad::PadFrame::default(),
+        pad_cursor: (640, 360),
+        pad_control: false,
+        pad_suppressed: false,
+        pad_group: None,
+        pad_group_tap: None,
+        pad_drag: None,
+        last_alert_pos: None,
+        last_health: Vec::new(),
+        pad_wheel: gamepad::WheelState::default(),
+        pad_wheel_pages: Vec::new(),
+        pad_tap: gamepad::TapTracker::default(),
+        pad_started: Instant::now(),
+        pad_last_poll: Instant::now(),
+        pad_rt_was_held: false,
+        pad_hint_until: Instant::now(),
+        boxed_fb: None,
         overlay: 0,
         install: install_handle,
         cursor_art: cursor_art.clone(),
@@ -6667,6 +7935,47 @@ fn main() {
     if no_fog {
         app.fog = false;
     }
+    if hud_stats {
+        app.game_options.game_timer = true;
+        app.game_options.apm_display = true;
+    }
+    if pillarbox {
+        app.game_options.video_pillarbox = true;
+    }
+    if sd_graphics {
+        app.game_options.video_hd = false;
+    }
+    if no_color_cycling {
+        app.game_options.game_color_cycling = false;
+    }
+    if minimap_standard {
+        app.game_options.minimap_position = 1;
+    }
+    if no_bonus_skins {
+        app.game_options.game_bonus_skins = false;
+    }
+    if show_fps {
+        app.game_options.show_fps = true;
+    }
+    if show_turn_rate {
+        app.game_options.show_turn_rate = true;
+    }
+    if carbot {
+        app.game_options.game_unit_skin = 2;
+    }
+    if let Some(skin) = console_skin {
+        app.game_options.game_console_skin = skin;
+    }
+    if let Some(id) = announcer_arg {
+        app.game_options.game_announcer = id;
+    }
+    app.voices.set_announcer(app.game_options.game_announcer);
+    app.console = ConsoleArt::load(
+        &assets,
+        console_race,
+        app.game_options.game_console_skin,
+        app.game_options.game_unit_skin,
+    );
     app.ais = slots
         .iter()
         .filter(|s| s.computer && skirmish_ai(&app.world, s.slot))
@@ -6758,6 +8067,11 @@ fn main() {
                 };
                 app.begin_intro(vec![clip.to_string()], None);
                 app.intro_expansion = clip == galaxycraft::video::INTRO_EXPANSION;
+                // The title movies carry no typed establishing caption, and
+                // its first-frame path resets the clock; skip it so `at`
+                // reaches the decoder (the 5 s `Blizzard Entertainment
+                // Presents` card used to capture as a black frame).
+                app.intro_caption_done = true;
                 app.intro_started = Instant::now() - Duration::from_secs(at);
                 app.draw_intro(&mut fb);
             }
@@ -7164,11 +8478,18 @@ fn main() {
                 app.hotkey_reset = shot_screen == "hotkeys-reset-dialog";
                 app.draw_menu(&mut fb);
             }
-            "collections" | "collections-announcers" => {
+            "collections" | "collections-announcers" | "collections-carbot" => {
                 app.intro = false;
                 app.menu = true;
                 app.menu_screen = MenuScreen::Collections;
-                app.collection_sel = 0;
+                app.collection_sel = if shot_screen == "collections-carbot" {
+                    4
+                } else {
+                    0
+                };
+                if shot_screen == "collections-carbot" {
+                    app.game_options.game_unit_skin = 2;
+                }
                 app.collections_scroll = if shot_screen == "collections-announcers" {
                     225.0
                 } else {
@@ -7558,8 +8879,8 @@ fn main() {
     let mut fullscreen_resent = !fullscreen;
     // The retail front-end shows its own pointer art; hide the system cursor
     // when that art is available so only one arrow is on screen.
-    window.set_cursor_visibility(app.cursor_art.is_none());
-    window.set_target_fps(60);
+    window.set_cursor_visibility(app.system_cursor_visible());
+    window.set_target_fps(target_fps(&app.game_options));
 
     let mut fps_frames = 0u32;
     let mut fps_last = Instant::now();
@@ -7569,6 +8890,8 @@ fn main() {
     let mut window_size = (fb.width as usize, fb.height as usize);
     let mut window_pixels: Vec<u32> = Vec::new();
     while window.is_open() && !app.quit {
+        window.set_target_fps(target_fps(&app.game_options));
+        window.set_cursor_visibility(app.system_cursor_visible());
         let (w, h) = window.get_size();
         let (w, h) = (w.max(640), h.max(360));
         let (iw, ih, ox, oy) = letterbox(w, h);
@@ -7577,9 +8900,12 @@ fn main() {
             fb = Framebuffer::new(iw, ih);
             app.present_offset = (ox, oy);
             window_size = (w, h);
+            app.virtual_pointer = None;
+            app.last_raw_pointer = None;
             app.update_view(&fb);
         }
-        app.pointer = app.surface_mouse(&window);
+        let raw_pointer = app.surface_mouse(&window);
+        app.update_pointer(raw_pointer, (fb.width, fb.height));
         if needs_centre {
             // The logical view is only known once the window exists; centring
             // earlier leaves the camera clamped to the map corner (black fog).
@@ -7598,6 +8924,8 @@ fn main() {
             window.set_fullscreen(is_fullscreen);
         }
         app.handle_input(&window);
+        window.set_cursor_visibility(app.system_cursor_visible());
+        app.update_audio_background(window.is_active());
         if let Some(full) = app.window_fullscreen.take() {
             is_fullscreen = full;
             window.set_fullscreen(full);
@@ -7646,6 +8974,7 @@ fn main() {
                     present_ms / fps_frames as f64
                 );
             }
+            app.fps = (fps_frames as f64 / elapsed) as f32;
             fps_frames = 0;
             draw_ms = 0.0;
             present_ms = 0.0;
@@ -7810,9 +9139,13 @@ fn draw_in_box(app: &mut App, fb: &mut Framebuffer, draw: fn(&mut App, &mut Fram
         draw(app, fb);
         return;
     }
-    let mut boxed = Framebuffer::new(w as usize, h as usize);
+    let mut boxed = match app.boxed_fb.take() {
+        Some(buffer) if buffer.width == w && buffer.height == h => buffer,
+        _ => Framebuffer::new(w as usize, h as usize),
+    };
     draw(app, &mut boxed);
     copy_into(fb, &boxed, x0, y0);
+    app.boxed_fb = Some(boxed);
 }
 
 /// Copy `src` into `dst` with its top-left corner at `(x0, y0)`.
@@ -7831,6 +9164,21 @@ fn copy_into(dst: &mut Framebuffer, src: &Framebuffer, x0: i32, y0: i32) {
         let d0 = (dy * dst.width + left) as usize;
         let n = (right - left) as usize;
         dst.pixels[d0..d0 + n].copy_from_slice(&src.pixels[s0..s0 + n]);
+    }
+}
+
+/// Alpha-blend a solid rectangle over the framebuffer (controller wheel and
+/// hint chrome; the rest of the HUD uses the shipped plate cache).
+/// Soft-filled circle.  Used by the command wheel's central plate and icon
+/// discs, which must darken the playfield without hard aliased edges.
+fn blend_circle(fb: &mut Framebuffer, cx: i32, cy: i32, radius: i32, color: Rgb, alpha: u8) {
+    let r = radius.max(0);
+    for dy in -r..=r {
+        let half = ((r * r - dy * dy).max(0) as f32).sqrt() as i32;
+        for dx in -half..=half {
+            let c = fb.get(cx + dx, cy + dy);
+            fb.put(cx + dx, cy + dy, c.blend(color, alpha));
+        }
     }
 }
 
@@ -8004,6 +9352,11 @@ impl App {
 
     /// Play the retail acknowledgement for the selected unit, cycling takes.
     fn play_ack(&mut self) {
+        // Retail's Sound Options: "Unit Speech" disables unit voices and
+        // "Unit Acknowledgments" disables the command replies on their own.
+        if !self.game_options.unit_speech || !self.game_options.unit_acks {
+            return;
+        }
         let take = self.ack_variant;
         self.ack_variant = self.ack_variant.wrapping_add(1);
         if let Some(u) = self.first_selected() {
@@ -8100,7 +9453,12 @@ impl App {
                             ms,
                             galaxycraft::transmission::text_chars(raw),
                         );
-                        self.trigger_text.push(raw, now, life);
+                        let shown = if self.game_options.game_language_filter {
+                            mature_language_filter(raw)
+                        } else {
+                            raw.to_string()
+                        };
+                        self.trigger_text.push(&shown, now, life);
                         done.0 += galaxycraft::transmission::clean_lines(raw).len();
                     }
                 }
@@ -8159,10 +9517,18 @@ impl App {
     /// same unit is clicked again and again (gaps under 3 s), as retail
     /// (`voice::selection_cue`).  It played the "ready" line before.
     fn play_selected(&mut self) {
+        if !self.game_options.unit_speech {
+            return;
+        }
+        self.voices
+            .set_classic(self.game_options.original_1998_campaign);
         let Some(u) = self.first_selected() else {
             return;
         };
         let (id, unit_type) = (u.id, u.type_id);
+        if !building_sound_allowed(&self.game_options, self.data.unit(unit_type).is_building()) {
+            return;
+        }
         let streak = match self.select_streak {
             Some((last, n, at)) if last == id && at.elapsed() < Duration::from_secs(3) => n + 1,
             _ => 1,
@@ -8181,6 +9547,8 @@ impl App {
     /// animations' `playsnd` sounds (gunfire, deaths, explosions) play
     /// when they happen on screen where the player can see.
     fn play_world_sounds(&mut self) {
+        self.voices
+            .set_classic(self.game_options.original_1998_campaign);
         let local = self.local_player as u8;
         // A new map or a reload: remember what is there, say nothing.
         let first_look = self.unit_types_seen.is_empty() || self.world.tick <= 2;
@@ -8192,7 +9560,7 @@ impl App {
                 continue;
             }
             let ty = self.data.unit(u.type_id);
-            if ty.is_building() {
+            if ty.is_building() && !self.game_options.building_sounds {
                 continue;
             }
             let was = self.unit_types_seen.get(&u.id).copied();
@@ -8251,9 +9619,16 @@ impl App {
         self.mp.setup.is_some() && self.local_player >= self.world.players.len()
     }
 
-    /// Fog drawn for the local player (an observer sees everything).
+    /// Fog drawn for the local player (an observer sees everything, and
+    /// `black sheep wall` / `war aint what it used to be` reveal the map).
     fn fog_on(&self) -> bool {
-        self.fog && !self.observing()
+        self.fog
+            && !self.observing()
+            && !self
+                .world
+                .players
+                .get(self.local_player)
+                .is_some_and(|p| p.cheats.reveal)
     }
 
     /// Player whose resources, supply and upgrades the HUD shows: the local
@@ -8300,6 +9675,31 @@ impl App {
         }
     }
 
+    /// Lobby game types that change the rules rather than only the teams.
+    /// Greed races to 10,000 gathered resources; Slaughter scores kills for
+    /// 30 minutes; Sudden Death ends a player when a town hall is destroyed.
+    /// Capture the Flag needs the flag units, which the reconstruction does
+    /// not create yet.
+    fn apply_special_rules(&mut self) {
+        self.world.sudden_death = false;
+        self.world.greed_goal = None;
+        self.world.slaughter_deadline = None;
+        let Some(setup) = self.mp.setup.as_ref() else {
+            return;
+        };
+        use galaxycraft::multiplayer::GameType;
+        match setup.game_type {
+            GameType::Greed => self.world.greed_goal = Some(10_000),
+            GameType::Slaughter => {
+                self.world.slaughter_deadline =
+                    Some(30 * 60 * galaxycraft::sim::TICKS_PER_SECOND as u64)
+            }
+            GameType::SuddenDeath => self.world.sudden_death = true,
+            GameType::CaptureTheFlag | GameType::TeamCaptureTheFlag => self.world.start_ctf(),
+            _ => {}
+        }
+    }
+
     fn local_race(&self) -> Race {
         self.world
             .players
@@ -8316,11 +9716,29 @@ impl App {
         }
     }
 
+    /// Sound tab "Sound Plays While In Background": when off, pause the
+    /// mixer while the window is not focused.
+    fn update_audio_background(&mut self, window_active: bool) {
+        let allowed = self.game_options.sound_background || window_active;
+        if allowed != self.audio_background {
+            self.audio_background = allowed;
+            self.audio.set_background(allowed);
+        }
+    }
+
     fn start_mission_music(&mut self) {
         let prefix = self.race_music_prefix();
         let name = format!("{}rdyroom", prefix);
         self.music_phase = 0;
         self.play_music(&name);
+        if let Some(samples) = self.voices.announcer_clip(&[
+            "gamestart_1.wav",
+            "gamestart_2.wav",
+            "gamestart_3.wav",
+            "gamestart.wav",
+        ]) {
+            self.audio.play(Some(&samples));
+        }
     }
 
     /// After the ready room, rotate the four shipped battle tracks, then the
@@ -8369,9 +9787,65 @@ impl App {
             .map(|(x, y)| surface_point(self.present_offset, x as i32, y as i32))
     }
 
+    /// Feed the raw surface pointer through the Speed tab's sensitivity and
+    /// scaling.  With the default 0.5 sensitivity (factor 1) the pointer is
+    /// the system position exactly; otherwise a virtual pointer follows the
+    /// raw deltas so the drawn cursor and every click stay aligned.
+    fn update_pointer(&mut self, raw: Option<(i32, i32)>, surface: (i32, i32)) {
+        let Some(raw) = raw else {
+            self.pointer = None;
+            self.last_raw_pointer = None;
+            return;
+        };
+        // A physical mouse move takes the pointer back from the controller.
+        // Control returns to the pad once the pad is neutral again.
+        if let Some(last) = self.last_raw_pointer {
+            let moved = (raw.0 - last.0).abs() + (raw.1 - last.1).abs();
+            if moved > 2 && self.pad_control {
+                self.pad_control = false;
+                self.pad_suppressed = true;
+            }
+        }
+        if self.pad_control {
+            // Keep `last_raw_pointer` at the takeover position so even a slow
+            // mouse movement accumulates and returns control to the mouse.
+            return;
+        }
+        let factor = mouse_move_factor(&self.game_options, surface);
+        if (factor - 1.0).abs() < 0.001 {
+            self.pointer = Some(raw);
+            self.virtual_pointer = Some((raw.0 as f32, raw.1 as f32));
+            self.last_raw_pointer = Some(raw);
+            return;
+        }
+        let current = self.virtual_pointer.unwrap_or((raw.0 as f32, raw.1 as f32));
+        let last = self
+            .last_raw_pointer
+            .map(|p| (p.0 as f32, p.1 as f32))
+            .unwrap_or((raw.0 as f32, raw.1 as f32));
+        let next =
+            advance_virtual_pointer(current, last, (raw.0 as f32, raw.1 as f32), factor, surface);
+        self.virtual_pointer = Some(next);
+        self.last_raw_pointer = Some(raw);
+        self.pointer = Some((next.0.round() as i32, next.1.round() as i32));
+    }
+
+    /// Whether the operating-system pointer should be visible this frame.
+    fn system_cursor_visible(&self) -> bool {
+        system_cursor_visible_for(self.pointer.is_some())
+    }
+
     fn content_rect(fb: &Framebuffer) -> (i32, i32, i32, i32) {
         let h = fb.height.max(1);
-        let want_w = ((h as f32 * 16.0 / 9.0).round() as i32).max(1);
+        // The Video option "Pillarbox" restores the original 4:3 playfield
+        // (the retail `OriginalAspectRatio` setting) for the game screens;
+        // menus and movies stay 16:9.
+        let aspect = if GAME_PILLARBOX.load(Ordering::Relaxed) {
+            4.0 / 3.0
+        } else {
+            16.0 / 9.0
+        };
+        let want_w = ((h as f32 * aspect).round() as i32).max(1);
         let w = want_w.min(fb.width.max(1));
         let x0 = (fb.width - w) / 2;
         (x0, 0, w, h)
@@ -8385,6 +9859,10 @@ impl App {
     }
 
     fn update_view(&mut self, fb: &Framebuffer) {
+        GAME_PILLARBOX.store(
+            self.game_options.video_pillarbox && !self.menu && !self.intro && !self.briefing,
+            Ordering::Relaxed,
+        );
         let (scale, ox, oy) = self.ui_metrics(fb);
         self.ui_scale = scale;
         self.ui_ox = ox;
@@ -8599,7 +10077,11 @@ impl App {
     }
 
     fn handle_intro(&mut self, window: &Window) {
-        for key in window.get_keys_pressed(KeyRepeat::No) {
+        let keys = window
+            .get_keys_pressed(KeyRepeat::No)
+            .into_iter()
+            .chain(self.pad_frame.menu_pressed.iter().copied());
+        for key in keys {
             match key {
                 Key::Enter | Key::Space | Key::Escape => {
                     self.play("ui_swish");
@@ -8609,7 +10091,7 @@ impl App {
                 _ => {}
             }
         }
-        if window.get_mouse_down(MouseButton::Left) {
+        if window.get_mouse_down(MouseButton::Left) || self.pad_frame.lmb {
             self.advance_intro();
         }
     }
@@ -8816,6 +10298,11 @@ impl App {
         else {
             return;
         };
+        let line = if self.game_options.game_language_filter {
+            mature_language_filter(&line)
+        } else {
+            line
+        };
         let lines: Vec<&str> = line.lines().collect();
         let n = lines.len() as f32;
         for (i, l) in lines.iter().enumerate() {
@@ -8904,7 +10391,12 @@ impl App {
             .copied()
             .unwrap_or(Race::Terran);
         self.console_race = console_race;
-        self.console = ConsoleArt::load(&self.assets_root, console_race);
+        self.console = ConsoleArt::load(
+            &self.assets_root,
+            console_race,
+            self.game_options.game_console_skin,
+            self.game_options.game_unit_skin,
+        );
         let mut world = World::from_scenario(
             self.data.clone(),
             &scenario,
@@ -8962,16 +10454,23 @@ impl App {
         self.briefing_page = 0;
         self.briefing_page_epoch = Instant::now();
         // The ready room follows the establishing shot when the mission has
-        // an `MBRF` script and the race's room art is installed (Terran).
+        // an `MBRF` script and its race's room art is installed.
         let human = scenario
             .player_slots()
             .iter()
             .position(|s| s.active && s.human)
             .unwrap_or(self.local_player);
-        self.ready_script = (races.get(human) == Some(&Race::Terran)
-            && self.glue.as_ref().is_some_and(|g| g.ready_t.is_some()))
-        .then(|| galaxycraft::ready_room::ReadyRoom::from_scenario(&scenario, human))
-        .flatten();
+        let human_race = races.get(human).copied().unwrap_or(Race::Terran);
+        self.ready_race = human_race;
+        let art_ready = self.glue.as_ref().is_some_and(|g| match human_race {
+            Race::Terran => g.ready_t.is_some(),
+            Race::Zerg => g.ready_z.is_some(),
+            Race::Protoss => g.ready_p.is_some(),
+            Race::Neutral => false,
+        });
+        self.ready_script = art_ready
+            .then(|| galaxycraft::ready_room::ReadyRoom::from_scenario(&scenario, human))
+            .flatten();
         self.ready = None;
         self.ready_at = None;
         self.briefing_art = briefing_art;
@@ -9006,9 +10505,13 @@ impl App {
         self.last_races = races.clone();
         world.recorder = Some(Recorder::new());
         self.world = world;
+        self.apply_special_rules();
         self.trigger_portraits_seen = (0, 0);
         self.trigger_cues_seen = 0;
         self.center_views_seen = 0;
+        self.actions = 0;
+        self.smooth_facing.clear();
+        self.smooth_facing_tick = self.world.tick;
         self.rescues_seen = 0;
         self.trigger_text.clear();
         self.replay = None;
@@ -9137,6 +10640,7 @@ impl App {
                 .get(self.map_index)
                 .map(|m| m.name.clone())
                 .unwrap_or_default(),
+            map_index: Some(self.map_index),
             map_chk: self.chk_raw.clone(),
             races: self.last_races.clone(),
             local_player: self.local_player,
@@ -9174,6 +10678,7 @@ impl App {
                 .get(self.map_index)
                 .map(|m| m.name.clone())
                 .unwrap_or_default(),
+            map_index: Some(self.map_index),
             map_chk: self.chk_raw.clone(),
             races: self.last_races.clone(),
             local_player: self.local_player,
@@ -9256,6 +10761,15 @@ impl App {
         }
         self.scenario = scenario;
         self.tileset = tileset;
+        if let Some(index) = self.saved_map_index(save) {
+            self.map_index = index;
+            self.menu_tab = usize::from(index >= self.campaign_len);
+            self.menu_index = if index < self.campaign_len {
+                index
+            } else {
+                index - self.campaign_len
+            };
+        }
         self.chk_raw = save.map_chk.clone();
         self.last_races = save.races.clone();
         // A lobby game may be watched: one past the last slot is the
@@ -9279,11 +10793,20 @@ impl App {
                 .unwrap_or(Race::Terran)
         };
         self.mp.setup = save.setup.clone();
-        self.console = ConsoleArt::load(&self.assets_root, self.console_race);
+        self.console = ConsoleArt::load(
+            &self.assets_root,
+            self.console_race,
+            self.game_options.game_console_skin,
+            self.game_options.game_unit_skin,
+        );
         self.world = world;
+        self.apply_special_rules();
         self.trigger_portraits_seen = (0, 0);
         self.trigger_cues_seen = 0;
         self.center_views_seen = 0;
+        self.actions = 0;
+        self.smooth_facing.clear();
+        self.smooth_facing_tick = self.world.tick;
         // A restored game does not replay the rescues it already had.
         self.rescues_seen = self.world.rescues.len();
         self.trigger_text.clear();
@@ -9380,6 +10903,15 @@ impl App {
 
     /// Start hosting: bind the lobby and announce it.  The lobby holds as
     /// many players as the map has start locations (2..=8).
+    /// Lockstep turns per network turn from the Network tab's latency mode.
+    fn latency_turns(&self) -> u32 {
+        match self.game_options.network_latency {
+            1 => 6,
+            2 => 8,
+            _ => galaxycraft::net::DEFAULT_TICKS_PER_TURN,
+        }
+    }
+
     fn lan_host(&mut self) {
         let entry = match self.maps.get(self.lan.map_index) {
             Some(e) => e.clone(),
@@ -9394,11 +10926,20 @@ impl App {
         };
         let mut map_hash = [0u8; 32];
         map_hash.copy_from_slice(&Sha256::digest(&raw));
-        match Lobby::bind("0.0.0.0:7777", map_hash, galaxycraft::net::WORLD_SEED) {
-            Ok(l) => {
+        // Network tab "Prefer Port 6112": bind the retail port instead of
+        // this client's historical 7777.
+        let port = if self.game_options.network_prefer_6112 {
+            6112
+        } else {
+            galaxycraft::net::LOBBY_PORT
+        };
+        let addr = format!("0.0.0.0:{port}");
+        match Lobby::bind(&addr, map_hash, galaxycraft::net::WORLD_SEED) {
+            Ok(mut l) => {
+                l.ticks_per_turn = self.latency_turns();
                 let queue = galaxycraft::net::JoinQueue::new(entry.players.clamp(2, 8) as u8);
                 self.lan.status = format!(
-                    "hosting {} on :7777 - 1/{} players",
+                    "hosting {} on :{port} - 1/{} players",
                     entry.name,
                     queue.capacity()
                 );
@@ -9427,7 +10968,11 @@ impl App {
                         .map(|m| m.name.clone())
                         .unwrap_or_default(),
                     map_hash: lobby.map_hash,
-                    port: galaxycraft::net::LOBBY_PORT,
+                    port: lobby
+                        .listener
+                        .local_addr()
+                        .map(|a| a.port())
+                        .unwrap_or(galaxycraft::net::LOBBY_PORT),
                     players: queue.players(),
                     started: false,
                     game_type: galaxycraft::multiplayer::GameType::Melee.tag(),
@@ -9504,7 +11049,15 @@ impl App {
             galaxycraft::net::WORLD_SEED,
             self.menu_race,
         ) {
-            Ok((t, Msg::Setup { races, you, .. })) => {
+            Ok((
+                t,
+                Msg::Setup {
+                    races,
+                    you,
+                    ticks_per_turn,
+                    ..
+                },
+            )) => {
                 // The host decides the map and races; find it by hash.
                 let index = self
                     .maps
@@ -9530,6 +11083,9 @@ impl App {
                     host_addr,
                     None,
                 ) {
+                    if let Some(net) = &mut self.net {
+                        net.lock.ticks_per_turn = ticks_per_turn.max(1);
+                    }
                     self.lan.status = format!("joined {addr} as player {}", you + 1);
                 }
             }
@@ -9572,6 +11128,7 @@ impl App {
         let races = setup.as_ref().map(|s| s.races()).unwrap_or(races);
         let save = SaveFile {
             map_name: entry.name.clone(),
+            map_index: Some(map_index),
             map_chk: raw,
             races: races.clone(),
             local_player: local_slot,
@@ -9600,6 +11157,11 @@ impl App {
                     .count() as u8
             })
             .unwrap_or(races.len() as u8);
+        let ticks_per_turn = lobby
+            .as_ref()
+            .map_or(galaxycraft::net::DEFAULT_TICKS_PER_TURN, |l| {
+                l.ticks_per_turn
+            });
         // Computers run inside the lockstep on every peer, not locally.
         let computers = if save.setup.is_some() {
             std::mem::take(&mut self.ais)
@@ -9620,7 +11182,7 @@ impl App {
         self.net = Some(NetSession {
             role,
             lock: {
-                let mut lock = Lockstep::new(local, peer_count, DEFAULT_TICKS_PER_TURN);
+                let mut lock = Lockstep::new(local, peer_count, ticks_per_turn);
                 lock.computers = computers;
                 lock
             },
@@ -9755,6 +11317,7 @@ impl App {
         self.accumulator -= need;
 
         let acts = net.lock.take_local();
+        let mut dropped_peer = None;
         let res = match net.role {
             NetRole::Host => galaxycraft::net::host_turn_peers(
                 &mut net.lock,
@@ -9763,6 +11326,7 @@ impl App {
                 acts,
             )
             .map_err(|f| {
+                dropped_peer = Some(f.peer);
                 net.waiting = Some((f.peer, Instant::now() + REJOIN_WAIT));
                 format!(
                     "player {} dropped ({}) - waiting for it",
@@ -9815,8 +11379,31 @@ impl App {
         }
     }
 
-    /// Add one chat line, keeping the newest 50.
+    /// Shift/LT right-click: append the order instead of replacing the
+    /// current one.  Goes through the recorded `QueueOrder` action so saves,
+    /// replays and LAN lockstep stay deterministic.
+    fn send_order_or_queue(&mut self, unit: u32, order: Order, queue: bool) {
+        if !queue {
+            self.send_order(unit, order);
+            return;
+        }
+        match self.net.as_mut() {
+            Some(net) => net.lock.queue(RecAct::QueueOrder { unit, order }),
+            None => {
+                let _ = self.world.queue_order_recorded(unit, order);
+            }
+        }
+    }
+
+    /// Add one chat line, keeping the newest 50.  The mature-language
+    /// filter masks whole words in both single-player prompts and received
+    /// LAN lines.
     fn push_chat_line(&mut self, line: String) {
+        let line = if self.game_options.game_language_filter {
+            mature_language_filter(&line)
+        } else {
+            line
+        };
         self.chat_log.push_back(line);
         while self.chat_log.len() > 50 {
             self.chat_log.pop_front();
@@ -9835,10 +11422,52 @@ impl App {
         }
     }
 
+    /// Recognise one of the retail single-player cheat codes.  The code is
+    /// a recorded [`RecAct::Cheat`], so its resource/upgrade/toggle effects
+    /// survive a save or replay.
+    fn apply_cheat_code(&mut self, text: &str) -> bool {
+        use galaxycraft::sim::cheat;
+        let code = text.trim().to_ascii_lowercase();
+        let id = match code.as_str() {
+            "show me the money" => cheat::SHOW_ME_THE_MONEY,
+            "whats mine is mine" | "what's mine is mine" => cheat::WHATS_MINE_IS_MINE,
+            "breathe deep" | "breathe deeply" => cheat::BREATHE_DEEP,
+            "power overwhelming" => cheat::POWER_OVERWHELMING,
+            "the gathering" => cheat::THE_GATHERING,
+            "food for thought" => cheat::FOOD_FOR_THOUGHT,
+            "black sheep wall" => cheat::BLACK_SHEEP_WALL,
+            "war aint what it used to be" | "war ain't what it used to be" => {
+                cheat::WAR_AINT_WHAT_IT_USED_TO_BE
+            }
+            "operation cwal" => cheat::OPERATION_CWAL,
+            "something for nothing" => cheat::SOMETHING_FOR_NOTHING,
+            "medieval man" => cheat::MEDIEVAL_MAN,
+            "modify the phase variance" => cheat::MODIFY_THE_PHASE_VARIANCE,
+            "there is no cow level" => cheat::THERE_IS_NO_COW_LEVEL,
+            "game over man" => cheat::GAME_OVER_MAN,
+            "staying alive" => cheat::STAYING_ALIVE,
+            "noglues" => cheat::NOGLUES,
+            _ => return false,
+        };
+        self.queue_act(RecAct::Cheat {
+            player: self.local_player as u8,
+            code: id,
+        });
+        self.push_chat_line("Cheat enabled.".to_string());
+        self.status("Cheat enabled".to_string());
+        self.play("ui_click");
+        true
+    }
+
     /// Send a chat line to the other players.  Chat is a client feature: it
     /// bypasses the command log and the lockstep checksum by design.
     fn send_chat(&mut self, text: String) {
         if self.net.is_none() {
+            // Single-player has no chat peers, but the message prompt is
+            // where the retail cheat codes are typed.
+            if !self.apply_cheat_code(&text) && !text.trim().is_empty() {
+                self.push_chat_line(format!("{}: {text}", self.active_name()));
+            }
             return;
         }
         let text: String = text.chars().take(200).collect();
@@ -10476,6 +12105,27 @@ impl App {
         }
     }
 
+    /// Map-list index of a save: the stored index when it still names the
+    /// same CHK, else the entry whose file is byte-identical to the embedded
+    /// CHK (v1-v4 saves), else the saved display name.
+    fn saved_map_index(&self, save: &SaveFile) -> Option<usize> {
+        let same_chk = |i: usize| {
+            self.maps
+                .get(i)
+                .is_some_and(|m| std::fs::read(&m.path).is_ok_and(|raw| raw == save.map_chk))
+        };
+        save.map_index
+            .filter(|&i| same_chk(i))
+            .or_else(|| (0..self.maps.len()).find(|&i| same_chk(i)))
+            .or_else(|| {
+                if save.map_name.is_empty() {
+                    None
+                } else {
+                    self.maps.iter().position(|m| m.name == save.map_name)
+                }
+            })
+    }
+
     /// Map list index of a mapdata mission (`campaign/<dir>/<key>`).
     fn campaign_map_index(&self, mission: u16) -> Option<usize> {
         let (dir, key) = galaxycraft::campaign_progress::mission_key(mission)?;
@@ -10664,9 +12314,13 @@ impl App {
     /// `--menu-script` fills it from a script so the real menu code can be
     /// walked headlessly (screens + sounds) without synthetic X11 events.
     fn handle_menu(&mut self, window: &Window) {
-        let input = MenuInput {
+        let mut input = MenuInput {
             keys: window.get_keys_pressed(KeyRepeat::No),
-            mouse: self.surface_mouse(window),
+            mouse: if self.pad_control {
+                self.pointer.or(Some(self.pad_cursor))
+            } else {
+                self.surface_mouse(window)
+            },
             mouse_down: window.get_mouse_down(MouseButton::Left),
             wheel: window
                 .get_scroll_wheel()
@@ -10674,6 +12328,15 @@ impl App {
                 .unwrap_or(0),
             shift: window.is_key_down(Key::LeftShift) || window.is_key_down(Key::RightShift),
         };
+        if self.pad_frame.active {
+            input.mouse = Some(self.pad_cursor);
+            input.mouse_down |= self.pad_frame.lmb;
+            input
+                .keys
+                .extend(self.pad_frame.menu_pressed.iter().copied());
+            input.wheel += self.pad_frame.wheel;
+            input.shift |= self.pad_frame.shift;
+        }
         if self.menu_screen == MenuScreen::Credits {
             // Held arrows drive the panel's key scrolling.
             self.credits_view.keys = (window.is_key_down(Key::Up), window.is_key_down(Key::Down));
@@ -11336,11 +12999,19 @@ impl App {
                 }
                 let (hit, clicked) = self.menu_pointer(input);
                 if clicked {
+                    if !matches!(hit, Some(MenuHit::OptInput)) {
+                        self.commit_apm_input();
+                    }
                     // Any press outside the open rows closes the list; the
                     // two branches below re-open or choose as appropriate.
                     let was_open = self.options_drop;
                     self.options_drop = None;
                     match hit {
+                        Some(MenuHit::OptInput) => {
+                            self.apm_input =
+                                Some(format!("{:.0}", self.game_options.apm_threshold));
+                            self.play("ui_click");
+                        }
                         Some(MenuHit::OptDrop(kind)) => {
                             self.options_drop = (was_open != Some(kind)).then_some(kind);
                             self.play("ui_click");
@@ -11356,6 +13027,15 @@ impl App {
                                     let picked = i.min(LANGUAGES.len() - 1);
                                     if picked != self.language {
                                         self.language = picked;
+                                        // Retail asks for a restart; persist
+                                        // the choice for the next launch.
+                                        let code = LANGUAGE_CODES[picked];
+                                        let path = saved_locale_path();
+                                        if let Some(parent) = path.parent()
+                                            && std::fs::create_dir_all(parent).is_ok()
+                                        {
+                                            let _ = std::fs::write(&path, code);
+                                        }
                                         self.changing_language = true;
                                     }
                                 }
@@ -11491,6 +13171,29 @@ impl App {
                     }
                 }
                 for key in input.keys.iter().copied() {
+                    if let Some(mut text) = self.apm_input.take() {
+                        match key {
+                            Key::Backspace => {
+                                text.pop();
+                                self.apm_input = Some(text);
+                            }
+                            Key::Enter | Key::Space => {
+                                self.apm_input = Some(text);
+                                self.commit_apm_input();
+                            }
+                            Key::Escape => {}
+                            _ => {
+                                if let Some(c) = chat_char(key)
+                                    && c.is_ascii_digit()
+                                    && text.len() < 3
+                                {
+                                    text.push(c);
+                                }
+                                self.apm_input = Some(text);
+                            }
+                        }
+                        continue;
+                    }
                     match key {
                         Key::Tab => {
                             let all = OptionsTab::all();
@@ -11733,6 +13436,40 @@ impl App {
                         }
                         Some(MenuHit::Equip) => {
                             self.play("ui_click");
+                            // Console skins (cells 0-2) and the unit &
+                            // structure set (cell 3 base art, cell 4 Carbot
+                            // from `anim/skins.json`) are applied here.
+                            // Announcers remain preview-only until their
+                            // voice sets are wired.
+                            if let Some(skin) = collection_console_skin(self.collection_sel) {
+                                self.game_options.game_console_skin = skin;
+                                self.console = ConsoleArt::load(
+                                    &self.assets_root,
+                                    self.console_race,
+                                    skin,
+                                    self.game_options.game_unit_skin,
+                                );
+                                self.flush_profiles();
+                            }
+                            if let Some(id) = collection_announcer(self.collection_sel) {
+                                self.game_options.game_announcer = id;
+                                self.voices.set_announcer(id);
+                                self.flush_profiles();
+                            }
+                            match self.collection_sel {
+                                3 | 4 => {
+                                    self.game_options.game_unit_skin =
+                                        if self.collection_sel == 4 { 2 } else { 0 };
+                                    self.console = ConsoleArt::load(
+                                        &self.assets_root,
+                                        self.console_race,
+                                        self.game_options.game_console_skin,
+                                        self.game_options.game_unit_skin,
+                                    );
+                                    self.flush_profiles();
+                                }
+                                _ => {}
+                            }
                         }
                         Some(MenuHit::Ok) | Some(MenuHit::Skip) => {
                             self.menu_screen = MenuScreen::Main;
@@ -11782,16 +13519,21 @@ impl App {
                     self.play("ui_move");
                 }
             }
-            if window.get_mouse_down(MouseButton::Left)
+            if (window.get_mouse_down(MouseButton::Left) || self.pad_frame.lmb)
                 && !self.mouse_was_down
                 && let Some((mx, my)) = self.pointer
                 && let Some(key) = self.ready_button_at(mx, my)
             {
                 self.briefing_key(key);
             }
-            self.mouse_was_down = window.get_mouse_down(MouseButton::Left);
+            self.mouse_was_down = window.get_mouse_down(MouseButton::Left) || self.pad_frame.lmb;
         }
-        for key in window.get_keys_pressed(KeyRepeat::No) {
+        let keys: Vec<Key> = window
+            .get_keys_pressed(KeyRepeat::No)
+            .into_iter()
+            .chain(self.pad_frame.menu_pressed.iter().copied())
+            .collect();
+        for key in keys {
             self.briefing_key(key);
         }
     }
@@ -11891,26 +13633,37 @@ impl App {
         }
         self.ready_players =
             std::array::from_fn(|i| galaxycraft::portrait::PortraitPlayer::new(i as u32 + 1));
+        self.ready_race = self
+            .world
+            .players
+            .get(self.local_player)
+            .map(|p| p.race)
+            .unwrap_or(galaxycraft::sim::Race::Terran);
+        let (dir, clip, projector) = match self.ready_race {
+            galaxycraft::sim::Race::Zerg => ("readyz", "start.webm", false),
+            galaxycraft::sim::Race::Protoss => ("readyp", "ring.webm", false),
+            _ => ("readyt", "start.webm", true),
+        };
         let headless = self.headless;
-        if self.ready_glow.is_none() {
-            self.ready_glow = MenuClip::open_at(
-                self.assets_root.join("glue/readyt/start.webm"),
-                0.0,
-                headless,
-            );
-        }
-        // The projector intro plays once per room; captures and pinned
-        // scripts past its 4 s show the loop.
-        self.ready_proj = (!headless && self.ready_at.is_none_or(|t| t < 4000))
+        self.ready_glow = MenuClip::open_at(
+            self.assets_root.join(format!("glue/{dir}/{clip}")),
+            0.0,
+            headless,
+        );
+        // The Terran projector intro plays once per room; Zerg and Protoss
+        // rooms have their own backdrop art and no projector.
+        self.ready_proj = (projector && !headless && self.ready_at.is_none_or(|t| t < 4000))
             .then(|| MenuClip::open_at(self.assets_root.join("glue/readyt/proj.webm"), 0.0, false))
             .flatten();
-        if self.ready_proloop.is_none() {
-            self.ready_proloop = MenuClip::open_at(
-                self.assets_root.join("glue/readyt/proloop.webm"),
-                0.0,
-                headless,
-            );
-        }
+        self.ready_proloop = projector
+            .then(|| {
+                MenuClip::open_at(
+                    self.assets_root.join("glue/readyt/proloop.webm"),
+                    0.0,
+                    headless,
+                )
+            })
+            .flatten();
         if self.ready.is_some() {
             self.update_briefing();
         }
@@ -12048,7 +13801,12 @@ impl App {
 
     /// Replay playback controls: SPACE pause, +/- speed, R restart, ESC out.
     fn handle_replay(&mut self, window: &Window) {
-        for key in window.get_keys_pressed(KeyRepeat::No) {
+        let keys: Vec<Key> = window
+            .get_keys_pressed(KeyRepeat::No)
+            .into_iter()
+            .chain(self.pad_frame.menu_pressed.iter().copied())
+            .collect();
+        for key in keys {
             match key {
                 Key::Space => {
                     let now_paused = if let Some(rp) = self.replay.as_mut() {
@@ -12146,7 +13904,7 @@ impl App {
     }
 
     fn handle_result(&mut self, window: &Window) {
-        let down = window.get_mouse_down(MouseButton::Left);
+        let down = window.get_mouse_down(MouseButton::Left) || self.pad_frame.lmb;
         if down
             && !self.mouse_was_down
             && let Some(key) = self.pointer.and_then(|(x, y)| self.result_button_at(x, y))
@@ -12154,7 +13912,12 @@ impl App {
             self.result_key(key);
         }
         self.mouse_was_down = down;
-        for key in window.get_keys_pressed(KeyRepeat::No) {
+        let keys: Vec<Key> = window
+            .get_keys_pressed(KeyRepeat::No)
+            .into_iter()
+            .chain(self.pad_frame.menu_pressed.iter().copied())
+            .collect();
+        for key in keys {
             self.result_key(key);
         }
     }
@@ -12200,6 +13963,8 @@ impl App {
             (4, Key::U),
             (5, Key::T),
             (6, Key::R),
+            (61, Key::F6),
+            (63, Key::W),
             (7, Key::Enter),
         ]
         .into_iter()
@@ -12211,6 +13976,20 @@ impl App {
     /// `result:<Key>` steps).
     fn result_key(&mut self, key: Key) {
         if self.end_dialog && self.end_dialog_hold > 0 {
+            return;
+        }
+        if key == Key::F6 && !self.end_dialog {
+            // Retail's Save Replay button on the score screen (F6 also
+            // saves during play).
+            self.save_replay();
+            return;
+        }
+        if key == Key::W && !self.end_dialog {
+            // Watch Replay: write the finished match and open it in the
+            // replay player, exactly like the Replays browser.
+            if let Some(path) = self.save_replay() {
+                self.load_save(&path, true);
+            }
             return;
         }
         if self.end_dialog {
@@ -12628,10 +14407,30 @@ impl App {
     fn draw_ready_room_with(&mut self, fb: &mut Framebuffer, glue: &GlueArt) {
         let (cx, _cy, cw, ch) = Self::content_rect(fb);
         let k = ch as f32 / 1440.0;
-        let Some(dialog) = glue.ready_t.as_ref() else {
+        let (dialog, backdrop, art, frames) = match self.ready_race {
+            galaxycraft::sim::Race::Zerg => (
+                &glue.ready_z,
+                &glue.ready_backdrop_z,
+                &glue.ready_art_z,
+                &glue.ready_slot_frames_z,
+            ),
+            galaxycraft::sim::Race::Protoss => (
+                &glue.ready_p,
+                &glue.ready_backdrop_p,
+                &glue.ready_art_p,
+                &glue.ready_slot_frames_p,
+            ),
+            _ => (
+                &glue.ready_t,
+                &glue.ready_backdrop,
+                &glue.ready_art,
+                &glue.ready_slot_frames,
+            ),
+        };
+        let Some(dialog) = dialog.as_ref() else {
             return;
         };
-        if let Some(bg) = &glue.ready_backdrop {
+        if let Some(bg) = backdrop {
             bg.draw_scaled(fb, cx, 0, cw, ch);
         }
         let sx = |ux: f32| cx + ((320.0 + ux * 3.0) * k).round() as i32;
@@ -12693,7 +14492,7 @@ impl App {
             self.ready_epoch.elapsed().as_secs_f32()
         };
         let step = (build_t * galaxycraft::menu::SWISH_STEPS_PER_SEC) as u32;
-        for (id, img) in &glue.ready_art {
+        for (id, img) in art {
             let Some(c) = dialog.controls.iter().find(|c| c.id == *id) else {
                 continue;
             };
@@ -12758,7 +14557,7 @@ impl App {
                     }
                 }
             }
-            if let Some((idle, hot)) = glue.ready_slot_frames.get(slot)
+            if let Some((idle, hot)) = frames.get(slot)
                 && let Some(img) = if talking { hot.as_ref() } else { idle.as_ref() }
             {
                 let w = (img.width as f32 * 0.75 * k).round() as i32;
@@ -12837,13 +14636,19 @@ impl App {
                 );
             }
         }
-        // Objectives heading (LTEXT -1, `gluRdyT-13`) and list (LTEXT -11).
+        // Objectives heading (LTEXT -1, `gluRdy?-13`) and list (LTEXT -11).
+        let prefix = match self.ready_race {
+            galaxycraft::sim::Race::Zerg => "GluRdyZ",
+            galaxycraft::sim::Race::Protoss => "gluRdyP",
+            _ => "gluRdyT",
+        };
+        let objectives = self.ui_text(&format!("{prefix}-13"), "Objectives");
         if let Some(c) = dialog.controls.iter().find(|c| c.id == -1) {
             self.glue_text_face(
                 fb,
                 to_content_x(c.abs.x as f32),
                 c.abs.y as f32 * 3.0 + READY_HEAD_BASE,
-                "Objectives",
+                &objectives,
                 READY_HEAD_PX,
                 text_color,
                 None,
@@ -12903,10 +14708,22 @@ impl App {
             .pointer
             .and_then(|(mx, my)| self.ready_button_at(mx, my));
         for (label, at, key) in [
-            ("Start", start, Key::S),
-            ("Replay", centre(20), Key::R),
-            ("Cancel", centre(14), Key::C),
-            ("Skip Tutorial", skip, Key::T),
+            (self.ui_text(&format!("{prefix}-1"), "Start"), start, Key::S),
+            (
+                self.ui_text(&format!("{prefix}-4"), "Replay"),
+                centre(20),
+                Key::R,
+            ),
+            (
+                self.ui_text(&format!("{prefix}-2"), "Cancel"),
+                centre(14),
+                Key::C,
+            ),
+            (
+                self.ui_text(&format!("{prefix}-3"), "Skip Tutorial"),
+                skip,
+                Key::T,
+            ),
         ] {
             let Some((ux, uy)) = at else {
                 continue;
@@ -12916,12 +14733,12 @@ impl App {
             } else {
                 GLUE_GREEN
             };
-            let w = self.glue_measure(label, GLUE_BIGGER_PX, GlueFace::Bigger);
+            let w = self.glue_measure(&label, GLUE_BIGGER_PX, GlueFace::Bigger);
             self.glue_text_face(
                 fb,
                 to_content_x(ux) - w / 2.0,
                 uy * 3.0 + GLUE_BIGGER_PX * GLUE_CAP / 2.0,
-                label,
+                &label,
                 GLUE_BIGGER_PX,
                 colour,
                 None,
@@ -13709,8 +15526,8 @@ impl App {
             );
         }
         for (id, label, colour) in [
-            (61, "Save Replay", SCORE_DISABLED),
-            (63, "Watch Replay", SCORE_DISABLED),
+            (61, "Save Replay", GLUE_GREEN),
+            (63, "Watch Replay", GLUE_GREEN),
             (7, "Ok", GLUE_GREEN),
         ] {
             if let Some(r) = ctl(id) {
@@ -13775,7 +15592,11 @@ impl App {
             let parsed = self
                 .install
                 .as_ref()
-                .and_then(|i| i.read_by_path("locales/enus/assets/rez/network.json").ok())
+                .and_then(|i| {
+                    i.read_by_path(&format!("locales/{}/assets/rez/network.json", i.locale()))
+                        .or_else(|_| i.read_by_path("locales/enus/assets/rez/network.json"))
+                        .ok()
+                })
                 .and_then(|b| {
                     let text =
                         String::from_utf8_lossy(b.strip_prefix(b"\xef\xbb\xbf").unwrap_or(&b))
@@ -13929,6 +15750,8 @@ impl App {
             self.card_set = None;
             self.target_act = None;
             self.build_mode = None;
+            self.pad_wheel.close();
+            self.pad_wheel_pages.clear();
         }
         self.command_list.clear();
         self.build_list.clear();
@@ -14021,6 +15844,23 @@ impl App {
             .collect()
     }
 
+    /// Selected own transports and Bunkers (the units whose card has the
+    /// Load / Unload actions).
+    fn selected_transports(&self) -> Vec<u32> {
+        self.selected
+            .iter()
+            .copied()
+            .filter(|id| {
+                self.world.unit(*id).is_some_and(|u| {
+                    u.owner as usize == self.local_player
+                        && u.alive
+                        && u.completed
+                        && self.data.unit(u.type_id).space_provided > 0
+                })
+            })
+            .collect()
+    }
+
     fn selected_own_buildings(&self) -> Vec<u32> {
         self.selected
             .iter()
@@ -14058,7 +15898,12 @@ impl App {
             | Act::Repair
             | Act::Gather
             | Act::Rally
-            | Act::Land) => {
+            | Act::Land
+            | Act::Nuke
+            | Act::Heal
+            | Act::Infest
+            | Act::RechargeShields
+            | Act::PlaceBeacon) => {
                 self.target_act = Some((act, var));
             }
             Act::Stop => {
@@ -14085,7 +15930,69 @@ impl App {
             Act::Build | Act::DroneBuild => {
                 self.build_mode = Some(var);
             }
-            Act::Train | Act::MorphUnit => self.train(var),
+            Act::Train => self.train(var),
+            Act::MorphUnit => self.morph_unit_command(var),
+            Act::MorphBuilding => {
+                for id in self.selected_own_buildings() {
+                    if self.net.is_some() {
+                        self.queue_act(galaxycraft::replay::RecAct::MorphBuilding {
+                            source: id,
+                            unit: var,
+                        });
+                    } else if let Err(e) = self.world.morph_building(id, var) {
+                        self.show_sim_error(e);
+                    }
+                }
+            }
+            Act::SpawnLarva => {
+                for id in self.selected_own_buildings() {
+                    if self.net.is_some() {
+                        self.queue_act(galaxycraft::replay::RecAct::SpawnLarva { hatchery: id });
+                    } else if let Err(e) = self.world.spawn_larva(id) {
+                        self.show_sim_error(e);
+                    }
+                }
+            }
+            Act::TrainHangar => {
+                for id in self.selected_mobile() {
+                    if self.net.is_some() {
+                        self.queue_act(galaxycraft::replay::RecAct::Hangar { unit: id });
+                    } else if let Err(e) = self.world.build_hangar_unit(id) {
+                        self.show_sim_error(e);
+                    }
+                }
+            }
+            Act::Cloak | Act::Decloak => {
+                let cloaked = matches!(Act::of(b.act), Act::Cloak);
+                for id in self.selected_mobile() {
+                    if self.net.is_some() {
+                        self.queue_act(galaxycraft::replay::RecAct::Cloak { unit: id, cloaked });
+                    } else if let Err(e) = self.world.set_cloak(id, cloaked) {
+                        self.show_sim_error(e);
+                    }
+                }
+            }
+            Act::StopOrMerge => {
+                if var as u8 == galaxycraft::ids::tech::ARCHON_WARP {
+                    self.merge_templars(false);
+                } else if var as u8 == galaxycraft::ids::tech::DARK_ARCHON_MELD {
+                    self.merge_templars(true);
+                } else {
+                    for id in self.selected_mobile() {
+                        self.send_order(id, Order::Stop);
+                    }
+                    self.play_ack();
+                }
+            }
+            Act::MergeArchon => self.merge_templars(false),
+            Act::MergeDarkArchon => self.merge_templars(true),
+            Act::Load => self.load_transports(),
+            Act::Unload => {
+                for id in self.selected_transports() {
+                    self.send_order(id, Order::Unload);
+                }
+                self.play_ack();
+            }
             Act::Addon => {
                 if let Err(e) = self.world.build_addon(u.id, var) {
                     self.show_sim_error(e);
@@ -14120,9 +16027,21 @@ impl App {
                     self.show_sim_error(e);
                 }
             }
-            Act::CancelLast | Act::CancelAddon | Act::CancelMorph => {
+            Act::CancelLast => {
                 if let Err(e) = self.world.cancel_production(u.id) {
                     self.show_sim_error(e);
+                }
+            }
+            Act::CancelAddon | Act::CancelMorph => {
+                // The shipped rows use several condition/action pairs for
+                // "cancel"; try the state-specific cancel that applies.
+                for id in self.selected.clone() {
+                    if self.world.unit(id).is_some_and(|u| {
+                        u.owner as usize == self.local_player
+                            && self.data.unit(u.type_id).is_building()
+                    }) {
+                        self.cancel_building(id);
+                    }
                 }
             }
             Act::CancelTarget => {
@@ -14288,6 +16207,98 @@ impl App {
                     self.send_order(id, Order::Land { pos });
                 }
             }
+            Act::Nuke => {
+                let ghosts: Vec<u32> = self
+                    .selected_mobile()
+                    .into_iter()
+                    .filter(|id| {
+                        self.world.unit(*id).is_some_and(|u| {
+                            u.type_id == galaxycraft::ids::unit::GHOST
+                                && u.owner as usize == self.local_player
+                        })
+                    })
+                    .collect();
+                for id in ghosts {
+                    if self.net.is_some() {
+                        self.queue_act(galaxycraft::replay::RecAct::Nuke { ghost: id, pos });
+                    } else if let Err(e) = self.world.launch_nuke(id, pos) {
+                        self.show_sim_error(e);
+                    }
+                }
+            }
+            Act::Heal => {
+                if let Some(t) = target {
+                    for id in self.selected_mobile() {
+                        if self
+                            .world
+                            .unit(id)
+                            .is_some_and(|u| u.type_id == galaxycraft::ids::unit::MEDIC)
+                        {
+                            self.send_order(
+                                id,
+                                Order::Cast {
+                                    spell: galaxycraft::sim::Spell::Healing,
+                                    target: galaxycraft::sim::SpellTarget::Unit(t),
+                                },
+                            );
+                        }
+                    }
+                }
+            }
+            Act::Infest => {
+                if let Some(t) = target {
+                    for id in self.selected_mobile() {
+                        if self
+                            .world
+                            .unit(id)
+                            .is_some_and(|u| u.type_id == galaxycraft::ids::unit::QUEEN)
+                        {
+                            self.send_order(
+                                id,
+                                Order::Cast {
+                                    spell: galaxycraft::sim::Spell::Infestation,
+                                    target: galaxycraft::sim::SpellTarget::Unit(t),
+                                },
+                            );
+                        }
+                    }
+                }
+            }
+            Act::PlaceBeacon => {
+                // Capture the Flag: move the selected own beacon once
+                // during the first ten minutes.
+                if self.net.is_some() {
+                    self.queue_act(galaxycraft::replay::RecAct::Beacon {
+                        player: self.local_player as u8,
+                        pos,
+                    });
+                } else if let Err(e) = self.world.move_beacon(self.local_player as u8, pos) {
+                    self.show_sim_error(e);
+                }
+            }
+            Act::RechargeShields => {
+                if let Some(t) = target {
+                    let batteries: Vec<u32> = self
+                        .selected_own_buildings()
+                        .into_iter()
+                        .filter(|id| {
+                            self.world.unit(*id).is_some_and(|u| {
+                                u.type_id == galaxycraft::ids::unit::SHIELD_BATTERY
+                            })
+                        })
+                        .collect();
+                    for id in batteries {
+                        if self.net.is_some() {
+                            self.queue_act(galaxycraft::replay::RecAct::ShieldBattery {
+                                battery: id,
+                                target: t,
+                            });
+                        } else if let Err(e) = self.world.shield_battery(id, t) {
+                            self.show_sim_error(e);
+                        }
+                    }
+                }
+            }
             _ => {}
         }
         self.play_ack();
@@ -14298,11 +16309,11 @@ impl App {
     /// attacked, workers gather from minerals and refineries, other targets
     /// and empty ground are moved to.  Grounded buildings take no orders;
     /// producing buildings set their rally point instead.
-    fn command_at(&mut self, sx: i32, sy: i32, attack_move: bool, patrol: bool) {
+    fn command_at(&mut self, sx: i32, sy: i32, attack_move: bool, patrol: bool, queue: bool) {
         let (lx, ly) = self.to_logical(sx, sy);
         let pos = self.world_of(lx, ly);
         let target = self.unit_at(sx, sy);
-        self.command_world(pos, target, attack_move, patrol);
+        self.command_world(pos, target, attack_move, patrol, queue);
     }
 
     /// [`Self::command_at`] at a world position (also the minimap's right
@@ -14313,6 +16324,7 @@ impl App {
         target: Option<u32>,
         attack_move: bool,
         patrol: bool,
+        queue: bool,
     ) {
         if self.selected.is_empty() {
             return;
@@ -14352,7 +16364,7 @@ impl App {
         if let Some((tid, towner, resource, tpos)) = target {
             if towner != me && self.world.hostile(me, towner) && !resource {
                 for id in mobile {
-                    self.send_order(id, Order::AttackUnit { target: tid });
+                    self.send_order_or_queue(id, Order::AttackUnit { target: tid }, queue);
                 }
                 self.play_ack();
                 return;
@@ -14378,7 +16390,11 @@ impl App {
                     .collect();
                 if !riders.is_empty() {
                     for id in riders {
-                        self.send_order(id, Order::EnterTransport { transport: tid });
+                        self.send_order_or_queue(
+                            id,
+                            Order::EnterTransport { transport: tid },
+                            queue,
+                        );
                     }
                     self.play_ack();
                     return;
@@ -14401,7 +16417,7 @@ impl App {
                     })
                     .collect();
                 if let Some(&scv) = scvs.first() {
-                    self.send_order(scv, Order::Construct { building: tid });
+                    self.send_order_or_queue(scv, Order::Construct { building: tid }, queue);
                     self.play_ack();
                     return;
                 }
@@ -14413,15 +16429,27 @@ impl App {
                         .is_some_and(|u| self.data.unit(u.type_id).is_worker())
                 });
                 for id in workers {
-                    self.send_order(id, Order::Gather { resource: tid });
+                    self.send_order_or_queue(id, Order::Gather { resource: tid }, queue);
                 }
                 if !others.is_empty() {
-                    self.world.command_move(&others, tpos);
+                    if queue {
+                        for id in others {
+                            self.send_order_or_queue(id, Order::Move { pos: tpos }, true);
+                        }
+                    } else {
+                        self.world.command_move(&others, tpos);
+                    }
                 }
                 self.play_ack();
                 return;
             }
-            self.world.command_move(&mobile, tpos);
+            if queue {
+                for id in mobile {
+                    self.send_order_or_queue(id, Order::Move { pos: tpos }, true);
+                }
+            } else {
+                self.world.command_move(&mobile, tpos);
+            }
             self.play_ack();
             return;
         }
@@ -14429,18 +16457,29 @@ impl App {
             for id in mobile {
                 if let Some(u) = self.world.unit(id) {
                     let a = (u.x / 256, u.y / 256);
-                    self.send_order(
+                    self.send_order_or_queue(
                         id,
                         Order::Patrol {
                             a,
                             b: (wx, wy),
                             forward: true,
                         },
+                        queue,
                     );
                 }
             }
         } else if attack_move {
-            self.world.command_attack_move(&mobile, (wx, wy));
+            if queue {
+                for id in mobile {
+                    self.send_order_or_queue(id, Order::AttackMove { pos: (wx, wy) }, true);
+                }
+            } else {
+                self.world.command_attack_move(&mobile, (wx, wy));
+            }
+        } else if queue {
+            for id in mobile {
+                self.send_order_or_queue(id, Order::Move { pos: (wx, wy) }, true);
+            }
         } else {
             self.world.command_move(&mobile, (wx, wy));
         }
@@ -14471,6 +16510,156 @@ impl App {
             self.actions = self.actions.saturating_add(1);
             self.play("ui_click");
             self.status(format!("Training {}", self.data.unit_name(unit_type)));
+        }
+    }
+
+    /// Queue a direct command-card act for the LAN lockstep, or apply it
+    /// locally.  The acts carry their own validation in `World`.
+    fn queue_act(&mut self, act: galaxycraft::replay::RecAct) {
+        if let Some(net) = self.net.as_mut() {
+            net.lock.queue(act);
+        } else {
+            galaxycraft::replay::apply_act(&mut self.world, &act);
+        }
+    }
+
+    /// The Morph Unit button: larva → unit, Hydralisk → Lurker,
+    /// Mutalisk → Guardian/Devourer.  (Those are the only morph rows with
+    /// this action in the shipped button table.)
+    fn morph_unit_command(&mut self, unit_type: u16) {
+        for id in self.selected.clone() {
+            let Some(u) = self.world.unit(id).cloned() else {
+                continue;
+            };
+            if u.owner as usize != self.local_player || !u.alive || u.in_transport.is_some() {
+                continue;
+            }
+            if u.type_id == galaxycraft::ids::unit::LARVA {
+                if self.net.is_some() {
+                    self.queue_act(galaxycraft::replay::RecAct::Morph {
+                        larva: id,
+                        unit: unit_type,
+                    });
+                } else if let Err(e) = self.world.morph(id, unit_type) {
+                    self.show_sim_error(e);
+                }
+            } else if matches!(
+                u.type_id,
+                galaxycraft::ids::unit::HYDRALISK | galaxycraft::ids::unit::MUTALISK
+            ) {
+                if self.net.is_some() {
+                    self.queue_act(galaxycraft::replay::RecAct::MorphUnit {
+                        unit: id,
+                        unit_type,
+                    });
+                } else if let Err(e) = self.world.morph_unit(id, unit_type) {
+                    self.show_sim_error(e);
+                }
+            }
+        }
+    }
+
+    /// Archon Warp / Dark Archon Meld: one cast merges the pair (the
+    /// simulation removes the two templars and spawns the archon).
+    fn merge_templars(&mut self, dark: bool) {
+        use galaxycraft::ids::unit as uid;
+        use galaxycraft::sim::{Spell, SpellTarget};
+        let wanted = if dark {
+            uid::DARK_TEMPLAR
+        } else {
+            uid::HIGH_TEMPLAR
+        };
+        let selected: Vec<u32> = self
+            .selected_mobile()
+            .into_iter()
+            .filter(|id| self.world.unit(*id).is_some_and(|u| u.type_id == wanted))
+            .collect();
+        if selected.len() < 2 {
+            self.status("Select 2 or more Templars");
+            return;
+        }
+        let spell = if dark {
+            Spell::DarkArchonMeld
+        } else {
+            Spell::ArchonWarp
+        };
+        self.send_order(
+            selected[0],
+            Order::Cast {
+                spell,
+                target: SpellTarget::None,
+            },
+        );
+        self.play_ack();
+    }
+
+    /// The transport / Bunker Load button: nearby own units board the
+    /// selected transport.  Retail loads the units around the transport,
+    /// not a clicked target.
+    fn load_transports(&mut self) {
+        let transports = self.selected_transports();
+        for transport in transports {
+            let Some(t) = self.world.unit(transport).cloned() else {
+                continue;
+            };
+            let ty = self.data.unit(t.type_id);
+            let used: i32 = t
+                .cargo
+                .iter()
+                .filter_map(|id| self.world.unit(*id))
+                .map(|u| self.data.unit(u.type_id).space_required as i32)
+                .sum();
+            let mut free = ty.space_provided as i32 - used;
+            if free <= 0 {
+                continue;
+            }
+            let riders: Vec<u32> = self
+                .world
+                .units
+                .iter()
+                .filter(|u| {
+                    u.alive
+                        && u.owner as usize == self.local_player
+                        && u.id != transport
+                        && !u.in_transport.is_some()
+                        && !self.data.unit(u.type_id).is_building()
+                        && self.data.unit(u.type_id).space_required > 0
+                        && (u.x - t.x).abs() < 8 * 256
+                        && (u.y - t.y).abs() < 8 * 256
+                })
+                .map(|u| u.id)
+                .collect();
+            for id in riders {
+                let need = self
+                    .world
+                    .unit(id)
+                    .map(|u| self.data.unit(u.type_id).space_required as i32)
+                    .unwrap_or(0);
+                if need > free {
+                    continue;
+                }
+                self.send_order(id, Order::EnterTransport { transport });
+                free -= need;
+                if free <= 0 {
+                    break;
+                }
+            }
+        }
+        self.play_ack();
+    }
+
+    /// Cancel whatever the selected building is currently doing: a morph, an
+    /// add-on, a construction site or a production queue (the shipped
+    /// Cancel rows share one card slot).
+    fn cancel_building(&mut self, id: u32) {
+        if self.world.cancel_morph(id).is_ok()
+            || self.world.cancel_addon(id).is_ok()
+            || self.world.cancel_construction(id).is_ok()
+        {
+            return;
+        }
+        if let Err(e) = self.world.cancel_production(id) {
+            self.show_sim_error(e);
         }
     }
 
@@ -14563,48 +16752,138 @@ impl App {
 
     /// Software pointer: the compositor does not always show the system cursor
     /// for a borderless window, so the client paints its own arrow.
-    fn draw_cursor(&self, fb: &mut Framebuffer) {
-        let Some((mx, my)) = self.pointer else {
+    /// Hidden `ShowFPS` setting: the retail executable stores `ShowFPS` in
+    /// its option map.  The overlay is debug chrome, so it is not in the
+    /// Options tabs.
+    fn draw_fps(&mut self, fb: &mut Framebuffer) {
+        if !self.game_options.show_fps {
             return;
-        };
-        // Retail skin when the install provides it; the drawn arrow below is
-        // only the fallback for runs without assets.
-        if let Some(grp) = &self.cursor_art
-            && !grp.frames.is_empty()
-        {
-            let frame = cursor_frame_index(self.cursor_started.elapsed(), grp.frames.len());
-            if let Some(img) = grp.frames.get(frame) {
-                blit_cursor_scaled(fb, img, mx, my, cursor_scale_for_height(fb.height));
-                return;
-            }
         }
-        // 12x18 arrow.
-        let shape: [&str; 12] = [
-            "X...........",
-            "XX..........",
-            "X.X.........",
-            "X..X........",
-            "X...X.......",
-            "X....X......",
-            "X.....X.....",
-            "X......X....",
-            "X....XXXX...",
-            "X..X...X....",
-            "X.X.....X...",
-            "XX......X...",
-        ];
-        for (dy, row) in shape.iter().enumerate() {
-            for (dx, c) in row.chars().enumerate() {
-                if c == 'X' {
-                    let (x, y) = (mx + dx as i32, my + dy as i32);
-                    fb.put(x, y, Rgb::new(0, 0, 0));
-                    fb.put(x + 1, y, Rgb::new(240, 240, 240));
-                }
-            }
+        let text = fps_label(self.fps);
+        self.glue_text_face(
+            fb,
+            20.0,
+            40.0,
+            &text,
+            HUD_SMALL_PX,
+            Rgb::new(255, 255, 0),
+            None,
+            GlueFace::Hud,
+        );
+    }
+
+    /// Hidden `ShowTurnRate` setting registered by the retail config routine
+    /// at `0x006e2653`; shows the selected flingy's `flingy.dat` turn rate.
+    fn draw_turn_rate(&mut self, fb: &mut Framebuffer) {
+        if !self.game_options.show_turn_rate {
+            return;
         }
+        let rate = self
+            .selected
+            .first()
+            .and_then(|id| self.world.unit(*id))
+            .and_then(|u| {
+                let unit = self.data.unit(u.type_id);
+                self.data.flingy(unit.flingy).map(|f| f.turn_rate)
+            });
+        let text = turn_rate_label(rate);
+        self.glue_text_face(
+            fb,
+            20.0,
+            if self.game_options.show_fps {
+                60.0
+            } else {
+                40.0
+            },
+            &text,
+            HUD_SMALL_PX,
+            Rgb::new(255, 255, 0),
+            None,
+            GlueFace::Hud,
+        );
+    }
+
+    fn draw_cursor(&self, fb: &mut Framebuffer) {
+        // The command wheel is modal: no pointer while it is open.
+        if self.pad_wheel.is_open() {
+            return;
+        }
+        let target = self.pointer.and_then(|(mx, my)| {
+            // Only the live playfield transforms the pointer; menus, briefing
+            // screens, dialogs and the command console keep the arrow.
+            if self.menu
+                || self.intro
+                || self.briefing
+                || self.overlay != 0
+                || self.game_dialog.is_some()
+                || my >= self.playfield_bottom()
+            {
+                return None;
+            }
+            let u = self.world.unit(self.unit_at(mx, my)?)?;
+            Some(if u.owner as usize == self.local_player {
+                CursorTarget::Own
+            } else if self.world.hostile(self.local_player as u8, u.owner) {
+                CursorTarget::Enemy
+            } else {
+                CursorTarget::Neutral
+            })
+        });
+        draw_virtual_cursor(
+            fb,
+            self.pointer,
+            self.cursor_art.as_ref(),
+            target,
+            self.cursor_started.elapsed(),
+        );
     }
 
     fn handle_input(&mut self, window: &Window) {
+        // The controller only produces the same pointer/keys the window
+        // produces; it never touches the simulation directly.
+        self.pad_frame = self.gamepad.poll();
+        if !self.pad_frame.active {
+            self.pad_suppressed = false;
+            self.pad_rt_was_held = false;
+        }
+        if self.pad_frame.active && self.pad_suppressed {
+            // The player moved the mouse: the pad stays ignored until it is
+            // released, then the next pad input takes over again.
+            self.pad_frame = gamepad::PadFrame::default();
+        }
+        let frame_now = Instant::now();
+        let frame_dt = frame_now
+            .duration_since(self.pad_last_poll)
+            .as_secs_f32()
+            .clamp(0.005, 0.1);
+        self.pad_last_poll = frame_now;
+        if self.pad_frame.active && !self.pad_wheel.is_open() {
+            let (w, h) = window.get_size();
+            let (ox, oy) = self.present_offset;
+            let sw = (w as i32 - ox * 2).max(1);
+            let sh = (h as i32 - oy * 2).max(1);
+            if !self.pad_control {
+                // Start from the mouse position so the virtual cursor does
+                // not jump when the pad is picked up.  `pointer` is in
+                // surface pixels, like every other hit test.
+                self.pad_cursor = self.pointer.unwrap_or((sw / 2, sh / 2));
+            }
+            self.pad_control = true;
+            let (dx, dy) = self.pad_frame.cursor;
+            // CURSOR_SPEED is px per 60 Hz frame; scale by the real frame
+            // time so the cursor feels the same in the main menu and in the
+            // heavier briefing/ready-room renderer.
+            let step = frame_dt * 60.0;
+            self.pad_cursor.0 = (self.pad_cursor.0 + (dx * step).round() as i32).clamp(0, sw - 1);
+            self.pad_cursor.1 = (self.pad_cursor.1 + (dy * step).round() as i32).clamp(0, sh - 1);
+            if self.pad_frame.minimap_hold {
+                let (rx, ry, rw, rh) = self.minimap_rect();
+                self.pad_cursor.0 = self.pad_cursor.0.clamp(rx, rx + rw - 1);
+                self.pad_cursor.1 = self.pad_cursor.1.clamp(ry, ry + rh - 1);
+            }
+            self.pointer = Some(self.pad_cursor);
+            self.pad_hint_until = Instant::now() + Duration::from_secs(5);
+        }
         if let Some(k) = window.get_keys_pressed(KeyRepeat::No).first() {
             self.last_key = Some(format!("{k:?}"));
         }
@@ -14639,14 +16918,26 @@ impl App {
             return;
         }
         if self.game_dialog.is_some() || self.paused {
-            let keys = window.get_keys_pressed(KeyRepeat::No);
-            let mouse = self.surface_mouse(window);
-            let lmb = window.get_mouse_down(MouseButton::Left);
-            let wheel = window
+            let mut keys = window.get_keys_pressed(KeyRepeat::No);
+            let mut mouse = if self.pad_control {
+                self.pointer.or(Some(self.pad_cursor))
+            } else {
+                self.surface_mouse(window)
+            };
+            let mut lmb = window.get_mouse_down(MouseButton::Left);
+            let mut wheel = window
                 .get_scroll_wheel()
                 .map(|(_, y)| -(y.signum() as i32))
                 .unwrap_or(0);
-            let shift = window.is_key_down(Key::LeftShift) || window.is_key_down(Key::RightShift);
+            let mut shift =
+                window.is_key_down(Key::LeftShift) || window.is_key_down(Key::RightShift);
+            if self.pad_frame.active {
+                keys.extend(self.pad_frame.menu_pressed.iter().copied());
+                mouse = Some(self.pad_cursor);
+                lmb |= self.pad_frame.lmb;
+                wheel += self.pad_frame.wheel;
+                shift |= self.pad_frame.shift;
+            }
             self.handle_game_dialog_input(&keys, mouse, lmb, wheel, shift);
             return;
         }
@@ -14654,7 +16945,7 @@ impl App {
             self.handle_replay(window);
             return;
         }
-        let input = GameInput {
+        let mut input = GameInput {
             pressed: window.get_keys_pressed(KeyRepeat::No),
             ctrl: window.is_key_down(Key::LeftCtrl) || window.is_key_down(Key::RightCtrl),
             alt: window.is_key_down(Key::LeftAlt) || window.is_key_down(Key::RightAlt),
@@ -14664,10 +16955,36 @@ impl App {
             up: window.is_key_down(Key::Up),
             down: window.is_key_down(Key::Down),
             wheel: window.get_scroll_wheel().map_or(0.0, |(_, y)| y),
-            mouse: self.surface_mouse(window),
+            pan: (0, 0),
+            mouse: self.pointer,
             lmb: window.get_mouse_down(MouseButton::Left),
             rmb: window.get_mouse_down(MouseButton::Right),
+            pad: gamepad::PadFrame::default(),
         };
+        if self.pad_frame.active {
+            let wheel_open = self.pad_wheel.is_open();
+            input.pan = if wheel_open {
+                (0, 0)
+            } else {
+                self.pad_frame.pan
+            };
+            input.mouse = Some(self.pad_cursor);
+            // A/B no longer mean left/right mouse buttons in the world:
+            // `input.pad` carries the controller edges to the in-game
+            // handler, which routes them through the same selection and
+            // command-card entry points.
+            input.shift |= self.pad_frame.shift;
+            input.ctrl |= self.pad_frame.ctrl;
+            if !wheel_open {
+                input.left |= self.pad_frame.nav.0;
+                input.right |= self.pad_frame.nav.1;
+                input.up |= self.pad_frame.nav.2;
+                input.down |= self.pad_frame.nav.3;
+            }
+            input.wheel += self.pad_frame.wheel as f32;
+            input.pressed.extend(self.pad_frame.pressed.iter().copied());
+            input.pad = self.pad_frame.clone();
+        }
         self.handle_game_input(&input);
     }
 
@@ -14716,13 +17033,23 @@ impl App {
             return;
         }
         let (mx, my) = input.mouse.unwrap_or((0, 0));
+        self.track_last_alert();
         self.drag_now = (mx, my);
         let in_view = input.mouse.is_some() && my < self.playfield_bottom();
+        if (input.pad.active
+            || self.pad_group.is_some()
+            || self.pad_drag.is_some()
+            || self.pad_wheel.is_open())
+            && self.handle_pad_input(input, mx, my, in_view)
+        {
+            return;
+        }
 
         for key in input.pressed.iter().copied() {
-            // LAN chat: Enter opens the input line, Enter again sends it.
+            // Enter opens the message prompt: LAN chat, and the retail
+            // single-player cheat-code prompt.
             if matches!(key, Key::Enter | Key::NumPadEnter) {
-                if self.net.is_some() {
+                if self.net.is_some() || (self.replay.is_none() && !self.observing()) {
                     self.chat_active = true;
                     self.chat_input.clear();
                     self.play("ui_click");
@@ -14847,7 +17174,7 @@ impl App {
                     // Retail control groups: Ctrl+N assigns, Shift+N adds,
                     // N recalls (the card has letter hotkeys only).
                     if input.ctrl {
-                        self.groups[n] = self.selected.clone();
+                        self.groups[n] = self.selected.iter().take(12).copied().collect();
                         self.status(format!("Group {n} set"));
                     } else if input.shift {
                         for id in self.selected.clone() {
@@ -14856,19 +17183,19 @@ impl App {
                             }
                         }
                     } else {
-                        let group = self.groups[n].clone();
-                        if !group.is_empty() {
-                            self.selected = group;
-                            self.refresh_commands();
-                        }
+                        self.recall_group(n);
                     }
                 }
                 _ => {}
             }
         }
 
-        // Camera scrolling.  Arrow keys only: A/S/H/P are unit commands.
-        let scroll = 14;
+        // Camera scrolling.  Arrow keys and the right stick; A/S/H/P are
+        // unit commands.  The Speed tab's Key Scroll slider scales the
+        // keyboard rate around the retail default (0.5 -> 14 px).
+        let scroll = (14.0 * (0.5 + self.game_options.key_scroll)).round() as i32;
+        self.camera.0 += input.pan.0;
+        self.camera.1 += input.pan.1;
         if input.left {
             self.camera.0 -= scroll;
         }
@@ -14882,7 +17209,9 @@ impl App {
             self.camera.1 += scroll;
         }
         if input.wheel != 0.0 {
-            self.camera.1 -= (input.wheel * 48.0) as i32;
+            // Mouse Scroll Speed: 0.5 is the retail default of 48 px/notch.
+            let step = 48.0 * (0.5 + self.game_options.mouse_scroll);
+            self.camera.1 -= (input.wheel * step) as i32;
         }
         self.clamp_camera();
 
@@ -14963,8 +17292,13 @@ impl App {
                     && let Some(t) = self.world.unit(id).map(|u| u.type_id)
                 {
                     // Retail Ctrl+click: every own unit of that type on the
-                    // screen (12 at most).
+                    // screen (12 at most, one for a building).
                     let (vw, vh) = self.view;
+                    let limit = if self.data.unit(t).is_building() {
+                        1
+                    } else {
+                        12
+                    };
                     let picked: Vec<u32> = self
                         .world
                         .units
@@ -14977,16 +17311,12 @@ impl App {
                             x >= 0 && y >= 0 && x < vw && y < vh
                         })
                         .map(|u| u.id)
-                        .take(12)
+                        .take(limit)
                         .collect();
                     self.selected = picked;
                 } else if input.shift {
                     if let Some(id) = id {
-                        if let Some(pos) = self.selected.iter().position(|&x| x == id) {
-                            self.selected.remove(pos);
-                        } else {
-                            self.selected.push(id);
-                        }
+                        self.select_unit(id, true);
                     }
                 } else {
                     self.selected = id.into_iter().collect();
@@ -14994,46 +17324,7 @@ impl App {
                 self.refresh_commands();
                 self.play_selected();
             } else {
-                // Box corners in logical game px, like `screen_of`.
-                let (ax, ay) = self.to_logical(start.0, start.1);
-                let (bx, by) = self.to_logical(mx, my);
-                let (x0, y0) = (ax.min(bx), ay.min(by));
-                let (x1, y1) = (ax.max(bx), ay.max(by));
-                // Retail box selection: own units only, at most 12, and
-                // buildings only when the box holds no other unit.
-                let inside: Vec<(u32, bool)> = self
-                    .world
-                    .units
-                    .iter()
-                    .filter(|u| u.alive && u.owner as usize == self.local_player)
-                    .filter(|u| {
-                        let (ux, uy) = self.screen_of(u);
-                        ux >= x0 && ux <= x1 && uy >= y0 && uy <= y1
-                    })
-                    .map(|u| (u.id, self.data.unit(u.type_id).is_building()))
-                    .collect();
-                // Left edge first, like retail's x-sorted unit finder
-                // (Wasteland recording 84 s: the five SCVs at x 56-132 come
-                // before the five Marines at x 172-209 in the group panel).
-                let mut inside = inside;
-                inside.sort_by_key(|(id, _)| {
-                    self.world.unit(*id).map_or((0, 0), |u| {
-                        let left = self.data.unit(u.type_id).dimensions.left as i32;
-                        (u.x / 256 - left, u.y / 256)
-                    })
-                });
-                let any_unit = inside.iter().any(|(_, b)| !b);
-                let picked: Vec<u32> = inside
-                    .iter()
-                    .filter(|(_, b)| !any_unit || !b)
-                    .map(|(id, _)| *id)
-                    .take(12)
-                    .collect();
-                if !picked.is_empty() {
-                    self.selected = picked;
-                }
-                self.refresh_commands();
-                self.play_selected();
+                self.select_box_region(start, (mx, my), input.shift);
             }
         }
 
@@ -15050,7 +17341,7 @@ impl App {
             let patrol = self.patrol_mode;
             self.attack_mode = false;
             self.patrol_mode = false;
-            self.command_at(mx, my, attack, patrol);
+            self.command_at(mx, my, attack, patrol, input.shift);
         }
         self.rmb_down = rmb;
 
@@ -15091,7 +17382,7 @@ impl App {
             } else if rmb_pressed {
                 // Retail: a right click on the minimap is a smart command to
                 // that spot.
-                self.command_world(world, None, false, false);
+                self.command_world(world, None, false, false, input.shift);
             } else if input.lmb {
                 self.drag_start = None;
                 self.camera = (
@@ -15105,12 +17396,762 @@ impl App {
         }
     }
 
-    /// Radar rectangle in window pixels: the same numbers `draw_hud` uses, so
-    /// a click can never land far from the drawn minimap (the previous version
-    /// used the 640x480 safe area instead of the content box and was ~330 px
-    /// off at 3440x1440).
-    /// `minimap` control 1 (classic 6,348 128x128, left-anchored); measured
-    /// on 135051 as the console art's black well x 18..402, y 1043..1427.
+    /// SC1 selection rules: a building can only be selected alone; mobile
+    /// units cap at twelve.  `additive` is Shift / LT and toggles the unit.
+    fn select_unit(&mut self, id: u32, additive: bool) {
+        if additive {
+            if let Some(pos) = self.selected.iter().position(|&x| x == id) {
+                self.selected.remove(pos);
+                return;
+            }
+            if self.is_building_id(id) {
+                self.selected = vec![id];
+                return;
+            }
+            if self.selected.iter().any(|&x| self.is_building_id(x)) {
+                self.selected.clear();
+            }
+            if self.selected.len() < 12 {
+                self.selected.push(id);
+            }
+        } else {
+            self.selected = vec![id];
+        }
+    }
+
+    fn is_building_id(&self, id: u32) -> bool {
+        self.world
+            .unit(id)
+            .is_some_and(|u| self.data.unit(u.type_id).is_building())
+    }
+
+    /// Box selection in surface pixels: own units only, at most twelve, and
+    /// buildings only when the box holds no mobile unit.
+    fn select_box_region(&mut self, start: (i32, i32), end: (i32, i32), additive: bool) {
+        let (ax, ay) = self.to_logical(start.0, start.1);
+        let (bx, by) = self.to_logical(end.0, end.1);
+        let (x0, y0) = (ax.min(bx), ay.min(by));
+        let (x1, y1) = (ax.max(bx), ay.max(by));
+        let mut inside: Vec<(u32, bool)> = self
+            .world
+            .units
+            .iter()
+            .filter(|u| u.alive && u.owner as usize == self.local_player)
+            .filter(|u| {
+                let (ux, uy) = self.screen_of(u);
+                ux >= x0 && ux <= x1 && uy >= y0 && uy <= y1
+            })
+            .map(|u| (u.id, self.data.unit(u.type_id).is_building()))
+            .collect();
+        // Left edge first, like retail's x-sorted unit finder.
+        inside.sort_by_key(|(id, _)| {
+            self.world.unit(*id).map_or((0, 0), |u| {
+                let left = self.data.unit(u.type_id).dimensions.left as i32;
+                (u.x / 256 - left, u.y / 256)
+            })
+        });
+        let any_unit = inside.iter().any(|(_, b)| !b);
+        let limit = if any_unit { 12 } else { 1 };
+        let picked: Vec<u32> = inside
+            .iter()
+            .filter(|(_, b)| !any_unit || !b)
+            .map(|(id, _)| *id)
+            .take(limit)
+            .collect();
+        if additive {
+            for id in picked {
+                if !self.selected.contains(&id) {
+                    self.select_unit(id, true);
+                }
+            }
+        } else if !picked.is_empty() {
+            self.selected = picked;
+        }
+        self.refresh_commands();
+        self.play_selected();
+    }
+
+    /// Recall a control group, enforcing the SC1 twelve-unit / one-building
+    /// limit and dropping dead members.
+    fn recall_group(&mut self, n: usize) {
+        let group: Vec<u32> = self.groups[n]
+            .iter()
+            .copied()
+            .filter(|id| self.world.unit(*id).is_some_and(|u| u.alive))
+            .collect();
+        if group.is_empty() {
+            self.status(format!("Group {n} is empty"));
+            return;
+        }
+        let selection = normalize_selection(group.iter().map(|&id| (id, self.is_building_id(id))));
+        self.selected = selection;
+        self.refresh_commands();
+        self.play_selected();
+        self.status(format!("Group {n}"));
+    }
+
+    fn centre_on_group(&mut self, n: usize) {
+        if let Some(u) = self.groups[n]
+            .iter()
+            .filter_map(|id| self.world.unit(*id))
+            .find(|u| u.alive)
+        {
+            self.jump_camera_to(u.x / 256, u.y / 256);
+            self.status(format!("Group {n}"));
+        }
+    }
+
+    fn jump_camera_to(&mut self, x: i32, y: i32) {
+        self.camera = (x - self.view.0 / 2, y - self.view.1 / 2);
+        self.clamp_camera();
+    }
+
+    /// D-pad cameras: a saved position, or a sensible live fallback for the
+    /// base / expansion / front slots before the player saves one.
+    fn camera_slot_target(&self, slot: usize) -> Option<(i32, i32)> {
+        if let Some(pos) = self.map_locations.get(slot).copied().flatten() {
+            // Saved slots hold the top-left camera value (keyboard F2-F4
+            // convention); the pad path centres on that view.
+            return Some((pos.0 + self.view.0 / 2, pos.1 + self.view.1 / 2));
+        }
+        let base = self
+            .world
+            .units
+            .iter()
+            .find(|u| {
+                u.alive
+                    && u.owner as usize == self.local_player
+                    && matches!(
+                        u.type_id,
+                        uid::COMMAND_CENTER | uid::NEXUS | uid::HATCHERY | uid::LAIR | uid::HIVE
+                    )
+            })
+            .or_else(|| {
+                self.world
+                    .units
+                    .iter()
+                    .find(|u| u.alive && u.owner as usize == self.local_player)
+            })
+            .map(|u| (u.x / 256, u.y / 256));
+        match slot {
+            0 => base,
+            1 => {
+                // Nearest resource node outside the main base's mineral line.
+                let base = base?;
+                self.world
+                    .units
+                    .iter()
+                    .filter(|u| u.alive && u.is_resource())
+                    .map(|u| (u.x / 256, u.y / 256))
+                    .filter(|&(x, y)| (x - base.0).pow(2) + (y - base.1).pow(2) > 12 * 12)
+                    .min_by_key(|&(x, y)| (x - base.0).pow(2) + (y - base.1).pow(2))
+                    .or(Some(base))
+            }
+            _ => {
+                let front = self
+                    .selected
+                    .iter()
+                    .filter_map(|id| self.world.unit(*id))
+                    .find(|u| {
+                        u.alive
+                            && !self.data.unit(u.type_id).is_worker()
+                            && !self.data.unit(u.type_id).is_building()
+                    })
+                    .or_else(|| {
+                        self.world.units.iter().find(|u| {
+                            u.alive
+                                && u.owner as usize == self.local_player
+                                && !self.data.unit(u.type_id).is_worker()
+                                && !self.data.unit(u.type_id).is_building()
+                        })
+                    })
+                    .map(|u| (u.x / 256, u.y / 256));
+                front.or(base)
+            }
+        }
+    }
+
+    fn save_camera_slot(&mut self, slot: usize) {
+        // Store the same top-left camera value as Shift+F2..F4, so the pad
+        // and the keyboard share the saved location without redefining the
+        // game's hotkeys.
+        self.map_locations[slot] = Some(self.camera);
+        self.status(format!("Camera {} saved", slot + 1));
+        self.play("ui_click");
+    }
+
+    fn jump_to_last_alert(&mut self) {
+        if let Some((x, y)) = self.last_alert_pos {
+            self.jump_camera_to(x, y);
+            self.status("Last alert");
+            return;
+        }
+        if let Some((x, y)) = self
+            .world
+            .triggers
+            .as_ref()
+            .and_then(|t| t.last_transmission(self.local_player))
+        {
+            self.jump_camera_to(x, y);
+            self.status("Last transmission");
+        } else {
+            self.status("No alert yet");
+        }
+    }
+
+    /// Sample local-unit hit points once per input frame and remember where
+    /// the most recent damage landed.
+    fn track_last_alert(&mut self) {
+        let mut next = Vec::with_capacity(self.world.units.len());
+        for u in &self.world.units {
+            if u.owner as usize != self.local_player {
+                continue;
+            }
+            if let Some((_, old)) = self.last_health.iter().find(|(id, _)| *id == u.id)
+                && (!u.alive || u.hp < *old)
+            {
+                self.last_alert_pos = Some((u.x / 256, u.y / 256));
+            }
+            if u.alive {
+                next.push((u.id, u.hp));
+            }
+        }
+        self.last_health = next;
+    }
+
+    fn jump_camera_to_minimap(&mut self, mx: i32, my: i32) {
+        let (rx, ry, rw, rh) = self.minimap_rect();
+        if rw <= 0 || rh <= 0 {
+            return;
+        }
+        let (mw, mh) = self.tileset.minimap_size;
+        let tx = (mx - rx) as i64 * mw as i64 / rw as i64;
+        let ty = (my - ry) as i64 * mh as i64 / rh as i64;
+        self.jump_camera_to(
+            tx as i32 * TILE_PX + TILE_PX / 2,
+            ty as i32 * TILE_PX + TILE_PX / 2,
+        );
+    }
+
+    /// B with a production building selected: refund and drop the newest
+    /// queued item (the current item keeps building).
+    fn dequeue_last_production(&mut self) -> bool {
+        let mut removed = false;
+        for id in self.selected_own_buildings() {
+            let queued = self
+                .world
+                .unit(id)
+                .is_some_and(|u| !u.production.is_empty());
+            if !queued {
+                continue;
+            }
+            if self.net.is_some() {
+                self.queue_act(galaxycraft::replay::RecAct::Dequeue { building: id });
+                removed = true;
+            } else {
+                match self.world.dequeue_production(id) {
+                    Ok(true) => removed = true,
+                    Ok(false) => {}
+                    Err(e) => self.show_sim_error(e),
+                }
+            }
+        }
+        if removed {
+            self.status("Removed the last queued item");
+            self.play("ui_click");
+            self.refresh_commands();
+        }
+        removed
+    }
+
+    /// Controller-first gameplay input.  Returns true when the action opened
+    /// a modal or consumed the frame, so the rest of the frame must stop.
+    fn handle_pad_input(&mut self, input: &GameInput, mx: i32, my: i32, in_view: bool) -> bool {
+        let pad = &input.pad;
+        if pad.menu {
+            self.close_command_wheel();
+            self.open_game_dialog(GameDialog::Menu);
+            self.play("ui_click");
+            return true;
+        }
+        if pad.objectives {
+            self.close_command_wheel();
+            if self.game_dialog == Some(GameDialog::Objectives) {
+                self.close_game_dialog();
+            } else {
+                self.open_game_dialog(GameDialog::Objectives);
+            }
+            self.play("ui_click");
+            return true;
+        }
+        // LB + face/D-pad: hold to assign the group, tap to recall it, and
+        // double-tap the same group to centre the camera on it.
+        if let Some(slot) = pad.group_pressed {
+            self.pad_group = Some((slot, Instant::now(), false));
+        }
+        if let Some((slot, since, assigned)) = self.pad_group {
+            if pad.group_held == Some(slot) {
+                if !assigned
+                    && since.elapsed() >= Duration::from_millis(450)
+                    && !self.selected.is_empty()
+                {
+                    self.groups[slot + 1] = self.selected.iter().take(12).copied().collect();
+                    self.pad_group = Some((slot, since, true));
+                    self.status(format!("Group {} assigned", slot + 1));
+                    self.play("ui_click");
+                }
+            } else {
+                if !assigned {
+                    self.recall_group(slot + 1);
+                    let now = Instant::now();
+                    let double = self.pad_group_tap.is_some_and(|(last, at)| {
+                        last == slot && now.duration_since(at) < Duration::from_millis(350)
+                    });
+                    if double {
+                        self.centre_on_group(slot + 1);
+                        self.pad_group_tap = None;
+                    } else {
+                        self.pad_group_tap = Some((slot, now));
+                    }
+                }
+                self.pad_group = None;
+            }
+        }
+
+        // RT + one of the nine positional buttons: command-card slot.
+        if let Some(slot) = pad.command_slot {
+            self.activate_command(slot);
+            self.pad_tap.reset();
+            return true;
+        }
+
+        // Saved cameras on the D-pad; LT stores the current view.
+        if pad.camera_save
+            && let Some(slot) = pad.camera_save_slot
+        {
+            self.save_camera_slot(slot);
+            return true;
+        }
+        if let Some(slot) = pad.camera_slot {
+            if let Some(pos) = self.camera_slot_target(slot) {
+                self.jump_camera_to(pos.0, pos.1);
+                self.status(format!("Camera {}", slot + 1));
+                self.play("ui_move");
+            }
+            return true;
+        }
+        if pad.last_alert {
+            self.jump_to_last_alert();
+            return true;
+        }
+
+        // RB confines the pointer to the minimap; A jumps the camera there.
+        if pad.minimap_hold {
+            if pad.primary {
+                self.jump_camera_to_minimap(mx, my);
+                self.play("ui_click");
+            }
+            return true;
+        }
+
+        // X: smart order (move / attack / gather).  Y: attack-move.
+        if pad.smart_order {
+            if self.target_act.is_some() || self.build_mode.is_some() {
+                self.status("Confirm with A or cancel with B");
+            } else if in_view {
+                self.command_at(mx, my, false, false, input.shift);
+            }
+            return true;
+        }
+        if pad.attack_move {
+            if self.target_act.is_some() || self.build_mode.is_some() {
+                self.status("Confirm with A or cancel with B");
+            } else if in_view {
+                self.command_at(mx, my, true, false, input.shift);
+            }
+            return true;
+        }
+
+        // A: press starts a click/drag; release selects a unit or a box.
+        if pad.cancel {
+            self.pad_cancel();
+            return true;
+        }
+        if pad.primary {
+            if in_view {
+                if self.target_act.is_some() {
+                    self.execute_target(mx, my);
+                } else if self.build_mode.is_some() {
+                    self.place_building(mx, my);
+                } else {
+                    self.pad_drag = Some((mx, my, pad.shift));
+                    self.drag_start = Some((mx, my));
+                    self.drag_now = (mx, my);
+                }
+            } else {
+                self.pad_primary(input, mx, my, false);
+            }
+            return true;
+        }
+        if self.pad_drag.is_some() && pad.lmb {
+            // A is held: keep the drag box alive and visible until release.
+            self.drag_now = (mx, my);
+            return true;
+        }
+        if let Some((start_x, start_y, additive)) = self.pad_drag
+            && !pad.lmb
+        {
+            self.pad_drag = None;
+            self.drag_start = None;
+            let start = (start_x, start_y);
+            let dist = (mx - start.0).abs() + (my - start.1).abs();
+            if dist < 6 {
+                self.pad_click_select(mx, my, in_view, additive);
+            } else {
+                self.select_box_region(start, (mx, my), additive);
+            }
+            return true;
+        }
+
+        // RT opens the radial command wheel.  Releasing RT closes it; the
+        // ring is the visible context, while RT+button still hits the
+        // corresponding 3x3 card slot directly.
+        let rt_edge = pad.command_layer && !self.pad_rt_was_held;
+        self.pad_rt_was_held = pad.command_layer;
+        if !pad.command_layer && self.pad_wheel.is_open() {
+            self.close_command_wheel();
+        } else if rt_edge && self.first_selected().is_some() {
+            self.open_command_wheel();
+        }
+        if self.pad_wheel.is_open() {
+            let mut moved = false;
+            if pad.page_prev {
+                moved |= self.pad_wheel.page_delta(-1);
+            }
+            if pad.page_next {
+                moved |= self.pad_wheel.page_delta(1);
+            }
+            if pad.aim != (0.0, 0.0) {
+                moved |= self.pad_wheel.aim(pad.aim.0, pad.aim.1);
+            }
+            if pad.nav_pressed.0 || pad.nav_pressed.2 {
+                moved |= self.pad_wheel.focus_delta(-1);
+            }
+            if pad.nav_pressed.1 || pad.nav_pressed.3 {
+                moved |= self.pad_wheel.focus_delta(1);
+            }
+            if moved {
+                self.play("ui_move");
+            }
+            if pad.command_slot == Some(7) || pad.primary {
+                self.activate_wheel_focus();
+                return true;
+            }
+            if pad.command_slot == Some(2) || pad.cancel {
+                self.close_command_wheel();
+                return true;
+            }
+            if pad.cycle_idle {
+                self.close_command_wheel();
+                self.cycle_idle_unit();
+                return true;
+            }
+            // The wheel is modal: while it is open no other game input runs,
+            // and the pointer stays hidden until it closes.
+            return true;
+        }
+        if pad.page_prev {
+            self.cycle_command_page(-1);
+        }
+        if pad.page_next {
+            self.cycle_command_page(1);
+        }
+        if pad.command_wheel {
+            self.toggle_command_wheel();
+            return true;
+        }
+        if pad.cycle_idle {
+            self.cycle_idle_unit();
+            return true;
+        }
+        false
+    }
+
+    fn toggle_command_wheel(&mut self) {
+        if self.pad_wheel.is_open() {
+            self.close_command_wheel();
+            return;
+        }
+        self.open_command_wheel();
+    }
+
+    /// RT opens the radial command wheel; the direct RT+button mapping still
+    /// activates its 3×3 card slot (and the right stick picks a sector).
+    fn open_command_wheel(&mut self) {
+        if self.target_act.is_some() || self.build_mode.is_some() {
+            self.status("Finish or cancel the current order first");
+            return;
+        }
+        let units: Vec<SimUnit> = self.selected_units().into_iter().cloned().collect();
+        if units.is_empty() {
+            self.status("No unit selected");
+            return;
+        }
+        if units.iter().any(|u| u.owner as usize != self.local_player) {
+            self.status("No commands for this selection");
+            return;
+        }
+        let page = wheel_page_for_selection(&self.world, &units, self.card_set);
+        if page.entries.is_empty() {
+            self.status("No shared commands");
+            return;
+        }
+        let counts = [page.entries.len()];
+        if !self.pad_wheel.open(counts) {
+            self.status("No commands for this selection");
+            return;
+        }
+        self.pad_wheel_pages = vec![page];
+        self.play("ui_click");
+    }
+
+    fn close_command_wheel(&mut self) {
+        if self.pad_wheel.is_open() {
+            self.play("ui_click");
+        }
+        self.pad_wheel.close();
+        self.pad_wheel_pages.clear();
+    }
+
+    fn wheel_focused_entry(&self) -> Option<&WheelEntry> {
+        self.pad_wheel_pages
+            .get(self.pad_wheel.page())
+            .and_then(|p| p.entries.get(self.pad_wheel.focus()))
+    }
+
+    /// A while the wheel is open: activate the focused card slot.  Disabled
+    /// buttons keep the wheel open so the player can pick another sector.
+    fn activate_wheel_focus(&mut self) {
+        let Some(entry) = self.wheel_focused_entry().cloned() else {
+            self.close_command_wheel();
+            return;
+        };
+        if !entry.enabled {
+            self.status(format!("{} is not available yet", entry.label));
+            return;
+        }
+        if self.pad_wheel.activate().is_none() {
+            return;
+        }
+        self.pad_wheel_pages.clear();
+        // `activate_command` reads the card through `card_set`; point it at
+        // the wheel entry's real set, then restore the HUD's page.
+        let old_set = self.card_set;
+        self.card_set = entry.set.filter(|s| *s != 228);
+        self.activate_command(entry.slot);
+        self.card_set = old_set;
+        self.pad_tap.reset();
+    }
+
+    /// A released without dragging: own unit selects (double tap = every
+    /// same type on screen), empty ground clears the selection.  LT toggles
+    /// the unit in or out of the selection.
+    fn pad_click_select(&mut self, mx: i32, my: i32, in_view: bool, additive: bool) {
+        if !in_view {
+            return;
+        }
+        if let Some(id) = self.unit_at(mx, my) {
+            let Some(unit) = self.world.unit(id).cloned() else {
+                return;
+            };
+            let own = unit.owner as usize == self.local_player;
+            if own {
+                let type_id = unit.type_id;
+                let now_ms = self.pad_started.elapsed().as_millis() as u64;
+                let double = !additive && self.pad_tap.tap(now_ms, type_id as u32);
+                if double {
+                    self.select_same_type_on_screen(type_id);
+                    self.status(format!("All {} selected", self.data.unit_name(type_id)));
+                } else {
+                    self.select_unit(id, additive);
+                }
+                self.refresh_commands();
+                self.play_selected();
+            } else {
+                // Enemies, resources and neutral units are inspectable from
+                // the controller: select the single unit so the status panel
+                // shows its name, HP, shields and resource amount.  It gets
+                // no command card because `refresh_commands` rejects
+                // non-local owners.
+                self.selected = vec![id];
+                self.pad_tap.reset();
+                self.refresh_commands();
+                let name = self.data.unit_name(unit.type_id).to_string();
+                if unit.is_resource() {
+                    self.status(format!("{name}: {}", unit.resource_amount));
+                } else {
+                    self.status(format!("Enemy {name}"));
+                }
+                self.play("ui_click");
+            }
+            return;
+        }
+        if !additive && !self.selected.is_empty() {
+            self.selected.clear();
+            self.pad_tap.reset();
+            self.refresh_commands();
+            self.status("Selection cleared");
+        }
+    }
+
+    /// A on the HUD: command-card slot or the MENU button.
+    fn pad_primary(&mut self, _input: &GameInput, mx: i32, my: i32, _in_view: bool) {
+        if let Some(index) = self.command_slots().iter().position(|r| r.contains(mx, my)) {
+            self.activate_command(index);
+            return;
+        }
+        if self.menu_button_rect().contains(mx, my) {
+            self.open_game_dialog(GameDialog::Menu);
+            self.play("ui_click");
+        }
+    }
+
+    /// Ctrl+click's same-type selection, shared by A double tap.
+    fn select_same_type_on_screen(&mut self, type_id: u16) {
+        let (vw, vh) = self.view;
+        let limit = if self.data.unit(type_id).is_building() {
+            1
+        } else {
+            12
+        };
+        self.selected = self
+            .world
+            .units
+            .iter()
+            .filter(|u| u.alive && u.owner as usize == self.local_player && u.type_id == type_id)
+            .filter(|u| {
+                let (x, y) = self.screen_of(u);
+                x >= 0 && y >= 0 && x < vw && y < vh
+            })
+            .map(|u| u.id)
+            .take(limit)
+            .collect();
+    }
+
+    /// B: back out one layer, then clear the selection, then open the menu.
+    fn pad_cancel(&mut self) {
+        if self.target_act.is_some() || self.build_mode.is_some() {
+            self.target_act = None;
+            self.build_mode = None;
+            self.status("Order cancelled");
+            return;
+        }
+        if self.card_set.is_some() {
+            self.card_set = None;
+            self.status("Command page: base");
+            return;
+        }
+        if self.dequeue_last_production() {
+            return;
+        }
+        if !self.selected.is_empty() {
+            self.selected.clear();
+            self.pad_tap.reset();
+            self.refresh_commands();
+            self.status("Selection cleared");
+            return;
+        }
+        self.open_game_dialog(GameDialog::Menu);
+        self.play("ui_click");
+    }
+
+    /// Y: cycle an idle worker, or an idle army unit when no worker is idle
+    /// (or when the current selection is a non-worker).  Mirrors Tab's
+    /// centre-on-the-unit behaviour.
+    fn cycle_idle_unit(&mut self) {
+        let workers = self.idle_units(true);
+        let army = self.idle_units(false);
+        let prefer_army = self
+            .first_selected()
+            .is_some_and(|u| !self.data.unit(u.type_id).is_worker());
+        let (pool, kind) = if prefer_army && !army.is_empty() {
+            (army, "army")
+        } else if !workers.is_empty() {
+            (workers, "worker")
+        } else {
+            (army, "army")
+        };
+        if pool.is_empty() {
+            self.status("No idle units");
+            return;
+        }
+        let current = self.selected.first().copied();
+        let next = current
+            .and_then(|id| pool.iter().position(|&u| u == id))
+            .map_or(0, |i| (i + 1) % pool.len());
+        let id = pool[next];
+        self.selected = vec![id];
+        self.pad_tap.reset();
+        if let Some(u) = self.world.unit(id) {
+            self.camera = (u.x / 256 - self.view.0 / 2, u.y / 256 - self.view.1 / 2);
+            self.clamp_camera();
+        }
+        self.refresh_commands();
+        self.play_selected();
+        self.status(format!("Idle {kind} {}/{}", next + 1, pool.len()));
+    }
+
+    fn idle_units(&self, workers: bool) -> Vec<u32> {
+        self.world
+            .units
+            .iter()
+            .filter(|u| {
+                u.alive
+                    && u.owner as usize == self.local_player
+                    && matches!(u.order, Order::Idle | Order::Stop)
+                    && if workers {
+                        self.data.unit(u.type_id).is_worker()
+                    } else {
+                        !self.data.unit(u.type_id).is_worker()
+                            && !self.data.unit(u.type_id).is_building()
+                            && !u.is_resource()
+                    }
+            })
+            .map(|u| u.id)
+            .collect()
+    }
+
+    /// LB / RB outside the wheel: cycle the retail card pages a unit exposes
+    /// through its `Act::Card` buttons (base card <-> build cards).
+    fn cycle_command_page(&mut self, delta: i32) {
+        let Some(unit) = self.first_selected().cloned() else {
+            self.status("No units selected");
+            return;
+        };
+        let base = galaxycraft::buttons::card_of_set(&self.world, &unit, None);
+        let mut pages: Vec<Option<u16>> = vec![None];
+        for (b, _) in base.iter().flatten() {
+            if galaxycraft::buttons::Act::of(b.act) == galaxycraft::buttons::Act::Card
+                && b.act_var != 228
+                && !pages.contains(&Some(b.act_var))
+            {
+                pages.push(Some(b.act_var));
+            }
+        }
+        if pages.len() < 2 {
+            self.status("No other command page");
+            return;
+        }
+        let current = self.card_set.filter(|s| *s != 228);
+        let at = pages.iter().position(|p| *p == current).unwrap_or(0);
+        let next = (at as i32 + delta).rem_euclid(pages.len() as i32) as usize;
+        self.card_set = pages[next];
+        self.target_act = None;
+        self.build_mode = None;
+        self.play("ui_move");
+        self.status(format!("Command page {}/{}", next + 1, pages.len()));
+    }
+
     fn minimap_rect(&self) -> (i32, i32, i32, i32) {
         let r = self.hud_control("minimap", 1, UiRect::new(6, 348, 128, 128));
         (r.x, r.y, r.w, r.h)
@@ -15249,6 +18290,16 @@ impl App {
     /// when its side won (allies win together) or every enemy is out.
     /// Shared by the local loop and the LAN lockstep.
     fn check_game_result(&mut self) {
+        // `staying alive`: the mission never ends by itself; the player can
+        // keep playing after the victory/defeat condition.
+        if self
+            .world
+            .players
+            .get(self.local_player)
+            .is_some_and(|p| p.cheats.stay_alive)
+        {
+            return;
+        }
         if self.game_result.is_none() && self.observing() {
             // An observer neither wins nor loses: the game ends once one
             // side is left, and nothing is recorded in the profile.
@@ -15310,11 +18361,50 @@ impl App {
         }
     }
 
+    /// Advance the render-only facing used by "Smooth Unit Turning".  The
+    /// simulation keeps its exact byte facing; only the drawn sprite turns
+    /// through the intermediate directions, at a constant rate per tick so
+    /// captures and replays stay deterministic.
+    fn update_smooth_facings(&mut self) {
+        if !self.game_options.video_smooth_turning {
+            self.smooth_facing.clear();
+            self.smooth_facing_tick = self.world.tick;
+            return;
+        }
+        let tick = self.world.tick;
+        if tick < self.smooth_facing_tick {
+            // A new mission / loaded save restarted the clock.
+            self.smooth_facing.clear();
+        }
+        let dt = tick.saturating_sub(self.smooth_facing_tick) as f32;
+        self.smooth_facing_tick = tick;
+        for u in &self.world.units {
+            if !u.alive {
+                continue;
+            }
+            let entry = self.smooth_facing.entry(u.id).or_insert(u.facing as f32);
+            if dt > 0.0 {
+                *entry = smooth_step_facing(*entry, u.facing, SMOOTH_TURN_RATE * dt);
+            }
+        }
+        self.smooth_facing
+            .retain(|id, _| self.world.unit(*id).is_some_and(|u| u.alive));
+    }
+
+    /// Facing byte the renderer should draw.
+    fn rendered_facing(&self, u: &galaxycraft::sim::SimUnit) -> u8 {
+        self.smooth_facing
+            .get(&u.id)
+            .map_or(u.facing, |f| (f.round() as i32).rem_euclid(256) as u8)
+    }
+
     /// Draw the current frame.  Every state (movies, menus, briefings,
     /// the game and its dialogs) lives in the 16:9 content box: the retail
     /// client is black outside it on all 56 reference captures.
     fn draw(&mut self, fb: &mut Framebuffer) {
         self.draw_frame(fb);
+        self.draw_fps(fb);
+        self.draw_turn_rate(fb);
         if self.end_dialog
             && self.end_dialog_hold == 0
             && self.game_result.is_some()
@@ -15342,6 +18432,9 @@ impl App {
             draw_in_box(self, fb, Self::draw_briefing);
             return;
         }
+        self.update_smooth_facings();
+        self.tileset
+            .update_color_cycle(self.world.tick, self.game_options.game_color_cycling);
         fb.clear(Rgb::new(0, 0, 0));
         // Walking / attack poses, bullets and explosions follow the ticks
         // the world ran since the last frame.
@@ -15378,7 +18471,8 @@ impl App {
         // console has see-through gaps), the 1x layer only carries creep and
         // units, and the fog is applied at screen resolution afterwards.
         let scale = self.ui_scale.max(0.5);
-        let hd = self.hd_terrain.is_some() && scale >= HD_WORLD_MIN_SCALE;
+        let hd =
+            self.game_options.video_hd && self.hd_terrain.is_some() && scale >= HD_WORLD_MIN_SCALE;
         let (vw, vh) = self.view;
         let vh = if hd {
             (Self::content_rect(fb_full).3 as f32 / scale).ceil() as i32
@@ -15410,8 +18504,7 @@ impl App {
 
         let mut order: Vec<usize> = (0..self.world.units.len())
             .filter(|&i| self.world.units[i].alive)
-            .collect();
-        // Elevation first, then y (retail sprite order); an SCV welding a
+            .collect(); // Elevation first, then y (retail sprite order); an SCV welding a
         // building is drawn in front of it.
         order.sort_by_key(|&i| {
             let u = &self.world.units[i];
@@ -15444,9 +18537,10 @@ impl App {
             let pose = (!self.data.unit(u.type_id).is_building())
                 .then(|| self.animator.unit_frame(u.id))
                 .flatten();
+            let facing = self.rendered_facing(u);
             if !self
                 .sprites
-                .draw_unit_posed(fb, u, (sx, sy), self.world.tick, pose)
+                .draw_unit_turned(fb, u, (sx, sy), self.world.tick, pose, facing)
             {
                 draw_unit_box(fb, u, &self.data, (sx, sy), selected);
             } else if selected {
@@ -15458,6 +18552,9 @@ impl App {
                 self.sprites.draw_health(fb, u, &self.data, (sx, sy));
             }
         }
+
+        let ctf_clip = (0, 0, world_fb.width, self.view.1);
+        self.draw_ctf_flags(&mut world_fb, ctf_clip, 1.0, false);
 
         if !hd {
             self.draw_animated_images_sd(&mut world_fb);
@@ -15479,16 +18576,27 @@ impl App {
                     (cx, cy, cw, ch),
                     scale,
                     &creep,
+                    self.game_options
+                        .game_color_cycling
+                        .then_some(self.world.tick / 3),
                 );
             }
             marks.push(("terrain", Instant::now()));
             blit_scaled_keyed(&world_fb, fb_full, scale, self.content_x0);
             marks.push(("blit", Instant::now()));
-            let env = self.hd_light_env(&hd_units, (cx, cy, cw, ch), scale);
+            let env = if self.game_options.video_lighting {
+                self.hd_light_env(&hd_units, (cx, cy, cw, ch), scale)
+            } else {
+                galaxycraft::hd_lights::LightEnv::new(
+                    (cx as f32, cy as f32, cw as f32, ch as f32),
+                    scale,
+                )
+            };
             marks.push(("lights", Instant::now()));
             for &i in &hd_units {
                 self.draw_unit_hd(fb_full, i, (cx, cy, cw, ch), scale, &env);
             }
+            self.draw_ctf_flags(fb_full, (cx, cy, cw, ch), scale, true);
             self.draw_animated_images(fb_full, (cx, cy, cw, ch), scale, &env);
             self.draw_order_marker(fb_full, (cx, cy, cw, ch), scale);
             self.draw_placement_preview(fb_full, (cx, cy, cw, ch), scale);
@@ -15517,13 +18625,22 @@ impl App {
                 );
             }
         } else {
-            blit_scaled_at(&world_fb, fb_full, scale, self.content_x0);
+            blit_scaled_at(
+                &world_fb,
+                fb_full,
+                scale,
+                self.content_x0,
+                self.game_options.video_sd_filter,
+            );
         }
         // The view is `vw` game px wide; retail scales it to fill the box.
         let content = Self::content_rect(fb_full);
         let drawn = (vw as f32 * scale).round() as i32;
         marks.push(("fog", Instant::now()));
         galaxycraft::render::stretch_columns(fb_full, content, drawn);
+        if hd && self.game_options.video_environment {
+            self.draw_environment_effects(fb_full, content);
+        }
         marks.push(("stretch", Instant::now()));
         // The selection box is in window pixels (where the drag started and
         // where the pointer is), so it goes on the screen frame after the
@@ -15545,6 +18662,7 @@ impl App {
         marks.push(("hud", Instant::now()));
         self.draw_overlay(fb);
         marks.push(("overlay", Instant::now()));
+        self.draw_pad_legend(fb);
         if prof {
             let parts: Vec<String> = marks
                 .windows(2)
@@ -15582,8 +18700,11 @@ impl App {
         let flingy = self.data.flingy(ty.flingy)?;
         let image = self.data.sprite(flingy.sprite)?.image;
         let install = self.install.as_ref();
+        let skin = unit_skin_id(type_id, &self.game_options);
         self.hd_sprites
-            .image(self.data.hd_anim_id(image), |path| install?.read(path))
+            .image_skin(self.data.hd_anim_id(image), skin, |path| {
+                install?.read(path)
+            })
     }
 
     /// Building placement preview (Boot Camp recording 169-170 s): the
@@ -15887,12 +19008,13 @@ impl App {
     fn hd_unit_parts(&self, i: usize, content: (i32, i32, i32, i32), s: f32) -> Option<HdParts> {
         let u = &self.world.units[i];
         let img = self.hd_unit_image(u.type_id)?;
-        // Recorded capture pose (render only), else the unit's own state.
-        let (ux, uy, facing) =
-            self.unit_poses
-                .get(&u.id)
-                .copied()
-                .unwrap_or((u.x / 256, u.y / 256, u.facing));
+        // Recorded capture pose (render only), else the unit's own state and
+        // the Video option's render-only smoothed facing.
+        let (ux, uy, facing) = self.unit_poses.get(&u.id).copied().unwrap_or((
+            u.x / 256,
+            u.y / 256,
+            self.rendered_facing(u),
+        ));
         let directional = img.header.frames.len() >= 17;
         // An SCV welding its building faces it (`welding_pose`).
         let weld = self.welding_pose(u);
@@ -16268,6 +19390,52 @@ impl App {
         galaxycraft::hd_sprites::draw_flat(fb, &img, 0, sx, sy, s, HUD_SELECT_GREEN, clip);
     }
 
+    /// Capture the Flag marker: a small pole and coloured pennant over the
+    /// beacon/worker.  `content`/`scale` are used in the HD pass; the SD pass
+    /// draws in logical game pixels.
+    fn draw_ctf_flags(
+        &self,
+        fb: &mut Framebuffer,
+        content: (i32, i32, i32, i32),
+        scale: f32,
+        hd: bool,
+    ) {
+        let Some(ctf) = self.world.ctf.as_ref() else {
+            return;
+        };
+        for flag in &ctf.flags {
+            if !flag.released {
+                continue;
+            }
+            let (wx, wy) = flag.pos;
+            let (sx, sy) = if hd {
+                (
+                    content.0 as f32 + (wx - self.camera.0) as f32 * scale,
+                    content.1 as f32 + (wy - self.camera.1) as f32 * scale,
+                )
+            } else {
+                ((wx - self.camera.0) as f32, (wy - self.camera.1) as f32)
+            };
+            let (x, y) = (sx as i32, sy as i32);
+            let (cx, cy, cw, ch) = content;
+            if x < cx - 32 || y < cy - 32 || x > cx + cw + 32 || y > cy + ch + 32 {
+                continue;
+            }
+            let color = galaxycraft::render::player_rgb(&self.world, flag.owner);
+            let s = if hd { scale.max(1.0) } else { 1.0 };
+            let pole = (2.0 * s).max(1.0) as i32;
+            let height = (24.0 * s) as i32;
+            fb.rect(x, y - height, pole, height, Rgb::new(30, 30, 30));
+            fb.rect(
+                x + pole,
+                y - height,
+                (14.0 * s).max(4.0) as i32,
+                (9.0 * s).max(3.0) as i32,
+                color,
+            );
+        }
+    }
+
     fn draw_unit_hd(
         &self,
         fb: &mut Framebuffer,
@@ -16297,6 +19465,9 @@ impl App {
         let layer = |below: bool, fb: &mut Framebuffer| {
             for p in parts.layers.iter().filter(|l| l.below == below) {
                 if below {
+                    if !self.game_options.video_shadow_stacking {
+                        continue;
+                    }
                     galaxycraft::hd_sprites::draw_shadow(
                         fb,
                         &p.img,
@@ -16445,7 +19616,8 @@ impl App {
     fn hud_rect(&self, dialog: &str, r: UiRect) -> UiRect {
         let (cx, cy, cw, ch) = self.content_box;
         let s = (ch as f32 / 480.0).max(0.5);
-        let shift = console_dialog_shift(dialog, self.view.0, cw, s);
+        let shift = console_dialog_shift(dialog, self.view.0, cw, s)
+            + minimap_centering_shift(self.game_options.minimap_position, dialog, cw, s);
         let x = cx as f32 + (r.x as f32 + shift) * s;
         UiRect::new(
             x.round() as i32,
@@ -16476,6 +19648,320 @@ impl App {
         "statbtndefault"
     }
 
+    /// Content-space point of a surface pixel (the HUD font helpers take
+    /// content units, the wheel is laid out in window pixels).
+    fn content_point(&self, fb: &Framebuffer, x: i32, y: i32) -> (f32, f32) {
+        let (cx, cy, _cw, ch) = Self::content_rect(fb);
+        let k = (ch as f32 / 1440.0).max(0.5);
+        ((x - cx) as f32 / k, (y - cy) as f32 / k)
+    }
+
+    /// Radial command wheel.  The sectors are
+    /// the retail command-card slots grouped by
+    /// [`galaxycraft::buttons::WheelCategory`], so activating one dispatches
+    /// the same action as a mouse click or hotkey.
+    fn draw_command_wheel(&mut self, fb: &mut Framebuffer) {
+        if self.game_dialog.is_some() || self.paused || self.game_result.is_some() {
+            return;
+        }
+        let (cx, cy, cw, ch) = Self::content_rect(fb);
+        if !self.pad_wheel.is_open() {
+            return;
+        }
+        let Some(page) = self.pad_wheel_pages.get(self.pad_wheel.page()).cloned() else {
+            self.pad_wheel.close();
+            return;
+        };
+        if page.entries.is_empty() {
+            self.pad_wheel.close();
+            return;
+        }
+
+        let center = (cx + cw / 2, cy + (ch as f32 * 0.44) as i32);
+        let ring = (ch as f32 * 0.155).max(96.0);
+        let icon = (ch as f32 * 0.038).clamp(30.0, 56.0);
+        let icon_ring = ring + icon * 0.78;
+        let inner = ring * 0.58;
+        let focus = self.pad_wheel.focus();
+
+        // The explanation plate is the only filled disc; the icons live
+        // outside the thin ring, so the playfield stays visible between them.
+        blend_circle(
+            fb,
+            center.0,
+            center.1,
+            inner as i32,
+            Rgb::new(3, 7, 13),
+            196,
+        );
+        fb.circle_outline(center.0, center.1, ring as i32, Rgb::new(108, 140, 176));
+        fb.circle_outline(center.0, center.1, inner as i32, Rgb::new(58, 84, 112));
+        fb.circle_outline(
+            center.0,
+            center.1,
+            (inner - 2.0).max(1.0) as i32,
+            Rgb::new(32, 48, 68),
+        );
+
+        let n = page.entries.len();
+        let step = std::f32::consts::TAU / n as f32;
+        for (i, entry) in page.entries.iter().enumerate() {
+            let boundary = -std::f32::consts::FRAC_PI_2 + i as f32 * step;
+            let (bsin, bcos) = boundary.sin_cos();
+            fb.line(
+                center.0 + (bcos * (inner + 4.0)) as i32,
+                center.1 + (bsin * (inner + 4.0)) as i32,
+                center.0 + (bcos * (ring - 3.0)) as i32,
+                center.1 + (bsin * (ring - 3.0)) as i32,
+                Rgb::new(48, 70, 96),
+            );
+
+            let angle = boundary + step / 2.0;
+            let (sin, cos) = angle.sin_cos();
+            let ix = center.0 + (cos * icon_ring) as i32;
+            let iy = center.1 + (sin * icon_ring) as i32;
+            let focused = i == focus;
+            let enabled = entry.enabled;
+            blend_circle(
+                fb,
+                ix,
+                iy,
+                (icon * 0.62) as i32,
+                Rgb::new(6, 10, 16),
+                if focused { 220 } else { 150 },
+            );
+            fb.circle_outline(
+                ix,
+                iy,
+                (icon * 0.62) as i32,
+                if focused {
+                    Rgb::new(255, 214, 96)
+                } else if enabled {
+                    Rgb::new(78, 108, 142)
+                } else {
+                    Rgb::new(58, 64, 74)
+                },
+            );
+            if focused {
+                fb.line(
+                    center.0 + (cos * (ring + 2.0)) as i32,
+                    center.1 + (sin * (ring + 2.0)) as i32,
+                    ix - (cos * icon * 0.62) as i32,
+                    iy - (sin * icon * 0.62) as i32,
+                    Rgb::new(255, 214, 96),
+                );
+            }
+            if let Some(console) = &self.console
+                && let Some(img) = console
+                    .cmdicons4
+                    .as_ref()
+                    .and_then(|g| g.frame(entry.icon as usize))
+            {
+                let size = (icon * 0.72) as i32;
+                let color = if !enabled {
+                    Rgb::new(96, 102, 112)
+                } else if focused {
+                    Rgb::new(255, 238, 180)
+                } else {
+                    Rgb::new(214, 226, 240)
+                };
+                draw_tinted(fb, img, (ix - size / 2, iy - size / 2, size, size), color);
+            }
+        }
+
+        // Every word of the focused command lives on the central plate.
+        let (tx, _) = self.content_point(fb, center.0, center.1);
+        let (_, title_y) = self.content_point(fb, center.0, center.1 - (inner * 0.58) as i32);
+        let (_, label_y) = self.content_point(fb, center.0, center.1 - (inner * 0.18) as i32);
+        let (_, page_y) = self.content_point(fb, center.0, center.1 + (inner * 0.58) as i32);
+        let (_, hint_y) = self.content_point(fb, center.0, center.1 + (ring * 0.80) as i32);
+
+        let title = page.title.to_uppercase();
+        self.glue_ink_centered(
+            fb,
+            &title,
+            tx,
+            title_y,
+            8.5,
+            Rgb::new(168, 184, 202),
+            None,
+            GlueFace::Hud,
+        );
+        if let Some(entry) = page.entries.get(focus) {
+            self.glue_ink_centered(
+                fb,
+                &entry.label,
+                tx,
+                label_y,
+                13.0,
+                if entry.enabled {
+                    Rgb::new(238, 242, 248)
+                } else {
+                    Rgb::new(132, 138, 148)
+                },
+                None,
+                GlueFace::Hud,
+            );
+            let rule_y = center.1 + (inner * 0.03) as i32;
+            let half = (inner * 0.42) as i32;
+            fb.line(
+                center.0 - half,
+                rule_y,
+                center.0 + half,
+                rule_y,
+                Rgb::new(64, 88, 116),
+            );
+            let tooltip: Vec<char> = entry.tooltip.chars().collect();
+            for line in 0..3 {
+                let start = line * 26;
+                if start >= tooltip.len() {
+                    break;
+                }
+                let end = (start + 26).min(tooltip.len());
+                let text: String = tooltip[start..end].iter().collect();
+                let (_, ty) = self.content_point(
+                    fb,
+                    center.0,
+                    center.1 + (inner * 0.08) as i32 + line as i32 * 11,
+                );
+                self.glue_ink_centered(
+                    fb,
+                    text.trim(),
+                    tx,
+                    ty,
+                    7.8,
+                    Rgb::new(178, 188, 200),
+                    None,
+                    GlueFace::Hud,
+                );
+            }
+        }
+        let page_text = format!("{} / {}", self.pad_wheel.page() + 1, self.pad_wheel.pages());
+        self.glue_ink_centered(
+            fb,
+            &page_text,
+            tx,
+            page_y,
+            7.5,
+            Rgb::new(150, 164, 180),
+            None,
+            GlueFace::Hud,
+        );
+        self.glue_ink_centered(
+            fb,
+            "A Activate   B Close   R-Stick Navigate",
+            tx,
+            hint_y,
+            7.0,
+            Rgb::new(132, 146, 162),
+            None,
+            GlueFace::Hud,
+        );
+    }
+
+    /// Vertical controller legend above the command console.  The plate is
+    /// rounded and has no bright rim; the button names use their controller
+    /// colours and the text is deliberately compact.
+    fn draw_pad_legend(&mut self, fb: &mut Framebuffer) {
+        use galaxycraft::menu::LabelAlign;
+        if !self.pad_control
+            || self.pad_wheel.is_open()
+            || self.game_dialog.is_some()
+            || self.paused
+        {
+            return;
+        }
+        let slots = self.command_slots();
+        let (scale, ox, oy) = self.ui_metrics(fb);
+        let panel_w = 108.0;
+        let row_h = 7.2;
+        let panel_h = 10.0 + row_h * 12.0 + 2.0;
+        let pw = (panel_w * scale).round() as i32;
+        let ph = (panel_h * scale).round() as i32;
+        let px = (slots[8].x + slots[8].w - pw).max(4);
+        // Keep clear of the console's top plate, which extends above the
+        // first command slot.
+        let py = (slots[0].y - ph - (22.0 * scale).round() as i32).max(4);
+        let x = (px - ox) as f32 / scale;
+        let y = (py - oy) as f32 / scale;
+        // 25 % transparent: the playfield shows through the plate.
+        draw_rounded_box_alpha(
+            fb,
+            (px, py, pw, ph),
+            (5.0 * scale).max(2.0),
+            (1.0 * scale).max(1.0),
+            Rgb::new(8, 10, 14),
+            Rgb::new(8, 10, 14),
+            191,
+        );
+        // Faux bold: the UI face has no bold weight, so draw the title twice
+        // with a sub-pixel offset.
+        for dx in [0.0, 0.4] {
+            let w = self.hd_advance_px("CONTROLS", 6.2, scale, false);
+            self.draw_hd_text(
+                fb,
+                "CONTROLS",
+                x + 4.0 + dx,
+                y + 2.0,
+                LabelAlign::Left,
+                w,
+                6.2,
+                scale,
+                ox,
+                oy,
+                Rgb::new(205, 210, 215),
+                false,
+            );
+        }
+        let rows = [
+            ("L-Stick", "Move pointer", Rgb::new(195, 200, 208)),
+            ("R-Stick", "Move screen", Rgb::new(195, 200, 208)),
+            ("A", "Select unit", Rgb::new(126, 225, 132)),
+            ("X", "Smart order", Rgb::new(120, 190, 245)),
+            ("Y", "Attack", Rgb::new(245, 215, 110)),
+            ("B", "Deselect", Rgb::new(240, 120, 120)),
+            ("LT", "Add / Queue", Rgb::new(190, 170, 255)),
+            ("RT", "Command wheel", Rgb::new(255, 220, 130)),
+            ("LB", "Groups", Rgb::new(190, 170, 255)),
+            ("RB", "Minimap", Rgb::new(150, 205, 225)),
+            ("Start", "Menu", Rgb::new(225, 233, 246)),
+            ("Select", "Score / Objectives", Rgb::new(195, 200, 208)),
+        ];
+        for (i, (button, action, color)) in rows.iter().enumerate() {
+            let row_y = y + 10.0 + i as f32 * row_h;
+            let bw = self.hd_advance_px(button, 6.0, scale, false);
+            self.draw_hd_text(
+                fb,
+                button,
+                x + 4.0,
+                row_y,
+                LabelAlign::Left,
+                bw,
+                6.0,
+                scale,
+                ox,
+                oy,
+                *color,
+                false,
+            );
+            let aw = self.hd_advance_px(action, 5.6, scale, false);
+            self.draw_hd_text(
+                fb,
+                action,
+                x + 29.0,
+                row_y,
+                LabelAlign::Left,
+                aw,
+                5.6,
+                scale,
+                ox,
+                oy,
+                Rgb::new(168, 174, 182),
+                false,
+            );
+        }
+    }
+
     fn draw_hud(&mut self, fb: &mut Framebuffer) {
         let (scale, ox, oy) = self.ui_metrics(fb);
         let (cx, cy, cw, ch) = Self::content_rect(fb);
@@ -16490,8 +19976,9 @@ impl App {
             let mut over_white = Framebuffer::new(w, h);
             over_white.clear(Rgb::new(255, 255, 255));
             if let Some(console) = &self.console {
-                console.draw_plates_in(&mut over_black, cy, ch, cx, cw);
-                console.draw_plates_in(&mut over_white, cy, ch, cx, cw);
+                let standard = self.game_options.minimap_position == 1;
+                console.draw_plates_in(&mut over_black, cy, ch, cx, cw, standard);
+                console.draw_plates_in(&mut over_white, cy, ch, cx, cw, standard);
             }
             self.plates_layer = Some((key, LayerCache::new(&over_black, &over_white)));
         }
@@ -16500,6 +19987,7 @@ impl App {
         }
         marks.push(("plates", Instant::now()));
         self.draw_hud_resources(fb);
+        self.draw_hud_optional_stats(fb);
         marks.push(("resources", Instant::now()));
         self.draw_hud_minimap(fb);
         marks.push(("minimap", Instant::now()));
@@ -16602,6 +20090,7 @@ impl App {
             );
         }
         self.draw_net_chat(fb);
+        self.draw_command_wheel(fb);
 
         if self.show_leaderboard {
             self.draw_leaderboard(fb, scale, ox, oy);
@@ -16611,11 +20100,11 @@ impl App {
         }
     }
 
-    /// Six newest LAN chat lines and, while typing, the input line.  Only
-    /// LAN matches have chat: campaign and skirmish screens keep the map
-    /// clean.
+    /// Six newest chat lines and, while typing, the input line.  LAN matches
+    /// use it for peer chat; single player uses the same prompt for the
+    /// retail cheat codes.
     fn draw_net_chat(&mut self, fb: &mut Framebuffer) {
-        if self.net.is_none() {
+        if self.net.is_none() && !self.chat_active && self.chat_log.is_empty() {
             return;
         }
         let lines: Vec<String> = self.chat_log.iter().rev().take(6).rev().cloned().collect();
@@ -16706,6 +20195,153 @@ impl App {
         }
     }
 
+    /// Optional Game-tab HUD stats: the shipped `console_time.dds` and
+    /// `console_apm.dds` top plates, with the mission clock and the APM
+    /// count in their black wells.  Retail draws these above the game view
+    /// at the top right; the exact anchor is INFERENCE from the plate art.
+    fn draw_hud_optional_stats(&mut self, fb: &mut Framebuffer) {
+        if !self.game_options.game_timer && !self.game_options.apm_display {
+            return;
+        }
+        let Some(console) = self.console.as_ref() else {
+            return;
+        };
+        let clock = console.clock.clone();
+        let apm_art = console.apm.clone();
+        let (_, _, _, ch) = Self::content_rect(fb);
+        let k = ch as f32 / 1440.0;
+        // The console pieces use art * console_scale / 4 (0.75x at 1440p).
+        let s = 0.75 * k;
+        // Anchor to the right edge of the shipped `statres` resource strip.
+        let resource = self.hud_control("statres", 1, UiRect::new(572, 0, 66, 20));
+        let gap = (6.0 * k).round() as i32;
+        let mut right = resource.x + resource.w;
+        let y = resource.y + resource.h + (6.0 * k).round() as i32;
+        if self.game_options.game_timer
+            && let Some(img) = clock
+        {
+            let w = (img.width as f32 * s).round() as i32;
+            let h = (img.height as f32 * s).round() as i32;
+            let x = right - w;
+            img.draw_scaled(fb, x, y, w, h);
+            let text = format_time(self.elapsed_ticks());
+            self.draw_hud_plate_text(fb, (x, y, w, h), &text, Rgb::new(198, 218, 255));
+            right = x - gap;
+        }
+        if self.game_options.apm_display
+            && let Some(img) = apm_art
+        {
+            let w = (img.width as f32 * s).round() as i32;
+            let h = (img.height as f32 * s).round() as i32;
+            let x = right - w;
+            img.draw_scaled(fb, x, y, w, h);
+            let apm = self.current_apm();
+            let alert = self.game_options.apm_alert
+                && self.elapsed_ticks() >= galaxycraft::sim::TICKS_PER_SECOND as u64 * 60
+                && apm < self.game_options.apm_threshold.round() as i64;
+            if alert && !self.apm_alerted {
+                if self.game_options.apm_play_sound {
+                    // No dedicated retail APM cue is shipped as a loose
+                    // asset; the short UI move cue is the audible warning.
+                    self.play("ui_move");
+                }
+                self.apm_alerted = true;
+            } else if !alert {
+                self.apm_alerted = false;
+            }
+            let colour = if alert && self.game_options.apm_color_text {
+                Rgb::new(255, 92, 70)
+            } else {
+                Rgb::new(198, 218, 255)
+            };
+            let text = format!("APM {apm}");
+            self.draw_hud_plate_text(fb, (x, y, w, h), &text, colour);
+        }
+    }
+
+    /// Centre HUD text in one of the optional plate's black wells.
+    fn draw_hud_plate_text(
+        &mut self,
+        fb: &mut Framebuffer,
+        (x, y, w, h): (i32, i32, i32, i32),
+        text: &str,
+        colour: Rgb,
+    ) {
+        let (cx, _cy, _cw, ch) = Self::content_rect(fb);
+        let k = ch as f32 / 1440.0;
+        let px = HUD_SMALL_PX;
+        let ink = self.glue_measure(text, px, GlueFace::Hud);
+        let base = (y as f32 + h as f32 * 0.66) / k;
+        let pen = (x as f32 - cx as f32) / k + (w as f32 / k - ink) / 2.0;
+        self.glue_text_face(fb, pen, base, text, px, colour, None, GlueFace::Hud);
+    }
+
+    /// Environment Effects overlay: deterministic era-coloured particles
+    /// from the shipped `hd2/effect/particle.dds`, positioned by the mission
+    /// tick so a capture or replay always draws the same field.
+    fn draw_environment_effects(&mut self, fb: &mut Framebuffer, content: (i32, i32, i32, i32)) {
+        if !self.env_particle_loaded {
+            self.env_particle_loaded = true;
+            self.env_particle = self
+                .install
+                .as_ref()
+                .and_then(|i| i.read("hd2/effect/particle.dds"))
+                .and_then(|b| galaxycraft::dds::parse(&b));
+        }
+        let Some(particle) = self.env_particle.clone() else {
+            return;
+        };
+        let (cx, cy, cw, ch) = content;
+        if cw <= 0 || ch <= 0 {
+            return;
+        }
+        let spec = env_spec(self.scenario.era);
+        let t = self.world.tick as f32 + self.accumulator.clamp(0.0, 1.0);
+        let w = cw as f32;
+        let h = ch as f32;
+        let unit = (ch as f32 / 1440.0).max(0.35);
+        // About one particle per 11k screen px, bounded so a 4K ultrawide
+        // window stays cheap and a small window still shows weather.
+        let count = (((cw as i64 * ch as i64) / 11_000).clamp(24, 150)) as usize;
+        let era = self.scenario.era.min(7) as u32;
+        for i in 0..count {
+            let seed = i as u32 * 7 + era * 131;
+            let h1 = env_hash(seed + 1);
+            let h2 = env_hash(seed + 2);
+            let h3 = env_hash(seed + 3);
+            let h4 = env_hash(seed + 4);
+            let frac = |v: u32| v as f32 / u32::MAX as f32;
+            let speed = spec.fall * (0.6 + frac(h4) * 0.8);
+            let drift = spec.drift * (0.6 + frac(h3) * 0.8);
+            let mut x = (frac(h1) * w + t * drift).rem_euclid(w)
+                + (t * 0.11 + frac(h4) * std::f32::consts::TAU).sin() * spec.sway;
+            let y = (frac(h2) * h + t * speed).rem_euclid(h);
+            x = x.rem_euclid(w);
+            let size = (spec.size * unit * (0.7 + frac(h3) * 0.6)).round().max(1.0) as i32;
+            let alpha = (spec.alpha as f32 * (0.5 + frac(h2) * 0.5)).round() as u8;
+            draw_env_particle(
+                fb,
+                &particle,
+                cx + x.round() as i32,
+                cy + y.round() as i32,
+                size,
+                spec.colour,
+                alpha,
+            );
+        }
+    }
+
+    /// Actions per minute from the mission clock, using the same command
+    /// count the score screen reports.
+    fn current_apm(&self) -> i64 {
+        let actions = self
+            .world
+            .recorder
+            .as_ref()
+            .map_or(self.actions, |r| r.cmds.len() as u32);
+        apm_value(actions, self.elapsed_ticks())
+    }
+
     /// `minimap` control 1 (classic 6,348 128x128, left-anchored): units and
     /// the camera box over the console art's own black well.
     fn draw_hud_minimap(&mut self, fb: &mut Framebuffer) {
@@ -16753,6 +20389,7 @@ impl App {
                         (0, 0, rw, rh),
                         s,
                         &creep,
+                        None,
                     );
                     if self.fog_on() {
                         galaxycraft::render::draw_fog_smooth(
@@ -16839,7 +20476,9 @@ impl App {
         self.draw_hud_status(fb, &u);
         self.draw_hud_cargo(fb, &u);
         // Hit points (and shields first for Protoss) under the wireframe.
-        let hp = (u.hp / 256).max(0);
+        // Translation batch 30 (`0x005b2570`): the status-panel current HP
+        // is the cached whole-point value with the retail zero clamp.
+        let hp = (u.a30_cached_whole_hp() as i32).max(0);
         let max_hp = ty.hit_points_raw as i32 / 256;
         let hr = self.hud_control("statdata", -7, UiRect::new(148, 452, 100, 12));
         let mut parts: Vec<(String, Rgb)> = Vec::new();
@@ -16966,6 +20605,9 @@ impl App {
 
     /// HUD element under the pointer that carries a retail tooltip.
     fn hud_hover(&self) -> Option<HudHover> {
+        if self.pad_wheel.is_open() {
+            return None;
+        }
         let (mx, my) = self.pointer?;
         let inside = |r: UiRect| mx >= r.x && mx < r.x + r.w && my >= r.y && my < r.y + r.h;
         if let Some(i) = self.command_slots().into_iter().position(inside) {
@@ -17306,10 +20948,9 @@ impl App {
     /// Loaded units of a Bunker / transport (Desperate Alliance recording
     /// 272 s: a Bunker with four Marines shows them in a 2 x 2 block of
     /// `cmdbtns` boxes at `statdata` controls 27-30, the middle two columns
-    /// of the eight cargo slots 25-32).  Capacity 4 uses 27-30, larger
-    /// transports 25-32; one-space units only (INFERENCE: fill order
-    /// column-major by control id, as the group grid; the two-space and
-    /// four-space slots 18-24 are not drawn yet).
+    /// of the eight cargo slots 25-32).  Capacity 4 uses 27-30; larger
+    /// transports pack 1 x 1, 1 x 2 and 2 x 2 cargo into 25-32 / 21-24 /
+    /// 18-20 (INFERENCE: column-major first fit, as the group grid).
     fn draw_hud_cargo(&mut self, fb: &mut Framebuffer, u: &SimUnit) {
         let ty = self.data.unit(u.type_id).clone();
         if ty.space_provided == 0 || u.cargo.is_empty() {
@@ -17321,10 +20962,16 @@ impl App {
             .iter()
             .filter_map(|id| self.world.unit(*id).cloned())
             .collect();
+        let sizes: Vec<u8> = cargo
+            .iter()
+            .map(|c| self.data.unit(c.type_id).space_required)
+            .collect();
+        let layout = cargo_slots(&sizes, ty.space_provided);
         for (n, c) in cargo.iter().enumerate() {
-            let Some(r) = self.cargo_slot_rect(&ty, n) else {
+            let Some(slot) = layout.get(n) else {
                 break;
             };
+            let r = self.cargo_slot_rect(slot.control);
             let cty = self.data.unit(c.type_id).clone();
             let Some(console) = &self.console else {
                 return;
@@ -17366,26 +21013,27 @@ impl App {
             return None;
         }
         let ty = self.data.unit(t.type_id);
+        let sizes: Vec<u8> = t
+            .cargo
+            .iter()
+            .filter_map(|id| self.world.unit(*id))
+            .map(|u| self.data.unit(u.type_id).space_required)
+            .collect();
+        let layout = cargo_slots(&sizes, ty.space_provided);
         t.cargo
             .iter()
             .enumerate()
             .find(|(n, _)| {
-                self.cargo_slot_rect(ty, *n)
-                    .is_some_and(|r| r.contains(mx, my))
+                layout
+                    .get(*n)
+                    .is_some_and(|slot| self.cargo_slot_rect(slot.control).contains(mx, my))
             })
             .map(|(_, &c)| (t.id, c))
     }
 
-    /// Screen rect of cargo slot `n` of a transport of type `ty`: `statdata`
-    /// 27-30 for capacity 4, 25-32 above (see `draw_hud_cargo`).
-    fn cargo_slot_rect(&self, ty: &galaxycraft::data::UnitType, n: usize) -> Option<UiRect> {
-        let (first, last) = if ty.space_provided <= 4 {
-            (27, 30)
-        } else {
-            (25, 32)
-        };
-        let id = first + n as i32;
-        (id <= last).then(|| self.hud_control("statdata", id, UiRect::new(0, 0, 0, 0)))
+    /// Screen rect of one `statdata` cargo control (see `cargo_slots`).
+    fn cargo_slot_rect(&self, control: i32) -> UiRect {
+        self.hud_control("statdata", control, UiRect::new(0, 0, 0, 0))
     }
 
     /// Screen rect of multi-selection slot `n` (0..12): `statdata` control
@@ -18132,7 +21780,7 @@ impl App {
         // Retail `glumain` layout: full-bleed space backdrop, the animated
         // fleet / battlecruiser / vortex clips at their `flc.json`
         // rectangles, the eight green entries, and the title frame with the
-        // Battle.net tag top-right and the build footer bottom-right.
+        // Build footer at the bottom-right of the title frame.
         //
         // The backdrop and title chrome are static: compose them once per
         // resolution and copy the cached pixels every frame.  Only the clips,
@@ -18396,6 +22044,9 @@ impl App {
                 // APM tracking: Color Text / Play Sound only answer while
                 // the alert is on (they are greyed otherwise).
                 if matches!(tab, OptionsTab::Game) {
+                    if inside(m::OPTIONS_APM_INPUT) {
+                        return Some(MenuHit::OptInput);
+                    }
                     for (i, r) in m::OPTIONS_CHECKS_APM.iter().enumerate() {
                         if inside(*r) && (i < 2 || self.game_options.apm_alert) {
                             return Some(MenuHit::OptCheck(m::OPTIONS_CHECKS_GAME.len() + i));
@@ -18615,6 +22266,107 @@ impl App {
     /// The eight green entries at their shipped 640x480 spots. Drawn by the
     /// main menu (with the cursor highlight) and, without highlight, behind
     /// every sub-screen panel — the retail client composites them that way.
+    /// Localized classic glue label, or the English fallback when the
+    /// selected locale has no `rc3.json` entry.
+    fn ui_text(&self, key: &str, fallback: &str) -> String {
+        self.ui_strings
+            .get(key)
+            .cloned()
+            .filter(|s| !s.trim().is_empty() && !s.contains("PLACEHOLDER"))
+            .unwrap_or_else(|| fallback.to_string())
+    }
+
+    /// Localized CEF chrome label (`gluall.json`), with an English fallback
+    /// for strings the selected locale does not ship.
+    fn cef_text(&self, key: &str, fallback: &str) -> String {
+        self.cef_strings
+            .get(key)
+            .cloned()
+            .filter(|s| !s.trim().is_empty() && !s.contains("PLACEHOLDER"))
+            .unwrap_or_else(|| fallback.to_string())
+    }
+
+    /// Lobby / create-screen term (`lobbyScreen_*`): race, colour, occupant
+    /// or "Select Race".  The key is the English label without spaces; the
+    /// lower-case form covers the race keys (`lobbyScreen_zerg`).
+    fn lobby_label(&self, name: &str) -> String {
+        if name.is_empty() {
+            return String::new();
+        }
+        if name == "Select Race" {
+            return self.cef_text("lobbyScreen_selectRace", name);
+        }
+        let compact = name.replace(' ', "");
+        for key in [
+            format!("lobbyScreen_{compact}"),
+            format!("lobbyScreen_{}", compact.to_ascii_lowercase()),
+        ] {
+            if let Some(value) = self.cef_strings.get(&key)
+                && !value.trim().is_empty()
+                && !value.contains("PLACEHOLDER")
+            {
+                return value.clone();
+            }
+        }
+        name.to_string()
+    }
+
+    /// Hotkey command-card heading (`glue_hotkeysPanel_*_actionCard`).
+    fn action_card_label(&self, label: &str) -> String {
+        let key = match label {
+            "General" => "glue_hotkeysPanel_general_actionCard",
+            "Basic Structure" => "glue_hotkeysPanel_basicStructure_actionCard",
+            "Advanced Structure" => "glue_hotkeysPanel_advancedStructure_actionCard",
+            "General - Tank Mode" => "glue_hotkeysPanel_tankMode_actionCard",
+            "General - Siege Mode" => "glue_hotkeysPanel_siegeMode_actionCard",
+            "General - Uncloaked" => "glue_hotkeysPanel_uncloaked_actionCard",
+            "General - Cloaked" => "glue_hotkeysPanel_cloaked_actionCard",
+            "General - Lifted" => "glue_hotkeysPanel_lifted_actionCard",
+            "General - Burrowed" => "glue_hotkeysPanel_burrowed_actionCard",
+            _ => return label.to_string(),
+        };
+        self.cef_text(key, label)
+    }
+
+    /// Shipped tileset name (`gameMapERA*`; index 0 has no suffix).
+    fn tileset_label(&self, name: &str) -> String {
+        let key = match name {
+            "Badlands" => "gameMapERA",
+            "Space" => "gameMapERA1",
+            "Installation" => "gameMapERA2",
+            "Ash World" | "Ashworld" => "gameMapERA3",
+            "Jungle" => "gameMapERA4",
+            "Desert" => "gameMapERA5",
+            "Ice" => "gameMapERA6",
+            _ => "gameMapERA7",
+        };
+        self.cef_text(key, name)
+    }
+
+    /// Race name in the lobby terms (`lobbyScreen_zerg`, ...).
+    fn race_label(&self, race: galaxycraft::sim::Race) -> String {
+        match race {
+            galaxycraft::sim::Race::Terran => self.lobby_label("Terran"),
+            galaxycraft::sim::Race::Zerg => self.lobby_label("Zerg"),
+            galaxycraft::sim::Race::Protoss => self.lobby_label("Protoss"),
+            galaxycraft::sim::Race::Neutral => self.lobby_label("Random"),
+        }
+    }
+
+    /// Main-menu labels in the current locale (`gluMain-*`).
+    fn main_labels(&self) -> [String; 8] {
+        [
+            self.ui_text("gluMain-3", "Single Player"),
+            self.ui_text("gluMain-4", "Multiplayer"),
+            self.ui_text("gluMain-5", "Options"),
+            self.ui_text("gluMain-6", "Collections"),
+            self.ui_text("gluMain-8", "Hotkeys"),
+            self.ui_text("gluMain-9", "Show Credits"),
+            self.ui_text("gluMain-7", "View Intro"),
+            self.ui_text("gluMain-1", "Exit"),
+        ]
+    }
+
     fn draw_menu_entries(&mut self, fb: &mut Framebuffer, highlight: bool) {
         if std::env::var_os("GC_NO_TEXT").is_some() {
             return;
@@ -18623,7 +22375,7 @@ impl App {
         // dimmed (measured mean 81,101,50 against 110,233,98 when lit).
         let dim = !highlight;
         let sel = if highlight { self.main_sel() } else { None };
-        let items = galaxycraft::menu::main_items();
+        let items = self.main_labels();
         // Measured on the retail captures: the idle face peaks at
         // (102, 227, 53) and the mouse-over face at (196, 255, 124).
         let normal = if dim {
@@ -19020,17 +22772,16 @@ impl App {
         }
     }
 
-    /// Build footer and account tag of the title frame.  Measured on
-    /// reference 130637: `blizzard-regular.ttf` (the shipped HUD face; IoU
-    /// 0.55 against the retail ink, LiberationSans 0.18), ink box 431x28 px
-    /// at 1440p with its right edge at UI x 633.67 and its top at UI y
-    /// 468.67, colour (198,218,255) and a soft dark shadow one UI pixel
-    /// down-right.  The account tag (reference picture-7) uses the same face,
-    /// colour and right edge, at the top of the frame.
+    /// Build footer of the title frame.  Measured on reference 130637:
+    /// `blizzard-regular.ttf` (the shipped HUD face; IoU 0.55 against the
+    /// retail ink, LiberationSans 0.18), ink box 431x28 px at 1440p with its
+    /// right edge at UI x 633.67 and its top at UI y 468.67, colour
+    /// (198,218,255) and a soft dark shadow one UI pixel down-right.
     fn draw_menu_frame_text(&mut self, fb: &mut Framebuffer) {
         if std::env::var_os("GC_NO_TEXT").is_some() {
             return;
         }
+        let footer = format!("1.23.10.13515 | {} | 64-bit", locale_tag(&self.locale_code));
         let (scale, ox, oy) = self.ui_metrics(fb);
         let Some(font) = self.ui_font_info.as_mut() else {
             return;
@@ -19038,26 +22789,11 @@ impl App {
         let (off, shade) = label_drop_shadow(scale);
         let colour = Rgb::new(198, 218, 255);
         let px = BUILD_FOOTER_PX * scale;
-        let width = font.measure(BUILD_FOOTER, px, 0.0);
+        let width = font.measure(&footer, px, 0.0);
         let x = ox + (BUILD_FOOTER_RIGHT * scale).round() as i32 - width;
         let top = oy + (BUILD_FOOTER_TOP * scale).round() as i32;
-        font.draw_top(fb, x + off, top + off, BUILD_FOOTER, px, 0.0, shade, None);
-        font.draw_top(fb, x, top, BUILD_FOOTER, px, 0.0, colour, None);
-        let tag_px = ACCOUNT_TAG_PX * scale;
-        let tag_width = font.measure(ACCOUNT_TAG, tag_px, 0.0);
-        let tag_x = ox + (ACCOUNT_TAG_RIGHT * scale).round() as i32 - tag_width;
-        let tag_top = oy + (ACCOUNT_TAG_TOP * scale).round() as i32;
-        font.draw_top(
-            fb,
-            tag_x + off,
-            tag_top + off,
-            ACCOUNT_TAG,
-            tag_px,
-            0.0,
-            shade,
-            None,
-        );
-        font.draw_top(fb, tag_x, tag_top, ACCOUNT_TAG, tag_px, 0.0, colour, None);
+        font.draw_top(fb, x + off, top + off, &footer, px, 0.0, shade, None);
+        font.draw_top(fb, x, top, &footer, px, 0.0, colour, None);
     }
 
     /// Title-frame surfaces plus the profile name, as every retail front-end
@@ -19348,9 +23084,10 @@ impl App {
         let bold = Rgb::new(208, 255, 131);
         let green = Rgb::new(108, 227, 66);
         let grey = Rgb::new(205, 220, 255);
+        let select_game_type = self.cef_text("gluSELECTTYPE", "Select Game Type");
         self.draw_hd_text(
             fb,
-            "Select Game Type",
+            &select_game_type,
             d.x as f32 + 180.0,
             top(15.3),
             LabelAlign::Center,
@@ -20298,9 +24035,10 @@ impl App {
         use galaxycraft::menu::LabelAlign;
         let pale = Rgb::new(0xc6, 0xda, 0xff);
         let folder_gold = Rgb::new(0xe7, 0xc9, 0x00);
+        let create_title = self.ui_text("gluCreat-1", "Create");
         self.draw_hd_text(
             fb,
-            "Create",
+            &create_title,
             (443.0 - 320.0) / 3.0,
             220.0 / 3.0,
             LabelAlign::Left,
@@ -20319,11 +24057,15 @@ impl App {
         let fh = (ch as f32 * (33.0 / 1440.0)) as i32;
         fb.rect(fx, fy + 6, fw, fh - 6, folder_gold);
         fb.rect(fx + 4, fy, fw - 4, 8, folder_gold);
-        let folder_label = if replays { "Replays" } else { "Maps" };
+        let folder_label = if replays {
+            self.cef_text("gameCloudReplays", "Replays")
+        } else {
+            self.cef_text("gameCloudMaps", "Maps")
+        };
         let folder_w = if replays { 145.0 } else { 104.0 } / 3.0;
         self.draw_hd_text(
             fb,
-            folder_label,
+            &folder_label,
             (553.0 - 320.0) / 3.0,
             323.0 / 3.0,
             LabelAlign::Left,
@@ -20505,12 +24247,13 @@ impl App {
         // map is selected: reference 38).
         if !replays && classic_sel.is_some() {
             let gy = (ch as f32 * 0.5833) as i32;
+            let game_type = self.cef_text("infoPane_gameType", "Game Type");
             hd(
                 self,
                 fb,
                 cx + (cw as f32 * 0.1734) as i32,
                 gy,
-                "Game Type",
+                &game_type,
                 8.5 * scale,
                 dim,
             );
@@ -20519,7 +24262,13 @@ impl App {
                 fb,
                 cx + (cw as f32 * 0.2988) as i32,
                 gy,
-                self.lobby_game_type.name(),
+                &self.cef_text(
+                    &format!(
+                        "scr.common.terms.gameType.{}",
+                        self.lobby_game_type.tag() + 1
+                    ),
+                    self.lobby_game_type.name(),
+                ),
                 8.5 * scale,
                 grey,
             );
@@ -20560,7 +24309,7 @@ impl App {
             let name = if i == 0 {
                 self.active_name()
             } else {
-                "Computer".to_string()
+                self.lobby_label("Computer")
             };
             let name_x = cx + (cw as f32 * (431.0 / 2560.0)) as i32;
             let type_x = cx + (cw as f32 * 0.2461) as i32;
@@ -20584,7 +24333,15 @@ impl App {
                 );
             }
             hd(self, fb, name_x, y, &name, 8.5 * scale, rgb_green);
-            hd(self, fb, race_x, y, race.label(), 8.5 * scale, grey);
+            hd(
+                self,
+                fb,
+                race_x,
+                y,
+                &self.lobby_label(race.label()),
+                8.5 * scale,
+                grey,
+            );
             for ax in [type_x, arrow_x] {
                 for k in 0..3 {
                     fb.rect(
@@ -20648,7 +24405,11 @@ impl App {
             let dh = (ch as f32 * 0.1944) as i32;
             fb.rect(dx, dy, dw, dh, Rgb::new(2, 4, 10));
             fb.rect_outline(dx, dy, dw, dh, CSS_INNER);
-            for (k, label) in ["Zerg", "Terran", "Protoss", "Random"].iter().enumerate() {
+            let race_labels: Vec<String> = ["Zerg", "Terran", "Protoss", "Random"]
+                .iter()
+                .map(|name| self.lobby_label(name))
+                .collect();
+            for (k, label) in race_labels.iter().enumerate() {
                 let ty = dy + (ch as f32 * 0.010) as i32 + (k as f32 * ch as f32 * 0.0382) as i32;
                 if k == 0 {
                     fb.rect(
@@ -20714,7 +24475,7 @@ impl App {
                     fb,
                     popup_x + (cw as f32 * 0.006) as i32,
                     ty,
-                    race.label(),
+                    &self.lobby_label(race.label()),
                     8.5 * scale,
                     if lit {
                         Rgb::new(225, 235, 255)
@@ -20799,14 +24560,26 @@ impl App {
                         value_color,
                     );
                 }
-                put(self, fb, "Players:", 1555.0, 601.0, 10.0, true, label_color);
+                put(
+                    self,
+                    fb,
+                    &self.cef_text("infoPane_players", "Players"),
+                    1555.0,
+                    601.0,
+                    10.0,
+                    true,
+                    label_color,
+                );
+                let terran = self.race_label(Race::Terran);
+                let zerg = self.race_label(Race::Zerg);
+                let protoss = self.race_label(Race::Protoss);
                 for (i, (name, race)) in info.players.iter().take(8).enumerate() {
                     let y = 650.0 + 36.0 * i as f32;
                     let (race_name, colour) = match race {
-                        Race::Terran => ("Terran", Rgb::new(0x80, 0xd4, 0xff)),
-                        Race::Zerg => ("Zerg", Rgb::new(0xd4, 0x80, 0xff)),
+                        Race::Terran => (terran.as_str(), Rgb::new(0x80, 0xd4, 0xff)),
+                        Race::Zerg => (zerg.as_str(), Rgb::new(0xd4, 0x80, 0xff)),
                         // INFERENCE: no reference shows a Protoss row.
-                        Race::Protoss => ("Protoss", Rgb::new(0xff, 0xd4, 0x80)),
+                        Race::Protoss => (protoss.as_str(), Rgb::new(0xff, 0xd4, 0x80)),
                         Race::Neutral => ("", value_color),
                     };
                     put(self, fb, name, 1552.0, y, 9.0, false, value_color);
@@ -20941,11 +24714,15 @@ impl App {
                     (size, tileset, suggested)
                 })
                 .unwrap_or_else(|| ("128x128".into(), "Jungle".into(), "2".into()));
+            let size_header = self.cef_text("infoPane_size", "Size");
+            let tileset_header = self.cef_text("infoPane_tileset", "Tileset");
+            let suggested_header = self.cef_text("infoPane_suggestedPlayers", "Suggested Players");
+            let tileset_label = self.tileset_label(&tileset_label);
             if let Some(font) = self.ui_font.as_mut() {
                 let rx = cx + (cw as f32 * 0.8477) as i32;
-                let size_line = format!("Size:  {size_label}");
-                let tileset_line = format!("Tileset:  {tileset_label}");
-                let suggested_line = format!("Suggested Players:  {suggested_label}");
+                let size_line = format!("{size_header}:  {size_label}");
+                let tileset_line = format!("{tileset_header}:  {tileset_label}");
+                let suggested_line = format!("{suggested_header}:  {suggested_label}");
                 for (i, line) in [
                     size_line.as_str(),
                     tileset_line.as_str(),
@@ -20968,8 +24745,15 @@ impl App {
             }
         }
         // Ok / Cancel `FLCBTN`s over the shipped pok/pcancel plates.
-        self.draw_glue_button(fb, "Ok", galaxycraft::menu::PALNL_OK_BUTTON, true);
-        self.draw_glue_button(fb, "Cancel", galaxycraft::menu::PALNL_CANCEL_BUTTON, true);
+        let ok_label = self.ui_text("gluCreat-2", "Ok");
+        let cancel_label = self.ui_text("gluCreat-3", "Cancel");
+        self.draw_glue_button(fb, &ok_label, galaxycraft::menu::PALNL_OK_BUTTON, true);
+        self.draw_glue_button(
+            fb,
+            &cancel_label,
+            galaxycraft::menu::PALNL_CANCEL_BUTTON,
+            true,
+        );
     }
 
     /// Retail Options panel (references 130933/130938/130942/130949/130954).
@@ -20977,6 +24761,15 @@ impl App {
     /// captures: panel 521..2038 x 181..1146, tab stack 521..847 with five
     /// 93 px cells from y=345, content columns at x=900 and x=1456 (516 px
     /// wide each), Restore/Ok buttons along y=1221..1286.
+    /// Commit the APM threshold text field, keeping the 0..1000 range.
+    fn commit_apm_input(&mut self) {
+        if let Some(text) = self.apm_input.take()
+            && let Ok(value) = text.parse::<f32>()
+        {
+            self.game_options.apm_threshold = value.clamp(0.0, 1000.0);
+        }
+    }
+
     /// Input of the Options "Restore to Default" confirmation: Continue
     /// (or Enter) resets the open tab, Cancel, the close cross or Escape
     /// keep everything.
@@ -21023,7 +24816,15 @@ impl App {
     fn draw_options_reset(&mut self, fb: &mut Framebuffer, tab: OptionsTab) {
         let (cx, _cy, cw, ch) = Self::content_rect(fb);
         fill_alpha_rect(fb, cx, 0, cw, ch, 153);
-        self.draw_confirm_dialog(fb, &tab.reset_title(), (744.0, 490.0, 1076.0, 460.0), true);
+        let key = match tab {
+            OptionsTab::Speed => "glue_optionsPanel_reset_speed_settings",
+            OptionsTab::Sound => "glue_optionsPanel_reset_sound_settings",
+            OptionsTab::Video => "glue_optionsPanel_reset_video_settings",
+            OptionsTab::Game => "glue_optionsPanel_reset_game_settings",
+            OptionsTab::Network => "glue_optionsPanel_reset_network_settings",
+        };
+        let title = self.cef_text(key, &tab.reset_title());
+        self.draw_confirm_dialog(fb, &title, (744.0, 490.0, 1076.0, 460.0), true);
     }
 
     /// The CEF "do you wish to continue?" dialog shared by Hotkeys
@@ -21086,19 +24887,28 @@ impl App {
                 1.0,
             );
         }
+        let discard = self.cef_text(
+            "glue_hotkeysPanel_restoreDefaultsExplanation",
+            "Discard your unsaved changes?",
+        );
         if let Some(font) = self.ui_font.as_mut() {
             font.draw_top(
                 fb,
                 sx(826.0),
                 sy(628.0),
-                "Discard your unsaved changes?",
+                &discard,
                 fpx(27.0),
                 0.23,
                 Rgb::new(221, 221, 221),
                 None,
             );
         }
-        for (label, x0) in [("Continue", 996.0f32), ("Cancel", 1387.0)] {
+        let continue_label = self.cef_text("glue_hotkeysPanel_continue_button", "Continue");
+        let cancel_label = self.cef_text("glue_hotkeysPanel_cancel_button", "Cancel");
+        for (label, x0) in [
+            (continue_label.as_str(), 996.0f32),
+            (cancel_label.as_str(), 1387.0),
+        ] {
             let bx = sx(x0);
             let by = sy(813.0);
             let bw = dx(360.0);
@@ -21180,27 +24990,255 @@ impl App {
         // Extended-face text, fitted with the outline rasteriser on 130933:
         // title 41.5 px/em at pen 581.5 / baseline 267.06; tab labels
         // 30.05 px/em centred on x 680.0, baseline row + 69.
+        // The CEF Options panel is a separate string set (`gluall.json`)
+        // from the classic glue labels (`rc3.json`): title, tabs, row
+        // labels, slider endpoints and button captions.
+        let options_title = self.cef_text(
+            "glue_optionsPanel_general_title",
+            &self.ui_text("gluMain-5", "Options"),
+        );
+        let tab_keys = [
+            "glue_optionsPanel_tabs_speed",
+            "glue_optionsPanel_tabs_sound",
+            "glue_optionsPanel_tabs_video",
+            "glue_optionsPanel_tabs_game",
+            "glue_optionsPanel_tabs_network",
+        ];
+        let tab_labels: Vec<String> = OptionsTab::all()
+            .iter()
+            .enumerate()
+            .map(|(i, t)| self.cef_text(tab_keys[i], &self.ui_text("options-2", t.name())))
+            .collect();
+        let slow = self.cef_text("glue_optionsPanel_general_label_slow", "slow");
+        let fast = self.cef_text("glue_optionsPanel_general_label_fast", "fast");
+        let min = self.cef_text("glue_optionsPanel_general_label_min", "min");
+        let max = self.cef_text("glue_optionsPanel_general_label_max", "max");
+        let game_speed = self.cef_text("glue_optionsPanel_speed_label_gameSpeed", "Game Speed");
+        let key_scroll = self.cef_text(
+            "glue_optionsPanel_speed_label_keyScroll",
+            "Key Scroll Speed",
+        );
+        let mouse_scroll = self.cef_text(
+            "glue_optionsPanel_speed_label_mouseScroll",
+            "Mouse Scroll Speed",
+        );
+        let mouse_sensitivity = self.cef_text(
+            "glue_optionsPanel_speed_label_mouseSensitivity",
+            "Mouse Sensitivity",
+        );
+        let mouse_scaling = self.cef_text(
+            "glue_optionsPanel_speed_label_mouseScaling",
+            "Use Mouse Scaling",
+        );
+        let music_volume =
+            self.cef_text("glue_optionsPanel_sound_label_musicVolume", "Music Volume");
+        let digital_volume = self.cef_text(
+            "glue_optionsPanel_sound_label_digitalVolume",
+            "Digital Volume",
+        );
+        let unit_speech = self.cef_text("glue_optionsPanel_sound_label_unitSpeech", "Unit Speech");
+        let unit_ack = self.cef_text(
+            "glue_optionsPanel_sound_label_unitAck",
+            "Unit Acknowledgments",
+        );
+        let sound_background = self.cef_text(
+            "glue_optionsPanel_sound_label_soundPlaysInBackground",
+            "Sound Plays While In Background",
+        );
+        let building_sounds = self.cef_text(
+            "glue_optionsPanel_sound_label_buildingSounds",
+            "Building Sounds",
+        );
+        let game_subtitles = self.cef_text(
+            "glue_optionsPanel_sound_label_gameSubtitles",
+            "Game Subtitles",
+        );
+        let cinematic_subtitles = self.cef_text(
+            "glue_optionsPanel_sound_label_cinematicSubtitles",
+            "Cinematic Subtitles",
+        );
+        let original_vo = self.cef_text(
+            "glue_optionsPanel_sound_label_originalUnitVO",
+            "Original Unit Voice Overs",
+        );
+        let original_campaign = self.cef_text(
+            "glue_optionsPanel_sound_label_originalCampaignVO",
+            "Original 1998 Campaign",
+        );
+        let display_mode =
+            self.cef_text("glue_optionsPanel_video_label_windowMode", "Display Mode");
+        let monitor = self.cef_text("glue_optionsPanel_video_label_monitor", "Monitor");
+        let gamma = self.cef_text("glue_optionsPanel_video_label_gamma", "Gamma Correction");
+        let fps_cap = self.cef_text("glue_optionsPanel_video_label_fpsCap", "Enable FPS Cap");
+        let sd_filter = self.cef_text("optionsPanel_video_Filtering_label", "SD Graphics Filter");
+        let sharp = self.cef_text("optionsPanel_video_Sharp_label", "Sharp");
+        let filtered = self.cef_text("optionsPanel_video_Filtered_label", "Filtered");
+        let default_label = self.cef_text("optionsPanel_game_console_default_label", "Default");
+        let vsync = self.cef_text(
+            "glue_optionsPanel_video_label_vsync",
+            "Enable Vertical Sync",
+        );
+        let hd_graphics = self.cef_text("glue_optionsPanel_video_label_hd", "HD Graphics");
+        let environment = self.cef_text(
+            "glue_optionsPanel_video_label_environmentEffects",
+            "Environment Effects",
+        );
+        let real_time = self.cef_text(
+            "glue_optionsPanel_video_label_realTimeLighting",
+            "Real-Time Lighting",
+        );
+        let smooth_turning = self.cef_text(
+            "glue_optionsPanel_video_label_smoothAnimations",
+            "Smooth Unit Turning",
+        );
+        let shadow_stack = self.cef_text(
+            "glue_optionsPanel_video_label_shadowStacking",
+            "Shadow Stacking",
+        );
+        let pillarbox = self.cef_text(
+            "glue_optionsPanel_video_label_aspect_ratio_letterbox",
+            "Pillarbox",
+        );
+        let display_modes: Vec<String> = [
+            (
+                "glue_optionsPanel_video_label_windowMode_windowed",
+                DISPLAY_MODES[0],
+            ),
+            (
+                "glue_optionsPanel_video_label_windowMode_windowedFullscreen",
+                DISPLAY_MODES[1],
+            ),
+            (
+                "glue_optionsPanel_video_label_windowMode_fullscreen",
+                DISPLAY_MODES[2],
+            ),
+        ]
+        .iter()
+        .map(|(key, fallback)| self.cef_text(key, fallback))
+        .collect();
+        let language_names: Vec<String> = [
+            ("enUS", "English"),
+            ("frFR", "Français"),
+            ("itIT", "Italiano"),
+            ("deDE", "Deutsch"),
+            ("esES", "Español - España"),
+            ("esMX", "Español - Latino"),
+            ("ptBR", "Português"),
+            ("zhCN", "简体中文"),
+            ("zhTW", "繁體中文"),
+            ("koKR", "한국어"),
+            ("jaJP", "日本語"),
+            ("plPL", "Polski"),
+            ("ruRU", "Русский"),
+        ]
+        .iter()
+        .map(|(tag, fallback)| {
+            self.cef_text(&format!("glue_optionsPanel_language_{tag}"), fallback)
+        })
+        .collect();
+        let gameplay = self.cef_text("glue_optionsPanel_game_subtitle_gameplay", "Gameplay");
+        let game_timer = self.cef_text("glue_optionsPanel_game_label_gameTimer", "Game Timer");
+        let color_cycling = self.cef_text(
+            "glue_optionsPanel_game_label_colorCycling",
+            "Enable Color Cycling",
+        );
+        let language_filter = self.cef_text(
+            "glue_optionsPanel_game_label_languageFilter",
+            "Mature Language Filter",
+        );
+        let bonus_skins = self.cef_text(
+            "glue_optionsPanel_game_label_bonusSkins",
+            "Show Bonus Skins",
+        );
+        let console_label = self.cef_text(
+            "glue_optionsPanel_game_label_consolePosition",
+            "Mini-Map Position",
+        );
+        let portraits = self.cef_text("glue_optionsPanel_game_label_portraits", "Portraits");
+        let animated = self.cef_text(
+            "glue_optionsPanel_game_label_unitPortraits_animated",
+            "Animated",
+        );
+        let still = self.cef_text("glue_optionsPanel_game_label_unitPortraits_still", "Still");
+        let disabled = self.cef_text(
+            "glue_optionsPanel_game_label_unitPortraits_disable",
+            "Disabled",
+        );
+        let left_corner = self.cef_text(
+            "glue_optionsPanel_game_label_consolePosition_leftCorner",
+            "Left Corner",
+        );
+        let standard = self.cef_text(
+            "glue_optionsPanel_game_label_consolePosition_standard",
+            "Standard",
+        );
+        let friends = "Friends presence text notifications";
+        let language = self.cef_text("glue_optionsPanel_game_subtitle_language", "Language");
+        let language_description = self.cef_text(
+            "glue_optionsPanel_game_language_description",
+            "Changing the language requires a game restart.",
+        );
+        let language_lines: Vec<String> = {
+            let words: Vec<&str> = language_description.split_whitespace().collect();
+            let half = words.len().div_ceil(2);
+            let (a, b) = words.split_at(half.min(words.len()));
+            vec![a.join(" "), b.join(" ")]
+        };
+        let apm_tracking = self.cef_text(
+            "glue_optionsPanel_game_subtitle_apmTracking",
+            "Actions Per Minute Tracking",
+        );
+        let display_apm = self.cef_text("glue_optionsPanel_game_label_apm", "Display APM In Game");
+        let apm_alert = self.cef_text(
+            "glue_optionsPanel_game_label_epm",
+            "Alert when APM falls below",
+        );
+        let color_text = self.cef_text("glue_optionsPanel_game_label_colorText", "Color Text");
+        let play_sound = self.cef_text("glue_optionsPanel_game_label_playSound", "Play Sound");
+        let prefer_port = self.cef_text(
+            "glue_optionsPanel_network_label_preferPort6112",
+            "Prefer port 6112",
+        );
+        let latency = self.cef_text(
+            "glue_optionsPanel_network_subtitle_defaultLatency",
+            "Latency",
+        );
+        let low_latency = self.cef_text("glue_optionsPanel_network_label_lowLat", "Low");
+        let high_latency = self.cef_text("glue_optionsPanel_network_label_highLat", "High");
+        let extra_high_latency =
+            self.cef_text("glue_optionsPanel_network_label_extraHighLat", "Extra High");
+        let network_description = self.cef_text(
+            "glue_optionsPanel_network_description",
+            &galaxycraft::menu::NETWORK_LATENCY_TEXT.join(" "),
+        );
+        let network_lines: Vec<String> = {
+            let words: Vec<&str> = network_description.split_whitespace().collect();
+            let per = words.len().div_ceil(3).max(1);
+            words.chunks(per).map(|chunk| chunk.join(" ")).collect()
+        };
+        let restore_default =
+            self.cef_text("glue_optionsPanel_general_restore", "Restore to Default");
         if let Some(font) = self.ui_font_hover.as_mut() {
             font.draw_cef(
                 fb,
                 fx(581.5),
                 fy(267.06),
-                "Options",
+                &options_title,
                 px(41.5),
                 0.0,
                 white,
                 white,
             );
-            for (i, t) in OptionsTab::all().iter().enumerate() {
-                let active = *t == tab;
+            for (i, label) in tab_labels.iter().enumerate() {
+                let active = OptionsTab::all()[i] == tab;
                 // The first letter is #b4fc74 on every tab
                 // (`::first-letter`); the selected tab is #b4fc74 throughout.
-                let w = font.measure_cef(t.name(), px(30.05), 0.0);
+                let w = font.measure_cef(label, px(30.05), 0.0);
                 font.draw_cef(
                     fb,
                     fx(680.0) - w / 2.0,
                     fy(rows[i] + 69.0),
-                    t.name(),
+                    label,
                     px(30.05),
                     0.0,
                     CSS_GREEN_HI,
@@ -21221,7 +25259,7 @@ impl App {
                 &mut self.ui_font,
                 dx(900.0),
                 dy(346.0),
-                "Game Speed",
+                &game_speed,
                 px(23.5),
                 white,
             );
@@ -21234,8 +25272,8 @@ impl App {
                 left + col_w,
                 dy(391.0),
                 gs,
-                "slow",
-                "fast",
+                &slow,
+                &fast,
                 dy(426.0),
                 unit,
                 px(20.0),
@@ -21245,7 +25283,7 @@ impl App {
                 &mut self.ui_font,
                 dx(900.0),
                 dy(499.0),
-                "Key Scroll Speed",
+                &key_scroll,
                 px(23.5),
                 white,
             );
@@ -21256,8 +25294,8 @@ impl App {
                 left + col_w,
                 dy(544.0),
                 self.game_options.key_scroll.clamp(0.0, 1.0),
-                "slow",
-                "fast",
+                &slow,
+                &fast,
                 dy(579.0),
                 unit,
                 px(20.0),
@@ -21267,7 +25305,7 @@ impl App {
                 &mut self.ui_font,
                 dx(900.0),
                 dy(652.0),
-                "Mouse Scroll Speed",
+                &mouse_scroll,
                 px(23.5),
                 white,
             );
@@ -21278,8 +25316,8 @@ impl App {
                 left + col_w,
                 dy(697.0),
                 self.game_options.mouse_scroll.clamp(0.0, 1.0),
-                "slow",
-                "fast",
+                &slow,
+                &fast,
                 dy(732.0),
                 unit,
                 px(20.0),
@@ -21293,7 +25331,7 @@ impl App {
                 dxw(29.0),
                 self.game_options.use_mouse_sensitivity,
                 true,
-                "Mouse Sensitivity",
+                &mouse_sensitivity,
                 true,
                 px(24.0),
             );
@@ -21304,8 +25342,8 @@ impl App {
                 right_end,
                 dy(394.0),
                 self.game_options.mouse_sensitivity.clamp(0.0, 1.0),
-                "slow",
-                "fast",
+                &slow,
+                &fast,
                 dy(429.0),
                 unit,
                 px(20.0),
@@ -21322,10 +25360,22 @@ impl App {
                 px(24.0),
                 white,
             );
+            let hardware_cursor =
+                self.cef_text("optionsPanel_speed_hardwareCursor_label", "Hardware Cursor");
+            let use_mouse_confine =
+                self.cef_text("optionsPanel_speed_mouseConfine_label", "Use Mouse Confine");
             for (i, (label, checked, enabled)) in [
-                ("Use Mouse Scaling", self.game_options.mouse_scaling, true),
-                ("Hardware Cursor", self.game_options.hardware_cursor, true),
-                ("Use Mouse Confine", true, false),
+                (
+                    mouse_scaling.as_str(),
+                    self.game_options.mouse_scaling,
+                    true,
+                ),
+                (
+                    hardware_cursor.as_str(),
+                    self.game_options.hardware_cursor,
+                    true,
+                ),
+                (use_mouse_confine.as_str(), true, false),
             ]
             .iter()
             .enumerate()
@@ -21355,7 +25405,7 @@ impl App {
                 dxw(29.0),
                 self.game_options.music_enabled,
                 true,
-                "Music Volume",
+                &music_volume,
                 false,
                 px(24.0),
             );
@@ -21366,8 +25416,8 @@ impl App {
                 left + col_w,
                 dy(394.0),
                 self.game_options.music_volume.clamp(0.0, 1.0),
-                "min",
-                "max",
+                &min,
+                &max,
                 dy(429.0),
                 unit,
                 px(20.0),
@@ -21380,7 +25430,7 @@ impl App {
                 dxw(29.0),
                 self.game_options.sfx_enabled,
                 true,
-                "Digital Volume",
+                &digital_volume,
                 false,
                 px(24.0),
             );
@@ -21391,28 +25441,28 @@ impl App {
                 left + col_w,
                 dy(550.0),
                 self.game_options.sfx_volume.clamp(0.0, 1.0),
-                "min",
-                "max",
+                &min,
+                &max,
                 dy(585.0),
                 unit,
                 px(20.0),
             );
             for (i, (label, checked)) in [
-                ("Unit Speech", self.game_options.unit_speech),
-                ("Unit Acknowledgments", self.game_options.unit_acks),
+                (unit_speech.as_str(), self.game_options.unit_speech),
+                (unit_ack.as_str(), self.game_options.unit_acks),
                 (
-                    "Sound Plays While In Background",
+                    sound_background.as_str(),
                     self.game_options.sound_background,
                 ),
-                ("Building Sounds", self.game_options.building_sounds),
-                ("Game Subtitles", self.game_options.subtitles),
-                ("Cinematic Subtitles", self.game_options.cinematic_subtitles),
+                (building_sounds.as_str(), self.game_options.building_sounds),
+                (game_subtitles.as_str(), self.game_options.subtitles),
                 (
-                    "Original Unit Voice Overs",
-                    self.game_options.original_voice_overs,
+                    cinematic_subtitles.as_str(),
+                    self.game_options.cinematic_subtitles,
                 ),
+                (original_vo.as_str(), self.game_options.original_voice_overs),
                 (
-                    "Original 1998 Campaign",
+                    original_campaign.as_str(),
                     self.game_options.original_1998_campaign,
                 ),
             ]
@@ -21441,7 +25491,7 @@ impl App {
                 &mut self.ui_font,
                 dx(900.0),
                 dy(346.0),
-                "Display Mode",
+                &display_mode,
                 px(23.5),
                 CSS_LAVENDER,
             );
@@ -21460,7 +25510,7 @@ impl App {
                 left,
                 fy(373.5),
                 col_w,
-                DISPLAY_MODES[self.display_mode.min(DISPLAY_MODES.len() as u8 - 1) as usize],
+                &display_modes[self.display_mode.min(DISPLAY_MODES.len() as u8 - 1) as usize],
                 true,
                 unit,
             );
@@ -21470,7 +25520,7 @@ impl App {
                 &mut self.ui_font,
                 dx(900.0),
                 dy(448.0),
-                "Monitor",
+                &monitor,
                 px(23.5),
                 CSS_LAVENDER,
             );
@@ -21480,7 +25530,7 @@ impl App {
                 left,
                 fy(475.5),
                 col_w,
-                "1. Default",
+                &format!("1. {default_label}"),
                 false,
                 unit,
             );
@@ -21489,7 +25539,7 @@ impl App {
                 &mut self.ui_font,
                 dx(900.0),
                 dy(550.0),
-                "Gamma Correction",
+                &gamma,
                 px(23.5),
                 grey,
             );
@@ -21509,8 +25559,8 @@ impl App {
                 left + col_w,
                 dy(595.0),
                 0.5,
-                "min",
-                "max",
+                &min,
+                &max,
                 dy(630.0),
                 unit,
                 px(20.0),
@@ -21524,7 +25574,7 @@ impl App {
                 dxw(29.0),
                 self.game_options.video_fps_cap,
                 true,
-                "Enable FPS Cap",
+                &fps_cap,
                 false,
                 px(24.0),
             );
@@ -21546,7 +25596,7 @@ impl App {
                 &mut self.ui_font,
                 right,
                 dy(520.0),
-                "SD Graphics Filter",
+                &sd_filter,
                 px(23.3),
                 white,
             );
@@ -21557,24 +25607,27 @@ impl App {
                 right_end,
                 dy(565.0),
                 self.game_options.video_sd_filter.clamp(0.0, 1.0),
-                "Sharp",
-                "Filtered",
+                &sharp,
+                &filtered,
                 dy(600.0),
                 unit,
                 px(20.0),
                 4,
             );
             for (i, (label, checked)) in [
-                ("Enable Vertical Sync", self.game_options.video_vsync),
-                ("HD Graphics", self.game_options.video_hd),
-                ("Environment Effects", self.game_options.video_environment),
-                ("Real-Time Lighting", self.game_options.video_lighting),
+                (vsync.as_str(), self.game_options.video_vsync),
+                (hd_graphics.as_str(), self.game_options.video_hd),
+                (environment.as_str(), self.game_options.video_environment),
+                (real_time.as_str(), self.game_options.video_lighting),
                 (
-                    "Smooth Unit Turning",
+                    smooth_turning.as_str(),
                     self.game_options.video_smooth_turning,
                 ),
-                ("Shadow Stacking", self.game_options.video_shadow_stacking),
-                ("Pillarbox", self.game_options.video_pillarbox),
+                (
+                    shadow_stack.as_str(),
+                    self.game_options.video_shadow_stacking,
+                ),
+                (pillarbox.as_str(), self.game_options.video_pillarbox),
             ]
             .iter()
             .enumerate()
@@ -21588,7 +25641,7 @@ impl App {
                     *checked,
                     true,
                     label,
-                    matches!(*label, "Environment Effects" | "Real-Time Lighting"),
+                    matches!(i, 2 | 3),
                     px(24.0),
                 );
             }
@@ -21601,18 +25654,18 @@ impl App {
                 &mut self.ui_font,
                 dx(900.0),
                 dy(346.0),
-                "Gameplay",
+                &gameplay,
                 px(30.0),
                 white,
             );
             for (i, (label, checked)) in [
-                ("Game Timer", self.game_options.game_timer),
-                ("Enable Color Cycling", self.game_options.game_color_cycling),
+                (game_timer.as_str(), self.game_options.game_timer),
+                (color_cycling.as_str(), self.game_options.game_color_cycling),
                 (
-                    "Mature Language Filter",
+                    language_filter.as_str(),
                     self.game_options.game_language_filter,
                 ),
-                ("Show Bonus Skins", self.game_options.game_bonus_skins),
+                (bonus_skins.as_str(), self.game_options.game_bonus_skins),
             ]
             .iter()
             .enumerate()
@@ -21635,7 +25688,7 @@ impl App {
                 &mut self.ui_font,
                 dx(900.0),
                 dy(611.0),
-                "Console",
+                &console_label,
                 px(24.0),
                 CSS_LAVENDER,
             );
@@ -21645,7 +25698,7 @@ impl App {
                 left,
                 fy(638.17),
                 col_w,
-                "Default",
+                &default_label,
                 true,
                 unit,
             );
@@ -21654,14 +25707,18 @@ impl App {
                 &mut self.ui_font,
                 dx(900.0),
                 dy(713.0),
-                "Portraits",
+                &portraits,
                 px(24.0),
                 CSS_LAVENDER,
             );
             for (x, label, selected) in [
-                (900.0f32, "Animated", self.game_options.portraits == 0),
-                (1075.0, "Still", self.game_options.portraits == 1),
-                (1190.0, "Disabled", self.game_options.portraits == 2),
+                (
+                    900.0f32,
+                    animated.as_str(),
+                    self.game_options.portraits == 0,
+                ),
+                (1075.0, still.as_str(), self.game_options.portraits == 1),
+                (1190.0, disabled.as_str(), self.game_options.portraits == 2),
             ] {
                 opt_radio(
                     fb,
@@ -21681,13 +25738,16 @@ impl App {
                 &mut self.ui_font,
                 dx(900.0),
                 dy(830.0),
-                "Mini-Map Position",
+                &console_label,
                 px(24.0),
                 CSS_LAVENDER,
             );
             for (i, (label, selected)) in [
-                ("Left Corner", self.game_options.minimap_position == 0),
-                ("Standard", self.game_options.minimap_position == 1),
+                (
+                    left_corner.as_str(),
+                    self.game_options.minimap_position == 0,
+                ),
+                (standard.as_str(), self.game_options.minimap_position == 1),
             ]
             .iter()
             .enumerate()
@@ -21713,7 +25773,7 @@ impl App {
                 dxw(29.0),
                 self.game_options.game_friend_notifications,
                 true,
-                "Friends presence text notifications",
+                friends,
                 false,
                 px(24.0),
             );
@@ -21723,35 +25783,28 @@ impl App {
                 &mut self.ui_font,
                 right,
                 dy(346.0),
-                "Language",
+                &language,
                 px(30.0),
                 white,
             );
-            opt_text(
-                fb,
-                &mut self.ui_font,
-                right,
-                dy(395.0),
-                "Changing the language requires",
-                px(23.3),
-                CSS_LAVENDER,
-            );
-            opt_text(
-                fb,
-                &mut self.ui_font,
-                right,
-                dy(422.0),
-                "a game restart.",
-                px(23.3),
-                CSS_LAVENDER,
-            );
+            for (i, line) in language_lines.iter().enumerate() {
+                opt_text(
+                    fb,
+                    &mut self.ui_font,
+                    right,
+                    dy(395.0 + 27.0 * i as f32),
+                    line,
+                    px(23.3),
+                    CSS_LAVENDER,
+                );
+            }
             opt_dropdown(
                 fb,
                 &mut self.ui_font,
                 right,
                 fy(449.17),
                 col_w,
-                LANGUAGES[self.language.min(LANGUAGES.len() - 1)],
+                &language_names[self.language.min(language_names.len() - 1)],
                 true,
                 unit,
             );
@@ -21760,7 +25813,7 @@ impl App {
                 &mut self.ui_font,
                 right,
                 dy(554.0),
-                "Actions Per Minute Tracking",
+                &apm_tracking,
                 px(30.0),
                 white,
             );
@@ -21772,7 +25825,7 @@ impl App {
                 dxw(29.0),
                 self.game_options.apm_display,
                 true,
-                "Display APM In Game",
+                &display_apm,
                 false,
                 px(24.0),
             );
@@ -21784,10 +25837,14 @@ impl App {
                 dxw(29.0),
                 self.game_options.apm_alert,
                 true,
-                "Alert when APM falls below",
+                &apm_alert,
                 false,
                 px(24.0),
             );
+            let threshold = self
+                .apm_input
+                .clone()
+                .unwrap_or_else(|| format!("{:.0}", self.game_options.apm_threshold));
             opt_input(
                 fb,
                 &mut self.ui_font,
@@ -21795,7 +25852,7 @@ impl App {
                 dy(642.0),
                 dxw(75.0),
                 dy(46.0),
-                "60",
+                &threshold,
                 px(23.0),
                 unit,
             );
@@ -21807,7 +25864,7 @@ impl App {
                 dxw(29.0),
                 self.game_options.apm_color_text,
                 self.game_options.apm_alert,
-                "Color Text",
+                &color_text,
                 false,
                 px(24.0),
             );
@@ -21819,7 +25876,7 @@ impl App {
                 dxw(29.0),
                 self.game_options.apm_play_sound,
                 self.game_options.apm_alert,
-                "Play Sound",
+                &play_sound,
                 false,
                 px(24.0),
             );
@@ -21829,7 +25886,7 @@ impl App {
         if tab == OptionsTab::Network && self.ingame_options {
             // In-game Network tab (Boot Camp 151 s): the explanation, the
             // Latency title and three radios.
-            for (i, line) in galaxycraft::menu::NETWORK_LATENCY_TEXT.iter().enumerate() {
+            for (i, line) in network_lines.iter().enumerate() {
                 opt_text(
                     fb,
                     &mut self.ui_font,
@@ -21845,13 +25902,17 @@ impl App {
                 &mut self.ui_font,
                 dx(897.0),
                 dy(472.0),
-                "Latency",
+                &latency,
                 px(28.0),
                 Rgb::new(255, 255, 255),
             );
-            for (i, (x, label)) in [(896.0f32, "Low"), (1018.0, "High"), (1144.0, "Extra High")]
-                .iter()
-                .enumerate()
+            for (i, (x, label)) in [
+                (896.0f32, low_latency.as_str()),
+                (1018.0, high_latency.as_str()),
+                (1144.0, extra_high_latency.as_str()),
+            ]
+            .iter()
+            .enumerate()
             {
                 opt_radio(
                     fb,
@@ -21875,7 +25936,7 @@ impl App {
                 dxw(29.0),
                 self.game_options.network_prefer_6112,
                 true,
-                "Prefer port 6112",
+                &prefer_port,
                 false,
                 px(24.0),
             );
@@ -21884,9 +25945,10 @@ impl App {
         // Restore to Default (left) and Ok (right): 5 px #331f1f outer frame
         // with a 10 px radius, black gap, and a 3 px #6c0000 inner frame with
         // a 4 px radius.  Fills are rgba(0,0,0,.8) as in the CEF CSS.
+        let ok_label = self.ui_text("gluCreat-2", "Ok");
         for (label, ox, ow, ix, iw) in [
-            ("Restore to Default", 513.0f32, 389.0, 523.0, 370.0),
-            ("Ok", 1672.0, 378.0, 1682.0, 357.0),
+            (restore_default.as_str(), 513.0f32, 389.0, 523.0, 370.0),
+            (ok_label.as_str(), 1672.0, 378.0, 1682.0, 357.0),
         ] {
             let (bx, by) = (dx(ox), dy(1212.0));
             let (bw, bh) = (dxw(ow), dy(84.0));
@@ -21972,8 +26034,24 @@ impl App {
                     x >= list.0 && x < list.0 + list.2 && y >= row_top && y < row_top + pitch
                 });
                 let label = match kind {
-                    OptionsDrop::DisplayMode => DISPLAY_MODES[i],
-                    OptionsDrop::Language => LANGUAGES[i],
+                    OptionsDrop::DisplayMode => self.cef_text(
+                        [
+                            "glue_optionsPanel_video_label_windowMode_windowed",
+                            "glue_optionsPanel_video_label_windowMode_windowedFullscreen",
+                            "glue_optionsPanel_video_label_windowMode_fullscreen",
+                        ][i],
+                        DISPLAY_MODES[i],
+                    ),
+                    OptionsDrop::Language => self.cef_text(
+                        &format!(
+                            "glue_optionsPanel_language_{}",
+                            [
+                                "enUS", "frFR", "itIT", "deDE", "esES", "esMX", "ptBR", "zhCN",
+                                "zhTW", "koKR", "jaJP", "plPL", "ruRU"
+                            ][i]
+                        ),
+                        LANGUAGES[i],
+                    ),
                 };
                 let needs_fallback = self
                     .ui_font
@@ -21989,7 +26067,7 @@ impl App {
                         fb,
                         bx as f32 + 10.0 * kx,
                         by as f32 + (pitch * i as f32 + 28.0) * ky,
-                        label,
+                        &label,
                         text_px * 3.0,
                         0.0,
                         if hot { CSS_GREEN_HI } else { CSS_GREEN },
@@ -22001,26 +26079,35 @@ impl App {
         // Help tooltips: retail shows a short explanation when the pointer
         // rests on a row's round ? badge (references 13-16 and 18).  The
         // rows below are the measured content-pixel bands.
-        let help: Option<(&str, (f32, f32), f32)> = match tab {
+        let help: Option<(String, (f32, f32), f32)> = match tab {
             OptionsTab::Speed => pointer.and_then(|(x, y)| {
                 if !(1456.0..2020.0).contains(&x) {
                     return None;
                 }
                 if (338.0..373.0).contains(&y) {
                     Some((
-                        "Use the operating system mouse speed.",
+                        self.cef_text(
+                            "glue_optionsPanel_speed_tooltip_mouseSensitivity",
+                            "Use the operating system mouse speed.",
+                        ),
                         (1460.0, 260.0),
                         482.0,
                     ))
                 } else if (494.0..529.0).contains(&y) {
                     Some((
-                        "Scale input to the original screen resolution.",
+                        self.cef_text(
+                            "glue_optionsPanel_speed_tooltip_mouseScaling",
+                            "Scale input to the original screen resolution.",
+                        ),
                         (1460.0, 482.0),
                         482.0,
                     ))
                 } else if (602.0..637.0).contains(&y) {
                     Some((
-                        "Keep the cursor inside the window. Alt+F1 toggles this in windowed mode.",
+                        self.cef_text(
+                            "optionsPanel_speed_mouseConfine_tooltip",
+                            "Keep the cursor inside the window. Alt+F1 toggles this in windowed mode.",
+                        ),
                         (1460.0, 482.0),
                         482.0,
                     ))
@@ -22030,7 +26117,10 @@ impl App {
             }),
             OptionsTab::Video => pointer.and_then(|(x, y)| {
                 ((900.0..1420.0).contains(&x) && (340.0..372.0).contains(&y)).then_some((
-                    "Gamma can only be adjusted in fullscreen mode.",
+                    self.cef_text(
+                        "glue_optionsPanel_video_tooltip_gamma",
+                        "Gamma can only be adjusted in fullscreen mode.",
+                    ),
                     (960.0, 482.0),
                     900.0,
                 ))
@@ -22040,7 +26130,7 @@ impl App {
         if let Some((text, (ax, ay), width)) = help {
             // Reference 13/18: the tooltip is a fixed band below the
             // sliders, opaque black with a red hairline, two lines wide.
-            let lines: Vec<String> = wrap_words(text, ((width - 20.0) * ky) as i32, |t| {
+            let lines: Vec<String> = wrap_words(&text, ((width - 20.0) * ky) as i32, |t| {
                 self.ui_font
                     .as_ref()
                     .map(|f| f.measure_cef(t, 8.3 * ky * 3.0, 0.0).round() as i32)
@@ -22097,12 +26187,16 @@ impl App {
         rounded_fill(fb, x, y, w, h, radius, Rgb::new(0, 0, 0));
         rounded_band(fb, x, y, w, h, radius, 0, dx(3.0), CSS_OUTER);
         rounded_band(fb, x, y, w, h, radius, dx(6.0), dx(3.0), CSS_INNER);
+        let title = self.cef_text(
+            "glue_optionsPanel_language_dialog_title",
+            "Changing Language",
+        );
         if let Some(font) = self.ui_font_hover.as_mut() {
             font.draw_top_stretched(
                 fb,
                 sx(826.0),
                 dy(572.0),
-                "Changing Language",
+                &title,
                 fpx(36.0),
                 0.0,
                 1.0,
@@ -22112,12 +26206,16 @@ impl App {
                 1.0,
             );
         }
+        let body = self.cef_text(
+            "glue_optionsPanel_language_dialog_body",
+            "Restart the game to change the language",
+        );
         if let Some(font) = self.ui_font.as_mut() {
             font.draw_top(
                 fb,
                 sx(826.0),
                 dy(640.0),
-                "Restart the game to change the language",
+                &body,
                 fpx(27.0),
                 0.23,
                 Rgb::new(221, 221, 221),
@@ -22131,12 +26229,13 @@ impl App {
         let br = dx(6.0) as f32;
         rounded_fill(fb, bx, by, bw, bh, br, Rgb::new(0, 0, 0));
         rounded_band(fb, bx, by, bw, bh, br, 0, dx(3.0), CSS_INNER);
+        let exit_label = self.cef_text("glue_optionsPanel_language_dialog_button", "Exit");
         if let Some(font) = self.ui_font_hover.as_mut() {
             font.draw_centered_stretched(
                 fb,
                 bx + bw / 2,
                 by + dy(21.0),
-                "Exit",
+                &exit_label,
                 fpx(30.0),
                 0.0,
                 1.0,
@@ -22210,12 +26309,13 @@ impl App {
             dy(3.0),
             CSS_INNER,
         );
+        let hotkeys_title = self.cef_text("hotkeyPane_title", "Hotkeys");
         if let Some(font) = self.ui_font_hover.as_mut() {
             font.draw_centered_stretched(
                 fb,
                 title_tab.0 + title_tab.2 / 2,
                 sy(83.0),
-                "Hotkeys",
+                &hotkeys_title,
                 fpx(42.0),
                 0.3,
                 1.0,
@@ -22229,7 +26329,7 @@ impl App {
                 fb,
                 title_tab.0 + title_tab.2 / 2,
                 sy(83.0),
-                "Hotkeys",
+                &hotkeys_title,
                 fpx(42.0),
                 0.3,
                 1.0,
@@ -22295,7 +26395,11 @@ impl App {
         }
 
         // Section headings ("Units" / "Buildings") use the wide face.
-        for (label, y) in [("Units", 187.0f32), ("Buildings", 661.0)] {
+        let section_labels = [
+            self.cef_text("glue_hotkeysPanel_units_label", "Units"),
+            self.cef_text("glue_hotkeysPanel_buildings_label", "Buildings"),
+        ];
+        for (label, y) in section_labels.iter().zip([187.0f32, 661.0]) {
             if let Some(font) = self.ui_font_hover.as_mut() {
                 font.draw_top_stretched(
                     fb,
@@ -22330,12 +26434,18 @@ impl App {
         // Exact lists from the shipped `hotkeypanel.js` (`e.Units`),
         // grouped by the four retail sections.
         let hk = hotkey_data::HotkeyData::get();
-        for (label, x, y) in [
-            ("Ground Units", 423.0f32, 256.0f32),
-            ("Air Units", 768.0, 256.0),
-            ("Basic", 423.0, 730.0),
-            ("Advanced", 768.0, 730.0),
-        ] {
+        let sub_labels = [
+            self.cef_text("glue_hotkeysPanel_groudUnits_label", "Ground Units"),
+            self.cef_text("glue_hotkeysPanel_airUnits_label", "Air Units"),
+            self.cef_text("glue_hotkeysPanel_basicBuildings_label", "Basic"),
+            self.cef_text("glue_hotkeysPanel_advancedBuildings_label", "Advanced"),
+        ];
+        for (label, (x, y)) in sub_labels.iter().zip([
+            (423.0f32, 256.0f32),
+            (768.0, 256.0),
+            (423.0, 730.0),
+            (768.0, 730.0),
+        ]) {
             if let Some(font) = self.ui_font.as_mut() {
                 font.draw_top(fb, sx(x), sy(y), label, fpx(27.0), 0.0, dim, None);
             } else {
@@ -22417,12 +26527,13 @@ impl App {
                 .unwrap_or(&raw_name)
                 .to_string();
             let unit_label = format!("{race_name} {name}");
+            let selected_prefix = self.cef_text("glue_hotkeysPanel_selected_prefix", "Selected:");
             if let Some(font) = self.ui_font_hover.as_mut() {
                 font.draw_top_stretched(
                     fb,
                     sx(1163.0),
                     sy(187.0),
-                    "Selected:",
+                    &selected_prefix,
                     fpx(33.0),
                     0.0,
                     1.0,
@@ -22431,7 +26542,7 @@ impl App {
                     None,
                     0.9,
                 );
-                let selected_w = font.measure("Selected:", fpx(33.0), 0.0);
+                let selected_w = font.measure(&selected_prefix, fpx(33.0), 0.0);
                 font.draw_top_stretched(
                     fb,
                     sx(1163.0) + selected_w + dx(15.0),
@@ -22450,7 +26561,7 @@ impl App {
                     fb,
                     sx(1163.0),
                     sy(187.0),
-                    "Selected:",
+                    &selected_prefix,
                     fpx(33.0),
                     0.0,
                     1.0,
@@ -22459,7 +26570,7 @@ impl App {
                     None,
                     0.9,
                 );
-                let selected_w = font.measure("Selected:", fpx(33.0), 0.0);
+                let selected_w = font.measure(&selected_prefix, fpx(33.0), 0.0);
                 font.draw_top_stretched(
                     fb,
                     sx(1163.0) + selected_w + dx(15.0),
@@ -22484,15 +26595,21 @@ impl App {
             // A fourth card (Zerg Drone `generalBurrowed`) wraps to a second
             // row and pushes the CEF instruction line down.
             let hint_y = if cards.len() > 3 { 1000.0 } else { 639.0 };
+            let card_titles: Vec<String> = cards
+                .iter()
+                .map(|card| {
+                    self.action_card_label(hotkey_data::HotkeyData::card_title(&card.label))
+                })
+                .collect();
             if let Some(font) = self.ui_font.as_mut() {
-                for (ci, card) in cards.iter().enumerate() {
+                for (ci, _) in cards.iter().enumerate() {
                     let col = ci % 3;
                     let block = ci / 3;
                     font.draw_top(
                         fb,
                         sx(card_x[col]),
                         sy(255.0) + block as i32 * wrap_px,
-                        hotkey_data::HotkeyData::card_title(&card.label),
+                        &card_titles[ci],
                         fpx(27.6),
                         0.0,
                         dim,
@@ -22610,6 +26727,10 @@ impl App {
                     self.hotkey_bindings.get(aid as usize).copied().flatten(),
                 ))
             });
+            let command_hint = self.cef_text(
+                "glue_hotkeysPanel_commandSelection_instructions",
+                "Click on a command to change its hotkey",
+            );
             if rebind.is_none()
                 && let Some(font) = self.ui_font.as_mut()
             {
@@ -22622,7 +26743,7 @@ impl App {
                     sx(1654.0),
                     phase,
                     sy(hint_y),
-                    "Click on a command to change its hotkey",
+                    &command_hint,
                     fpx(27.6),
                     0.0,
                     dim,
@@ -22630,6 +26751,15 @@ impl App {
                     1.0,
                 );
             }
+            let press_hint = self.cef_text(
+                "glue_hotkeysPanel_hotkey_instructions",
+                "Press the desired key",
+            );
+            let unbound_hint = self.cef_text(
+                "glue_hotkeysPanel_unboundedInstructions",
+                "Some commands have no key assigned",
+            );
+            let default_prefix = self.cef_text("glue_hotkeysPanel_binding_default", "Default:");
             if let Some((label, def, icon_name, shares, current)) = rebind {
                 if let Some(font) = self.ui_font.as_mut() {
                     if !self.hotkey_binding_error {
@@ -22637,7 +26767,7 @@ impl App {
                             fb,
                             sx(1655.0),
                             sy(1021.0),
-                            "Press the desired key",
+                            &press_hint,
                             fpx(25.7),
                             0.0,
                             Rgb::new(221, 221, 221),
@@ -22649,7 +26779,7 @@ impl App {
                             fb,
                             sx(1655.0),
                             sy(1021.0),
-                            "Some commands have no key assigned",
+                            &unbound_hint,
                             fpx(25.7),
                             0.0,
                             Rgb::new(214, 14, 0),
@@ -22760,7 +26890,7 @@ impl App {
                         fb,
                         sx(1287.0),
                         sy(def_top),
-                        &format!("Default: {def}"),
+                        &format!("{default_prefix} {def}"),
                         fpx(27.0),
                         0.0,
                         1.0,
@@ -22801,24 +26931,27 @@ impl App {
                 }
             }
         } else {
+            let unit_hint = self.cef_text(
+                "glue_hotkeysPanel_unitSelection_instructions",
+                "Click on a unit to view its commands",
+            );
             if let Some(font) = self.ui_font.as_mut() {
                 font.draw_centered(
                     fb,
                     sx(1653.0),
                     sy(440.0),
-                    "Click on a unit to view its commands",
+                    &unit_hint,
                     fpx(27.0),
                     0.0,
                     dim,
                     None,
                 );
             } else {
-                let hint = "Click on a unit to view its commands";
-                let hw = hint.chars().count() as i32 * 8 * (dy(24.0) / 8).max(1);
+                let hw = unit_hint.chars().count() as i32 * 8 * (dy(24.0) / 8).max(1);
                 fb.text(
                     sx(1653.0) - hw / 2,
                     sy(440.0),
-                    hint,
+                    &unit_hint,
                     dim,
                     (dy(24.0) / 8).max(1),
                 );
@@ -22826,9 +26959,15 @@ impl App {
         }
 
         // Bottom buttons: outer #331f1f group + #6c0000 button border.
+        let restore_label = self.cef_text(
+            "glue_hotkeysPanel_restoreToDefault_button",
+            "Restore to Default",
+        );
+        let save_label = self.cef_text("glue_hotkeysPanel_save_button", "Save");
+        let cancel_label = self.cef_text("glue_hotkeysPanel_cancel_button", "Cancel");
         for (label, gx0, gy0, gw, gh, rw, rh) in [
             (
-                "Restore to Default",
+                restore_label.as_str(),
                 354.0f32,
                 1302.0f32,
                 390.0f32,
@@ -22836,8 +26975,24 @@ impl App {
                 372.0f32,
                 66.0f32,
             ),
-            ("Save", 1453.0, 1302.0, 378.0, 84.0, 360.0, 66.0),
-            ("Cancel", 1825.0, 1302.0, 378.0, 84.0, 360.0, 66.0),
+            (
+                save_label.as_str(),
+                1453.0,
+                1302.0,
+                378.0,
+                84.0,
+                360.0,
+                66.0,
+            ),
+            (
+                cancel_label.as_str(),
+                1825.0,
+                1302.0,
+                378.0,
+                84.0,
+                360.0,
+                66.0,
+            ),
         ] {
             let group = (sx(gx0), sy(gy0), dx(gw), dy(gh));
             // Retail button group: 5 CSS px radius with a 1.5 CSS px brown
@@ -22915,12 +27070,11 @@ impl App {
             // including the bottom button strip and the space between it and
             // the panel (all samples give a 0.40 factor).
             fill_alpha_rect(fb, sx(354.0), sy(42.0), dx(1849.0), dy(1398.0), 153);
-            self.draw_confirm_dialog(
-                fb,
+            let reset_question = self.cef_text(
+                "glue_hotkeysPanel_restoreDefaultsQuestion",
                 "Restore defaults?",
-                (735.0, 486.0, 1087.0, 468.0),
-                false,
             );
+            self.draw_confirm_dialog(fb, &reset_question, (735.0, 486.0, 1087.0, 468.0), false);
         }
     }
 
@@ -22943,7 +27097,13 @@ impl App {
         // Everything above the dimmed menu is static: composed once per
         // window size (see `LayerCache`).
         let scroll = self.collections_scroll.round() as i32;
-        let key = (fb.width, fb.height, scroll);
+        let key = (
+            fb.width,
+            fb.height,
+            scroll,
+            self.collection_sel,
+            self.game_options.game_unit_skin,
+        );
         if self.collections_layer.as_ref().map(|c| c.0) != Some(key) {
             let (w, h) = (fb.width as usize, fb.height as usize);
             let mut over_black = Framebuffer::new(w, h);
@@ -22997,9 +27157,13 @@ impl App {
             }
         }
         // Title (Extended 9 px, #fff) and dropdown chip.
+        let collections_title = self.cef_text(
+            "scr.profile.tab.heading.5",
+            &self.ui_text("gluMain-6", "Collections"),
+        );
         self.draw_hd_text(
             fb,
-            "Collections",
+            &collections_title,
             u(402.0),
             v(121.0),
             galaxycraft::menu::LabelAlign::Left,
@@ -23016,9 +27180,10 @@ impl App {
         for t in 0..b {
             fb.rect_outline(dx + t, dy + t, dw - t * 2, dh - t * 2, CSS_INNER);
         }
+        let all_collections = self.cef_text("profile_all_collections", "All Collections");
         self.draw_hd_text(
             fb,
-            "All Collections",
+            &all_collections,
             u(1241.0),
             v(129.0),
             galaxycraft::menu::LabelAlign::Left,
@@ -23043,32 +27208,42 @@ impl App {
             );
         }
         // Section headers and right-aligned counts.
-        for (label, count, ink_y, count_y, count_w, label_w) in [
+        let available = self.cef_text("profile_collections_available", "{numAvailable} Available");
+        let sections = [
             (
-                "Console Skins",
-                "3 Available",
+                self.cef_text("profile_console_skins", "Console Skins"),
+                "3",
                 216.0f32,
                 214.0,
                 92.0f32,
                 152.0f32,
             ),
             (
-                "Unit & Structure Skins",
-                "2 Available",
+                self.cef_text("profile_unit_skins", "Unit & Structure Skins"),
+                "2",
                 537.0,
                 535.0,
                 91.0,
                 248.0,
             ),
-            ("Announcers", "6 Available", 858.0, 856.0, 92.0, 132.0),
-        ] {
+            (
+                self.cef_text("profile_collection_announcers_title", "Announcers"),
+                "6",
+                858.0,
+                856.0,
+                92.0,
+                132.0,
+            ),
+        ];
+        for (label, count, ink_y, count_y, count_w, label_w) in sections {
             let header_y = (ink_y - scroll) * k;
             if header_y < 180.0 * k || header_y > 1194.0 * k {
                 continue;
             }
+            let count = available.replace("{numAvailable}", count);
             self.draw_hd_text(
                 fb,
-                label,
+                &label,
                 u(402.0),
                 (ink_y - scroll) / 3.0,
                 galaxycraft::menu::LabelAlign::Left,
@@ -23084,7 +27259,7 @@ impl App {
             let center = 1513.0 - count_w / 2.0;
             self.draw_hd_text(
                 fb,
-                count,
+                &count,
                 u(center),
                 (count_y - scroll) / 3.0,
                 galaxycraft::menu::LabelAlign::Center,
@@ -23098,24 +27273,32 @@ impl App {
             );
         }
         // Grid: 353x224 cells, columns 411/787/1161, rows 274/595/916/1158.
-        let cells: [(f32, f32, bool, &str); 11] = [
-            (411.0, 274.0, true, "default_console_thumbnail.jpg"),
-            (787.0, 274.0, false, "krc_silver_console_thumbnail.png"),
-            (1161.0, 274.0, false, "krc_gold_console_thumbnail.png"),
-            (411.0, 595.0, true, "skins_default.jpg"),
-            (787.0, 595.0, false, "skins_carbot.png"),
-            (411.0, 916.0, true, "default_announcer.png"),
-            (787.0, 916.0, false, "um_announcer.png"),
-            (1161.0, 916.0, false, "jeon_announcer.png"),
-            (411.0, 1158.0, false, "kim_announcer.png"),
-            (787.0, 1158.0, false, "umjeonkim_announcer.png"),
-            (1161.0, 1158.0, false, "heyjini_announcer.png"),
+        let cells: [(f32, f32, &str); 11] = [
+            (411.0, 274.0, "default_console_thumbnail.jpg"),
+            (787.0, 274.0, "krc_silver_console_thumbnail.png"),
+            (1161.0, 274.0, "krc_gold_console_thumbnail.png"),
+            (411.0, 595.0, "skins_default.jpg"),
+            (787.0, 595.0, "skins_carbot.png"),
+            (411.0, 916.0, "default_announcer.png"),
+            (787.0, 916.0, "um_announcer.png"),
+            (1161.0, 916.0, "jeon_announcer.png"),
+            (411.0, 1158.0, "kim_announcer.png"),
+            (787.0, 1158.0, "umjeonkim_announcer.png"),
+            (1161.0, 1158.0, "heyjini_announcer.png"),
         ];
         let cell_w = sw(353.0);
         let cell_h = sw(224.0);
         let clip_bottom = sy(1192.0);
         let clip_top = sy(180.0);
-        for (x, y, selected, name) in cells {
+        let equipped_skin = self.game_options.game_unit_skin;
+        let equipped_console = self.game_options.game_console_skin;
+        let equipped_announcer = self.game_options.game_announcer;
+        for (i, (x, y, name)) in cells.into_iter().enumerate() {
+            let selected = i == self.collection_sel;
+            let equipped = (i <= 2 && i as u8 == equipped_console)
+                || (i >= 5 && (i - 5) as u8 == equipped_announcer)
+                || (i == 3 && equipped_skin == 0)
+                || (i == 4 && equipped_skin == 2);
             let (cell_x, cell_y) = (sx(x), cy(y));
             let visible_h = cell_h.min(clip_bottom - cell_y).max(0);
             let visible_top = (clip_top - cell_y).max(0);
@@ -23164,6 +27347,15 @@ impl App {
                             Rgb::new(0x9c, 0xb3, 0xfa),
                         );
                     }
+                }
+            }
+            // Equipment mark: a green dot in the cell's top-right corner, so
+            // the active unit collection stays visible while scrolling.
+            if equipped {
+                let (dx, dy) = (cell_x + cell_w - sw(22.0), cell_y + sw(8.0));
+                let dot = sw(9.0).max(3);
+                if dy >= clip_top && dy + dot <= clip_bottom {
+                    fb.rect(dx, dy, dot, dot, green);
                 }
             }
         }
@@ -23223,6 +27415,11 @@ impl App {
             .collection_sel
             .min(galaxycraft::menu::COLLECTION_ITEMS.len() - 1);
         let (sel_img, sel_title) = galaxycraft::menu::COLLECTION_ITEMS[sel];
+        let sel_title = if sel_title == "Default" {
+            self.cef_text("profile_collection_announcers_default_title", "Default")
+        } else {
+            sel_title.to_string()
+        };
         if let Some(img) = self.thumb(sel_img, sw(349.0), sw(237.0)) {
             let (ix, iy) = (sx(1719.0), sy(118.0));
             for yy in 0..img.height as i32 {
@@ -23240,7 +27437,7 @@ impl App {
         }
         self.draw_hd_text(
             fb,
-            sel_title,
+            &sel_title,
             u(1825.0),
             v(373.0),
             galaxycraft::menu::LabelAlign::Left,
@@ -23263,9 +27460,35 @@ impl App {
                 Rgb::new(0x45, 0x45, 0x45),
             );
         }
+        let skin = self.game_options.game_unit_skin;
+        let console_skin = self.game_options.game_console_skin;
+        let announcer = self.game_options.game_announcer;
+        let (equip_label, equip_color) = match self.collection_sel {
+            0 if console_skin == 0 => {
+                (self.cef_text("scr.profile.btn.equipped", "EQUIPPED"), green)
+            }
+            1 if console_skin == 1 => {
+                (self.cef_text("scr.profile.btn.equipped", "EQUIPPED"), green)
+            }
+            2 if console_skin == 2 => {
+                (self.cef_text("scr.profile.btn.equipped", "EQUIPPED"), green)
+            }
+            0..=2 => (self.cef_text("scr.profile.btn.equip", "EQUIP"), white),
+            5 if announcer == 0 => (self.cef_text("scr.profile.btn.equipped", "EQUIPPED"), green),
+            6 if announcer == 1 => (self.cef_text("scr.profile.btn.equipped", "EQUIPPED"), green),
+            7 if announcer == 2 => (self.cef_text("scr.profile.btn.equipped", "EQUIPPED"), green),
+            8 if announcer == 3 => (self.cef_text("scr.profile.btn.equipped", "EQUIPPED"), green),
+            9 if announcer == 4 => (self.cef_text("scr.profile.btn.equipped", "EQUIPPED"), green),
+            10 if announcer == 5 => (self.cef_text("scr.profile.btn.equipped", "EQUIPPED"), green),
+            5..=10 => (self.cef_text("scr.profile.btn.equip", "EQUIP"), white),
+            3 if skin == 0 => (self.cef_text("scr.profile.btn.equipped", "EQUIPPED"), green),
+            4 if skin == 2 => (self.cef_text("scr.profile.btn.equipped", "EQUIPPED"), green),
+            3 | 4 => (self.cef_text("scr.profile.btn.equip", "EQUIP"), white),
+            _ => (self.cef_text("scr.profile.btn.equip", "EQUIP"), equip_grey),
+        };
         self.draw_hd_text(
             fb,
-            "EQUIP",
+            &equip_label,
             u(1848.0),
             v(441.0),
             galaxycraft::menu::LabelAlign::Left,
@@ -23274,7 +27497,7 @@ impl App {
             scale,
             uox,
             uoy,
-            equip_grey,
+            equip_color,
             true,
         );
         // Ok holder + button at the panel's bottom-right.
@@ -23288,9 +27511,10 @@ impl App {
         for t in 0..b {
             fb.rect_outline(ox + t, oy + t, ow - t * 2, oh - t * 2, CSS_INNER);
         }
+        let ok_label = self.ui_text("gluCreat-2", "Ok");
         self.draw_hd_text(
             fb,
-            "Ok",
+            &ok_label,
             u(1995.0),
             v(1266.0),
             galaxycraft::menu::LabelAlign::Left,
@@ -23317,7 +27541,7 @@ impl App {
             return;
         }
         let (cx, _cy, cw, ch) = Self::content_rect(fb);
-        // Backdrop: the shipped metal room (`glue/battlenet/backgnd.dds`).
+        // Backdrop: the shipped metal room (retail metal-room backdrop).
         match self.glue.as_ref().and_then(|g| g.credits_backdrop.clone()) {
             Some(art) => art.draw_scaled(fb, cx, 0, cw, ch),
             None => {
@@ -23738,7 +27962,7 @@ impl App {
                     white,
                 );
             }
-            let tag = format!("| {}", input_language_tag());
+            let tag = format!("| {}", input_language_tag(&self.locale_code));
             let tagw = self.glue_measure(&tag, TEXT_PX, GlueFace::Hud);
             self.glue_text_face(
                 fb,
@@ -24620,6 +28844,265 @@ mod display_tests {
     use super::DisplayBackend;
 
     #[test]
+    fn show_fps_label_rounds_the_measured_rate() {
+        assert_eq!(super::fps_label(59.6), "FPS 60");
+        assert_eq!(super::fps_label(0.0), "FPS 0");
+    }
+
+    #[test]
+    fn building_sound_option_gates_only_structures() {
+        use galaxycraft::menu::GameOptions;
+        let mut options = GameOptions::default();
+        assert!(super::building_sound_allowed(&options, true));
+        assert!(super::building_sound_allowed(&options, false));
+        options.building_sounds = false;
+        assert!(!super::building_sound_allowed(&options, true));
+        assert!(super::building_sound_allowed(&options, false));
+    }
+
+    #[test]
+    fn turn_rate_label_shows_the_selected_flingy_value() {
+        assert_eq!(super::turn_rate_label(Some(40)), "TURN 40");
+        assert_eq!(super::turn_rate_label(None), "TURN -");
+    }
+
+    #[test]
+    fn collections_console_cells_map_to_the_three_skins() {
+        assert_eq!(super::collection_console_skin(0), Some(0));
+        assert_eq!(super::collection_console_skin(1), Some(1));
+        assert_eq!(super::collection_console_skin(2), Some(2));
+        assert_eq!(super::collection_console_skin(3), None, "unit skin cell");
+        assert_eq!(super::collection_console_skin(5), None, "announcer cell");
+        assert_eq!(super::collection_console_skin(10), None);
+    }
+
+    #[test]
+    fn collections_announcer_cells_map_to_the_six_sets() {
+        assert_eq!(super::collection_announcer(5), Some(0), "Default");
+        assert_eq!(super::collection_announcer(6), Some(1), "Um");
+        assert_eq!(super::collection_announcer(7), Some(2), "Jeon");
+        assert_eq!(super::collection_announcer(8), Some(3), "Kim");
+        assert_eq!(super::collection_announcer(9), Some(4), "UmJeonKim");
+        assert_eq!(super::collection_announcer(10), Some(5), "HeyJini");
+        assert_eq!(super::collection_announcer(4), None);
+        assert_eq!(super::collection_announcer(11), None);
+    }
+
+    #[test]
+    fn presale_bonus_skins_cover_the_shipped_units() {
+        use galaxycraft::ids::unit as uid;
+        let options = galaxycraft::menu::GameOptions::default();
+        assert_eq!(super::unit_skin_id(uid::COMMAND_CENTER, &options), 1);
+        assert_eq!(super::unit_skin_id(uid::NEXUS, &options), 1);
+        assert_eq!(super::unit_skin_id(uid::SCOURGE, &options), 1);
+        let options = galaxycraft::menu::GameOptions {
+            game_bonus_skins: false,
+            ..Default::default()
+        };
+        assert_eq!(super::unit_skin_id(uid::COMMAND_CENTER, &options), 0);
+        assert_eq!(super::unit_skin_id(uid::MARINE, &options), 0);
+    }
+
+    #[test]
+    fn carbot_collection_skins_every_unit() {
+        use galaxycraft::ids::unit as uid;
+        let options = galaxycraft::menu::GameOptions {
+            game_unit_skin: 2,
+            ..Default::default()
+        };
+        for unit in [uid::MARINE, uid::COMMAND_CENTER, uid::ZERGLING, uid::ZEALOT] {
+            assert_eq!(super::unit_skin_id(unit, &options), 2);
+        }
+        let options = galaxycraft::menu::GameOptions {
+            game_bonus_skins: false,
+            ..Default::default()
+        };
+        assert_eq!(super::unit_skin_id(uid::MARINE, &options), 0);
+    }
+
+    #[test]
+    fn mouse_sensitivity_and_scaling_scale_the_pointer() {
+        use galaxycraft::menu::GameOptions;
+        let mut o = GameOptions::default();
+        assert_eq!(super::mouse_move_factor(&o, (1280, 720)), 1.0);
+        o.mouse_sensitivity = 1.0;
+        assert_eq!(super::mouse_move_factor(&o, (1280, 720)), 1.5);
+        o.use_mouse_sensitivity = false;
+        assert_eq!(super::mouse_move_factor(&o, (1280, 720)), 1.0);
+        o.mouse_scaling = true;
+        assert_eq!(super::mouse_move_factor(&o, (1280, 720)), 1.5);
+        assert_eq!(super::mouse_move_factor(&o, (640, 480)), 1.0);
+    }
+
+    #[test]
+    fn virtual_pointer_advances_by_the_scaled_delta_and_clamps() {
+        let start = (10.0, 10.0);
+        let next = super::advance_virtual_pointer(start, start, (20.0, 14.0), 0.5, (100, 80));
+        assert_eq!(next, (15.0, 12.0));
+        let edge =
+            super::advance_virtual_pointer((95.0, 5.0), (95.0, 5.0), (120.0, 5.0), 1.0, (100, 80));
+        assert_eq!(edge.0, 99.0);
+    }
+
+    #[test]
+    fn standard_minimap_position_moves_towards_the_centre() {
+        // 2560 content at s=3 is a 853.3 game-px playfield; the classic
+        // 640 px console leaves 106.7 game px on each side.
+        assert_eq!(super::minimap_centering_shift(0, "minimap", 2560, 3.0), 0.0);
+        let shift = super::minimap_centering_shift(1, "minimap", 2560, 3.0);
+        assert!((shift - 106.67).abs() < 0.1, "shift {shift}");
+        assert_eq!(
+            super::minimap_centering_shift(1, "statdata", 2560, 3.0),
+            0.0
+        );
+        // 4:3 has no spare width.
+        assert_eq!(super::minimap_centering_shift(1, "minimap", 1920, 3.0), 0.0);
+    }
+
+    #[test]
+    fn sd_graphics_filter_chooses_nearest_or_bilinear() {
+        use super::{Framebuffer, Rgb};
+        let mut src = Framebuffer::new(2, 2);
+        let red = Rgb::new(255, 0, 0);
+        let green = Rgb::new(0, 255, 0);
+        let blue = Rgb::new(0, 0, 255);
+        let white = Rgb::new(255, 255, 255);
+        src.put(0, 0, red);
+        src.put(1, 0, green);
+        src.put(0, 1, blue);
+        src.put(1, 1, white);
+        let mut sharp = Framebuffer::new(4, 4);
+        super::blit_scaled_at(&src, &mut sharp, 2.0, 0, 0.0);
+        assert_eq!(sharp.get(0, 0), red);
+        assert_eq!(sharp.get(1, 1), red, "nearest keeps 2x2 texel blocks");
+        assert_eq!(sharp.get(2, 0), green);
+        let mut filtered = Framebuffer::new(4, 4);
+        super::blit_scaled_at(&src, &mut filtered, 2.0, 0, 1.0);
+        assert_eq!(filtered.get(0, 0), red);
+        assert_ne!(filtered.get(1, 1), red, "filtered stops interpolate");
+        assert_ne!(filtered.get(1, 1), filtered.get(2, 2));
+    }
+
+    #[test]
+    fn pillarbox_uses_a_centred_four_by_three_content_box() {
+        use super::{App, Framebuffer, GAME_PILLARBOX, Ordering};
+        let fb = Framebuffer::new(1920, 1080);
+        GAME_PILLARBOX.store(false, Ordering::Relaxed);
+        assert_eq!(App::content_rect(&fb), (0, 0, 1920, 1080));
+        GAME_PILLARBOX.store(true, Ordering::Relaxed);
+        assert_eq!(App::content_rect(&fb), (240, 0, 1440, 1080));
+        // A narrower window still fits the 4:3 box.
+        let fb = Framebuffer::new(1280, 960);
+        assert_eq!(App::content_rect(&fb), (0, 0, 1280, 960));
+        GAME_PILLARBOX.store(false, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn mature_language_filter_masks_whole_words_and_keeps_layout() {
+        assert_eq!(
+            super::mature_language_filter("What the FUCK, shit!"),
+            "What the ****, ****!"
+        );
+        assert_eq!(
+            super::mature_language_filter("Classic assistant"),
+            "Classic assistant",
+            "only whole words are masked"
+        );
+        assert_eq!(super::mature_language_filter("damn\nhell"), "****\n****");
+    }
+
+    #[test]
+    fn smooth_turning_rotates_the_short_way_around_the_facing_circle() {
+        // 250 -> 10 is +16 through 0, not -240.
+        assert_eq!(super::smooth_step_facing(250.0, 10, 8.0), 2.0);
+        // And back down the same way.
+        assert_eq!(super::smooth_step_facing(10.0, 250, 8.0), 2.0);
+        // No target change leaves the facing alone.
+        assert_eq!(super::smooth_step_facing(64.0, 64, 24.0), 64.0);
+        // 0 -> 200 is -56, so a 20-unit step goes to 236.
+        assert_eq!(super::smooth_step_facing(0.0, 200, 20.0), 236.0);
+    }
+
+    #[test]
+    fn environment_particles_are_deterministic_and_era_specific() {
+        let hashes: Vec<u32> = (0..8).map(super::env_hash).collect();
+        assert_eq!(hashes, (0..8).map(super::env_hash).collect::<Vec<_>>());
+        assert_ne!(hashes[0], hashes[1]);
+        assert_ne!(
+            super::env_spec(3).colour,
+            super::env_spec(6).colour,
+            "ash and snow differ"
+        );
+        assert!(super::env_spec(5).drift < 0.0, "desert sand blows sideways");
+        // The shipped particle texture supplies coverage; the era the colour.
+        let img = galaxycraft::dds::DdsImage {
+            width: 1,
+            height: 1,
+            pixels: vec![0xff00_0000],
+        };
+        let mut fb = galaxycraft::render::Framebuffer::new(4, 4);
+        fb.clear(galaxycraft::render::Rgb::new(0, 0, 0));
+        super::draw_env_particle(
+            &mut fb,
+            &img,
+            1,
+            1,
+            1,
+            galaxycraft::render::Rgb::new(255, 255, 255),
+            255,
+        );
+        assert_eq!(fb.get(1, 1), galaxycraft::render::Rgb::new(255, 255, 255));
+        assert_eq!(fb.get(0, 0), galaxycraft::render::Rgb::new(0, 0, 0));
+    }
+
+    #[test]
+    fn video_options_drive_the_window_polling_rate() {
+        use galaxycraft::menu::GameOptions;
+        let mut o = GameOptions::default();
+        assert_eq!(super::target_fps(&o), 300);
+        o.video_fps_limit = 0.0;
+        assert_eq!(super::target_fps(&o), 100);
+        o.video_fps_cap = false;
+        assert_eq!(super::target_fps(&o), 60, "VSync fallback");
+        o.video_vsync = false;
+        assert_eq!(super::target_fps(&o), 0, "unlimited");
+    }
+
+    #[test]
+    fn apm_uses_the_mission_clock_and_waits_for_the_first_minute() {
+        let minute = galaxycraft::sim::TICKS_PER_SECOND as u64 * 60;
+        assert_eq!(super::apm_value(60, minute), 60);
+        assert_eq!(super::apm_value(120, minute * 2), 60);
+        assert_eq!(super::apm_value(30, minute / 2), 0, "opening minute");
+        assert_eq!(super::apm_value(1, 0), 0);
+    }
+
+    #[test]
+    fn cargo_grid_packs_small_medium_and_large_units_without_overlap() {
+        let controls = |sizes: &[u8], capacity| {
+            super::cargo_slots(sizes, capacity)
+                .into_iter()
+                .map(|s| s.control)
+                .collect::<Vec<_>>()
+        };
+        // Eight one-space units keep the retail column-major 25-32 order.
+        assert_eq!(controls(&[1; 8], 8), vec![25, 26, 27, 28, 29, 30, 31, 32]);
+        // A 2-space unit takes a full 1 x 2 column; the next Marine moves
+        // to the next free column.
+        assert_eq!(controls(&[2, 1], 8), vec![21, 27]);
+        // Two 4-space units fill the left and right 2 x 2 blocks.
+        assert_eq!(controls(&[4, 4], 8), vec![18, 19]);
+        // After one 4-space block, four Marines use the right half.
+        assert_eq!(controls(&[4, 1, 1, 1, 1], 8), vec![18, 29, 30, 31, 32]);
+        // A Marine first leaves the left column's top cell taken, so the
+        // first 4-space block starts in the middle column.
+        assert_eq!(controls(&[1, 4], 8), vec![25, 20]);
+        // Bunkers show their four one-space passengers in the centred
+        // 2 x 2 block.
+        assert_eq!(controls(&[1; 4], 4), vec![27, 28, 29, 30]);
+    }
+
+    #[test]
     fn the_score_screen_leaves_like_the_recording() {
         // Backwater Station 651.0-653.0 s: panel out in 0.25 s, backdrop
         // alone, black from 1.5 s, the next screen at 2.0 s.
@@ -24653,6 +29136,28 @@ mod display_tests {
         assert!(!super::order_flash_on(0.2));
         assert!(super::order_flash_on(0.3));
         assert!(!super::order_flash_on(0.8), "done after three blinks");
+    }
+
+    #[test]
+    fn classic_glue_labels_drop_hotkey_control_bytes() {
+        assert_eq!(
+            super::decode_glue_string("s\\u0004S\\u0001ingle Player"),
+            "Single Player"
+        );
+        assert_eq!(
+            super::decode_glue_string("iView \\u0004I\\u0001ntro"),
+            "View Intro"
+        );
+        assert_eq!(super::decode_glue_string("\\u0005Exit"), "Exit");
+    }
+
+    #[test]
+    fn glue_json_lists_decode_hotkey_markup() {
+        let json =
+            br#"[{"Key":"gluCreat-2","Value":"o\u0004O\u0001k"},{"Key":"empty","Value":""}]"#;
+        let strings = super::parse_json_strings(json);
+        assert_eq!(strings.get("gluCreat-2").map(String::as_str), Some("Ok"));
+        assert_eq!(strings.get("empty").map(String::as_str), Some(""));
     }
 
     #[test]
@@ -25043,6 +29548,150 @@ mod trigger_portrait_tests {
         // A new world (shorter lists) starts over.
         let (hit, _) = latest_trigger_portrait(&tx[..1], &[], (5, 5), 0);
         assert_eq!(hit, Some((1, 3000)));
+    }
+}
+
+#[cfg(test)]
+mod controller_wheel_tests {
+    use super::{gamepad, wheel_page_for_selection, wheel_pages_for};
+    use galaxycraft::buttons::{Act, WheelCategory, card_of_set};
+    use galaxycraft::ids::unit as uid;
+    use galaxycraft::map::Terrain;
+    use galaxycraft::sim::{Race, World};
+    use std::sync::Arc;
+
+    fn world() -> World {
+        let data = Arc::new(galaxycraft::data::GameData::bundled().expect("tables"));
+        let mut w = World::new(data, Terrain::open(64, 64), 2);
+        w.players[0].race = Race::Terran;
+        w
+    }
+
+    fn completed(w: &mut World, id: usize) {
+        w.units[id].completed = true;
+    }
+
+    #[test]
+    fn selection_ring_is_dynamic_and_intersects_a_group() {
+        let mut w = world();
+        let marine = w.spawn_px(0, uid::MARINE, 600, 600).expect("marine");
+        completed(&mut w, marine);
+        let scv = w.spawn_px(0, uid::SCV, 620, 600).expect("scv");
+        completed(&mut w, scv);
+        w.players[0].techs[galaxycraft::ids::tech::STIM_PACKS as usize] = true;
+
+        let one = wheel_page_for_selection(&w, &[w.units[marine].clone()], None);
+        assert_eq!(one.title, "Unit Commands");
+        assert!(one.entries.len() <= 9);
+        assert!(one.entries.iter().any(|e| e.act == Act::Move));
+        assert!(one.entries.iter().any(|e| e.act == Act::StimPacks));
+
+        let group =
+            wheel_page_for_selection(&w, &[w.units[marine].clone(), w.units[scv].clone()], None);
+        assert_eq!(group.title, "Group Commands");
+        assert!(group.entries.len() <= 9);
+        assert!(group.entries.iter().any(|e| e.act == Act::Move));
+        assert!(group.entries.iter().any(|e| e.act == Act::Attack));
+        assert!(
+            !group.entries.iter().any(|e| e.act == Act::StimPacks),
+            "Stim is Marine-only"
+        );
+        assert!(
+            !group.entries.iter().any(|e| e.act == Act::Gather),
+            "Gather is SCV-only"
+        );
+    }
+
+    #[test]
+    fn building_ring_uses_only_the_building_card() {
+        let mut w = world();
+        let cc = w.spawn_px(0, uid::COMMAND_CENTER, 600, 600).expect("cc");
+        completed(&mut w, cc);
+        let page = wheel_page_for_selection(&w, &[w.units[cc].clone()], None);
+        assert_eq!(page.title, "Building Commands");
+        assert!(page.entries.len() <= 9);
+        assert!(page.entries.iter().any(|e| e.act == Act::Train));
+        assert!(!page.entries.iter().any(|e| e.act == Act::Gather));
+    }
+
+    #[test]
+    fn worker_wheel_uses_the_real_build_cards() {
+        let mut w = world();
+        let scv = w.spawn_px(0, uid::SCV, 600, 600).expect("scv");
+        completed(&mut w, scv);
+        let pages = wheel_pages_for(&w, &w.units[scv]);
+        let titles: Vec<&str> = pages.iter().map(|p| p.title).collect();
+        assert!(titles.contains(&WheelCategory::Commands.title()));
+        assert!(titles.contains(&WheelCategory::Build.title()));
+        assert!(titles.contains(&WheelCategory::Stances.title()));
+        let build = pages
+            .iter()
+            .find(|p| p.title == WheelCategory::Build.title())
+            .expect("build page");
+        assert!(
+            build.entries.iter().any(|e| e.set == Some(239)),
+            "Terran basic build card"
+        );
+        for entry in &build.entries {
+            assert!(matches!(entry.act, Act::Build | Act::DroneBuild));
+            assert!(entry.slot < 9);
+            let card = card_of_set(&w, &w.units[scv], entry.set);
+            let (button, _) = card[entry.slot].expect("wheel slot exists on the card");
+            assert_eq!(Act::of(button.act), entry.act);
+        }
+    }
+
+    #[test]
+    fn wheel_page_selection_resolves_to_a_card_command() {
+        let mut w = world();
+        let cc = w.spawn_px(0, uid::COMMAND_CENTER, 600, 600).expect("cc");
+        completed(&mut w, cc);
+        let pages = wheel_pages_for(&w, &w.units[cc]);
+        let train_page = pages
+            .iter()
+            .position(|p| p.title == WheelCategory::Train.title())
+            .expect("train page");
+        let focus = pages[train_page]
+            .entries
+            .iter()
+            .position(|e| e.act == Act::Train)
+            .expect("SCV train button");
+        // Open/close and page selection are the real WheelState paths used
+        // by the controller, not a test-only shortcut.
+        let mut wheel = gamepad::WheelState::default();
+        assert!(wheel.open(pages.iter().map(|p| p.entries.len())));
+        while wheel.page() != train_page {
+            assert!(wheel.page_delta(1));
+        }
+        while wheel.focus() != focus {
+            assert!(wheel.focus_delta(1));
+        }
+        let (page, sector) = wheel.activate().expect("A activates");
+        assert!(!wheel.is_open(), "activation closes the wheel");
+        let entry = &pages[page].entries[sector];
+        assert_eq!(entry.act, Act::Train);
+        assert_eq!(entry.set, None, "the Command Center's own card");
+        let card = card_of_set(&w, &w.units[cc], entry.set);
+        let (button, _) = card[entry.slot].expect("train slot");
+        assert_eq!(Act::of(button.act), Act::Train);
+        assert_eq!(button.act_var, uid::SCV);
+    }
+
+    #[test]
+    fn empty_or_pending_selections_do_not_build_a_wheel() {
+        let mut w = world();
+        let scv = w.spawn_px(0, uid::SCV, 600, 600).expect("scv");
+        completed(&mut w, scv);
+        let pages = wheel_pages_for(&w, &w.units[scv]);
+        assert!(!pages.is_empty());
+        // Every entry points at a real visible card slot; Card navigation
+        // buttons are represented by pages, never by a wheel sector.
+        for page in pages {
+            assert!(!page.entries.is_empty(), "empty pages are dropped");
+            for entry in page.entries {
+                assert_ne!(entry.act, Act::Card);
+            }
+        }
     }
 }
 
@@ -25614,5 +30263,112 @@ mod end_check_tests {
             let h = frames_to_end_check(t) as u64;
             assert!(h < 46 && (t + h).is_multiple_of(46));
         }
+    }
+}
+
+#[cfg(test)]
+mod cursor_visibility_tests {
+    use super::{
+        CursorArt, CursorTarget, Framebuffer, Rgb, draw_virtual_cursor, normalize_selection,
+        system_cursor_visible_for,
+    };
+
+    fn solid_cursor(w: usize, h: usize, argb: u32) -> galaxycraft::dds::DdsGrp {
+        galaxycraft::dds::DdsGrp {
+            frames: vec![galaxycraft::dds::DdsImage {
+                width: w,
+                height: h,
+                pixels: vec![argb; w * h],
+            }],
+        }
+    }
+
+    #[test]
+    fn the_virtual_cursor_is_shown_with_the_mouse_and_pad() {
+        // With a pointer present (mouse or pad), the OS pointer is hidden and
+        // the drawn cursor is the only one.
+        assert!(!system_cursor_visible_for(true));
+        // Without a pointer there is nothing to draw, so keep the OS arrow.
+        assert!(system_cursor_visible_for(false));
+    }
+
+    #[test]
+    fn sc1_selection_caps_at_twelve_units_or_one_building() {
+        let units: Vec<(u32, bool)> = (1..=13).map(|id| (id, false)).collect();
+        let picked = normalize_selection(units);
+        assert_eq!(picked.len(), 12);
+        assert_eq!(picked.last(), Some(&12));
+        // A building is selected alone even when it arrives after units.
+        let mixed = [(1, false), (2, false), (9, true), (3, false)];
+        assert_eq!(normalize_selection(mixed), vec![9]);
+    }
+
+    #[test]
+    fn the_virtual_cursor_renders_its_arrow_at_the_pointer() {
+        let mut fb = Framebuffer::new(64, 48);
+        fb.clear(Rgb::new(0, 0, 0));
+        draw_virtual_cursor(&mut fb, Some((8, 6)), None, None, std::time::Duration::ZERO);
+        // The fallback arrow is black with a light right/bottom edge.
+        assert_eq!(fb.get(9, 6), Rgb::new(240, 240, 240));
+        assert_eq!(fb.get(8, 0), Rgb::new(0, 0, 0));
+        // No pointer: nothing is painted and no out-of-range panic.
+        let mut empty = Framebuffer::new(8, 8);
+        draw_virtual_cursor(&mut empty, None, None, None, std::time::Duration::ZERO);
+        assert_eq!(empty.get(0, 0), Rgb::new(0, 0, 0));
+    }
+
+    #[test]
+    fn the_target_cursor_is_centred_and_animated() {
+        let art = CursorArt {
+            arrow: Some(solid_cursor(2, 2, 0xff00_ff00)),
+            own: Some(galaxycraft::dds::DdsGrp {
+                frames: vec![
+                    galaxycraft::dds::DdsImage {
+                        width: 4,
+                        height: 4,
+                        pixels: vec![0xffff_0000; 16],
+                    },
+                    galaxycraft::dds::DdsImage {
+                        width: 4,
+                        height: 4,
+                        pixels: vec![0xff00_00ff; 16],
+                    },
+                ],
+            }),
+            ..CursorArt::default()
+        };
+        // 1920-line framebuffer: one authored cursor pixel is one screen pixel.
+        let mut fb = Framebuffer::new(64, 1920);
+        fb.clear(Rgb::new(0, 0, 0));
+        draw_virtual_cursor(
+            &mut fb,
+            Some((32, 30)),
+            Some(&art),
+            Some(CursorTarget::Own),
+            std::time::Duration::ZERO,
+        );
+        // Centred hotspot (0.5, 0.5): the 4x4 frame starts at (30, 28).
+        assert_eq!(fb.get(30, 28), Rgb::new(255, 0, 0));
+        assert_eq!(fb.get(29, 27), Rgb::new(0, 0, 0));
+        // The second authored frame follows the same 6 fps cursor clock.
+        fb.clear(Rgb::new(0, 0, 0));
+        draw_virtual_cursor(
+            &mut fb,
+            Some((32, 30)),
+            Some(&art),
+            Some(CursorTarget::Own),
+            std::time::Duration::from_millis(167),
+        );
+        assert_eq!(fb.get(30, 28), Rgb::new(0, 0, 255));
+        // Over terrain the arrow is used again, at its top-left tip.
+        fb.clear(Rgb::new(0, 0, 0));
+        draw_virtual_cursor(
+            &mut fb,
+            Some((10, 10)),
+            Some(&art),
+            None,
+            std::time::Duration::ZERO,
+        );
+        assert_eq!(fb.get(10, 10), Rgb::new(0, 255, 0));
     }
 }

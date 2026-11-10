@@ -149,5 +149,6 @@ fn mining_takes_the_measured_frames_and_a_field_serves_one_worker_at_a_time() {
 fn mineral_mining_time_is_the_recorded_93_frames() {
     // Boot Camp recording: a recorded SCV stays at its field 99-115 frames
     // per visit (ours 88-92 with 75); Wasteland income -1.7 % with 93.
+    assert_eq!(galaxycraft::sim::MINING_TIMER_FRAMES, 75);
     assert_eq!(galaxycraft::sim::MINING_FRAMES, 93);
 }

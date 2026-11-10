@@ -221,6 +221,8 @@ pub struct GameOptions {
     /// threshold, and the alert's two styles (live only with the alert on).
     pub apm_display: bool,
     pub apm_alert: bool,
+    /// APM below this value triggers the alert/colour.
+    pub apm_threshold: f32,
     pub apm_color_text: bool,
     pub apm_play_sound: bool,
     /// Game tab state: four gameplay checks, the friends notification check,
@@ -230,7 +232,20 @@ pub struct GameOptions {
     pub game_color_cycling: bool,
     pub game_language_filter: bool,
     pub game_bonus_skins: bool,
+    /// Unit & Structure collection in use: 0 base art, 2 Carbot
+    /// (`anim/skins.json`; the Collections EQUIP button sets it).
+    pub game_unit_skin: u8,
+    /// Console skin in use: 0 Default, 1 Silver, 2 Gold
+    /// (`game/consoles/krc_silver` / `krc_gold`; Collections cells 0-2).
+    pub game_console_skin: u8,
+    /// Announcer collection: 0 Default, 1 Um, 2 Jeon, 3 Kim, 4 UmJeonKim,
+    /// 5 HeyJini (`voice::ANNOUNCER_DIRS`).
+    pub game_announcer: u8,
     pub game_friend_notifications: bool,
+    /// Hidden `ShowFPS` setting from the retail executable's option keys.
+    pub show_fps: bool,
+    /// Hidden `ShowTurnRate` setting from the retail executable's option keys.
+    pub show_turn_rate: bool,
     pub portraits: u8,
     pub minimap_position: u8,
     /// Network tab: prefer the retail discovery port.
@@ -276,13 +291,19 @@ impl Default for GameOptions {
             video_sd_filter: 1.0,
             apm_display: false,
             apm_alert: false,
+            apm_threshold: 60.0,
             apm_color_text: false,
             apm_play_sound: false,
             game_timer: false,
             game_color_cycling: true,
             game_language_filter: true,
             game_bonus_skins: true,
+            game_unit_skin: 0,
+            game_console_skin: 0,
+            game_announcer: 0,
             game_friend_notifications: true,
+            show_fps: false,
+            show_turn_rate: false,
             portraits: 0,
             minimap_position: 0,
             network_prefer_6112: false,
@@ -344,10 +365,12 @@ impl GameOptions {
                 self.game_language_filter = d.game_language_filter;
                 self.game_bonus_skins = d.game_bonus_skins;
                 self.game_friend_notifications = d.game_friend_notifications;
+                self.show_fps = d.show_fps;
                 self.portraits = d.portraits;
                 self.minimap_position = d.minimap_position;
                 self.apm_display = d.apm_display;
                 self.apm_alert = d.apm_alert;
+                self.apm_threshold = d.apm_threshold;
                 self.apm_color_text = d.apm_color_text;
                 self.apm_play_sound = d.apm_play_sound;
             }
@@ -411,11 +434,15 @@ macro_rules! settings_fields {
     (@get speed $e:expr_2021) => { $e };
     (@get unit $e:expr_2021) => { $e };
     (@get bool $e:expr_2021) => { if $e { 1.0 } else { 0.0 } };
+    (@get mode5 $e:expr_2021) => { $e as f32 };
     (@get mode3 $e:expr_2021) => { $e as f32 };
     (@get mode2 $e:expr_2021) => { $e as f32 };
+    (@get count $e:expr_2021) => { $e };
     (@set speed $v:expr_2021) => { $v.clamp(0.1, 3.0) };
+    (@set count $v:expr_2021) => { $v.clamp(0.0, 1000.0) };
     (@set unit $v:expr_2021) => { $v.clamp(0.0, 1.0) };
     (@set bool $v:expr_2021) => { $v != 0.0 };
+    (@set mode5 $v:expr_2021) => { $v.clamp(0.0, 5.0) as u8 };
     (@set mode3 $v:expr_2021) => { $v.clamp(0.0, 2.0) as u8 };
     (@set mode2 $v:expr_2021) => { $v.clamp(0.0, 1.0) as u8 };
 }
@@ -451,13 +478,19 @@ settings_fields! {
     unit video_sd_filter,
     bool apm_display,
     bool apm_alert,
+    count apm_threshold,
     bool apm_color_text,
     bool apm_play_sound,
     bool game_timer,
     bool game_color_cycling,
     bool game_language_filter,
     bool game_bonus_skins,
+    mode3 game_unit_skin,
+    mode3 game_console_skin,
+    mode5 game_announcer,
     bool game_friend_notifications,
+    bool show_fps,
+    bool show_turn_rate,
     mode3 portraits,
     mode2 minimap_position,
     bool network_prefer_6112,
@@ -1578,6 +1611,8 @@ pub const OPTIONS_CHECKS_APM: [HitRect; 4] = [
     (1498.0, 712.0, 260.0, 29.0),
     (1498.0, 766.0, 260.0, 29.0),
 ];
+/// The editable "Alert when APM falls below" threshold field.
+pub const OPTIONS_APM_INPUT: HitRect = (1780.0, 642.0, 75.0, 46.0);
 /// Network tab: `Prefer port 6112`.
 pub const OPTIONS_CHECKS_NETWORK: [HitRect; 1] = [(900.0, 341.0, 430.0, 29.0)];
 /// In-game Network tab: the three Latency radios with their labels
@@ -2323,6 +2358,58 @@ mod tests {
         assert_eq!(o.network_latency, 0, "Restore to Default");
         assert_eq!(OPTIONS_RADIOS_LATENCY.len(), 3);
         assert_eq!(NETWORK_LATENCY_TEXT.len(), 3);
+    }
+
+    #[test]
+    fn the_equipped_unit_collection_survives_the_profile_codec() {
+        let o = GameOptions {
+            game_unit_skin: 2,
+            ..Default::default()
+        };
+        let mut back = GameOptions::default();
+        for (k, v) in o.to_pairs() {
+            assert!(back.set_pair(k, v), "{k}");
+        }
+        assert_eq!(back.game_unit_skin, 2);
+        // A collection id outside the shipped list is clamped by the codec.
+        assert!(back.set_pair("game_unit_skin", 9.0));
+        assert_eq!(back.game_unit_skin, 2);
+    }
+
+    #[test]
+    fn the_equipped_console_skin_survives_the_profile_codec() {
+        let o = GameOptions {
+            game_console_skin: 1,
+            ..Default::default()
+        };
+        let mut back = GameOptions::default();
+        for (k, v) in o.to_pairs() {
+            assert!(back.set_pair(k, v), "{k}");
+        }
+        assert_eq!(back.game_console_skin, 1);
+        // The codec clamps to the three shipped skins (Default/Silver/Gold).
+        assert!(back.set_pair("game_console_skin", 9.0));
+        assert_eq!(back.game_console_skin, 2);
+        assert!(back.set_pair("game_console_skin", -1.0));
+        assert_eq!(back.game_console_skin, 0);
+    }
+
+    #[test]
+    fn the_equipped_announcer_survives_the_profile_codec() {
+        let o = GameOptions {
+            game_announcer: 5,
+            ..Default::default()
+        };
+        let mut back = GameOptions::default();
+        for (k, v) in o.to_pairs() {
+            assert!(back.set_pair(k, v), "{k}");
+        }
+        assert_eq!(back.game_announcer, 5);
+        // The codec clamps to the six shipped sets (Default + five voices).
+        assert!(back.set_pair("game_announcer", 9.0));
+        assert_eq!(back.game_announcer, 5);
+        assert!(back.set_pair("game_announcer", -1.0));
+        assert_eq!(back.game_announcer, 0);
     }
 
     #[test]

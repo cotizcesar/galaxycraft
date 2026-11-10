@@ -129,6 +129,7 @@ fn savefile_roundtrip_with_embedded_map() {
     let h1 = state_hash(&w);
     let save = SaveFile {
         map_name: "tiny-test".to_string(),
+        map_index: None,
         map_chk: chk.clone(),
         races: races.clone(),
         local_player: 0,
@@ -212,6 +213,7 @@ fn boxer_with_ai_save_reload_replays_identically() {
     assert!(!w.recorder.as_ref().unwrap().cmds.is_empty());
     let save = SaveFile {
         map_name: "Boxer".to_string(),
+        map_index: None,
         map_chk: raw.clone(),
         races: races.clone(),
         local_player: 0,
@@ -270,6 +272,7 @@ fn saves_carry_the_lobby_setup_and_still_read_version_1() {
     };
     let save = SaveFile {
         map_name: "The Hunters".into(),
+        map_index: Some(3),
         map_chk: vec![1, 2, 3],
         races: vec![Race::Protoss, Race::Zerg],
         local_player: 0,
@@ -295,7 +298,7 @@ fn saves_carry_the_lobby_setup_and_still_read_version_1() {
     v1.save(&path).unwrap();
     let bytes = std::fs::read(&path).unwrap();
     let payload = &bytes[6..bytes.len() - 32];
-    let old_payload = &payload[..payload.len() - 4]; // drop the empty setup length
+    let old_payload = &payload[..payload.len() - 8]; // empty setup length + map index
     let mut old = Vec::new();
     old.extend_from_slice(&bytes[..4]);
     old.extend_from_slice(&1u16.to_le_bytes());
@@ -310,7 +313,7 @@ fn saves_carry_the_lobby_setup_and_still_read_version_1() {
     save.save(&path).unwrap();
     let mut bytes = std::fs::read(&path).unwrap();
     let n = bytes.len();
-    let race_at = n - 32 - 5 + 2; // second slot's race byte (5-byte slots)
+    let race_at = n - 32 - 4 - 5 + 2; // map index, then second 5-byte slot race
     bytes[race_at] = 9;
     let digest = Sha256::digest(&bytes[6..n - 32]);
     bytes[n - 32..].copy_from_slice(&digest);
