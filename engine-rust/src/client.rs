@@ -64769,3 +64769,1234 @@ mod tests_wave23_agent04 {
         assert!(!w23a04_slot_guard(true, 3, true, 1, 1, |_| false, || true));
     }
 }
+
+// ===========================================================================
+// Merged from src/wave24/agent01.rs
+// ===========================================================================
+// Wave 24 translation batch 01: small client helpers (message builders,
+// effect-slot table walkers, vision-slot checks).
+
+/// Number of entries in the 0x1c-byte effect slot table.
+pub const W24A01_SLOT_COUNT: usize = 8;
+
+/// `0x0072c500`: builds the two-byte net message `[0x21, value]` that the
+/// original passes to the send helper with length 2.
+pub fn w24a01_build_msg_21(value: u8) -> [u8; 2] {
+    [0x21, value]
+}
+
+/// `0x0072cd60`: builds the one-byte net message `[0x36]` (length 1).
+pub fn w24a01_build_msg_36() -> [u8; 1] {
+    [0x36]
+}
+
+/// `0x00728200`: for command ids 1, 4, 8 and 0x19 the handler invokes the
+/// stored callback once; for 2 and 0x17 it also invokes it (and returns).
+/// Returns `true` when the callback was invoked, `false` for other ids.
+pub fn w24a01_dispatch_cb(id: u32, mut cb: impl FnMut()) -> bool {
+    match id {
+        1 | 2 | 4 | 8 | 0x17 | 0x19 => {
+            cb();
+            true
+        }
+        _ => false,
+    }
+}
+
+/// `0x0077de60`: returns whether player `index` may use the slot table.
+/// `player_flag` is the byte at `index*0xb0 + 0x80` of the player table; a
+/// zero flag gives `false`.  Otherwise every slot whose handle satisfies
+/// `is_valid` and whose owner field (dword 3 of the 0x1c-byte record) equals
+/// `index` makes the result `false`; if no slot matches the result is `true`.
+pub fn w24a01_player_slot_free(
+    index: u32,
+    player_flag: u8,
+    slots: &[(u32, u32); W24A01_SLOT_COUNT],
+    is_valid: impl Fn(u32) -> bool,
+) -> bool {
+    if player_flag == 0 {
+        return false;
+    }
+    !slots
+        .iter()
+        .any(|&(handle, owner)| is_valid(handle) && owner == index)
+}
+
+/// `0x0077f770`: calls the pre-step then `stop(handle)` for each of the
+/// eight slot handles in order.
+pub fn w24a01_stop_all_slots(
+    handles: &[u32; W24A01_SLOT_COUNT],
+    mut pre: impl FnMut(),
+    mut stop: impl FnMut(u32),
+) {
+    pre();
+    for &h in handles {
+        stop(h);
+    }
+}
+
+/// `0x0077e620`: same as the stop-all walk followed by a final `post` call.
+pub fn w24a01_stop_all_slots_then(
+    handles: &[u32; W24A01_SLOT_COUNT],
+    pre: impl FnMut(),
+    stop: impl FnMut(u32),
+    mut post: impl FnMut(),
+) {
+    w24a01_stop_all_slots(handles, pre, stop);
+    post();
+}
+
+/// `0x007ad300`: given a record with `active` (dword at +0x54) and `mode`
+/// (dword at +0x88), returns `Some((count, mode))` where
+/// `count = 4 - (mode != 1)` when `check(i)` holds for every i in
+/// `0..count`; `None` when inactive or any check fails.  The caller's base
+/// plus 0x8c is the returned pointer.
+pub fn w24a01_probe_channels(
+    active: u32,
+    mode: u32,
+    mut check: impl FnMut(u32) -> bool,
+) -> Option<(u32, u32)> {
+    if active == 0 {
+        return None;
+    }
+    let count = 4 - u32::from(mode != 1);
+    for i in 0..count {
+        if !check(i) {
+            return None;
+        }
+    }
+    Some((count, mode))
+}
+
+/// `0x00729120`: coordinate bounds guard.  `x`/`y` are the u16 values at
+/// +1/+3 of the record and must be below `width`/`height`; then, when
+/// `is_observer` is set, returns `(x, y, own_player, true)`; otherwise when
+/// `cell_visible` is nonzero returns `(x, y, 0x11 + (local != own), false)`.
+#[allow(clippy::too_many_arguments)]
+pub fn w24a01_marker_args(
+    x: u16,
+    y: u16,
+    width: u16,
+    height: u16,
+    is_observer: bool,
+    own_player: u8,
+    local_player: u32,
+    own_player_id: u32,
+    cell_visible: bool,
+) -> Option<(i32, i32, u8, bool)> {
+    if x >= width || y >= height {
+        return None;
+    }
+    if is_observer {
+        return Some((i32::from(x as i16), i32::from(y as i16), own_player, true));
+    }
+    if cell_visible {
+        let kind = 0x11 + u8::from(local_player != own_player_id);
+        return Some((i32::from(x as i16), i32::from(y as i16), kind, false));
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests_wave24_agent01 {
+    use super::*;
+
+    #[test]
+    fn msgs() {
+        assert_eq!(w24a01_build_msg_21(7), [0x21, 7]);
+        assert_eq!(w24a01_build_msg_36(), [0x36]);
+    }
+
+    #[test]
+    fn dispatch() {
+        let mut n = 0;
+        for id in [1, 2, 4, 8, 0x17, 0x19] {
+            assert!(w24a01_dispatch_cb(id, || n += 1));
+        }
+        assert!(!w24a01_dispatch_cb(3, || n += 1));
+        assert_eq!(n, 6);
+    }
+
+    #[test]
+    fn slot_free() {
+        let slots = [
+            (1, 0),
+            (2, 3),
+            (0, 5),
+            (0, 0),
+            (0, 0),
+            (0, 0),
+            (0, 0),
+            (0, 0),
+        ];
+        let valid = |h: u32| h != 0;
+        assert!(!w24a01_player_slot_free(3, 0, &slots, valid));
+        assert!(!w24a01_player_slot_free(3, 1, &slots, valid));
+        assert!(w24a01_player_slot_free(5, 1, &slots, valid));
+    }
+
+    #[test]
+    fn stop_all() {
+        let h = [1, 2, 3, 4, 5, 6, 7, 8];
+        let log = std::cell::RefCell::new(Vec::new());
+        w24a01_stop_all_slots_then(
+            &h,
+            || log.borrow_mut().push(0),
+            |x| log.borrow_mut().push(x),
+            || log.borrow_mut().push(99),
+        );
+        let log = log.into_inner();
+        assert_eq!(log.len(), 10);
+        assert_eq!(log[1], 1);
+        assert_eq!(log[9], 99);
+    }
+
+    #[test]
+    fn probe() {
+        assert_eq!(w24a01_probe_channels(0, 1, |_| true), None);
+        assert_eq!(w24a01_probe_channels(1, 1, |_| true), Some((4, 1)));
+        assert_eq!(w24a01_probe_channels(1, 2, |_| true), Some((3, 2)));
+        assert_eq!(w24a01_probe_channels(1, 2, |i| i < 2), None);
+    }
+
+    #[test]
+    fn marker() {
+        assert_eq!(
+            w24a01_marker_args(10, 10, 10, 20, true, 1, 0, 0, true),
+            None
+        );
+        assert_eq!(
+            w24a01_marker_args(3, 4, 10, 20, true, 2, 0, 0, false),
+            Some((3, 4, 2, true))
+        );
+        assert_eq!(
+            w24a01_marker_args(3, 4, 10, 20, false, 2, 1, 0, true),
+            Some((3, 4, 0x12, false))
+        );
+        assert_eq!(
+            w24a01_marker_args(3, 4, 10, 20, false, 2, 1, 0, false),
+            None
+        );
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave24/agent02.rs
+// ===========================================================================
+// Wave 24 batch 02: small client-side helpers.
+
+/// `0x0073f0e0`: swaps a global value, returning the previous one.
+pub fn w24a02_swap_global(slot: &mut u32, new_value: u32) -> u32 {
+    std::mem::replace(slot, new_value)
+}
+
+/// `0x007494e0`: true when the flag is set, the game is in the
+/// 0x80..0x83 mode range (or `active_session != 0`), and `blocker == 0`.
+pub fn w24a02_session_ready(flag: u8, active_session: u32, mode: u32, blocker: u32) -> bool {
+    if flag != 0 && (active_session != 0 || mode.wrapping_sub(0x80) < 4) {
+        return blocker == 0;
+    }
+    false
+}
+
+/// `0x00744740`: returns 8 when no slot is found, else the mapped value;
+/// `None` when the session is absent (non-returning path in retail).
+pub fn w24a02_slot_or_none(
+    has_session: bool,
+    find: impl Fn() -> u8,
+    map: impl Fn(u8) -> u32,
+) -> Option<u32> {
+    if !has_session {
+        return None;
+    }
+    let c = find();
+    Some(if c == 0 { 8 } else { map(c) })
+}
+
+/// `0x00744d20`: like the slot lookup, then indexes an 8-entry byte table;
+/// values above 7 yield 0.  `None` when the session is absent.
+pub fn w24a02_slot_table_value(
+    has_session: bool,
+    find: impl Fn() -> u8,
+    map: impl Fn(u8) -> u8,
+    table: &[u8; 8],
+) -> Option<u8> {
+    if !has_session {
+        return None;
+    }
+    let c = find();
+    let v = if c == 0 { 8 } else { map(c) };
+    Some(if v > 7 { 0 } else { table[v as usize] })
+}
+
+/// `0x0073bb30`: for `slot <= 7` runs the first callback, then the second
+/// when the flag callback reports true; `None` when `slot > 7`
+/// (non-returning in retail).
+pub fn w24a02_apply_slot(
+    slot: u32,
+    first: impl FnOnce(u32),
+    flag: impl FnOnce() -> bool,
+    second: impl FnOnce(),
+) -> Option<()> {
+    if slot > 7 {
+        return None;
+    }
+    first(slot);
+    if flag() {
+        second();
+    }
+    Some(())
+}
+
+#[cfg(test)]
+mod tests_wave24_agent02 {
+    use super::*;
+
+    #[test]
+    fn swap_and_ready() {
+        let mut g = 5;
+        assert_eq!(w24a02_swap_global(&mut g, 9), 5);
+        assert_eq!(g, 9);
+        assert!(w24a02_session_ready(1, 0, 0x83, 0));
+        assert!(!w24a02_session_ready(1, 0, 0x84, 0));
+        assert!(!w24a02_session_ready(1, 1, 0, 1));
+        assert!(!w24a02_session_ready(0, 1, 0x80, 0));
+    }
+
+    #[test]
+    fn slot_lookups() {
+        assert_eq!(w24a02_slot_or_none(false, || 1, |c| c as u32), None);
+        assert_eq!(w24a02_slot_or_none(true, || 0, |c| c as u32), Some(8));
+        assert_eq!(w24a02_slot_or_none(true, || 3, |c| c as u32 + 1), Some(4));
+        let t = [10, 11, 12, 13, 14, 15, 16, 17];
+        assert_eq!(w24a02_slot_table_value(true, || 0, |c| c, &t), Some(0));
+        assert_eq!(w24a02_slot_table_value(true, || 2, |c| c, &t), Some(12));
+        assert_eq!(w24a02_slot_table_value(true, || 2, |c| c + 6, &t), Some(0));
+        assert_eq!(w24a02_slot_table_value(false, || 2, |c| c, &t), None);
+    }
+
+    #[test]
+    fn apply_slot() {
+        let mut log = vec![];
+        assert!(w24a02_apply_slot(8, |_| log.push(1), || true, || {}).is_none());
+        assert!(log.is_empty());
+        let n = std::cell::Cell::new(0);
+        assert!(
+            w24a02_apply_slot(7, |s| n.set(n.get() + s), || true, || n.set(n.get() + 100))
+                .is_some()
+        );
+        assert_eq!(n.get(), 107);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave24/agent03.rs
+// ===========================================================================
+// Wave 24 translation batch 03.
+//
+// Skipped (no recoverable logic or opaque globals): FUN_0075b1e0,
+// FUN_0075b350, FUN_0075c860, FUN_0075cb40, FUN_0075d1d0, FUN_00762e40,
+// FUN_00767d30, FUN_00769dc0, FUN_0076b120, FUN_0076dab0, FUN_0076eb70,
+// FUN_00771b00, FUN_00771d90, FUN_00771f10, FUN_00771fd0, FUN_007723b0.
+
+/// `0x0075d970`: true when the region record `idx` (record stride `0x40`,
+/// field at `+0x449fc` of the map block) holds the sentinel `0x1ffd`.
+/// `records` is the byte image starting at `+0x449fc`; `idx` is the already
+/// resolved (masked to 16 bits) region id.
+pub fn w24a03_region_is_sentinel(records: &[u8], idx: u16) -> bool {
+    let off = idx as usize * 0x40;
+    match records.get(off..off + 2) {
+        Some(b) => u16::from_le_bytes([b[0], b[1]]) == 0x1ffd,
+        None => false,
+    }
+}
+
+/// `0x00767ff0`: depth-first walk over region neighbours.  A region is
+/// visited when it is non-zero, not yet flagged in `visited`, and
+/// `depth <= max_depth`; it is flagged, `on_visit` is called, and unless the
+/// region id appears in `stop_list` (the global u16 list of `count` entries)
+/// its neighbours (via `neighbours`) are recursed into with `depth + 1`.
+pub fn w24a03_region_walk(
+    region: u16,
+    depth: u32,
+    visited: &mut [u32],
+    max_depth: u32,
+    stop_list: &[u16],
+    neighbours: &dyn Fn(u16) -> Vec<u16>,
+    on_visit: &mut dyn FnMut(u16),
+) {
+    let r = region as usize;
+    if region == 0 || r >= visited.len() || visited[r] != 0 || depth > max_depth {
+        return;
+    }
+    on_visit(region);
+    visited[r] = 1;
+    if stop_list.contains(&region) {
+        return;
+    }
+    for n in neighbours(region) {
+        w24a03_region_walk(
+            n,
+            depth + 1,
+            visited,
+            max_depth,
+            stop_list,
+            neighbours,
+            on_visit,
+        );
+    }
+}
+
+/// `0x007661b0`: marks neighbouring regions.  The region used is `explicit`
+/// when it is `< 0x9c4`, else `own_region` (the unit position region).  Every
+/// neighbour whose id differs from `own_group` (unit field `+0x160`) gets its
+/// dword at record offset `+0x44a04` (stride `0x40`) set to 1.  Returns the
+/// number of records marked; `flags` is indexed by region id.
+pub fn w24a03_mark_neighbours(
+    flags: &mut [u32],
+    explicit: u16,
+    own_region: u16,
+    own_group: u16,
+    neighbours: &dyn Fn(u16) -> Vec<u16>,
+) -> usize {
+    let region = if explicit < 0x9c4 {
+        explicit
+    } else {
+        own_region
+    };
+    let mut n = 0;
+    for id in neighbours(region) {
+        if id != own_group {
+            if let Some(f) = flags.get_mut(id as usize) {
+                *f = 1;
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
+/// `0x0076de60`: bounded append into a 32-byte name buffer.  Finds the
+/// current length (`strnlen(dst, 0x20)`); if the buffer is full nothing
+/// happens, else copies `min(len + strlen(src), 0x1f) - len` bytes of `src`
+/// after it.  Returns the number of bytes copied.
+pub fn w24a03_append_name(dst: &mut [u8; 0x20], src: &[u8]) -> usize {
+    let len = dst.iter().position(|&b| b == 0).unwrap_or(0x20);
+    if len == 0x20 {
+        return 0;
+    }
+    let slen = src.iter().position(|&b| b == 0).unwrap_or(src.len());
+    let n = (len + slen).min(0x1f) - len;
+    dst[len..len + n].copy_from_slice(&src[..n]);
+    n
+}
+
+#[cfg(test)]
+mod tests_wave24_agent03 {
+    use super::*;
+
+    #[test]
+    fn sentinel() {
+        let mut r = vec![0u8; 0x80];
+        r[0x40] = 0xfd;
+        r[0x41] = 0x1f;
+        assert!(w24a03_region_is_sentinel(&r, 1));
+        assert!(!w24a03_region_is_sentinel(&r, 0));
+        assert!(!w24a03_region_is_sentinel(&r, 9));
+    }
+
+    #[test]
+    fn walk() {
+        let mut vis = vec![0u32; 8];
+        let mut seen = vec![];
+        let nb = |r: u16| if r < 4 { vec![r + 1] } else { vec![] };
+        w24a03_region_walk(1, 0, &mut vis, 1, &[], &nb, &mut |r| seen.push(r));
+        assert_eq!(seen, vec![1, 2]);
+        let mut vis = vec![0u32; 8];
+        let mut seen = vec![];
+        w24a03_region_walk(1, 0, &mut vis, 9, &[3], &nb, &mut |r| seen.push(r));
+        assert_eq!(seen, vec![1, 2, 3]);
+        w24a03_region_walk(0, 0, &mut vis, 9, &[], &nb, &mut |r| seen.push(r));
+        assert_eq!(seen.len(), 3);
+    }
+
+    #[test]
+    fn mark() {
+        let mut f = vec![0u32; 8];
+        let nb = |r: u16| if r == 5 { vec![1, 2, 3] } else { vec![7] };
+        assert_eq!(w24a03_mark_neighbours(&mut f, 0x9c4, 5, 2, &nb), 2);
+        assert_eq!(f, vec![0, 1, 0, 1, 0, 0, 0, 0]);
+        assert_eq!(w24a03_mark_neighbours(&mut f, 4, 5, 2, &nb), 1);
+        assert_eq!(f[7], 1);
+    }
+
+    #[test]
+    fn append() {
+        let mut d = [0u8; 0x20];
+        d[..3].copy_from_slice(b"abc");
+        assert_eq!(w24a03_append_name(&mut d, b"de\0"), 2);
+        assert_eq!(&d[..6], b"abcde\0");
+        let mut d = [b'x'; 0x20];
+        assert_eq!(w24a03_append_name(&mut d, b"y"), 0);
+        let mut d = [0u8; 0x20];
+        assert_eq!(w24a03_append_name(&mut d, &[b'z'; 40]), 0x1f);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave24/agent04.rs
+// ===========================================================================
+// Wave 24 translation batch 04: client option/state helpers.
+//
+// Skipped (bnet/SEH glue/non-returning chains): FUN_00773220, FUN_00774dd0,
+// FUN_0077ac50, FUN_0077ae90, FUN_0077b0d0, FUN_0077b310, FUN_0077b550,
+// FUN_0077b790, FUN_0077dec0, FUN_0077e600, FUN_0077f7a0.
+
+/// `0x007730e0`: byte lookup in a table blob.  `a` selects the row; ids below
+/// `0x18` use stride `0x18` at offset `0xdd34`, others stride `0x14` at
+/// `0xff48`.
+pub fn w24a04_table_byte(blob: &[u8], a: i32, b: u16) -> Option<u8> {
+    let idx = if b < 0x18 {
+        (b as i64) + (a as i64) * 0x18 + 0xdd34
+    } else {
+        (b as i64) + (a as i64) * 0x14 + 0xff48
+    };
+    usize::try_from(idx).ok().and_then(|i| blob.get(i).copied())
+}
+
+/// State block written by `0x00775910`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct W24a04Clamp {
+    pub active: u32,
+    pub x: u32,
+    pub y: u32,
+    pub max_x: i32,
+    pub max_y: i32,
+}
+
+/// `0x00775910`: when the blocking check is false, latch the 8-aligned
+/// origin and unlimited maxima; the previous callback is invoked first
+/// (caller-supplied `call_prev`).  `reset_scale` models the call that sets
+/// scale 1.0 (`0x3f800000`).
+pub fn w24a04_set_clamp(
+    st: &mut W24a04Clamp,
+    x: u32,
+    y: u32,
+    blocked: bool,
+    call_prev: &mut dyn FnMut(),
+    reset_scale: &mut dyn FnMut(),
+) {
+    call_prev();
+    if !blocked {
+        reset_scale();
+        st.x = x & 0xffff_fff8;
+        st.active = 1;
+        st.y = y & 0xffff_fff8;
+        st.max_x = 0x7fff_ffff;
+        st.max_y = 0x7fff_ffff;
+    }
+}
+
+/// `0x00775d70`: returns `Some(player)` when the follow-up (non-returning)
+/// call is made: check passes, player differs from the local one and `< 8`.
+pub fn w24a04_player_notify(player: i32, check: bool, local_player: i32) -> Option<i32> {
+    (check && player != local_player && player < 8).then_some(player)
+}
+
+/// `0x00776b50`: stores `unit` (nonzero id) into slot `slot + player * 12`.
+/// Returns `false` on rejection.  For `slot > 0` the unit must pass
+/// `selectable` and its byte at +0x4c must equal `local_byte`.  The second
+/// closure models the post-store refresh when `player_ok` is true.
+#[allow(clippy::too_many_arguments)]
+pub fn w24a04_assign_group_slot(
+    slots: &mut [i32],
+    unit: i32,
+    player: i32,
+    slot: i32,
+    rejected: bool,
+    selectable: bool,
+    unit_byte_4c: u8,
+    local_byte: u8,
+    player_ok: bool,
+    refresh: &mut dyn FnMut(),
+) -> bool {
+    if unit == 0 || player > 7 || slot > 0xb || rejected {
+        return false;
+    }
+    if slot > 0 && (!selectable || unit_byte_4c != local_byte) {
+        return false;
+    }
+    let idx = slot as i64 + player as i64 * 12;
+    let Some(cell) = usize::try_from(idx).ok().and_then(|i| slots.get_mut(i)) else {
+        return false;
+    };
+    *cell = unit;
+    if player_ok {
+        refresh();
+    }
+    true
+}
+
+/// `0x007767b0`: walks the 12 slots of `player` (< 8), calling `release` for
+/// each nonzero entry and clearing it, stopping at the first zero.  When
+/// `player_ok` is false the whole row is zeroed instead (0x30 bytes).
+pub fn w24a04_clear_group_row(
+    slots: &mut [i32],
+    player: i32,
+    player_ok: bool,
+    release: &mut dyn FnMut(i32),
+) {
+    if !(0..8).contains(&player) {
+        return;
+    }
+    let base = player as usize * 12;
+    let Some(row) = slots.get_mut(base..base + 12) else {
+        return;
+    };
+    if !player_ok {
+        row.fill(0);
+        return;
+    }
+    for cell in row.iter_mut() {
+        if *cell == 0 {
+            return;
+        }
+        release(*cell);
+        *cell = 0;
+    }
+}
+
+/// `0x0077a970`: constructor initialising a 0x1f-word object.  `ctor_sub`
+/// models the member constructor call; the string pointer word (`0x11`)
+/// stores the word index of the inline buffer (`0x14`).
+pub fn w24a04_init_object(obj: &mut [u32; 0x1f], first: u32, ctor_sub: &mut dyn FnMut()) {
+    obj[0] = 2;
+    obj[1] = first;
+    obj[8] = 2;
+    ctor_sub();
+    obj[0x12] = 0;
+    obj[0x11] = 0x14;
+    obj[0x13] = 0x8000_000f;
+    obj[0x14] &= !0xff;
+    obj[0x18] = (obj[0x18] & 0xff00_0000) | 0x100;
+    obj[0x19] = 8;
+    obj[0x1b] = 0;
+    obj[0x1a] = 0;
+    obj[0x1c] = 0x3f80_0000;
+    obj[0x1d] = 1;
+    obj[0x1e] = 1;
+}
+
+/// Volumes computed by `0x0077e0e0`.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct W24a04Volumes {
+    pub music: f32,
+    pub sfx: f32,
+    pub voice: f32,
+}
+
+/// `0x0077e0e0`: each volume is `value / 100` when its enable flag is set,
+/// else 0.  Inputs are `(enabled, value)` pairs for music, sfx, voice.
+pub fn w24a04_volumes(music: (bool, i32), sfx: (bool, i32), voice: (bool, i32)) -> W24a04Volumes {
+    let f = |(on, v): (bool, i32)| if on { v as f32 / 100.0 } else { 0.0 };
+    W24a04Volumes {
+        music: f(music),
+        sfx: f(sfx),
+        voice: f(voice),
+    }
+}
+
+/// `0x0077e5c0`: little-endian u32 at `index * 0xb0 + 0x88` of a table.
+pub fn w24a04_record_field(table: &[u8], index: i32) -> Option<u32> {
+    let off = usize::try_from(index as i64 * 0xb0 + 0x88).ok()?;
+    let b = table.get(off..off + 4)?;
+    Some(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+}
+
+/// `0x0077ea40`: true when option A and B are enabled and C's value is nonzero.
+pub fn w24a04_all_enabled(a_on: bool, b_on: bool, c_value: i32) -> bool {
+    a_on && b_on && c_value != 0
+}
+
+#[cfg(test)]
+mod tests_wave24_agent04 {
+    use super::*;
+
+    #[test]
+    fn table_and_record() {
+        let mut blob = vec![0u8; 0x10000 + 0x200];
+        blob[0xdd34 + 0x18 + 3] = 7;
+        blob[0xff48 + 0x14 + 0x18] = 9;
+        assert_eq!(w24a04_table_byte(&blob, 1, 3), Some(7));
+        assert_eq!(w24a04_table_byte(&blob, 1, 0x18), Some(9));
+        assert_eq!(w24a04_table_byte(&[], 0, 0), None);
+        let mut t = vec![0u8; 0x88 + 0xb0 + 4];
+        t[0x88 + 0xb0..0x88 + 0xb0 + 4].copy_from_slice(&5u32.to_le_bytes());
+        assert_eq!(w24a04_record_field(&t, 1), Some(5));
+        assert_eq!(w24a04_record_field(&t, 9), None);
+    }
+
+    #[test]
+    fn clamp_and_notify() {
+        let mut st = W24a04Clamp::default();
+        let (mut p, mut r) = (0, 0);
+        w24a04_set_clamp(&mut st, 0x1f, 0x2f, false, &mut || p += 1, &mut || r += 1);
+        assert_eq!((st.x, st.y, st.active, p, r), (0x18, 0x28, 1, 1, 1));
+        assert_eq!(st.max_x, 0x7fff_ffff);
+        let mut st2 = W24a04Clamp::default();
+        w24a04_set_clamp(&mut st2, 9, 9, true, &mut || {}, &mut || {});
+        assert_eq!(st2, W24a04Clamp::default());
+        assert_eq!(w24a04_player_notify(3, true, 1), Some(3));
+        assert_eq!(w24a04_player_notify(8, true, 1), None);
+        assert_eq!(w24a04_player_notify(1, true, 1), None);
+        assert_eq!(w24a04_player_notify(2, false, 1), None);
+    }
+
+    #[test]
+    fn group_slots() {
+        let mut s = [0i32; 96];
+        let mut n = 0;
+        assert!(w24a04_assign_group_slot(
+            &mut s,
+            5,
+            2,
+            0,
+            false,
+            false,
+            0,
+            0,
+            true,
+            &mut || n += 1
+        ));
+        assert_eq!(s[24], 5);
+        assert_eq!(n, 1);
+        assert!(!w24a04_assign_group_slot(
+            &mut s,
+            5,
+            2,
+            1,
+            false,
+            true,
+            1,
+            0,
+            true,
+            &mut || {}
+        ));
+        assert!(!w24a04_assign_group_slot(
+            &mut s,
+            5,
+            8,
+            0,
+            false,
+            true,
+            0,
+            0,
+            true,
+            &mut || {}
+        ));
+        assert!(!w24a04_assign_group_slot(
+            &mut s,
+            5,
+            2,
+            12,
+            false,
+            true,
+            0,
+            0,
+            true,
+            &mut || {}
+        ));
+        assert!(!w24a04_assign_group_slot(
+            &mut s,
+            0,
+            2,
+            0,
+            false,
+            true,
+            0,
+            0,
+            true,
+            &mut || {}
+        ));
+        s[25] = 6;
+        s[27] = 8;
+        let mut rel = vec![];
+        w24a04_clear_group_row(&mut s, 2, true, &mut |u| rel.push(u));
+        assert_eq!(rel, vec![5, 6]);
+        assert_eq!(s[27], 8);
+        w24a04_clear_group_row(&mut s, 2, false, &mut |_| {});
+        assert_eq!(s[27], 0);
+    }
+
+    #[test]
+    fn init_and_volumes() {
+        let mut o = [0xffff_ffffu32; 0x1f];
+        let mut called = false;
+        w24a04_init_object(&mut o, 77, &mut || called = true);
+        assert!(called);
+        assert_eq!((o[0], o[1], o[8], o[0x13]), (2, 77, 2, 0x8000_000f));
+        assert_eq!(o[0x18], 0xff00_0100);
+        assert_eq!(o[0x1c], 0x3f80_0000);
+        let v = w24a04_volumes((true, 50), (false, 80), (true, 100));
+        assert_eq!(
+            v,
+            W24a04Volumes {
+                music: 0.5,
+                sfx: 0.0,
+                voice: 1.0
+            }
+        );
+        assert!(w24a04_all_enabled(true, true, 1));
+        assert!(!w24a04_all_enabled(true, true, 0));
+        assert!(!w24a04_all_enabled(false, true, 1));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave24/agent05.rs
+// ===========================================================================
+// Wave 24 translation batch 05: client helpers (bit test, selection
+// cache, string append, mode selector, flag broadcast precheck).
+
+/// `0x00781580`: tests bit `bit` of the per-player byte mask located at
+/// `table[(bit >> 3) + player * 6]`; returns the masked byte (nonzero = set).
+/// The table is the decoded base at offset `0x10140`, stride 6 per player.
+pub fn w24a05_player_bit_test(table: &[u8], bit: u8, player: usize) -> u32 {
+    let idx = (bit >> 3) as usize + player * 6;
+    let byte = table.get(idx).copied().unwrap_or(0);
+    (byte as u32) & (1u32 << (bit & 7))
+}
+
+/// New selection-cache state produced by [`w24a05_select_cache_update`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct W24a05SelectCache {
+    /// Cached object handle (0 = none).
+    pub current: u32,
+    /// Cached auxiliary id (`0xffffffff` = none).
+    pub aux: u32,
+    /// True when the follow-up refresh call (callee at 786e80) must run.
+    pub refresh: bool,
+    /// True when the clear path ran (callee at 603ee0 must run).
+    pub cleared: bool,
+}
+
+/// `0x00785b20`: updates the cached selected object.  `busy` is the result
+/// of the gate check, `lookup_matches` says the object found for the owner
+/// id equals `obj`, `obj_aux` is the object's field at `+0x40`.
+pub fn w24a05_select_cache_update(
+    busy: bool,
+    lookup_matches: bool,
+    obj: u32,
+    obj_aux: u32,
+    cached: u32,
+) -> W24a05SelectCache {
+    if !busy && lookup_matches {
+        if obj != cached {
+            return W24a05SelectCache {
+                current: obj,
+                aux: obj_aux,
+                refresh: true,
+                cleared: false,
+            };
+        }
+        return W24a05SelectCache {
+            current: cached,
+            aux: obj_aux,
+            refresh: false,
+            cleared: false,
+        };
+    }
+    W24a05SelectCache {
+        current: 0,
+        aux: 0xffff_ffff,
+        refresh: false,
+        cleared: true,
+    }
+}
+
+/// `0x007a1dd0`: bounded append of the C string `src` onto the C string in
+/// `dst` (capacity `0x318`, at most `0x317` characters kept).  Does nothing
+/// when `dst` is already full.  Returns the number of bytes appended.
+pub fn w24a05_bounded_append(dst: &mut [u8], src: &[u8]) -> usize {
+    const CAP: usize = 0x318;
+    let lim = dst.len().min(CAP);
+    let len = dst[..lim].iter().position(|&b| b == 0).unwrap_or(lim);
+    if len == CAP {
+        return 0;
+    }
+    let slen = src.iter().position(|&b| b == 0).unwrap_or(src.len());
+    let n = (slen + len).min(0x317) - len;
+    dst[len..len + n].copy_from_slice(&src[..n]);
+    if len + n < dst.len() {
+        dst[len + n] = 0;
+    }
+    n
+}
+
+/// `0x0079dde0`: first-pass state selection (the `DAT_011b24c0` byte when it
+/// is zero).  `initialised` is the global gate, `flags` the word at
+/// `+10` of the event record, `a`/`b` the two probe results (callees
+/// 748d60 and 6e5460) and `mode_byte` the byte at offset `0x2c70`.
+pub fn w24a05_ui_state_select(
+    initialised: bool,
+    flags: u16,
+    a: bool,
+    b: bool,
+    mode_byte: u8,
+) -> u8 {
+    if !initialised {
+        return 1;
+    }
+    if a {
+        return 5;
+    }
+    if flags & 3 != 0 {
+        return 2;
+    }
+    if b && (flags >> 2) & 1 != 0 {
+        return 3;
+    }
+    if mode_byte == 8 {
+        return 2;
+    }
+    if b && mode_byte == 9 {
+        return 3;
+    }
+    4
+}
+
+/// `0x0079c060`: pre-check and new flag word for the flag broadcast.
+/// Errors carry the Win32 code passed to the error setter: `0x57` (no
+/// context), `0x85100070` (invalid handle), `0x120` (no active object).
+/// `clear_low_bit` is `param_2 != 0`; the result is the value stored in the
+/// broadcast word.
+pub fn w24a05_flag_broadcast_value(
+    have_ctx: bool,
+    handle_invalid: bool,
+    active_object: bool,
+    flags: u32,
+    clear_low_bit: bool,
+) -> Result<u32, u32> {
+    if !have_ctx {
+        return Err(0x57);
+    }
+    if handle_invalid {
+        return Err(0x8510_0070);
+    }
+    if !active_object {
+        return Err(0x120);
+    }
+    Ok(if clear_low_bit { flags & !1 } else { flags })
+}
+
+#[cfg(test)]
+mod tests_wave24_agent05 {
+    use super::*;
+
+    #[test]
+    fn bit_test() {
+        let t = [0u8, 0, 0, 0, 0, 0, 0b0000_0100, 0, 0, 0, 0, 0];
+        assert_eq!(w24a05_player_bit_test(&t, 2, 1), 4);
+        assert_eq!(w24a05_player_bit_test(&t, 3, 1), 0);
+        assert_eq!(w24a05_player_bit_test(&t, 2, 0), 0);
+    }
+
+    #[test]
+    fn select_cache() {
+        let s = w24a05_select_cache_update(false, true, 5, 9, 0);
+        assert!(s.refresh && s.current == 5 && s.aux == 9);
+        let s = w24a05_select_cache_update(false, true, 5, 9, 5);
+        assert!(!s.refresh && !s.cleared);
+        let s = w24a05_select_cache_update(true, true, 5, 9, 5);
+        assert!(s.cleared && s.current == 0 && s.aux == 0xffff_ffff);
+    }
+
+    #[test]
+    fn append() {
+        let mut b = [0u8; 0x318];
+        b[..2].copy_from_slice(b"ab");
+        assert_eq!(w24a05_bounded_append(&mut b, b"cd\0"), 2);
+        assert_eq!(&b[..5], b"abcd\0");
+        let mut full = [b'x'; 0x318];
+        assert_eq!(w24a05_bounded_append(&mut full, b"y\0"), 0);
+        let mut near = [b'x'; 0x318];
+        near[0x316] = 0;
+        assert_eq!(w24a05_bounded_append(&mut near, b"yz\0"), 1);
+        assert_eq!(near[0x316], b'y');
+    }
+
+    #[test]
+    fn ui_state() {
+        assert_eq!(w24a05_ui_state_select(false, 0, false, false, 0), 1);
+        assert_eq!(w24a05_ui_state_select(true, 0, true, false, 0), 5);
+        assert_eq!(w24a05_ui_state_select(true, 1, false, false, 0), 2);
+        assert_eq!(w24a05_ui_state_select(true, 4, false, true, 0), 3);
+        assert_eq!(w24a05_ui_state_select(true, 0, false, false, 8), 2);
+        assert_eq!(w24a05_ui_state_select(true, 0, false, true, 9), 3);
+        assert_eq!(w24a05_ui_state_select(true, 0, false, false, 9), 4);
+    }
+
+    #[test]
+    fn flag_broadcast() {
+        assert_eq!(
+            w24a05_flag_broadcast_value(false, false, true, 3, true),
+            Err(0x57)
+        );
+        assert_eq!(
+            w24a05_flag_broadcast_value(true, true, true, 3, true),
+            Err(0x8510_0070)
+        );
+        assert_eq!(
+            w24a05_flag_broadcast_value(true, false, false, 3, true),
+            Err(0x120)
+        );
+        assert_eq!(
+            w24a05_flag_broadcast_value(true, false, true, 3, true),
+            Ok(2)
+        );
+        assert_eq!(
+            w24a05_flag_broadcast_value(true, false, true, 3, false),
+            Ok(3)
+        );
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave24/agent06.rs
+// ===========================================================================
+// Wave 24 agent 06 (client.rs target).  Skipped (SEH/noreturn glue, no
+// recoverable logic): FUN_007a7160, FUN_007a7850, FUN_007ae420, FUN_007ae660,
+// FUN_007ae8a0, FUN_007af190, FUN_007b0b40, FUN_007b5e30, FUN_007c2be0,
+// FUN_007c88d0, FUN_007c97d0, FUN_007cb760, FUN_007cb950, FUN_007cc3b0,
+// FUN_007cea50, FUN_007d0c50, FUN_007d67c0.
+
+/// Result of `0x007a8770`: the packed cursor cell (x, y) and the flag byte.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct W24a06CellSelect {
+    pub x: i16,
+    pub y: i16,
+    pub flag: bool,
+}
+
+/// `0x007a8770`: cell-selection handler.  `blocked(x, y)` models the first
+/// callee (non-zero means ignore), `accepts(x, y)` the vtable slot 0x14 call
+/// (non-zero means ignore).  When both pass, the cell is stored (x in the low
+/// half, y in the high half) and the flag is set only for kind 6.
+pub fn w24a06_cell_select(
+    x: i16,
+    y: i16,
+    kind: i16,
+    blocked: impl Fn(i32, i32) -> bool,
+    accepts: impl Fn(i32, i32) -> bool,
+) -> Option<W24a06CellSelect> {
+    if blocked(x as i32, y as i32) || accepts(x as i32, y as i32) {
+        return None;
+    }
+    Some(W24a06CellSelect {
+        x,
+        y,
+        flag: kind == 6,
+    })
+}
+
+/// `0x007a9000`: resets the 8 list sentinels (12-byte nodes: next, prev,
+/// count) to self-linked/empty.  Returns the index of the first node whose old
+/// prev link was not itself (the original then hits a non-returning path), or
+/// `None` if all were fine.  Node links are node indices.
+pub fn w24a06_reset_sentinels(nodes: &mut [[u32; 3]; 8]) -> Option<usize> {
+    for i in 0..8 {
+        let old_prev = nodes[i][1];
+        nodes[i] = [i as u32, i as u32, 0];
+        if old_prev != i as u32 {
+            return Some(i);
+        }
+    }
+    None
+}
+
+/// Layout produced by `0x007ca4b0` (16-byte small-string header).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct W24a06StrHeader {
+    pub len: u32,
+    pub heap_alloc: Option<u32>,
+    pub tag: u16,
+    pub remaining_byte: u8,
+}
+
+/// `0x007ca4b0`: initialises a string header for `len` bytes.  Under 14 the
+/// text is inline (tag 0x1c05, byte at +0xd = 13 - len); otherwise tag 0xc05,
+/// length stored and `len + 1` bytes are allocated.
+pub fn w24a06_str_header_init(len: u32) -> W24a06StrHeader {
+    if len < 0xe {
+        W24a06StrHeader {
+            len: 0,
+            heap_alloc: None,
+            tag: 0x1c05,
+            remaining_byte: (13u32.wrapping_sub(len)) as u8,
+        }
+    } else {
+        W24a06StrHeader {
+            len,
+            heap_alloc: Some(len + 1),
+            tag: 0xc05,
+            remaining_byte: 0,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests_wave24_agent06 {
+    use super::*;
+
+    #[test]
+    fn cell_select() {
+        let r = w24a06_cell_select(3, 4, 6, |_, _| false, |_, _| false).unwrap();
+        assert!(r.flag && r.x == 3 && r.y == 4);
+        assert!(
+            !w24a06_cell_select(1, 2, 5, |_, _| false, |_, _| false)
+                .unwrap()
+                .flag
+        );
+        assert!(w24a06_cell_select(1, 2, 5, |_, _| true, |_, _| false).is_none());
+        assert!(w24a06_cell_select(1, 2, 5, |_, _| false, |_, _| true).is_none());
+    }
+
+    #[test]
+    fn sentinels() {
+        let mut n = [[0u32; 3]; 8];
+        for (i, e) in n.iter_mut().enumerate() {
+            *e = [9, i as u32, 5];
+        }
+        assert_eq!(w24a06_reset_sentinels(&mut n), None);
+        assert_eq!(n[7], [7, 7, 0]);
+        let mut m = [[0u32; 3]; 8];
+        assert_eq!(w24a06_reset_sentinels(&mut m), Some(1));
+    }
+
+    #[test]
+    fn str_header() {
+        let a = w24a06_str_header_init(13);
+        assert_eq!((a.tag, a.remaining_byte, a.heap_alloc), (0x1c05, 0, None));
+        assert_eq!(w24a06_str_header_init(0).remaining_byte, 13);
+        let b = w24a06_str_header_init(14);
+        assert_eq!((b.tag, b.len, b.heap_alloc), (0xc05, 14, Some(15)));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave24/agent07.rs
+// ===========================================================================
+// Wave 24 translation batch 07: small client/save-file helpers.
+
+/// `0x00726220`: lazily allocates the one-byte global buffer (when `buf` is
+/// empty) and stores the constant `0x3c` in it.
+pub fn w24a07_init_flag_byte(buf: &mut Vec<u8>) {
+    if buf.is_empty() {
+        buf.push(0);
+    }
+    buf[0] = 0x3c;
+}
+
+/// `0x00726ad0`: membership check of `wanted` against a table of eight bytes
+/// plus a packed word of four bytes.  Returns `true` when the byte is present
+/// (the retail function returns 0 and only aborts when it is absent and
+/// `fatal_flag` is zero; a non-zero `fatal_flag` always aborts).
+/// `Ok(())` means retail returns 0; `Err(())` stands for the abort path.
+pub fn w24a07_validate_member(
+    table8: &[u8; 8],
+    packed: u32,
+    wanted: u8,
+    fatal_flag: i32,
+) -> Result<(), ()> {
+    if fatal_flag != 0 {
+        return Err(());
+    }
+    let in_table = table8.contains(&wanted);
+    let in_packed = packed.to_le_bytes().contains(&wanted);
+    if in_table || in_packed {
+        Ok(())
+    } else {
+        Err(())
+    }
+}
+
+/// `0x00772c80`: validates a 32-bit header word read from a save stream.
+/// Returns the high half when bit 16 is set and the high half lies in
+/// `0x69..=0x6d`, otherwise `None`.
+pub fn w24a07_header_word_kind(word: u32) -> Option<u32> {
+    let hi = word >> 16;
+    if hi & 1 != 0 && hi.wrapping_sub(0x69) < 5 {
+        Some(hi)
+    } else {
+        None
+    }
+}
+
+/// `0x00741b30`: skips an optional section of a save file.  Reads a u32 flag;
+/// when non-zero reads two more u32s (the second is the entry count), then for
+/// each entry reads a u32 length and seeks forward by it (relative).  Returns
+/// the new position, or `None` ("File corrupt") on a short read or negative seek.
+pub fn w24a07_skip_section(data: &[u8], mut pos: usize) -> Option<usize> {
+    fn rd(data: &[u8], pos: &mut usize) -> Option<u32> {
+        let b = data.get(*pos..pos.checked_add(4)?)?;
+        *pos += 4;
+        Some(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    }
+    if rd(data, &mut pos)? == 0 {
+        return Some(pos);
+    }
+    rd(data, &mut pos)?;
+    let n = rd(data, &mut pos)?;
+    for _ in 0..n {
+        let v = rd(data, &mut pos)? as i32 as i64;
+        let np = pos as i64 + v;
+        if np < 0 {
+            return None;
+        }
+        pos = np as usize;
+    }
+    Some(pos)
+}
+
+#[cfg(test)]
+mod tests_wave24_agent07 {
+    use super::*;
+
+    #[test]
+    fn flag_byte() {
+        let mut b = Vec::new();
+        w24a07_init_flag_byte(&mut b);
+        assert_eq!(b, vec![0x3c]);
+        b[0] = 1;
+        w24a07_init_flag_byte(&mut b);
+        assert_eq!(b[0], 0x3c);
+    }
+
+    #[test]
+    fn member() {
+        let t = [1, 2, 3, 4, 5, 6, 7, 8];
+        assert!(w24a07_validate_member(&t, 0x0b0a0908, 9, 0).is_ok());
+        assert!(w24a07_validate_member(&t, 0x0b0a0908, 3, 0).is_ok());
+        assert!(w24a07_validate_member(&t, 0, 99, 0).is_err());
+        assert!(w24a07_validate_member(&t, 0, 3, 1).is_err());
+    }
+
+    #[test]
+    fn header() {
+        assert_eq!(w24a07_header_word_kind(0x0069_0000), Some(0x69));
+        assert_eq!(w24a07_header_word_kind(0x006a_0000), None);
+        assert_eq!(w24a07_header_word_kind(0x006d_0000), Some(0x6d));
+        assert_eq!(w24a07_header_word_kind(0x0001_0000), None);
+    }
+
+    #[test]
+    fn skip() {
+        let mut d = vec![];
+        for v in [1u32, 0, 2, 4, 0, 0] {
+            d.extend_from_slice(&v.to_le_bytes());
+        }
+        assert_eq!(w24a07_skip_section(&d, 0), Some(24));
+        assert_eq!(w24a07_skip_section(&0u32.to_le_bytes(), 0), Some(4));
+        assert_eq!(w24a07_skip_section(&d[..10], 0), None);
+    }
+}
