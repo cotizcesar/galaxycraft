@@ -79,7 +79,8 @@ HUB_CALLERS = 150
 BNET = re.compile(
     r"bnet|battle\.?net|battlenet|blizzard|bgs\b|clientsdk|telemetry|"
     r"matchmak|ladder|presence|friend|clan|ssl|https?://|oauth|account|"
-    r"websocket|grpc|protobuf|json-?rpc|launcher|agent\.exe|crash.?report",
+    r"websocket|grpc|protobuf|json-?rpc|launcher|agent\.exe|crash.?report|"
+    r"tact::|bnl::|\bcasc\b|blte|ngdp|\bcdn\b|encoding.?table|archive.?index|ekey|ckey",
     re.I,
 )
 FRAGMENT = re.compile(r"\b(?:unaff_\w+|in_(?!ECX)\w+)")
@@ -143,6 +144,23 @@ def main() -> int:
     for a, cs in callees.items():
         for c in cs:
             callers[c].add(a)
+
+    # Propagate the Battle.net mark through the call graph: a function whose
+    # neighbours are mostly Battle.net code (TACT/CASC downloader glue that
+    # the string heuristic misses) is Battle.net code too.
+    for _ in range(4):
+        changed = 0
+        for a, cat in list(texts_cat.items()):
+            if cat not in ("clean", "trivial", "fragment", "unwind"):
+                continue
+            nb = (callees.get(a, set()) | callers.get(a, set())) & texts_cat.keys()
+            if len(nb) >= 3:
+                bn = sum(1 for n in nb if texts_cat[n] == "bnet")
+                if bn * 2 >= len(nb):
+                    texts_cat[a] = "bnet"
+                    changed += 1
+        if not changed:
+            break
 
     def neighbours(a: int) -> set[int]:
         return callees.get(a, set()) | callers.get(a, set())

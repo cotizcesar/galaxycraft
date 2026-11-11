@@ -217,3 +217,12 @@ counterpart; the CDN/NGDP rows were skipped as Battle.net code.
 and filebuf plans, a JSON-like list parser and a Crypto++-style decoder
 fragment.  Blizzard TACT/CDN rows were skipped as Battle.net code.  No
 rules-core counterpart.
+
+## Wave 30 (2026-11-11, triage queue, tiers 2-3, 20 agents)
+
++51 exact ledger functions (ledger 4637 -> 4688) in `runtime.rs`: container
+sizing helpers, BLTE/LZ4 header checks, VFS manifest bounds readers and
+async-memory-file helpers (CASC glue that happened to be pure arithmetic).
+The queue had reached Blizzard's TACT/CDN downloader, which is Battle.net
+code; `scripts/triage_corpus.py` now propagates the `bnet` mark through the
+call graph so those rows are no longer queued.  Waves are paused.
