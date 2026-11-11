@@ -69661,3 +69661,1754 @@ mod tests_wave29_agent20 {
         assert_eq!(r, (3, 2));
     }
 }
+
+// ===========================================================================
+// Merged from src/wave30/agent01.rs
+// ===========================================================================
+// Wave 30 agent 01: VFS manifest reader field accessors (pure helpers).
+
+/// Failure of a manifest bounds check (the retail code raises a logged error).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum W30a01Err {
+    /// Offset outside the manifest window.
+    OutOfRange,
+    /// Unterminated or malformed field.
+    Corrupt,
+}
+
+/// File-table entry kind (`0x00af35f0`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum W30a01Entry {
+    /// Kind 1 with the record count (byte value `1..=0xe0`).
+    Records(u32),
+    /// Marker `0xff`.
+    Kind2,
+    /// Marker `0xfe`.
+    Kind3,
+    /// Marker `0xfd`.
+    Kind4,
+}
+
+/// `0x00af35f0`: classifies the entry byte at `off` inside the window
+/// `data[base..base+len]`.  Markers `0xff/0xfe/0xfd` map to kinds 2/3/4;
+/// values above `0xe0` are invalid; otherwise the entry needs
+/// `stride * count + 1` bytes after `off` (`stride` is the result of the
+/// unrecovered helper, passed in).
+pub fn w30a01_classify_entry(
+    data: &[u8],
+    base: usize,
+    len: u32,
+    off: u32,
+    stride: u32,
+) -> Result<W30a01Entry, W30a01Err> {
+    if off >= len {
+        return Err(W30a01Err::OutOfRange);
+    }
+    let b = *data.get(base + off as usize).ok_or(W30a01Err::OutOfRange)? as u32;
+    match b {
+        0xff => Ok(W30a01Entry::Kind2),
+        0xfe => Ok(W30a01Entry::Kind3),
+        0xfd => Ok(W30a01Entry::Kind4),
+        _ if b > 0xe0 => Err(W30a01Err::Corrupt),
+        _ => {
+            if len < stride.wrapping_mul(b).wrapping_add(1).wrapping_add(off) {
+                Err(W30a01Err::OutOfRange)
+            } else {
+                Ok(W30a01Entry::Records(b))
+            }
+        }
+    }
+}
+
+/// One record: 8 key bytes (two big-endian dwords) plus a size field.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct W30a01Record {
+    /// Low dword: bytes 1..=4 big-endian.
+    pub lo: u32,
+    /// High dword: bytes 5..=8 big-endian.
+    pub hi: u32,
+    /// Size field, width chosen by `size_max`.
+    pub size: u32,
+}
+
+/// `0x00af3fe0`: reads record `idx` of the entry at `off`.  The size field
+/// is 1, 2, 3 or 4 bytes (big-endian) when `size_max` is `< 0x100`,
+/// `< 0x10000`, `< 0x1000000` or larger.  `stride` is the per-record
+/// stride (unrecovered helper result).
+pub fn w30a01_read_record(
+    data: &[u8],
+    base: usize,
+    len: u32,
+    size_max: u32,
+    off: u32,
+    idx: u32,
+    stride: u32,
+) -> Result<W30a01Record, W30a01Err> {
+    if len.wrapping_add(base as u32) <= (base as u32).wrapping_add(off) {
+        return Err(W30a01Err::OutOfRange);
+    }
+    let count = *data.get(base + off as usize).ok_or(W30a01Err::OutOfRange)? as u32;
+    if count > 0xe0 || count <= idx {
+        return Err(W30a01Err::Corrupt);
+    }
+    if len < stride.wrapping_mul(count).wrapping_add(1).wrapping_add(off) {
+        return Err(W30a01Err::OutOfRange);
+    }
+    let p = base + (off as usize) + (idx as usize) * (stride as usize);
+    let g = |i: usize| data.get(p + i).copied().ok_or(W30a01Err::OutOfRange);
+    let be = |n: usize| -> Result<u32, W30a01Err> {
+        let mut v = 0u32;
+        for i in 0..n {
+            v = (v << 8) | g(9 + i)? as u32;
+        }
+        Ok(v)
+    };
+    let lo = u32::from_be_bytes([g(1)?, g(2)?, g(3)?, g(4)?]);
+    let hi = u32::from_be_bytes([g(5)?, g(6)?, g(7)?, g(8)?]);
+    let size = match size_max {
+        0..=0xff => be(1)?,
+        0x100..=0xffff => be(2)?,
+        0x1_0000..=0xff_ffff => be(3)?,
+        _ => be(4)?,
+    };
+    Ok(W30a01Record { lo, hi, size })
+}
+
+/// `0x00af3330`: length of the NUL-terminated string at `off` inside the
+/// window `data[base..base+len]`.
+pub fn w30a01_cstr_len(data: &[u8], base: usize, len: u32, off: u32) -> Result<u32, W30a01Err> {
+    if off >= len {
+        return Err(W30a01Err::OutOfRange);
+    }
+    let mut i = off;
+    while i < len {
+        match data.get(base + i as usize) {
+            Some(0) => break,
+            Some(_) => i += 1,
+            None => return Err(W30a01Err::OutOfRange),
+        }
+    }
+    if i == len {
+        return Err(W30a01Err::Corrupt);
+    }
+    Ok(i - off)
+}
+
+/// `0x00af3820`: validates a `0xfe`-tagged length-prefixed block at `off`
+/// and returns `length_byte + 1`.
+pub fn w30a01_tagged_len(data: &[u8], base: usize, len: u32, off: u32) -> Result<u32, W30a01Err> {
+    let end = len as u64 + base as u64;
+    let p = off as u64 + base as u64;
+    if end < p + 2 {
+        return Err(W30a01Err::OutOfRange);
+    }
+    if data.get(p as usize) != Some(&0xfe) {
+        return Err(W30a01Err::Corrupt);
+    }
+    let n = *data.get(p as usize + 1).ok_or(W30a01Err::OutOfRange)? as u64;
+    if end < n + 3 + p {
+        return Err(W30a01Err::OutOfRange);
+    }
+    Ok(n as u32 + 1)
+}
+
+/// `0x00af43d0`: succeeds when `off + 4` fits in `len`.
+pub fn w30a01_check_u32_fits(len: u32, off: u32) -> Result<(), W30a01Err> {
+    if len < off.wrapping_add(4) {
+        Err(W30a01Err::OutOfRange)
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests_wave30_agent01 {
+    use super::*;
+
+    #[test]
+    fn classify() {
+        let d = [0xff, 0xfe, 0xfd, 0xe1, 2, 0, 0, 0];
+        assert_eq!(
+            w30a01_classify_entry(&d, 0, 8, 0, 9),
+            Ok(W30a01Entry::Kind2)
+        );
+        assert_eq!(
+            w30a01_classify_entry(&d, 0, 8, 1, 9),
+            Ok(W30a01Entry::Kind3)
+        );
+        assert_eq!(
+            w30a01_classify_entry(&d, 0, 8, 2, 9),
+            Ok(W30a01Entry::Kind4)
+        );
+        assert_eq!(
+            w30a01_classify_entry(&d, 0, 8, 3, 9),
+            Err(W30a01Err::Corrupt)
+        );
+        assert_eq!(
+            w30a01_classify_entry(&d, 0, 8, 8, 1),
+            Err(W30a01Err::OutOfRange)
+        );
+        assert_eq!(
+            w30a01_classify_entry(&d, 0, 8, 4, 1),
+            Ok(W30a01Entry::Records(2))
+        );
+        assert_eq!(
+            w30a01_classify_entry(&d, 0, 8, 4, 4),
+            Err(W30a01Err::OutOfRange)
+        );
+    }
+
+    #[test]
+    fn record() {
+        let d = [1u8, 1, 2, 3, 4, 5, 6, 7, 8, 0x12, 0x34];
+        let r = w30a01_read_record(&d, 0, 11, 0x200, 0, 0, 10).unwrap();
+        assert_eq!((r.lo, r.hi, r.size), (0x01020304, 0x05060708, 0x1234));
+        let r = w30a01_read_record(&d, 0, 11, 0x20, 0, 0, 10).unwrap();
+        assert_eq!(r.size, 0x12);
+        assert_eq!(
+            w30a01_read_record(&d, 0, 11, 0x20, 0, 1, 10),
+            Err(W30a01Err::Corrupt)
+        );
+    }
+
+    #[test]
+    fn strings_and_bounds() {
+        let d = *b"ab\0cd";
+        assert_eq!(w30a01_cstr_len(&d, 0, 5, 0), Ok(2));
+        assert_eq!(w30a01_cstr_len(&d, 0, 5, 3), Err(W30a01Err::Corrupt));
+        assert_eq!(w30a01_cstr_len(&d, 0, 5, 5), Err(W30a01Err::OutOfRange));
+        let t = [0xfe, 3, 0, 0, 0, 0];
+        assert_eq!(w30a01_tagged_len(&t, 0, 6, 0), Ok(4));
+        assert_eq!(w30a01_tagged_len(&t, 0, 5, 0), Err(W30a01Err::OutOfRange));
+        assert_eq!(
+            w30a01_tagged_len(&[1, 0, 0], 0, 3, 0),
+            Err(W30a01Err::Corrupt)
+        );
+        assert!(w30a01_check_u32_fits(8, 4).is_ok());
+        assert!(w30a01_check_u32_fits(7, 4).is_err());
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave30/agent03.rs
+// ===========================================================================
+// Wave 30 translation batch 03: tact async memory file and ref vector helpers.
+
+/// Inline buffer capacity of the async memory file (`0x100` bytes).
+pub const W30A03_INLINE_CAP: usize = 0x100;
+
+/// Model of the async memory file layout (len at `+0x10c`, pos at `+0x110`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct W30a03MemFile {
+    pub data: Vec<u8>,
+    pub len: u32,
+    pub pos: u32,
+}
+
+/// `0x00af9760`: constructor; stores the length (`+0x10c`), zeroes the
+/// position, and copies `len` bytes from `src` (inline when `<= 0x100`,
+/// heap otherwise; both modelled as one owned buffer).
+pub fn w30a03_memfile_new(src: &[u8], len: u32) -> W30a03MemFile {
+    let n = (len as usize).min(src.len());
+    let mut data = src[..n].to_vec();
+    data.resize(len as usize, 0);
+    W30a03MemFile { data, len, pos: 0 }
+}
+
+/// `0x00af9960`: read; clamps `*req` to `len - pos`, copies that many
+/// bytes starting at `pos` into `dst`.  Position is not advanced.
+pub fn w30a03_memfile_read(f: &W30a03MemFile, dst: &mut [u8], req: &mut u32) {
+    let avail = f.len.wrapping_sub(f.pos);
+    let n = (*req).min(avail);
+    *req = n;
+    let s = f.pos as usize;
+    let n = n as usize;
+    dst[..n].copy_from_slice(&f.data[s..s + n]);
+}
+
+/// `0x00af9ab0`: grow capacity word (low 31 bits capacity, bit 31 flag
+/// preserved): adds `max(1, cap / 2)`; `None` on overflow.
+pub fn w30a03_grow_cap(word: u32) -> Option<u32> {
+    let cap = word & 0x7fff_ffff;
+    cap.checked_add(1)?;
+    let half = (word >> 1) & 0x3fff_ffff;
+    let add = if half >= 1 { half } else { 1 };
+    let new = cap.wrapping_add(add);
+    Some((new ^ word) & 0x7fff_ffff ^ word)
+}
+
+/// `0x00af9ab0`: push a shared handle; grows when full and bumps the
+/// handle's refcount (`+4`) if non-zero.
+pub fn w30a03_push_ref(
+    items: &mut Vec<u32>,
+    cap_word: &mut u32,
+    handle: u32,
+    refs: &mut std::collections::HashMap<u32, u32>,
+) {
+    if items.len() as u32 == (*cap_word & 0x7fff_ffff) {
+        if let Some(w) = w30a03_grow_cap(*cap_word) {
+            *cap_word = w;
+        }
+    }
+    items.push(handle);
+    if handle != 0 {
+        *refs.entry(handle).or_insert(0) += 1;
+    }
+}
+
+#[cfg(test)]
+mod tests_wave30_agent03 {
+    use super::*;
+
+    #[test]
+    fn ctor_and_read_clamp() {
+        let f = w30a03_memfile_new(&[1, 2, 3, 4], 4);
+        let mut f2 = f.clone();
+        f2.pos = 1;
+        let mut d = [0u8; 8];
+        let mut r = 10;
+        w30a03_memfile_read(&f2, &mut d, &mut r);
+        assert_eq!(r, 3);
+        assert_eq!(&d[..3], &[2, 3, 4]);
+        assert_eq!(f.pos, 0);
+        let big = w30a03_memfile_new(&[], 0x101);
+        assert_eq!(big.data.len(), 0x101);
+    }
+
+    #[test]
+    fn grow_and_push() {
+        assert_eq!(w30a03_grow_cap(0), Some(1));
+        assert_eq!(w30a03_grow_cap(10), Some(15));
+        assert_eq!(w30a03_grow_cap(0x8000_0000 | 4), Some(0x8000_0006));
+        let mut v = vec![];
+        let mut c = 0;
+        let mut m = std::collections::HashMap::new();
+        w30a03_push_ref(&mut v, &mut c, 7, &mut m);
+        w30a03_push_ref(&mut v, &mut c, 0, &mut m);
+        assert_eq!(v, vec![7, 0]);
+        assert_eq!(m[&7], 1);
+        assert_eq!(c, 2);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave30/agent07.rs
+// ===========================================================================
+// Wave 30 translation batch 07: container/table helpers.
+
+/// `0x00b0cd30`: clamps `*out` to the smaller of `*len` and `*out`, stores the
+/// result in both, and returns the number of bytes to copy (0 status).
+pub fn w30a07_clamp_copy_len(len: &mut u32, out: &mut u32) -> u32 {
+    let v = (*len).min(*out);
+    *out = v;
+    *len = v;
+    v
+}
+
+/// `0x00b083b0`: resize of a vector of 16-byte elements.  Shrinking drops the
+/// tail, growing returns the new element count and (via `grow`) lets the
+/// caller initialise new slots.  Returns the new capacity-word when a
+/// reallocation is required (low 31 bits = capacity, top bit preserved).
+pub fn w30a07_resize16(len: &mut u32, cap_word: &mut u32, new_len: u32) -> Option<u32> {
+    if new_len < *len {
+        *len = new_len;
+        return None;
+    }
+    if *len < new_len {
+        let cap = *cap_word & 0x7fff_ffff;
+        if cap < new_len {
+            let mut want = (*cap_word >> 1 & 0x3fff_ffff).wrapping_add(cap);
+            if want < new_len {
+                want = new_len;
+            }
+            *cap_word = (*cap_word ^ want) & 0x7fff_ffff ^ *cap_word;
+            return Some(want);
+        }
+        *len = new_len;
+    }
+    None
+}
+
+/// Error from the BLTE header validation.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum W30a07BlteError {
+    NeedBytes(u32),
+    BadMagic,
+    BadTableFormat(u8),
+    HeaderSizeMismatch,
+    Complete,
+}
+
+/// `0x00b08f60`: validates a BLTE header (`"BLTE"`, big-endian header size,
+/// flag byte 0x0f and 24-bit chunk count, `size == count*0x18+0xc`).
+pub fn w30a07_blte_header_check(buf: &[u8], avail: u32) -> W30a07BlteError {
+    if avail < 8 || buf.len() < 8 {
+        return W30a07BlteError::NeedBytes(8);
+    }
+    if buf[0..4] != *b"BLTE" {
+        return W30a07BlteError::BadMagic;
+    }
+    let hsize = u32::from_be_bytes([buf[4], buf[5], buf[6], buf[7]]);
+    if hsize == 0 {
+        return W30a07BlteError::Complete;
+    }
+    if avail < 0xc || buf.len() < 0xc {
+        return W30a07BlteError::NeedBytes(0xc);
+    }
+    let count = u32::from_be_bytes([0, buf[9], buf[10], buf[11]]);
+    if buf[8] != 0x0f || count == 0 {
+        return W30a07BlteError::BadTableFormat(buf[8]);
+    }
+    let want = count.wrapping_mul(0x18).wrapping_add(0xc);
+    if hsize != want {
+        return W30a07BlteError::HeaderSizeMismatch;
+    }
+    if want <= avail {
+        return W30a07BlteError::Complete;
+    }
+    W30a07BlteError::NeedBytes(want)
+}
+
+/// `0x00b09e60`: over 28-byte chunk records `(a, b)` (first two u32 words,
+/// cumulative sums), finds the chunks fully inside `[off, off+len)` in the
+/// `a` space and returns `(min_b_start, max_b_extent)`; `None` if the range
+/// extends past the total.
+pub fn w30a07_chunk_range(chunks: &[(u32, u32)], off: u64, len: u64) -> Option<(u64, u64)> {
+    let (mut lo, mut ext) = (u64::MAX, 0u64);
+    let (mut ca, mut cb) = (0u64, 0u64);
+    for &(a, b) in chunks {
+        if ca >= off && ca.wrapping_add(a as u64) <= off.wrapping_add(len) {
+            lo = lo.min(cb);
+            let v = (b as u64).wrapping_sub(lo).wrapping_add(cb);
+            ext = ext.max(v);
+        }
+        ca = ca.wrapping_add(a as u64);
+        cb = cb.wrapping_add(b as u64);
+    }
+    if ca < off.wrapping_add(len) {
+        return None;
+    }
+    Some((lo, ext))
+}
+
+#[cfg(test)]
+mod tests_wave30_agent07 {
+    use super::*;
+
+    #[test]
+    fn clamp() {
+        let (mut a, mut b) = (5, 3);
+        assert_eq!(w30a07_clamp_copy_len(&mut a, &mut b), 3);
+        assert_eq!((a, b), (3, 3));
+    }
+
+    #[test]
+    fn resize() {
+        let (mut l, mut c) = (4, 8);
+        assert_eq!(w30a07_resize16(&mut l, &mut c, 2), None);
+        assert_eq!(l, 2);
+        assert_eq!(w30a07_resize16(&mut l, &mut c, 6), None);
+        assert_eq!(l, 6);
+        assert_eq!(w30a07_resize16(&mut l, &mut c, 20), Some(20));
+        assert_eq!(l, 6);
+        assert_eq!(c & 0x7fff_ffff, 20);
+    }
+
+    #[test]
+    fn blte() {
+        let mut h = b"BLTE\0\0\0\x24\x0f\0\0\x01".to_vec();
+        assert_eq!(
+            w30a07_blte_header_check(&h, 4),
+            W30a07BlteError::NeedBytes(8)
+        );
+        assert_eq!(
+            w30a07_blte_header_check(&h, 12),
+            W30a07BlteError::NeedBytes(0x24)
+        );
+        assert_eq!(
+            w30a07_blte_header_check(&h, 0x30),
+            W30a07BlteError::Complete
+        );
+        h[7] = 0x20;
+        assert_eq!(
+            w30a07_blte_header_check(&h, 0x30),
+            W30a07BlteError::HeaderSizeMismatch
+        );
+        h[0] = b'X';
+        assert_eq!(
+            w30a07_blte_header_check(&h, 0x30),
+            W30a07BlteError::BadMagic
+        );
+    }
+
+    #[test]
+    fn range() {
+        let c = [(10, 4), (10, 6), (10, 8)];
+        assert_eq!(w30a07_chunk_range(&c, 10, 10), Some((4, 6)));
+        assert_eq!(w30a07_chunk_range(&c, 0, 31), None);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave30/agent08.rs
+// ===========================================================================
+// Wave 30 agent 08: tact encoder/header helpers (pure reference helpers).
+
+/// Result of the record probe in `0x00b0cf80`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum W30a08Probe {
+    /// More bytes are required (the `param_5` output); value is the total length needed.
+    Need(u32),
+    /// Record accepted; value is the consumed length (the `param_4` output).
+    Accepted(u32),
+    /// Record rejected with no output written.
+    Rejected,
+}
+
+/// `0x00b0cf80`: probes an `'E'` record: `E, n, key[n], m, tag[m], 'S'|'A'`.
+/// `n != 0`, `m <= 0x10`; `verify` receives the first `n` key bytes (after
+/// the two header bytes) and returns the produced length, accepted when it
+/// is 0 or <= 0x10.  Fewer than 3 bytes requests 3.
+#[allow(clippy::type_complexity)]
+pub fn w30a08_probe_record(data: &[u8], verify: Option<&dyn Fn(&[u8]) -> u32>) -> W30a08Probe {
+    let len = data.len() as u32;
+    if len < 3 {
+        return W30a08Probe::Need(3);
+    }
+    if data[0] != b'E' || data[1] == 0 {
+        return W30a08Probe::Rejected;
+    }
+    let n = data[1] as u32;
+    let mut need = n + 3;
+    if need <= len {
+        let m = data[(n + 2) as usize] as u32;
+        if m > 0x10 {
+            return W30a08Probe::Rejected;
+        }
+        need = m + 4 + n;
+        if need <= len {
+            let tag = data[(n + m + 3) as usize];
+            if tag == b'S' || tag == b'A' {
+                let ok = match verify {
+                    None => true,
+                    Some(f) => {
+                        let r = f(&data[2..2 + n as usize]);
+                        r == 0 || r < 0x11
+                    }
+                };
+                if ok {
+                    return W30a08Probe::Accepted(need);
+                }
+            }
+            return W30a08Probe::Rejected;
+        }
+    }
+    W30a08Probe::Need(need)
+}
+
+/// `0x00b0f000`: serialises a BLTE header.  Layout: `"BLTE"` (LE u32
+/// `0x45544c42`), big-endian header size `n * 0x18 + 0xc`, flag byte `0x0f`,
+/// 24-bit big-endian chunk count, then per chunk two big-endian u32 and a
+/// raw 16-byte hash.  Returns the header bytes.
+pub fn w30a08_write_blte_header(chunks: &[(u32, u32, [u8; 16])]) -> Vec<u8> {
+    let n = chunks.len() as u32;
+    let size = n * 0x18 + 0xc;
+    let mut out = Vec::with_capacity(size as usize);
+    out.extend_from_slice(&0x4554_4c42u32.to_le_bytes());
+    out.extend_from_slice(&size.to_be_bytes());
+    out.push(0x0f);
+    out.extend_from_slice(&n.to_be_bytes()[1..]);
+    for (a, b, h) in chunks {
+        out.extend_from_slice(&a.to_be_bytes());
+        out.extend_from_slice(&b.to_be_bytes());
+        out.extend_from_slice(h);
+    }
+    out
+}
+
+/// `0x00b0f7f0`: LZ4 encoder block-size validity: power of two within
+/// `0x400..=0x10000`.
+pub fn w30a08_lz4_block_size_valid(size: u32) -> bool {
+    (size & size.wrapping_sub(1)) == 0 && size.wrapping_sub(0x400) < 0xfc01
+}
+
+/// `0x00b0f7f0`: bytes of the input the encoder may take this round:
+/// `min(wanted_remaining, block - filled)` once `filled < block`, else 0.
+pub fn w30a08_lz4_take(block: u32, filled: u32, wanted_remaining: u32) -> u32 {
+    if filled < block {
+        wanted_remaining.min(block - filled)
+    } else {
+        0
+    }
+}
+
+/// `0x00b0f7f0`: the "final chunk" flag and the usable input length.
+/// Returns `(final, limit)` where `final` iff `hi_diff == (lo < avail_lo)`
+/// and `total - consumed <= request`.
+pub fn w30a08_lz4_final(
+    total: u32,
+    total_hi: u32,
+    consumed: u32,
+    consumed_hi: u32,
+    request: u32,
+) -> (bool, u32) {
+    let fin = total_hi.wrapping_sub(consumed_hi) == u32::from(total < consumed)
+        && total.wrapping_sub(consumed) <= request;
+    let limit = if fin {
+        total.wrapping_sub(consumed)
+    } else {
+        request
+    };
+    (fin, limit)
+}
+
+#[cfg(test)]
+mod tests_wave30_agent08 {
+    use super::*;
+
+    #[test]
+    fn probe() {
+        assert_eq!(w30a08_probe_record(&[1, 2], None), W30a08Probe::Need(3));
+        assert_eq!(w30a08_probe_record(b"Xab", None), W30a08Probe::Rejected);
+        assert_eq!(w30a08_probe_record(b"E\x02ab", None), W30a08Probe::Need(5));
+        assert_eq!(
+            w30a08_probe_record(b"E\x02ab\x11zz", None),
+            W30a08Probe::Rejected
+        );
+        assert_eq!(
+            w30a08_probe_record(b"E\x02ab\x01x", None),
+            W30a08Probe::Need(7)
+        );
+        assert_eq!(
+            w30a08_probe_record(b"E\x02ab\x01xS", None),
+            W30a08Probe::Accepted(7)
+        );
+        assert_eq!(
+            w30a08_probe_record(b"E\x02ab\x00A", None),
+            W30a08Probe::Accepted(6)
+        );
+        assert_eq!(
+            w30a08_probe_record(b"E\x02ab\x00Q", None),
+            W30a08Probe::Rejected
+        );
+        let bad = |_: &[u8]| 0x11;
+        assert_eq!(
+            w30a08_probe_record(b"E\x02ab\x00A", Some(&bad)),
+            W30a08Probe::Rejected
+        );
+        let good = |k: &[u8]| k.len() as u32;
+        assert_eq!(
+            w30a08_probe_record(b"E\x02ab\x00A", Some(&good)),
+            W30a08Probe::Accepted(6)
+        );
+    }
+
+    #[test]
+    fn blte() {
+        let h = w30a08_write_blte_header(&[(0x01020304, 0x05060708, [9; 16])]);
+        assert_eq!(h.len(), 0x24);
+        assert_eq!(&h[..4], b"BLTE");
+        assert_eq!(&h[4..8], &[0, 0, 0, 0x24]);
+        assert_eq!(h[8], 0x0f);
+        assert_eq!(&h[9..12], &[0, 0, 1]);
+        assert_eq!(&h[12..20], &[1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(&h[20..], &[9; 16]);
+        assert_eq!(w30a08_write_blte_header(&[]).len(), 12);
+    }
+
+    #[test]
+    fn lz4() {
+        assert!(w30a08_lz4_block_size_valid(0x400));
+        assert!(w30a08_lz4_block_size_valid(0x10000));
+        assert!(!w30a08_lz4_block_size_valid(0x200));
+        assert!(!w30a08_lz4_block_size_valid(0x20000));
+        assert!(!w30a08_lz4_block_size_valid(0x600));
+        assert!(!w30a08_lz4_block_size_valid(0));
+        assert_eq!(w30a08_lz4_take(0x400, 0x300, 0x500), 0x100);
+        assert_eq!(w30a08_lz4_take(0x400, 0x400, 5), 0);
+        assert_eq!(w30a08_lz4_take(0x400, 0, 5), 5);
+        assert_eq!(w30a08_lz4_final(10, 0, 4, 0, 6), (true, 6));
+        assert_eq!(w30a08_lz4_final(10, 0, 4, 0, 5), (false, 5));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave30/agent09.rs
+// ===========================================================================
+// Wave 30 translation batch 09.  Almost the whole queue is TACT (Blizzard
+// CDN / content-delivery) glue: skipped as "bnet" or non-returning chains.
+
+/// `0x00b15b30`: lazily creates a shared object in an atomic 64-bit slot.
+/// Returns the slot value if non-zero; otherwise, when `create` is true,
+/// builds a value with `make`, compare-exchanges it into the slot from 0 and,
+/// if another thread won, destroys its own value with `destroy` and returns
+/// the winner's value.  With `create == false` an empty slot yields 0.
+pub fn w30a09_lazy_init_slot(
+    slot: &std::sync::atomic::AtomicU64,
+    create: bool,
+    make: impl FnOnce() -> u64,
+    destroy: impl FnOnce(u64),
+) -> u64 {
+    use std::sync::atomic::Ordering::SeqCst;
+    let cur = slot.load(SeqCst);
+    if cur != 0 || !create {
+        return cur;
+    }
+    let mine = make();
+    match slot.compare_exchange(0, mine, SeqCst, SeqCst) {
+        Ok(_) => mine,
+        Err(winner) => {
+            destroy(mine);
+            winner
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests_wave30_agent09 {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[test]
+    fn lazy_init() {
+        let s = AtomicU64::new(0);
+        assert_eq!(w30a09_lazy_init_slot(&s, false, || 5, |_| {}), 0);
+        assert_eq!(w30a09_lazy_init_slot(&s, true, || 5, |_| {}), 5);
+        assert_eq!(w30a09_lazy_init_slot(&s, true, || 9, |_| panic!()), 5);
+    }
+
+    #[test]
+    fn lazy_init_race_destroys_loser() {
+        let s = AtomicU64::new(0);
+        let mut d = 0;
+        let r = w30a09_lazy_init_slot(
+            &s,
+            true,
+            || {
+                s.store(7, Ordering::SeqCst);
+                8
+            },
+            |v| d = v,
+        );
+        assert_eq!((r, d), (7, 8));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave30/agent10.rs
+// ===========================================================================
+// Wave 30 translation batch 10.
+//
+// Window: queue: 20 addresses, module `runtime.rs`.
+// Implemented: 0x00b1b8a0 (string erase-range helper).
+
+/// 0x00b1b8a0: erase up to `count` bytes starting at `pos` from a
+/// NUL-terminated byte string, keeping the terminator semantics.
+/// `data` holds the characters without the terminator.  When `pos` is past
+/// the end, the clamp mirrors the unsigned wrap of the original (no-op).
+pub fn w30a10_string_erase(data: &mut Vec<u8>, pos: usize, count: usize) {
+    let len = data.len();
+    let avail = len.wrapping_sub(pos);
+    let n = count.min(avail);
+    if pos > len || n == 0 {
+        return;
+    }
+    data.drain(pos..pos + n);
+}
+
+#[cfg(test)]
+mod tests_wave30_agent10 {
+    use super::*;
+
+    #[test]
+    fn erase_middle() {
+        let mut v = b"abcdef".to_vec();
+        w30a10_string_erase(&mut v, 1, 2);
+        assert_eq!(v, b"adef");
+    }
+
+    #[test]
+    fn erase_clamps_count() {
+        let mut v = b"abcdef".to_vec();
+        w30a10_string_erase(&mut v, 4, 99);
+        assert_eq!(v, b"abcd");
+    }
+
+    #[test]
+    fn erase_noop() {
+        let mut v = b"abc".to_vec();
+        w30a10_string_erase(&mut v, 1, 0);
+        w30a10_string_erase(&mut v, 9, 1);
+        assert_eq!(v, b"abc");
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave30/agent11.rs
+// ===========================================================================
+// Wave 30 agent 11: weak-pointer lock, async token bind check and lazy-init
+// guard helpers.
+
+/// `0x00b1c090`: weak-pointer lock.  `strong` is the control block's strong
+/// count (offset 4).  Returns `true` and increments it only if it is
+/// non-zero (CAS loop); a zero count yields an empty pointer.
+pub fn w30a11_weak_lock(strong: &std::sync::atomic::AtomicI32) -> bool {
+    use std::sync::atomic::Ordering;
+    let mut cur = strong.load(Ordering::SeqCst);
+    while cur != 0 {
+        match strong.compare_exchange(cur, cur + 1, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => return true,
+            Err(actual) => cur = actual,
+        }
+    }
+    false
+}
+
+/// One 0x18-byte async token slot (fields at +8, +0xc, +0x10, +0x18, +0x1c).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct W30a11TokenSlot {
+    pub id: u32,
+    pub generation: i32,
+    pub flags: u8,
+    pub refs: i32,
+    pub pending: i32,
+}
+
+/// `0x00b1cfd0`: token bind.  The slot is `token & 0xff`; binding is valid
+/// when id and generation match and either the slot is open (`flags & 3 == 0`
+/// and `pending == 0`) or `force` is set.  On success `refs += delta` and
+/// `true` is returned; otherwise the retail code logs "failed attempt to bind
+/// to closed or non-existing token ID" (AsyncTokenTable) and returns `false`.
+pub fn w30a11_token_bind(
+    slots: &mut [W30a11TokenSlot],
+    token: u32,
+    generation: i32,
+    delta: i32,
+    force: bool,
+) -> bool {
+    let Some(s) = slots.get_mut((token & 0xff) as usize) else {
+        return false;
+    };
+    if s.id != token || s.generation != generation {
+        return false;
+    }
+    if ((s.flags & 3) != 0 || s.pending != 0) && !force {
+        return false;
+    }
+    s.refs = s.refs.wrapping_add(delta);
+    true
+}
+
+/// `0x00b1d340`: lazy-init guard.  If not yet `done`, takes the spin flag,
+/// runs `init` when not `constructed`, releases the flag.  Returns `true`
+/// when the object is usable (retail returns `this`, or null once `done`
+/// is set).
+pub fn w30a11_lazy_get(done: bool, constructed: &mut bool, init: impl FnOnce()) -> bool {
+    if !done {
+        if !*constructed {
+            init();
+            *constructed = true;
+        }
+    }
+    !done
+}
+
+/// `0x00b1d470`: same lazy-init guard as `0x00b1d340` without a return
+/// value; runs `init` once when not done and not constructed.
+pub fn w30a11_lazy_init(done: bool, constructed: &mut bool, init: impl FnOnce()) {
+    let _ = w30a11_lazy_get(done, constructed, init);
+}
+
+#[cfg(test)]
+mod tests_wave30_agent11 {
+    use super::*;
+    use std::sync::atomic::{AtomicI32, Ordering};
+
+    #[test]
+    fn weak_lock() {
+        let a = AtomicI32::new(2);
+        assert!(w30a11_weak_lock(&a));
+        assert_eq!(a.load(Ordering::SeqCst), 3);
+        let z = AtomicI32::new(0);
+        assert!(!w30a11_weak_lock(&z));
+        assert_eq!(z.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn bind() {
+        let mut v = vec![W30a11TokenSlot::default(); 256];
+        v[5] = W30a11TokenSlot {
+            id: 0x105,
+            generation: 7,
+            ..Default::default()
+        };
+        assert!(w30a11_token_bind(&mut v, 0x105, 7, 3, false));
+        assert_eq!(v[5].refs, 3);
+        assert!(!w30a11_token_bind(&mut v, 0x105, 8, 1, false));
+        assert!(!w30a11_token_bind(&mut v, 0x205, 7, 1, false));
+        v[5].flags = 1;
+        assert!(!w30a11_token_bind(&mut v, 0x105, 7, 1, false));
+        assert!(w30a11_token_bind(&mut v, 0x105, 7, 1, true));
+        assert_eq!(v[5].refs, 4);
+    }
+
+    #[test]
+    fn lazy() {
+        let mut c = false;
+        let mut n = 0;
+        assert!(w30a11_lazy_get(false, &mut c, || n += 1));
+        assert!(w30a11_lazy_get(false, &mut c, || n += 1));
+        assert_eq!(n, 1);
+        assert!(!w30a11_lazy_get(true, &mut c, || n += 1));
+        let mut c2 = false;
+        w30a11_lazy_init(false, &mut c2, || n += 1);
+        assert_eq!(n, 2);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave30/agent13.rs
+// ===========================================================================
+// Wave 30 agent 13: tact container helpers (reference translations).
+
+/// `0x00b223a0`: bounds check for appending `len` bytes to a 64 KiB staging
+/// buffer whose 64-bit fill counter lives at `+0x20018/+0x2001c`.  Returns
+/// true (and copies) when `fill + len <= 0x10000` with no 64-bit carry.
+pub fn w30a13_buffer_append(buf: &mut [u8], fill: &mut u64, src: &[u8]) -> bool {
+    let len = src.len() as u64;
+    match fill.checked_add(len) {
+        Some(end) if end <= 0x10000 && (end as usize) <= buf.len() => {
+            buf[*fill as usize..end as usize].copy_from_slice(src);
+            *fill = end;
+            true
+        }
+        _ => false,
+    }
+}
+
+/// `0x00b24160`: small-vector reserve policy.  The capacity word keeps a
+/// flag in bit 31; when the requested count exceeds the capacity the new
+/// capacity is `max(cap + cap/2, wanted)`.  Returns the updated word, or
+/// `None` when no growth is needed.
+pub fn w30a13_reserve_policy(word: u32, wanted: u32) -> Option<u32> {
+    let cap = word & 0x7fff_ffff;
+    if cap >= wanted {
+        return None;
+    }
+    let grown = ((word >> 1) & 0x3fff_ffff) + cap;
+    let new_cap = grown.max(wanted);
+    Some(((word ^ new_cap) & 0x7fff_ffff) ^ word)
+}
+
+/// `0x00b24010`: hash-table bucket count policy.  `count` is the stored
+/// element count, `cur` the value returned by the sizing helper, `load` the
+/// max load factor.  Result is the power of two (min 8) that holds the
+/// request, and whether the table already has that size (no rehash).
+pub fn w30a13_bucket_target(
+    count: i32,
+    cur: u32,
+    load: f32,
+    request: u32,
+    buckets: u32,
+    has_table: bool,
+) -> (u32, bool) {
+    let cnt = count as u32 as f32;
+    let mut want = cur.wrapping_add(1);
+    if cnt <= (cur as f32) * load {
+        want = cur;
+    }
+    if want < request {
+        want = request;
+    }
+    let mut size = 8u32;
+    if want > 8 {
+        while size < want {
+            size = size.wrapping_mul(2);
+        }
+    }
+    (size, size == buckets && has_table)
+}
+
+/// `0x00b22d80`: linear search of 16-byte records `(lo, hi, extra, ptr)`
+/// for a 64-bit key; on a hit the first three words are copied out.
+pub fn w30a13_find_record(rows: &[[u32; 4]], lo: u32, hi: u32) -> Option<[u32; 3]> {
+    rows.iter()
+        .find(|r| r[0] == lo && r[1] == hi)
+        .map(|r| [r[0], r[1], r[2]])
+}
+
+#[cfg(test)]
+mod tests_wave30_agent13 {
+    use super::*;
+
+    #[test]
+    fn append() {
+        let mut b = vec![0u8; 0x10000];
+        let mut f = 0xfffe;
+        assert!(!w30a13_buffer_append(&mut b, &mut f, &[1, 2, 3]));
+        assert!(w30a13_buffer_append(&mut b, &mut f, &[1, 2]));
+        assert_eq!(f, 0x10000);
+        assert_eq!(b[0xffff], 2);
+    }
+
+    #[test]
+    fn reserve() {
+        assert_eq!(w30a13_reserve_policy(10, 5), None);
+        assert_eq!(w30a13_reserve_policy(10, 11), Some(15));
+        assert_eq!(w30a13_reserve_policy(10, 40), Some(40));
+        assert_eq!(w30a13_reserve_policy(0x8000_0004, 100), Some(0x8000_0064));
+    }
+
+    #[test]
+    fn buckets() {
+        assert_eq!(w30a13_bucket_target(1, 4, 1.0, 0, 8, true), (8, true));
+        assert_eq!(w30a13_bucket_target(9, 8, 1.0, 0, 8, true), (16, false));
+        assert_eq!(w30a13_bucket_target(1, 4, 1.0, 100, 8, false), (128, false));
+    }
+
+    #[test]
+    fn find() {
+        let rows = [[1, 2, 3, 0], [4, 5, 6, 0]];
+        assert_eq!(w30a13_find_record(&rows, 4, 5), Some([4, 5, 6]));
+        assert_eq!(w30a13_find_record(&rows, 4, 6), None);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave30/agent15.rs
+// ===========================================================================
+// Wave 30 agent 15: argument-list integer parsing, hash-bucket gate,
+// capacity growth and the RC4-style key schedule.
+
+/// `0x00b29160`: parses argument `idx` as a signed 32-bit decimal.  An
+/// optional leading `-` is skipped; `parse` models the unresolved
+/// string-to-u64 helper and returns `(value, consumed_bytes)`.  The whole
+/// string must be consumed; positive values must be below `0x8000_0000`,
+/// negative magnitudes at most `0x8000_0000`.
+pub fn w30a15_arg_to_i32(
+    args: &[&str],
+    idx: usize,
+    parse: impl Fn(&str) -> (u64, usize),
+) -> Option<i32> {
+    let s = *args.get(idx)?;
+    let (neg, body) = match s.strip_prefix('-') {
+        Some(r) => (true, r),
+        None => (false, s),
+    };
+    let (v, n) = parse(body);
+    if n != body.len() || (v >> 32) != 0 {
+        return None;
+    }
+    let v = v as u32;
+    if neg {
+        (v <= 0x8000_0000).then(|| v.wrapping_neg() as i32)
+    } else {
+        (v < 0x8000_0000).then_some(v as i32)
+    }
+}
+
+/// `0x00b29210`: parses argument `idx` as an unsigned 32-bit value; the
+/// whole string must be consumed and the high half of the result be zero.
+pub fn w30a15_arg_to_u32(
+    args: &[&str],
+    idx: usize,
+    parse: impl Fn(&str) -> (u64, usize),
+) -> Option<u32> {
+    let s = *args.get(idx)?;
+    let (v, n) = parse(s);
+    (n == s.len() && (v >> 32) == 0).then_some(v as u32)
+}
+
+/// Table gate state used by `0x00b2b5e0`.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct W30a15Gate {
+    /// Bucket count (power of two); mask is `size - 1`.
+    pub size: u32,
+    /// Expected masked hash (field at +0x50).
+    pub expect: u32,
+    /// Visit counter (field at +0x54).
+    pub visits: u32,
+}
+
+/// `0x00b2b5e0`: when the record length byte is above 4 and
+/// `hash_byte5 & (size-1)` equals the expected slot, runs `insert`; if it
+/// reports true the notify step is requested.  The visit counter is
+/// incremented whenever the gate passes.  Returns `Some(notify)` on pass.
+pub fn w30a15_gate_visit(
+    g: &mut W30a15Gate,
+    rec: &[u8],
+    insert: impl FnOnce(&[u8]) -> bool,
+) -> Option<bool> {
+    if rec.len() < 6 || rec[0] <= 4 {
+        return None;
+    }
+    if (rec[5] as u32 & g.size.wrapping_sub(1)) != g.expect {
+        return None;
+    }
+    let notify = insert(rec);
+    g.visits = g.visits.wrapping_add(1);
+    Some(notify)
+}
+
+/// `0x00b2bc30`: grows a string capacity word (low 31 bits capacity, top
+/// bit flag).  When `want` exceeds the capacity the new capacity is
+/// `cap + cap/2` (at least `want`), the flag bit is preserved.  Returns
+/// the new word when growth is needed.
+pub fn w30a15_grow_capacity(word: u32, want: u32) -> Option<u32> {
+    let cap = word & 0x7fff_ffff;
+    if cap >= want {
+        return None;
+    }
+    let mut new = ((word >> 1) & 0x3fff_ffff) + cap;
+    if new < want {
+        new = want;
+    }
+    Some((word & 0x8000_0000) | (new & 0x7fff_ffff))
+}
+
+/// RC4-style cipher state used by `0x00b2c6f0`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct W30a15Rc4 {
+    pub s: [u8; 256],
+    pub i: u8,
+    pub j: u8,
+}
+
+/// `0x00b2c6f0`: builds the 28-byte seed (`b` big-endian, `a`
+/// big-endian, `extra` little-endian, 16 bytes of `ctx`), digests it to 16
+/// bytes with `digest` (unresolved helper), runs the RC4 key schedule and
+/// discards `0x300` keystream bytes.  `j` carries over from `state`.
+pub fn w30a15_key_schedule(
+    state: &mut W30a15Rc4,
+    a: u32,
+    b: u32,
+    extra: u32,
+    ctx: &[u8; 16],
+    digest: impl Fn(&[u8; 28]) -> [u8; 16],
+) {
+    let mut seed = [0u8; 28];
+    seed[0..4].copy_from_slice(&b.to_be_bytes());
+    seed[4..8].copy_from_slice(&a.to_be_bytes());
+    seed[8..12].copy_from_slice(&extra.to_le_bytes());
+    seed[12..28].copy_from_slice(ctx);
+    let key = digest(&seed);
+    state.i = 0;
+    for (k, v) in state.s.iter_mut().enumerate() {
+        *v = k as u8;
+    }
+    let mut ks = 0u8;
+    for k in 0..256usize {
+        ks = ks.wrapping_add(state.s[k]).wrapping_add(key[k % 16]);
+        state.s.swap(k, ks as usize);
+    }
+    let mut i = state.i;
+    let mut j = state.j;
+    for _ in 0..0x300 {
+        i = i.wrapping_add(1);
+        let t = state.s[i as usize];
+        j = j.wrapping_add(t);
+        state.s[i as usize] = state.s[j as usize];
+        state.s[j as usize] = t;
+    }
+    state.j = j;
+    state.i = i;
+}
+
+#[cfg(test)]
+mod tests_wave30_agent15 {
+    use super::*;
+
+    fn dec(s: &str) -> (u64, usize) {
+        let n = s.bytes().take_while(|c| c.is_ascii_digit()).count();
+        (s[..n].parse().unwrap_or(0), n)
+    }
+
+    #[test]
+    fn parse_signed() {
+        let a = [
+            "5",
+            "-5",
+            "2147483647",
+            "2147483648",
+            "-2147483648",
+            "x",
+            "4294967296",
+        ];
+        assert_eq!(w30a15_arg_to_i32(&a, 0, dec), Some(5));
+        assert_eq!(w30a15_arg_to_i32(&a, 1, dec), Some(-5));
+        assert_eq!(w30a15_arg_to_i32(&a, 2, dec), Some(i32::MAX));
+        assert_eq!(w30a15_arg_to_i32(&a, 3, dec), None);
+        assert_eq!(w30a15_arg_to_i32(&a, 4, dec), Some(i32::MIN));
+        assert_eq!(w30a15_arg_to_i32(&a, 5, dec), None);
+        assert_eq!(w30a15_arg_to_i32(&a, 6, dec), None);
+        assert_eq!(w30a15_arg_to_i32(&a, 9, dec), None);
+    }
+
+    #[test]
+    fn parse_unsigned() {
+        let a = ["4294967295", "4294967296", "12z"];
+        assert_eq!(w30a15_arg_to_u32(&a, 0, dec), Some(u32::MAX));
+        assert_eq!(w30a15_arg_to_u32(&a, 1, dec), None);
+        assert_eq!(w30a15_arg_to_u32(&a, 2, dec), None);
+    }
+
+    #[test]
+    fn gate() {
+        let mut g = W30a15Gate {
+            size: 8,
+            expect: 3,
+            visits: 0,
+        };
+        let rec = [5u8, 0, 0, 0, 0, 0x0b];
+        assert_eq!(w30a15_gate_visit(&mut g, &rec, |_| true), Some(true));
+        assert_eq!(g.visits, 1);
+        assert_eq!(
+            w30a15_gate_visit(&mut g, &[4, 0, 0, 0, 0, 3], |_| true),
+            None
+        );
+        assert_eq!(
+            w30a15_gate_visit(&mut g, &[5, 0, 0, 0, 0, 4], |_| true),
+            None
+        );
+        assert_eq!(g.visits, 1);
+    }
+
+    #[test]
+    fn grow() {
+        assert_eq!(w30a15_grow_capacity(15, 10), None);
+        assert_eq!(w30a15_grow_capacity(15, 16), Some(22));
+        assert_eq!(w30a15_grow_capacity(0x8000_000f, 100), Some(0x8000_0064));
+    }
+
+    #[test]
+    fn rc4() {
+        let mut st = W30a15Rc4 {
+            s: [0; 256],
+            i: 9,
+            j: 0,
+        };
+        w30a15_key_schedule(&mut st, 1, 2, 3, &[7; 16], |s| {
+            let mut o = [0u8; 16];
+            o.copy_from_slice(&s[..16]);
+            o
+        });
+        let mut v = st.s.to_vec();
+        v.sort();
+        assert!(v.iter().enumerate().all(|(k, b)| *b as usize == k));
+        assert_eq!(st.i, 0); // 0x300 steps wrap the counter back to zero
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave30/agent16.rs
+// ===========================================================================
+// Wave 30 agent 16: small field-layout helpers from the encoded-file module.
+
+/// Range record filled by `0x00b31830` (field offsets in bytes).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct W30a16Range {
+    /// +0x00
+    pub tag: u32,
+    /// +0x08 low / +0x0c high (u64 start)
+    pub start: u64,
+    /// +0x10 low / +0x14 high (u64 end)
+    pub end: u64,
+    /// +0x18 low / +0x1c high (u64 end - start)
+    pub length: u64,
+}
+
+/// `0x00b31830`: stores the tag and the two 64-bit bounds (low word first,
+/// as `param_2`/`param_3` and `param_4`/`param_5`) and computes the 64-bit
+/// difference `end - start` with borrow, as the original does.
+pub fn w30a16_set_range(
+    tag: u32,
+    end_lo: u32,
+    end_hi: u32,
+    start_lo: u32,
+    start_hi: u32,
+) -> W30a16Range {
+    let end = (u64::from(end_hi) << 32) | u64::from(end_lo);
+    let start = (u64::from(start_hi) << 32) | u64::from(start_lo);
+    W30a16Range {
+        tag,
+        start,
+        end,
+        length: end.wrapping_sub(start),
+    }
+}
+
+/// Buffer state reset by `0x00b2e3c0` (offsets +0x170/+0x180/+0x184/+0x188).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct W30a16Buffer {
+    /// +0x170 handle, released through a callback.
+    pub handle: Option<u32>,
+    /// +0x180 data buffer.
+    pub data: Option<Vec<u8>>,
+    /// +0x184 buffer length.
+    pub len: u32,
+    /// +0x188 read position.
+    pub pos: u32,
+}
+
+/// `0x00b2e3c0`: clears length and position, drops the data buffer and
+/// takes the handle (returned so the caller can release it); result is 0.
+pub fn w30a16_reset_buffer(b: &mut W30a16Buffer) -> (u32, Option<u32>) {
+    b.len = 0;
+    b.pos = 0;
+    b.data = None;
+    (0, b.handle.take())
+}
+
+#[cfg(test)]
+mod tests_wave30_agent16 {
+    use super::*;
+
+    #[test]
+    fn range_borrow() {
+        let r = w30a16_set_range(7, 5, 1, 10, 0);
+        assert_eq!(r.length, (1u64 << 32 | 5) - 10);
+        assert_eq!(r.tag, 7);
+        assert_eq!(r.start, 10);
+    }
+
+    #[test]
+    fn reset_buffer() {
+        let mut b = W30a16Buffer {
+            handle: Some(3),
+            data: Some(vec![1]),
+            len: 4,
+            pos: 2,
+        };
+        assert_eq!(w30a16_reset_buffer(&mut b), (0, Some(3)));
+        assert_eq!(b, W30a16Buffer::default());
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave30/agent17.rs
+// ===========================================================================
+// Wave 30 agent 17: tact file-tree helpers (pure reference models).
+
+/// `0x00b33410`: initialises a stream-slot record from a six-word source
+/// descriptor; words 1..7 are copied and word 7 is `flags | 0x80`.
+pub fn w30a17_init_slot_flags(src: &[u32; 6], flags: u32) -> [u32; 8] {
+    let mut out = [0u32; 8];
+    out[1..7].copy_from_slice(src);
+    out[7] = flags | 0x80;
+    out
+}
+
+/// `0x00b334c0`: initialises an 0x12-word record from a six-word source;
+/// words 1..7 are copied and words 8..0x12 are zeroed.
+pub fn w30a17_init_slot_zeroed(src: &[u32; 6]) -> [u32; 0x12] {
+    let mut out = [0u32; 0x12];
+    out[1..7].copy_from_slice(src);
+    out
+}
+
+/// `0x00b335c0`: identical to the `0x00b334c0` initialiser (separate
+/// template instance).
+pub fn w30a17_init_slot_zeroed_b(src: &[u32; 6]) -> [u32; 0x12] {
+    w30a17_init_slot_zeroed(src)
+}
+
+/// `0x00b34a50`: path-join length check.  Returns `false` when the root
+/// length plus separator plus the relative length exceeds `0x104`
+/// (MAX_PATH), the case where the original raises an error.
+pub fn w30a17_path_fits(root_len: u32, rel_len: u32) -> bool {
+    root_len.wrapping_add(1).wrapping_add(rel_len) <= 0x104
+}
+
+/// Outcome of the open/create flag decision in [`w30a17_create_dir_plan`].
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum W30a17DirPlan {
+    /// Neither read nor write bit set: nothing happens.
+    Nothing,
+    /// Proceed to resolve the path without creating it.
+    Resolve,
+    /// Create the directory, then resolve.
+    CreateThenResolve,
+    /// Read-only tree: "failed attempt to create a subdirectory" error.
+    ErrReadOnly,
+}
+
+/// `0x00b35a40`: decides what to do from the mode `flags` (bits 0..2 access,
+/// bit 2 = create dir) and the read-only state of the tree.
+pub fn w30a17_create_dir_plan(flags: u32, read_only: bool) -> W30a17DirPlan {
+    if flags & 3 == 0 {
+        return W30a17DirPlan::Nothing;
+    }
+    if flags & 4 != 0 {
+        if read_only {
+            return W30a17DirPlan::ErrReadOnly;
+        }
+        return W30a17DirPlan::CreateThenResolve;
+    }
+    W30a17DirPlan::Resolve
+}
+
+/// `0x00b35a40` (second half): mkdir failure handling.  `errno` 7 is the
+/// tolerated "exists" code; with the exclusive bit (8) it is an error.
+/// Returns `Ok(())` if execution continues, `Err(())` on a logged error.
+pub fn w30a17_mkdir_failure(errno: i32, flags: u32) -> Result<(), ()> {
+    if errno != 7 || flags & 8 != 0 {
+        Err(())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests_wave30_agent17 {
+    use super::*;
+
+    #[test]
+    fn slot_init() {
+        let s = [1, 2, 3, 4, 5, 6];
+        let a = w30a17_init_slot_flags(&s, 1);
+        assert_eq!(a, [0, 1, 2, 3, 4, 5, 6, 0x81]);
+        let b = w30a17_init_slot_zeroed(&s);
+        assert_eq!(&b[1..7], &s);
+        assert!(b[8..].iter().all(|&x| x == 0));
+        assert_eq!(w30a17_init_slot_zeroed_b(&s), b);
+    }
+
+    #[test]
+    fn path_len() {
+        assert!(w30a17_path_fits(0x100, 3));
+        assert!(!w30a17_path_fits(0x100, 4));
+    }
+
+    #[test]
+    fn dir_plan() {
+        assert_eq!(w30a17_create_dir_plan(0, false), W30a17DirPlan::Nothing);
+        assert_eq!(w30a17_create_dir_plan(1, false), W30a17DirPlan::Resolve);
+        assert_eq!(
+            w30a17_create_dir_plan(5, false),
+            W30a17DirPlan::CreateThenResolve
+        );
+        assert_eq!(w30a17_create_dir_plan(5, true), W30a17DirPlan::ErrReadOnly);
+        assert!(w30a17_mkdir_failure(7, 0).is_ok());
+        assert!(w30a17_mkdir_failure(7, 8).is_err());
+        assert!(w30a17_mkdir_failure(2, 0).is_err());
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave30/agent18.rs
+// ===========================================================================
+// Wave 30 agent 18: tact memory-file helpers and open-flag mapping.
+
+/// `0x00b35f10`: maps the caller's open mode to the native open flags: low
+/// two bits 0/1 -> `0x8000`, 2 -> `0x8001`, 3 -> `0x8002`; bit 2 adds `0x100`.
+pub fn w30a18_open_flags(mode: u32) -> u32 {
+    let base = match mode & 3 {
+        2 => 0x8001,
+        3 => 0x8002,
+        _ => 0x8000,
+    };
+    if mode & 4 != 0 { base | 0x100 } else { base }
+}
+
+/// `0x00b36a40`: memory-file read.  `buf` is the backing store, `pos` the
+/// cursor (+0x10) and `len` the valid length (+0xc).  `want` is clamped to
+/// the remaining bytes (0 at or past the end); returns the bytes to copy.
+pub fn w30a18_mem_read<'a>(buf: &'a [u8], pos: usize, len: usize, want: &mut usize) -> &'a [u8] {
+    if len <= pos {
+        *want = 0;
+        return &[];
+    }
+    let avail = len - pos;
+    if avail < *want {
+        *want = avail;
+    }
+    &buf[pos..pos + *want]
+}
+
+/// Outcome of [`w30a18_mem_write_check`].
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum W30a18WriteStatus {
+    /// Status 2: file is read-only (flag +0x14).
+    ReadOnly,
+    /// Status 0: nothing to write.
+    Empty,
+    /// Data fits inside the current length; copy at the cursor, status continues.
+    Fits,
+    /// Status 0xd: would need to grow but growth is forbidden (flag +0x15).
+    Fixed,
+    /// Buffer must be grown to at least this end offset before copying.
+    Grow(usize),
+}
+
+/// `0x00b36b30`: memory-file write pre-check.
+pub fn w30a18_mem_write_check(
+    read_only: bool,
+    no_grow: bool,
+    pos: usize,
+    len: usize,
+    count: usize,
+) -> W30a18WriteStatus {
+    if read_only {
+        return W30a18WriteStatus::ReadOnly;
+    }
+    if count == 0 {
+        return W30a18WriteStatus::Empty;
+    }
+    let end = pos.wrapping_add(count);
+    if end < len {
+        return W30a18WriteStatus::Fits;
+    }
+    if no_grow {
+        return W30a18WriteStatus::Fixed;
+    }
+    W30a18WriteStatus::Grow(end)
+}
+
+/// `0x00b38d20`: validates through `check`, then reports whether the state
+/// byte (+0x90 of the inner object) equals 1.
+pub fn w30a18_state_is_one(check: bool, state: u8) -> bool {
+    check && state == 1
+}
+
+#[cfg(test)]
+mod tests_wave30_agent18 {
+    use super::*;
+
+    #[test]
+    fn open_flags() {
+        assert_eq!(w30a18_open_flags(0), 0x8000);
+        assert_eq!(w30a18_open_flags(1), 0x8000);
+        assert_eq!(w30a18_open_flags(2), 0x8001);
+        assert_eq!(w30a18_open_flags(7), 0x8102);
+    }
+
+    #[test]
+    fn read_clamps() {
+        let b = [1u8, 2, 3, 4];
+        let mut n = 10;
+        assert_eq!(w30a18_mem_read(&b, 1, 4, &mut n), &[2, 3, 4]);
+        assert_eq!(n, 3);
+        let mut n = 2;
+        assert_eq!(w30a18_mem_read(&b, 0, 4, &mut n), &[1, 2]);
+        let mut n = 2;
+        assert!(w30a18_mem_read(&b, 4, 4, &mut n).is_empty());
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn write_check() {
+        use W30a18WriteStatus::*;
+        assert_eq!(w30a18_mem_write_check(true, false, 0, 8, 1), ReadOnly);
+        assert_eq!(w30a18_mem_write_check(false, false, 0, 8, 0), Empty);
+        assert_eq!(w30a18_mem_write_check(false, false, 0, 8, 7), Fits);
+        assert_eq!(w30a18_mem_write_check(false, true, 0, 8, 8), Fixed);
+        assert_eq!(w30a18_mem_write_check(false, false, 4, 8, 8), Grow(12));
+    }
+
+    #[test]
+    fn state() {
+        assert!(w30a18_state_is_one(true, 1));
+        assert!(!w30a18_state_is_one(true, 0));
+        assert!(!w30a18_state_is_one(false, 1));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave30/agent19.rs
+// ===========================================================================
+// Wave 30 agent 19: small runtime helpers.
+
+/// `0x00b3a8f0`: copies two 16-byte blocks at offsets `0x70` and `0x80` of
+/// the object (taken under its lock at `+0xa0`) into a 32-byte output.
+pub fn w30a19_copy_locked_pair(obj: &[u8]) -> Option<[u8; 32]> {
+    let a = obj.get(0x70..0x90)?;
+    let mut out = [0u8; 32];
+    out.copy_from_slice(a);
+    Some(out)
+}
+
+/// `0x00b3ac30`: scans 16-byte records (four i32 words) for one whose
+/// words 0 and 1 equal `(key_a, key_b)` and returns its word 2 (the owner
+/// pointer); `None` when absent.
+pub fn w30a19_find_record_owner(records: &[[i32; 4]], key_a: i32, key_b: i32) -> Option<i32> {
+    records
+        .iter()
+        .find(|r| r[0] == key_a && r[1] == key_b)
+        .map(|r| r[2])
+}
+
+/// `0x00b3af20`: capacity growth.  The low 31 bits of `word` hold the
+/// capacity; when below `wanted` the new capacity is the larger of
+/// `cap + cap/2` and `wanted`, and the top bit is preserved.  Returns the
+/// updated word, or `None` when no growth is needed.
+pub fn w30a19_grow_capacity_word(word: u32, wanted: u32) -> Option<u32> {
+    let cap = word & 0x7fff_ffff;
+    if cap >= wanted {
+        return None;
+    }
+    let mut new_cap = ((word >> 1) & 0x3fff_ffff) + cap;
+    if new_cap < wanted {
+        new_cap = wanted;
+    }
+    Some(((word ^ new_cap) & 0x7fff_ffff) ^ word)
+}
+
+/// `0x00b3dfd0`: derives the 64-bit low-bits mask `(1 << bits) - 1`
+/// (wrapping; `bits >= 64` yields all ones) as `(lo, hi)` words.
+pub fn w30a19_bit_mask_words(bits: u8) -> (u32, u32) {
+    let b = bits as u32;
+    let mut hi_v = 0u32;
+    let mut lo_v = 1u32 << (b & 31);
+    if b > 31 {
+        hi_v = lo_v;
+        lo_v = 0;
+    }
+    if b > 63 {
+        hi_v = lo_v;
+    }
+    (
+        lo_v.wrapping_sub(1),
+        hi_v.wrapping_sub(1).wrapping_add((lo_v != 0) as u32),
+    )
+}
+
+#[cfg(test)]
+mod tests_wave30_agent19 {
+    use super::*;
+
+    #[test]
+    fn copy_pair() {
+        let mut o = vec![0u8; 0xa0];
+        o[0x70] = 1;
+        o[0x8f] = 9;
+        let r = w30a19_copy_locked_pair(&o).unwrap();
+        assert_eq!((r[0], r[31]), (1, 9));
+        assert!(w30a19_copy_locked_pair(&o[..0x80]).is_none());
+    }
+
+    #[test]
+    fn find_owner() {
+        let r = [[1, 2, 3, 0], [4, 5, 6, 0]];
+        assert_eq!(w30a19_find_record_owner(&r, 4, 5), Some(6));
+        assert_eq!(w30a19_find_record_owner(&r, 4, 6), None);
+    }
+
+    #[test]
+    fn grow() {
+        assert_eq!(w30a19_grow_capacity_word(10, 8), None);
+        assert_eq!(w30a19_grow_capacity_word(10, 12), Some(15));
+        assert_eq!(w30a19_grow_capacity_word(10, 100), Some(100));
+        assert_eq!(
+            w30a19_grow_capacity_word(0x8000_0004, 100),
+            Some(0x8000_0064)
+        );
+    }
+
+    #[test]
+    fn mask() {
+        assert_eq!(w30a19_bit_mask_words(0), (0, 0));
+        assert_eq!(w30a19_bit_mask_words(8), (0xff, 0));
+        assert_eq!(w30a19_bit_mask_words(32), (0xffff_ffff, 0));
+        assert_eq!(w30a19_bit_mask_words(40), (0xffff_ffff, 0xff));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave30/agent20.rs
+// ===========================================================================
+// Wave 30 agent 20: recoverable guard logic from the 0xb3e..0xb43 container /
+// MultiProcessIndex glue.  Everything else in the queue is SEH/vtable glue.
+
+/// `0x00b3e430`: shifts `offset` right by `shift` and validates the span
+/// index: it must be below `0x3ff` and survive the optional round-trip check.
+pub fn w30a20_span_index(offset: u64, shift: u8, roundtrip_ok: Option<bool>) -> Option<u32> {
+    let v = (offset >> (shift & 63)) as u32;
+    let same = roundtrip_ok.unwrap_or(true);
+    if v < 0x3ff && same { Some(v) } else { None }
+}
+
+/// `0x00b3f360`: the buffer must hold at least `count` headers of `0x1e` bytes.
+pub fn w30a20_headers_fit(buf_len: u32, count: u8) -> bool {
+    buf_len >= u32::from(count) * 0x1e
+}
+
+/// `0x00b43050`: clamps the filled prefix length of a 9-byte key slot and
+/// returns the number of trailing bytes to zero (`9 - min(len, 9)`).
+pub fn w30a20_zero_tail_len(len: u32) -> u32 {
+    9 - len.min(9)
+}
+
+/// `0x00b41c20`: maps a block kind to its table offset (4 -> `0x150`,
+/// 5 -> `0x154`); other kinds yield `None` (the function returns 0).
+pub fn w30a20_kind_offset(kind: i32) -> Option<u32> {
+    match kind {
+        4 => Some(0x150),
+        5 => Some(0x154),
+        _ => None,
+    }
+}
+
+/// `0x00b410a0`: recursive-owner bookkeeping: when no owner is set the
+/// caller becomes owner with depth 1, otherwise the depth is incremented.
+pub fn w30a20_acquire_owner(owner: &mut u32, depth: &mut u32, caller: u32) {
+    if *owner == 0 {
+        *owner = caller;
+        *depth = 1;
+    } else {
+        *depth += 1;
+    }
+}
+
+/// `0x00b427f0`: true when the NUL-terminated name plus 7 bytes still fits
+/// the 255-byte stack buffer (length incl. NUL + 7 - 1 < 0x100 check).
+pub fn w30a20_name_fits(name: &[u8]) -> bool {
+    let len = name.iter().position(|&b| b == 0).unwrap_or(name.len());
+    len + 7 < 0x100
+}
+
+#[cfg(test)]
+mod tests_wave30_agent20 {
+    use super::*;
+
+    #[test]
+    fn span_index() {
+        assert_eq!(w30a20_span_index(0x1000, 4, None), Some(0x100));
+        assert_eq!(w30a20_span_index(0x3ff, 0, None), None);
+        assert_eq!(w30a20_span_index(0x3fe, 0, Some(false)), None);
+        assert_eq!(w30a20_span_index(0x3fe, 0, Some(true)), Some(0x3fe));
+    }
+
+    #[test]
+    fn headers() {
+        assert!(w30a20_headers_fit(0x1e * 3, 3));
+        assert!(!w30a20_headers_fit(0x1e * 3 - 1, 3));
+    }
+
+    #[test]
+    fn zero_tail() {
+        assert_eq!(w30a20_zero_tail_len(0), 9);
+        assert_eq!(w30a20_zero_tail_len(20), 0);
+    }
+
+    #[test]
+    fn kinds() {
+        assert_eq!(w30a20_kind_offset(4), Some(0x150));
+        assert_eq!(w30a20_kind_offset(5), Some(0x154));
+        assert_eq!(w30a20_kind_offset(6), None);
+    }
+
+    #[test]
+    fn owner() {
+        let (mut o, mut d) = (0, 0);
+        w30a20_acquire_owner(&mut o, &mut d, 7);
+        w30a20_acquire_owner(&mut o, &mut d, 7);
+        assert_eq!((o, d), (7, 2));
+    }
+
+    #[test]
+    fn name() {
+        assert!(w30a20_name_fits(b"abc\0"));
+        assert!(!w30a20_name_fits(&[b'a'; 249]));
+        assert!(w30a20_name_fits(&[b'a'; 248]));
+    }
+}

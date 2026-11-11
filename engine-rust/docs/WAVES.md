@@ -21,3 +21,4 @@ One line per merged wave.  Append; do not rewrite history.  Format:
 - Wave 27 (2026-11-11, queue, tiers 2-3, 20 agents): +115 translated (ledger 4282 -> 4397), lib tests 3835, full suite 4112; 285 rows to skiplist.tsv (3984 total).
 - Wave 28 (2026-11-11, queue, tiers 2-3, 20 agents): +159 translated (ledger 4397 -> 4556), lib tests 3921, full suite 4198; 241 rows to skiplist.tsv (4225 total).
 - Wave 29 (2026-11-11, queue, tiers 2-3, 20 agents): +81 translated (ledger 4556 -> 4637), lib tests 3986, full suite 4263; 319 rows to skiplist.tsv (4544 total).  Many rows were Blizzard TACT/CDN code (bnet).
+- Wave 30 (2026-11-11, queue, tiers 2-3, 20 agents): +51 translated (ledger 4637 -> 4688), lib tests 4034, full suite 4311; 349 rows to skiplist.tsv (4893 total).  Six agents got only TACT/CDN rows (0 translated); triage_corpus.py now propagates the bnet mark (704 rows).  Waves paused by the owner after this merge.
