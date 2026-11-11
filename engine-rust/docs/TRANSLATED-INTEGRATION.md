@@ -99,3 +99,17 @@ All `src/wave13/agentNN.rs` staging files and the isolated harnesses were
 deleted after the merge.  The two endpoint getters `0x0066f800` and
 `0x0066fd00` landed in a follow-up commit.  Ledger: 2444 → 2620; lib tests:
 2613; clippy and fmt clean.
+
+## Waves 15–16 (2026-11-11, triage queue, tier 1)
+
+Waves 15 and 16 added 156 exact ledger functions (ledger 2801 → 2957) in
+`sim.rs` (110), `ai_recovered.rs` (27) and `client.rs` (19).  Almost all of
+them model retail structures the rules core does not keep (intrusive lists,
+28/40-byte records, global tables), so they stay auditable reference helpers;
+the unresolved callees are closure or `bool` parameters.
+
+Wired / proven against the engine:
+
+| Address | Helper | Engine side | Test |
+|---|---|---|---|
+| `0x005692b0` + `0x00569120` | `w15a04_direction`, `w16a04_signed_table_search` | `unit_anim::facing_of` (floating-point `atan2`) | `unit_anim::tests::facing_matches_the_retail_direction_routine` — retail table lookup (rebuilt analytically) and the engine agree within one facing unit over ±300 px |
