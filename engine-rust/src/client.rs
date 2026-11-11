@@ -67746,3 +67746,3995 @@ mod tests_wave29_agent01 {
         assert_eq!(p, [(1, 2), (0, 0)]);
     }
 }
+
+// ===========================================================================
+// Merged from src/wave31/agent02.rs
+// ===========================================================================
+// Wave 31 batch 02 (client.rs helpers): hash-table iteration, substring
+// search and small packers.
+
+/// Iterator cursor of the chained hash table (`cur`, `bucket`, `end`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct W31a02Cursor {
+    /// Current node index (0 = none).
+    pub node: u32,
+    /// Current bucket slot index.
+    pub bucket: usize,
+    /// One past the last bucket slot.
+    pub end: usize,
+}
+
+/// `0x0053b260`: advance the cursor: follow the node's next link; if none,
+/// scan forward through `buckets` for the next non-empty slot.
+/// `next_of` yields a node's next link.
+pub fn w31a02_cursor_advance(c: &mut W31a02Cursor, buckets: &[u32], next_of: impl Fn(u32) -> u32) {
+    if c.node != 0 {
+        c.node = next_of(c.node);
+        if c.node != 0 {
+            return;
+        }
+    }
+    c.bucket += 1;
+    while c.bucket < c.end {
+        c.node = buckets.get(c.bucket).copied().unwrap_or(0);
+        if c.node != 0 {
+            return;
+        }
+        c.bucket += 1;
+    }
+}
+
+/// `0x0053e8a0`: hash-table find; key hash is a 32-bit finalizer
+/// (murmur3-style, multipliers `0x85EBCA6B`, `0xC2B2AE35`) masked by
+/// `bucket_count - 1`.  Returns `(node, bucket_slot, end_slot)`; a missing
+/// key yields `node == 0` and `bucket_slot == bucket_count`.
+/// `bucket_count` must be a power of two; `buckets` holds node ids,
+/// `next_of`/`key_of` read a node.
+pub fn w31a02_hash_find(
+    bucket_count: u32,
+    buckets: Option<&[u32]>,
+    key: u32,
+    next_of: impl Fn(u32) -> u32,
+    key_of: impl Fn(u32) -> u32,
+) -> (u32, u32, u32) {
+    let Some(b) = buckets else {
+        return (0, bucket_count << 2, bucket_count << 2);
+    };
+    let mut h = (key >> 16 ^ key).wrapping_mul(0x85EB_CA6B);
+    h = (h >> 13 ^ h).wrapping_mul(0xC2B2_AE35);
+    h = (h >> 16 ^ h) & bucket_count.wrapping_sub(1);
+    let mut node = b.get(h as usize).copied().unwrap_or(0);
+    while node != 0 && key_of(node) != key {
+        node = next_of(node);
+    }
+    let slot = if node != 0 { h } else { bucket_count };
+    (node, slot, bucket_count)
+}
+
+/// `0x00549a60`: forward substring search of `needle` in `hay[..hay_len]`
+/// starting at `start`; returns the match index or `u32::MAX`.  An empty
+/// needle returns `start` when `start <= hay_len`.
+pub fn w31a02_find_bytes(hay: &[u8], hay_len: u32, needle: &[u8], start: u32) -> u32 {
+    let n = needle.len() as u32;
+    if start <= hay_len {
+        if n == 0 {
+            return start;
+        }
+        let mut end = start + n;
+        let mut s = start;
+        while end <= hay_len {
+            let from = s as usize;
+            if hay.get(from..from + n as usize) == Some(needle) {
+                return s;
+            }
+            end += 1;
+            s += 1;
+        }
+    }
+    u32::MAX
+}
+
+/// `0x0057b8b0`: packed key of a record: when `kind < 5` defers to
+/// `fallback`; else `((kind << 18 | flags & 0x10) << 9) | id`.
+pub fn w31a02_pack_key(kind: u8, flags: u8, id: u16, fallback: impl Fn() -> u32) -> u32 {
+    if kind < 5 {
+        return fallback();
+    }
+    ((u32::from(kind) << 18 | u32::from(flags & 0x10)) << 9) | u32::from(id)
+}
+
+/// `0x00595c20`: push-back of an element given by reference `idx` into the
+/// vector `v` (aliasing-safe): skipped when `idx == end_marker`; if the
+/// source lies inside the vector, its value is copied before growth.
+/// `src_in_vec` is the element index when the source is inside `v`.
+pub fn w31a02_push_back_alias(
+    v: &mut Vec<u32>,
+    is_end: bool,
+    src_in_vec: Option<usize>,
+    value: u32,
+) {
+    if is_end {
+        return;
+    }
+    let v_copy = match src_in_vec {
+        Some(i) if i < v.len() => v[i],
+        _ => value,
+    };
+    v.push(v_copy);
+}
+
+/// `0x00597560`: begin() of a bucket table: when the table exists, the
+/// first node is `first`; if zero, advance via `advance`.  Returns
+/// `(node, table_ptr, end)`; with no table returns `(0, n << 2, n << 2)`.
+pub fn w31a02_table_begin(
+    bucket_count: u32,
+    table: Option<u32>,
+    first: u32,
+    advance: impl FnOnce() -> u32,
+) -> (u32, u32, u32) {
+    match table {
+        Some(t) => {
+            let node = if first == 0 { advance() } else { first };
+            (node, t, t.wrapping_add(bucket_count))
+        }
+        None => (0, bucket_count << 2, bucket_count << 2),
+    }
+}
+
+/// `0x0060aa00`: lazily cached timestamp; on first use queries `query`
+/// (returning the raw value, or `None`) and scales via `scale`; the result
+/// (0 on failure) is cached.  Returns the cached `(lo, hi)` pair.
+pub fn w31a02_cached_time(
+    cache: &mut Option<u64>,
+    query: impl FnOnce() -> Option<u64>,
+    scale: impl FnOnce(u64) -> u64,
+) -> (u32, u32) {
+    let v = *cache.get_or_insert_with(|| query().map(scale).unwrap_or(0));
+    (v as u32, (v >> 32) as u32)
+}
+
+/// `0x0053f840`: initialise a stream-like record `[a, b, c, 0, 0, 0x20000]`;
+/// slot 3 is replaced by `probe()` when it returns `Some`.
+pub fn w31a02_init_record_a(
+    a: u32,
+    b: u32,
+    c: u32,
+    probe: impl FnOnce() -> Option<u32>,
+) -> [u32; 6] {
+    let mut r = [a, b, c, 0, 0, 0x20000];
+    if let Some(p) = probe() {
+        r[3] = p;
+    }
+    r
+}
+
+/// `0x0053f8a0`: like the sibling initialiser but layout `[0, a, b, 0, 0,
+/// 0x20000]`.
+pub fn w31a02_init_record_b(a: u32, b: u32, probe: impl FnOnce() -> Option<u32>) -> [u32; 6] {
+    let mut r = [0, a, b, 0, 0, 0x20000];
+    if let Some(p) = probe() {
+        r[3] = p;
+    }
+    r
+}
+
+#[cfg(test)]
+mod tests_wave31_agent02 {
+    use super::*;
+
+    #[test]
+    fn cursor() {
+        let buckets = [0, 0, 7, 0, 9];
+        let mut c = W31a02Cursor {
+            node: 5,
+            bucket: 0,
+            end: 5,
+        };
+        w31a02_cursor_advance(&mut c, &buckets, |n| if n == 5 { 0 } else { 0 });
+        assert_eq!((c.node, c.bucket), (7, 2));
+        w31a02_cursor_advance(&mut c, &buckets, |_| 0);
+        assert_eq!((c.node, c.bucket), (9, 4));
+        w31a02_cursor_advance(&mut c, &buckets, |_| 0);
+        assert_eq!((c.node, c.bucket), (0, 5));
+    }
+
+    #[test]
+    fn find() {
+        assert_eq!(w31a02_hash_find(4, None, 1, |_| 0, |_| 0), (0, 16, 16));
+        let b = [1u32, 0, 0, 0];
+        let r = w31a02_hash_find(4, Some(&b), 0, |_| 0, |_| 7);
+        assert_eq!(r.0, 0);
+        assert_eq!(r.1, 4);
+        let h = w31a02_hash_find(4, Some(&[1, 1, 1, 1]), 3, |_| 0, |_| 3);
+        assert_eq!(h.0, 1);
+        assert!(h.1 < 4);
+    }
+
+    #[test]
+    fn bytes() {
+        assert_eq!(w31a02_find_bytes(b"abcabc", 6, b"ca", 0), 2);
+        assert_eq!(w31a02_find_bytes(b"abcabc", 6, b"zz", 0), u32::MAX);
+        assert_eq!(w31a02_find_bytes(b"abc", 3, b"", 2), 2);
+        assert_eq!(w31a02_find_bytes(b"abc", 3, b"", 4), u32::MAX);
+        assert_eq!(w31a02_find_bytes(b"abcabc", 6, b"abc", 1), 3);
+    }
+
+    #[test]
+    fn pack() {
+        assert_eq!(w31a02_pack_key(4, 0, 1, || 99), 99);
+        assert_eq!(
+            w31a02_pack_key(5, 0x10, 3, || 0),
+            ((5 << 18 | 0x10) << 9) | 3
+        );
+    }
+
+    #[test]
+    fn push() {
+        let mut v = vec![1, 2];
+        w31a02_push_back_alias(&mut v, true, None, 5);
+        assert_eq!(v.len(), 2);
+        w31a02_push_back_alias(&mut v, false, Some(1), 5);
+        assert_eq!(v, [1, 2, 2]);
+        w31a02_push_back_alias(&mut v, false, None, 8);
+        assert_eq!(v[3], 8);
+    }
+
+    #[test]
+    fn begin_and_time() {
+        assert_eq!(w31a02_table_begin(2, None, 0, || 1), (0, 8, 8));
+        assert_eq!(w31a02_table_begin(2, Some(10), 0, || 4), (4, 10, 12));
+        let mut c = None;
+        assert_eq!(
+            w31a02_cached_time(&mut c, || Some(3), |x| x * 1_000_000_000),
+            (3_000_000_000, 0)
+        );
+        assert_eq!(
+            w31a02_cached_time(&mut c, || None, |x| x),
+            (3_000_000_000, 0)
+        );
+        let mut d = None;
+        assert_eq!(w31a02_cached_time(&mut d, || None, |x| x), (0, 0));
+    }
+
+    #[test]
+    fn records() {
+        assert_eq!(
+            w31a02_init_record_a(1, 2, 3, || Some(9)),
+            [1, 2, 3, 9, 0, 0x20000]
+        );
+        assert_eq!(
+            w31a02_init_record_b(1, 2, || None),
+            [0, 1, 2, 0, 0, 0x20000]
+        );
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave31/agent03.rs
+// ===========================================================================
+// Wave 31 translation batch 03: JSON value parser dispatch/array/object
+// (client-side config parser) and two small helpers.
+
+/// Parser state shared by the JSON routines (`param_1` pair plus the error
+/// slots at `+0x18`/`+0x1c` of the reader object).
+#[derive(Debug, Clone, Default)]
+pub struct W31a03Parser {
+    pub buf: Vec<u8>,
+    pub pos: usize,
+    pub begin: usize,
+    pub err: u32,
+    pub err_off: usize,
+}
+
+impl W31a03Parser {
+    fn peek(&self) -> u8 {
+        self.buf.get(self.pos).copied().unwrap_or(0)
+    }
+    fn fail(&mut self, code: u32) {
+        self.err = code;
+        self.err_off = self.pos.wrapping_sub(self.begin);
+    }
+}
+
+/// Callbacks for the unrecovered callees of the value routines.
+pub trait W31a03Hooks {
+    /// string parse (FUN_0061d100); `is_key` is the third argument.
+    fn string(&mut self, p: &mut W31a03Parser, st: &mut Vec<[u32; 4]>, is_key: bool);
+    /// number parse (FUN_0061c5b0, the default branch).
+    fn number(&mut self, p: &mut W31a03Parser, st: &mut Vec<[u32; 4]>);
+    /// separator skip (FUN_0061d600).
+    fn skip(&mut self, p: &mut W31a03Parser);
+    /// bool commit (func_0x61_d970); true means handled.
+    fn commit_bool(&mut self, v: bool) -> bool;
+    /// array commit (FUN_0061d9b0).
+    fn commit_array(&mut self, n: u32) -> bool;
+    /// object commit (FUN_0061da10).
+    fn commit_object(&mut self, n: u32) -> bool;
+}
+
+fn w31a03_skip_ws(p: &mut W31a03Parser) {
+    while matches!(p.peek(), b' ' | b'\n' | b'\r' | b'\t') && p.pos < p.buf.len() {
+        p.pos += 1;
+    }
+}
+
+fn w31a03_push_container(st: &mut Vec<[u32; 4]>, kind: u32) {
+    st.push([0, 0, 0, kind << 16]);
+}
+
+fn w31a03_reset_top(st: &mut [[u32; 4]], kind: u32) {
+    if let Some(t) = st.last_mut() {
+        t[0] = 0;
+        t[1] = 0;
+        t[2] = 0;
+        t[3] = (t[3] & 0xffff) | (kind << 16);
+    }
+}
+
+/// `0x0061c3f0`: parses a JSON array body after `[`; pushes a 16-byte
+/// value tagged 4, error codes 7 (missing `]`) and 0x10 (commit refused).
+pub fn w31a03_parse_array<H: W31a03Hooks>(p: &mut W31a03Parser, st: &mut Vec<[u32; 4]>, h: &mut H) {
+    p.pos += 1;
+    w31a03_push_container(st, 4);
+    w31a03_skip_ws(p);
+    if p.err != 0 {
+        return;
+    }
+    if p.peek() == b']' {
+        p.pos += 1;
+        w31a03_reset_top(st, 4);
+        return;
+    }
+    let mut count = 0u32;
+    w31a03_parse_value(p, st, h);
+    if p.err != 0 {
+        return;
+    }
+    loop {
+        count += 1;
+        w31a03_skip_ws(p);
+        if p.err != 0 {
+            return;
+        }
+        if p.peek() != b',' {
+            break;
+        }
+        p.pos += 1;
+        h.skip(p);
+        if p.err != 0 {
+            return;
+        }
+        w31a03_parse_value(p, st, h);
+        if p.err != 0 {
+            return;
+        }
+    }
+    if p.peek() == b']' {
+        p.pos += 1;
+        if !h.commit_array(count) {
+            p.fail(0x10);
+        }
+    } else {
+        p.fail(7);
+    }
+}
+
+/// `0x0061cdb0`: parses a JSON object body after `{`; pushes a value tagged
+/// 3; error codes 4 (key not a string), 5 (missing `:`), 6 (missing `}`),
+/// 0x10 (commit refused).
+pub fn w31a03_parse_object<H: W31a03Hooks>(
+    p: &mut W31a03Parser,
+    st: &mut Vec<[u32; 4]>,
+    h: &mut H,
+) {
+    p.pos += 1;
+    w31a03_push_container(st, 3);
+    w31a03_skip_ws(p);
+    if p.err != 0 {
+        return;
+    }
+    if p.peek() == b'}' {
+        p.pos += 1;
+        w31a03_reset_top(st, 3);
+        return;
+    }
+    let mut count = 0u32;
+    loop {
+        if p.peek() != b'"' {
+            p.fail(4);
+            return;
+        }
+        h.string(p, st, true);
+        if p.err != 0 {
+            return;
+        }
+        w31a03_skip_ws(p);
+        if p.err != 0 {
+            return;
+        }
+        if p.peek() != b':' {
+            p.fail(5);
+            return;
+        }
+        p.pos += 1;
+        w31a03_skip_ws(p);
+        if p.err != 0 {
+            return;
+        }
+        w31a03_parse_value(p, st, h);
+        if p.err != 0 {
+            return;
+        }
+        h.skip(p);
+        if p.err != 0 {
+            return;
+        }
+        count += 1;
+        if p.peek() != b',' {
+            break;
+        }
+        p.pos += 1;
+        h.skip(p);
+        if p.err != 0 {
+            return;
+        }
+    }
+    if p.peek() != b'}' {
+        p.fail(6);
+        return;
+    }
+    p.pos += 1;
+    if !h.commit_object(count) {
+        p.fail(0x10);
+    }
+}
+
+/// `0x0061d450`: JSON value dispatch on the first byte (`"`, `[`, `{`,
+/// `null`, `true`, `false`, otherwise number).  Bad literals set error 3.
+pub fn w31a03_parse_value<H: W31a03Hooks>(p: &mut W31a03Parser, st: &mut Vec<[u32; 4]>, h: &mut H) {
+    let start = p.pos;
+    match p.peek() {
+        b'"' => h.string(p, st, false),
+        b'[' => w31a03_parse_array(p, st, h),
+        b'{' => w31a03_parse_object(p, st, h),
+        c @ (b'f' | b'n' | b't') => {
+            let word: &[u8] = match c {
+                b'f' => b"false",
+                b'n' => b"null",
+                _ => b"true",
+            };
+            // The decompiled code advances one byte at a time and stops at
+            // the first mismatch, leaving pos on the offending byte.
+            for i in 1..word.len() {
+                p.pos = start + i;
+                if p.peek() != word[i] {
+                    p.fail(3);
+                    return;
+                }
+            }
+            p.pos = start + word.len();
+            match c {
+                b'n' => {
+                    if st.capacity() == st.len() {
+                        st.reserve(1);
+                    }
+                    st.push([0; 4]);
+                }
+                _ => {
+                    if !h.commit_bool(c == b't') {
+                        p.fail(0x10);
+                    }
+                }
+            }
+        }
+        _ => h.number(p, st),
+    }
+}
+
+/// `0x0060aa90`: intern lookup.  When the bucket table exists and `find`
+/// returns a node, its id (`+0x20`) is returned; otherwise the counter is
+/// incremented, `grow` is called (FUN_0060aaf0) and the new count returned.
+pub fn w31a03_intern(
+    count: &mut u32,
+    has_buckets: bool,
+    find: impl FnOnce() -> Option<u32>,
+    grow: impl FnOnce(),
+) -> u32 {
+    if has_buckets {
+        if let Some(id) = find() {
+            return id;
+        }
+    }
+    *count += 1;
+    grow();
+    *count
+}
+
+/// `0x00635990`: true when byte 0 of the `0x4e8`-byte slot `index` is zero.
+pub fn w31a03_slot_free(slots: &[u8], index: usize) -> bool {
+    slots.get(index * 0x4e8).is_some_and(|b| *b == 0)
+}
+
+#[cfg(test)]
+mod tests_wave31_agent03 {
+    use super::*;
+
+    #[derive(Default)]
+    struct H {
+        arr: Vec<u32>,
+        obj: Vec<u32>,
+        bools: Vec<bool>,
+        refuse: bool,
+    }
+    impl W31a03Hooks for H {
+        fn string(&mut self, p: &mut W31a03Parser, st: &mut Vec<[u32; 4]>, _k: bool) {
+            p.pos += 1;
+            while p.peek() != b'"' {
+                p.pos += 1;
+            }
+            p.pos += 1;
+            st.push([0, 0, 0, 5 << 16]);
+        }
+        fn number(&mut self, p: &mut W31a03Parser, st: &mut Vec<[u32; 4]>) {
+            if !p.peek().is_ascii_digit() {
+                p.fail(3);
+                return;
+            }
+            while p.peek().is_ascii_digit() {
+                p.pos += 1;
+            }
+            st.push([1, 0, 0, 6 << 16]);
+        }
+        fn skip(&mut self, p: &mut W31a03Parser) {
+            w31a03_skip_ws(p);
+        }
+        fn commit_bool(&mut self, v: bool) -> bool {
+            self.bools.push(v);
+            !self.refuse
+        }
+        fn commit_array(&mut self, n: u32) -> bool {
+            self.arr.push(n);
+            !self.refuse
+        }
+        fn commit_object(&mut self, n: u32) -> bool {
+            self.obj.push(n);
+            !self.refuse
+        }
+    }
+
+    fn run(s: &str, h: &mut H) -> (W31a03Parser, Vec<[u32; 4]>) {
+        let mut buf = s.as_bytes().to_vec();
+        buf.push(0);
+        let mut p = W31a03Parser {
+            buf,
+            ..Default::default()
+        };
+        let mut st = Vec::new();
+        w31a03_parse_value(&mut p, &mut st, h);
+        (p, st)
+    }
+
+    #[test]
+    fn array_counts() {
+        let mut h = H::default();
+        let (p, st) = run("[1, 22 ,3]", &mut h);
+        assert_eq!(p.err, 0);
+        assert_eq!(h.arr, vec![3]);
+        assert_eq!(st[0][3] >> 16, 4);
+        let (p, _) = run("[ ]", &mut h);
+        assert_eq!(p.err, 0);
+        assert_eq!(h.arr, vec![3]);
+        let (p, _) = run("[1 2]", &mut h);
+        assert_eq!((p.err, p.err_off), (7, 3));
+    }
+
+    #[test]
+    fn object_errors_and_count() {
+        let mut h = H::default();
+        let (p, _) = run("{\"a\": 1, \"b\": [2]}", &mut h);
+        assert_eq!(p.err, 0);
+        assert_eq!(h.obj, vec![2]);
+        assert_eq!(run("{1:2}", &mut h).0.err, 4);
+        assert_eq!(run("{\"a\" 2}", &mut h).0.err, 5);
+        assert_eq!(run("{\"a\":2 3}", &mut h).0.err, 6);
+        assert_eq!(run("{}", &mut h).0.err, 0);
+    }
+
+    #[test]
+    fn literals() {
+        let mut h = H::default();
+        let (p, st) = run("null", &mut h);
+        assert_eq!((p.err, p.pos, st.len()), (0, 4, 1));
+        run("true", &mut h);
+        run("false", &mut h);
+        assert_eq!(h.bools, vec![true, false]);
+        let (p, _) = run("trux", &mut h);
+        assert_eq!((p.err, p.err_off), (3, 3));
+        h.refuse = true;
+        let (p, _) = run("true", &mut h);
+        assert_eq!((p.err, p.err_off), (0x10, 4));
+    }
+
+    #[test]
+    fn intern_and_slot() {
+        let mut n = 4;
+        assert_eq!(w31a03_intern(&mut n, true, || Some(9), || panic!()), 9);
+        assert_eq!(n, 4);
+        let mut grown = false;
+        assert_eq!(w31a03_intern(&mut n, true, || None, || grown = true), 5);
+        assert!(grown);
+        assert_eq!(w31a03_intern(&mut n, false, || Some(1), || {}), 6);
+        let mut s = vec![1u8; 0x4e8 * 2];
+        s[0x4e8] = 0;
+        assert!(!w31a03_slot_free(&s, 0));
+        assert!(w31a03_slot_free(&s, 1));
+        assert!(!w31a03_slot_free(&s, 2));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave31/agent04.rs
+// ===========================================================================
+// Wave 31 translation batch 04.
+//
+// Skipped (no `0x` prefix): FUN_0064eeb0 TLS guard glue, FUN_0064ef10 thunk,
+// FUN_0066bb20 non-returning, FUN_0066d0c0 STL tree erase, FUN_00679c90 SEH,
+// FUN_0067c5a0 STL tree bound, FUN_00681360 call chain, FUN_00688270 thunk,
+// FUN_00688730 thunk, FUN_006ad69d SEH funclet, FUN_006bb560 opaque calls,
+// FUN_006bb600 call chain.
+
+/// `0x0064ef30`: walks a chained hash table (bucket heads in `heads`,
+/// `count` buckets) calling `visit` on every node of every non-empty
+/// bucket.  Retail only scans when bucket 0 is non-empty; otherwise it
+/// takes the error path, reported here as `false`.  Node 0 means null.
+pub fn w31a04_hash_visit_all(
+    heads: &[usize],
+    count: usize,
+    next: impl Fn(usize) -> usize,
+    mut visit: impl FnMut(usize),
+) -> bool {
+    let n = count.min(heads.len());
+    if n == 0 || heads[0] == 0 {
+        return false;
+    }
+    for &head in &heads[..n] {
+        let mut node = head;
+        while node != 0 {
+            visit(node);
+            node = next(node);
+        }
+    }
+    true
+}
+
+/// `0x006a9830`: when the guard flag is set, releases the held handle.
+pub fn w31a04_guard_release(handle: u32, armed: bool, mut release: impl FnMut(u32)) {
+    if armed {
+        release(handle);
+    }
+}
+
+/// `0x006a9840`: when armed and the pointed-to object is non-null, invokes
+/// `call` with the object and a zero flag.  Returns whether it called.
+pub fn w31a04_guard_call(obj: u32, armed: bool, mut call: impl FnMut(u32, u32)) -> bool {
+    if armed && obj != 0 {
+        call(obj, 0);
+        true
+    } else {
+        false
+    }
+}
+
+/// `0x0067b060`: with `flag == 0`, queries `(status, count)`; if status is 0
+/// and count is positive, resets.  Always returns 0.
+pub fn w31a04_conditional_reset(
+    flag: i32,
+    query: impl FnOnce() -> (i32, i32),
+    reset: impl FnOnce(),
+) -> u32 {
+    if flag == 0 {
+        let (status, count) = query();
+        if status == 0 && count > 0 {
+            reset();
+        }
+    }
+    0
+}
+
+/// `0x0068ac30`: scans `entries` (each `(a, b)`) and returns 1 as soon as
+/// `cmp(a, b, key0, key1)` yields 0, otherwise 0.
+pub fn w31a04_list_contains(
+    entries: &[(u32, u32)],
+    key0: u32,
+    key1: u32,
+    mut cmp: impl FnMut(u32, u32, u32, u32) -> i32,
+) -> u32 {
+    for &(a, b) in entries {
+        if cmp(a, b, key0, key1) == 0 {
+            return 1;
+        }
+    }
+    0
+}
+
+#[cfg(test)]
+mod tests_wave31_agent04 {
+    use super::*;
+
+    #[test]
+    fn hash_visit() {
+        let heads = [1usize, 0, 3];
+        let nxt = |n: usize| if n == 1 { 2 } else { 0 };
+        let mut seen = vec![];
+        assert!(w31a04_hash_visit_all(&heads, 3, nxt, |n| seen.push(n)));
+        assert_eq!(seen, vec![1, 2, 3]);
+        assert!(!w31a04_hash_visit_all(&[0, 1], 2, nxt, |_| {}));
+    }
+
+    #[test]
+    fn guards() {
+        let mut v = vec![];
+        w31a04_guard_release(7, true, |h| v.push(h));
+        w31a04_guard_release(8, false, |h| v.push(h));
+        assert_eq!(v, vec![7]);
+        assert!(w31a04_guard_call(1, true, |_, f| assert_eq!(f, 0)));
+        assert!(!w31a04_guard_call(0, true, |_, _| {}));
+        assert!(!w31a04_guard_call(1, false, |_, _| {}));
+    }
+
+    #[test]
+    fn reset_and_contains() {
+        let mut r = 0;
+        assert_eq!(w31a04_conditional_reset(0, || (0, 1), || r += 1), 0);
+        assert_eq!(w31a04_conditional_reset(0, || (0, 0), || r += 1), 0);
+        assert_eq!(w31a04_conditional_reset(1, || (0, 5), || r += 1), 0);
+        assert_eq!(r, 1);
+        let e = [(1, 2), (3, 4)];
+        assert_eq!(
+            w31a04_list_contains(&e, 3, 4, |a, b, k, l| (a != k || b != l) as i32),
+            1
+        );
+        assert_eq!(
+            w31a04_list_contains(&e, 9, 9, |a, b, k, l| (a != k || b != l) as i32),
+            0
+        );
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave31/agent05.rs
+// ===========================================================================
+// Wave 31 translation batch 05: small client-side predicates and helpers.
+
+/// Cell record of the 0x18-byte grid at `+0xe8` (`0x006c2b90`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct W31a05Cell {
+    pub flags: u16,
+    pub cost: f32,
+    pub counter_a: u16,
+    pub counter_b: u16,
+}
+
+/// `0x006c2b90`: refreshes bit 0 of every cell: set only when bit 1 is set,
+/// bit 2 is clear and `cost >= threshold`; clears both counters.
+pub fn w31a05_refresh_cells(cells: &mut [W31a05Cell], threshold: f32) {
+    for c in cells.iter_mut() {
+        let b = c.flags as u8;
+        if (b >> 2) & 1 != 0 || (b >> 1) & 1 == 0 || c.cost < threshold {
+            c.flags &= 0xfffe;
+        } else {
+            c.flags |= 1;
+        }
+        c.counter_a = 0;
+        c.counter_b = 0;
+    }
+}
+
+/// Action selected by the key handlers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum W31a05Action {
+    None,
+    Cancel,
+    A,
+    B,
+}
+
+/// `0x006cc570`: dispatch on the event code (`0x2d` -> A, `0x2e` -> B);
+/// the global flag forces Cancel.
+pub fn w31a05_key_dispatch(flag: bool, code: i16) -> W31a05Action {
+    if flag {
+        return W31a05Action::Cancel;
+    }
+    match code {
+        0x2d => W31a05Action::A,
+        0x2e => W31a05Action::B,
+        _ => W31a05Action::None,
+    }
+}
+
+/// `0x006cc5b0`: true (Cancel is invoked) when the code is `0x2d` or `0x2e`.
+pub fn w31a05_key_cancel(code: i16) -> bool {
+    code == 0x2e || code == 0x2d
+}
+
+/// Scroll request of `0x006cc710`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum W31a05Scroll {
+    None,
+    Cancel,
+    Immediate(f32),
+    Step(f32, i32),
+}
+
+/// `0x006cc710`: code `0x11` / `0x12` scroll forward / backward; `held`
+/// is the result of the `0x11` key query.
+pub fn w31a05_scroll_dispatch(flag: bool, code: i16, held: bool) -> W31a05Scroll {
+    if flag {
+        return W31a05Scroll::Cancel;
+    }
+    match code {
+        0x11 if held => W31a05Scroll::Immediate(1.0),
+        0x11 => W31a05Scroll::Step(f32::from_bits(0x3dcc_cccd), 2),
+        0x12 if held => W31a05Scroll::Immediate(-1.0),
+        0x12 => W31a05Scroll::Step(f32::from_bits(0xbdcc_cccd), 2),
+        _ => W31a05Scroll::None,
+    }
+}
+
+/// `0x006cdc70`: stores `v` at `obj[0x60]`; `pre`/`post` model the calls
+/// before/after, `on_zero` the call made when `v == 0`.
+pub fn w31a05_set_flag_wrapped(
+    obj: &mut [u8],
+    v: u8,
+    mut pre: impl FnMut(),
+    mut on_zero: impl FnMut(),
+    mut post: impl FnMut(),
+) {
+    pre();
+    if v == 0 {
+        on_zero();
+    }
+    obj[0x60] = v;
+    post();
+}
+
+/// `0x006cddf0`: as above without the surrounding calls.
+pub fn w31a05_set_flag(obj: &mut [u8], v: u8, mut on_zero: impl FnMut()) {
+    if v == 0 {
+        on_zero();
+    }
+    obj[0x60] = v;
+}
+
+/// `0x006e1a00`: returns 0 when the query holds and `rec[4] == 0`, else 1.
+pub fn w31a05_gate(query: bool, rec: &[u8]) -> u32 {
+    if query && rec[4] == 0 { 0 } else { 1 }
+}
+
+/// `0x006e5460`: true when mode byte is 1, byte2 is 0, counter < 1 and
+/// the external check is false.
+pub fn w31a05_idle_ready(mode: u8, flag: u8, counter: i32, ext: impl FnOnce() -> bool) -> bool {
+    mode == 1 && flag == 0 && counter < 1 && !ext()
+}
+
+/// `0x006ec3c0`: scans the ten (key, value) pairs from the last down;
+/// returns the mapped value (if any) and whether the fallback call with the
+/// original value is made (when the `2` query is false).
+pub fn w31a05_table_lookup(table: &[(u8, u8); 10], key: u32, query2: bool) -> (Option<u8>, bool) {
+    let mapped = table.iter().rev().find(|e| e.0 as u32 == key).map(|e| e.1);
+    (mapped, !query2)
+}
+
+#[cfg(test)]
+mod tests_wave31_agent05 {
+    use super::*;
+
+    #[test]
+    fn cells() {
+        let mut v = vec![
+            W31a05Cell {
+                flags: 2,
+                cost: 5.0,
+                counter_a: 3,
+                counter_b: 4,
+            },
+            W31a05Cell {
+                flags: 6,
+                cost: 5.0,
+                counter_a: 1,
+                counter_b: 1,
+            },
+            W31a05Cell {
+                flags: 3,
+                cost: 1.0,
+                counter_a: 1,
+                counter_b: 1,
+            },
+        ];
+        w31a05_refresh_cells(&mut v, 2.0);
+        assert_eq!(v[0].flags, 3);
+        assert_eq!(v[1].flags, 6);
+        assert_eq!(v[2].flags, 2);
+        assert!(v.iter().all(|c| c.counter_a == 0 && c.counter_b == 0));
+    }
+
+    #[test]
+    fn keys() {
+        assert_eq!(w31a05_key_dispatch(true, 0), W31a05Action::Cancel);
+        assert_eq!(w31a05_key_dispatch(false, 0x2d), W31a05Action::A);
+        assert_eq!(w31a05_key_dispatch(false, 0x2e), W31a05Action::B);
+        assert_eq!(w31a05_key_dispatch(false, 1), W31a05Action::None);
+        assert!(w31a05_key_cancel(0x2d) && !w31a05_key_cancel(0));
+        assert_eq!(
+            w31a05_scroll_dispatch(false, 0x12, true),
+            W31a05Scroll::Immediate(-1.0)
+        );
+        assert_eq!(
+            w31a05_scroll_dispatch(false, 0x11, false),
+            W31a05Scroll::Step(f32::from_bits(0x3dcc_cccd), 2)
+        );
+        assert_eq!(
+            w31a05_scroll_dispatch(true, 0x11, false),
+            W31a05Scroll::Cancel
+        );
+        assert_eq!(w31a05_scroll_dispatch(false, 3, false), W31a05Scroll::None);
+    }
+
+    #[test]
+    fn flags_and_gates() {
+        let mut o = [9u8; 0x80];
+        let mut n = 0;
+        w31a05_set_flag(&mut o, 0, || n += 1);
+        assert_eq!((o[0x60], n), (0, 1));
+        w31a05_set_flag_wrapped(&mut o, 1, || {}, || n += 10, || {});
+        assert_eq!((o[0x60], n), (1, 1));
+        assert_eq!(w31a05_gate(true, &[0; 5]), 0);
+        assert_eq!(w31a05_gate(false, &[0; 5]), 1);
+        assert!(w31a05_idle_ready(1, 0, 0, || false));
+        assert!(!w31a05_idle_ready(1, 0, 1, || false));
+        let t = [
+            (1, 11),
+            (2, 12),
+            (3, 13),
+            (4, 14),
+            (5, 15),
+            (6, 16),
+            (7, 17),
+            (8, 18),
+            (9, 19),
+            (3, 99),
+        ];
+        assert_eq!(w31a05_table_lookup(&t, 3, false), (Some(99), true));
+        assert_eq!(w31a05_table_lookup(&t, 50, true), (None, false));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave31/agent06.rs
+// ===========================================================================
+// Wave 31 agent 06: client-side UI/redraw helpers.
+
+/// Handler kind chosen by `0x006fda20`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum W31a06Handler {
+    /// Handler at data address 0x006c_bef0.
+    Primary,
+    /// Handler at function address 0x006c_cbb0.
+    Secondary,
+}
+
+/// `0x006fda20`: maps mode 1/2/3 to (index into the three-word callback
+/// table at 0x0117_a2d8, handler).  Other modes select nothing.
+pub fn w31a06_select_handler(mode: i32) -> Option<(usize, W31a06Handler)> {
+    match mode {
+        1 => Some((0, W31a06Handler::Primary)),
+        2 => Some((1, W31a06Handler::Primary)),
+        3 => Some((2, W31a06Handler::Secondary)),
+        _ => None,
+    }
+}
+
+/// `0x007012c0`: after the common prelude, dispatches on the mode word:
+/// returns 1 or 2 for the two sub-handlers, `None` otherwise.
+pub fn w31a06_dispatch_mode(mode: i32) -> Option<u8> {
+    match mode {
+        1 => Some(1),
+        2 => Some(2),
+        _ => None,
+    }
+}
+
+/// `0x00715280`: clears the low bits of every framebuffer word with a mask
+/// chosen from `flags`.  Returns true when a mask was applied (caller then
+/// runs the redraw call).  `force_clear` drops bits 0 and 14 first.
+pub fn w31a06_mask_clear(
+    flags: &mut u32,
+    force_clear: bool,
+    buf: &mut [u32],
+    count: usize,
+) -> bool {
+    if force_clear {
+        *flags &= 0xffff_bffe;
+    }
+    let mask = if *flags & 1 != 0 {
+        0xffff_0000u32
+    } else if *flags & 0x4000 != 0 {
+        0xffff_ff00u32
+    } else {
+        return false;
+    };
+    for w in buf.iter_mut().take(count) {
+        *w &= mask;
+    }
+    true
+}
+
+/// `0x007155e0`: when neither bit 0 nor bit 14 of `flags` is set, ORs 0xff
+/// into every word.  `state` gets bit 1 set when bit 0 is clear.  Returns
+/// true when the fill ran.
+pub fn w31a06_fill_low(
+    flags: &mut u32,
+    force_clear: bool,
+    state: &mut u8,
+    buf: &mut [u32],
+    count: usize,
+) -> bool {
+    if force_clear {
+        *flags &= 0xffff_bffe;
+    }
+    if *state & 1 == 0 {
+        *state |= 2;
+    }
+    if *flags & 0x4001 != 0 {
+        return false;
+    }
+    for w in buf.iter_mut().take(count) {
+        *w |= 0xff;
+    }
+    true
+}
+
+/// One 0x14-byte slot of the marker table at 0x0117_efc8.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct W31a06Slot {
+    pub active: u8,
+    pub x: u32,
+    pub y: u32,
+    pub zero: u16,
+    pub kind: u8,
+    pub extra: u32,
+}
+
+/// `0x00719ea0`: claims the first free slot of 16 and fills it with
+/// map-pixel coordinates `((v >> 5) << shift) / div - 0x40`.  Returns the
+/// slot index, or `None` when full (or `div` is zero).
+pub fn w31a06_add_slot(
+    slots: &mut [W31a06Slot; 16],
+    x: u32,
+    y: u32,
+    kind: u8,
+    extra: u32,
+    shift: u8,
+    div: u32,
+) -> Option<usize> {
+    let i = slots.iter().position(|s| s.active == 0)?;
+    if div == 0 {
+        return None;
+    }
+    let conv = |v: u32| {
+        ((v >> 5) << (shift & 0x1f))
+            .wrapping_div(div)
+            .wrapping_sub(0x40)
+    };
+    slots[i] = W31a06Slot {
+        active: 1,
+        x: conv(x),
+        y: conv(y),
+        zero: 0,
+        kind,
+        extra,
+    };
+    Some(i)
+}
+
+/// `0x0071ae50`: writes palette entry `(a * 2 | b)` into the pixel at
+/// `(x, y)` of a surface with `stride` words.
+pub fn w31a06_put_pixel(
+    dst: &mut [u32],
+    palette: &[u32],
+    stride: usize,
+    x: usize,
+    y: usize,
+    a: usize,
+    b: usize,
+) {
+    let v = palette[(a * 2) | b];
+    dst[stride * y + x] = v;
+}
+
+/// `0x00711b80`: looks a row up with `find`, then calls `emit` with the row
+/// words chosen by `mode` (1: words 0,1; 2: words 4,5 or 6,7 depending on
+/// `alt`).  Rows have ten words.  Returns 0 when not found or mode unknown.
+pub fn w31a06_emit_row(
+    rows: &[[u32; 10]],
+    find: impl FnOnce() -> Option<usize>,
+    mode: i32,
+    alt: bool,
+    mut emit: impl FnMut(u32, u32, bool) -> u32,
+) -> u32 {
+    let Some(i) = find() else { return 0 };
+    let r = &rows[i];
+    match mode {
+        1 => emit(r[0], r[1], true),
+        2 => {
+            let (a, b) = if alt { (r[6], r[7]) } else { (r[4], r[5]) };
+            emit(a, b, false)
+        }
+        _ => 0,
+    }
+}
+
+/// `0x007129b0`: when `guard` is -1, runs the redraw variant picked by
+/// `variant_a` and then the common tail.  Returns which variant ran.
+pub fn w31a06_redraw_pick(guard: i32, variant_a: bool) -> Option<char> {
+    if guard != -1 {
+        return None;
+    }
+    Some(if variant_a { 'a' } else { 'b' })
+}
+
+#[cfg(test)]
+mod tests_wave31_agent06 {
+    use super::*;
+
+    #[test]
+    fn handler_and_dispatch() {
+        assert_eq!(w31a06_select_handler(1), Some((0, W31a06Handler::Primary)));
+        assert_eq!(
+            w31a06_select_handler(3),
+            Some((2, W31a06Handler::Secondary))
+        );
+        assert_eq!(w31a06_select_handler(0), None);
+        assert_eq!(w31a06_dispatch_mode(2), Some(2));
+        assert_eq!(w31a06_dispatch_mode(3), None);
+        assert_eq!(w31a06_redraw_pick(-1, true), Some('a'));
+        assert_eq!(w31a06_redraw_pick(-1, false), Some('b'));
+        assert_eq!(w31a06_redraw_pick(0, true), None);
+    }
+
+    #[test]
+    fn masks() {
+        let mut f = 1u32;
+        let mut b = [0xaabb_ccddu32; 3];
+        assert!(w31a06_mask_clear(&mut f, false, &mut b, 2));
+        assert_eq!(b, [0xaabb_0000, 0xaabb_0000, 0xaabb_ccdd]);
+        let mut f = 0x4000u32;
+        let mut b = [0x1234_5678u32];
+        assert!(w31a06_mask_clear(&mut f, false, &mut b, 1));
+        assert_eq!(b[0], 0x1234_5600);
+        let mut f = 0x4001u32;
+        assert!(!w31a06_mask_clear(&mut f, true, &mut b, 1));
+        assert_eq!(f, 0);
+
+        let mut f = 0u32;
+        let mut st = 0u8;
+        let mut b = [0x100u32; 2];
+        assert!(w31a06_fill_low(&mut f, false, &mut st, &mut b, 2));
+        assert_eq!(st, 2);
+        assert_eq!(b, [0x1ff, 0x1ff]);
+        let mut f = 1u32;
+        assert!(!w31a06_fill_low(&mut f, false, &mut st, &mut b, 2));
+    }
+
+    #[test]
+    fn slots() {
+        let mut s = [W31a06Slot::default(); 16];
+        assert_eq!(w31a06_add_slot(&mut s, 0x100, 0x200, 7, 9, 0, 1), Some(0));
+        assert_eq!(s[0].x, 8u32.wrapping_sub(0x40));
+        assert_eq!(s[0].y, 16u32.wrapping_sub(0x40));
+        assert_eq!(s[0].kind, 7);
+        assert_eq!(w31a06_add_slot(&mut s, 0x1000, 0, 1, 2, 1, 2), Some(1));
+        assert_eq!(s[1].x, 0x80 - 0x40);
+        for x in s.iter_mut() {
+            x.active = 1;
+        }
+        assert_eq!(w31a06_add_slot(&mut s, 0, 0, 0, 0, 0, 1), None);
+    }
+
+    #[test]
+    fn pixel_and_rows() {
+        let mut d = [0u32; 6];
+        let pal = [10, 11, 12, 13];
+        w31a06_put_pixel(&mut d, &pal, 3, 2, 1, 1, 1);
+        assert_eq!(d[5], 13);
+        let rows = [[0u32, 1, 2, 3, 4, 5, 6, 7, 8, 9]];
+        let e = |a, b, f: bool| a * 100 + b + f as u32;
+        assert_eq!(w31a06_emit_row(&rows, || Some(0), 1, false, e), 2);
+        assert_eq!(w31a06_emit_row(&rows, || Some(0), 2, false, e), 405);
+        assert_eq!(w31a06_emit_row(&rows, || Some(0), 2, true, e), 607);
+        assert_eq!(w31a06_emit_row(&rows, || None, 1, false, e), 0);
+        assert_eq!(w31a06_emit_row(&rows, || Some(0), 3, false, e), 0);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave31/agent07.rs
+// ===========================================================================
+// Wave 31 translation batch 07: client-side slot/hotkey/menu-flow helpers.
+
+/// `0x00746f10`: tallies the 12 slot flag words.  Returns
+/// `(occupied, without_0x40000, result_flag, notify)` where `result_flag` is
+/// `Some(1)` when the halves tie, `Some(2)` when the minority holds (game
+/// aborts, no notifications) and `None` otherwise.  `notify` lists the player
+/// ids (slot, or slot + 0x78 for slots >= 8) that get the 0x40000006 message.
+pub fn w31a07_slot_tally(slots: &[u32; 12]) -> (i32, i32, Option<u8>, Vec<u32>) {
+    let mut occ = 0i32;
+    let mut cnt = 0i32;
+    // The first word of the first block sets both counters at once.
+    for (i, &w) in slots.iter().take(8).enumerate() {
+        if w & 0x10000 != 0 {
+            occ += 1;
+            if w & 0x40000 == 0 {
+                cnt += 1;
+            }
+        }
+        let _ = i;
+    }
+    let flag = if occ - cnt == cnt {
+        Some(1)
+    } else if occ - cnt < cnt {
+        return (occ, cnt, Some(2), Vec::new());
+    } else {
+        None
+    };
+    let mut notify = Vec::new();
+    for (i, &w) in slots.iter().enumerate() {
+        if w & 0x10000 != 0 && w & 0x40000 == 0 {
+            let id = if i < 8 { i as u32 } else { i as u32 + 0x78 };
+            notify.push(id);
+        }
+    }
+    (occ, cnt, flag, notify)
+}
+
+/// `0x00748e00`: maps the key byte to a table row (0x80..0x83 fold to
+/// 0x0c..0x0f) and, when the lock is clear and the row kind is 2, returns the
+/// byte to latch.
+pub fn w31a07_hotkey_latch(key: u8, lock: u32, row_kind: impl Fn(usize) -> u8) -> Option<u8> {
+    if lock != 0 {
+        return None;
+    }
+    let idx = if (key as u32).wrapping_sub(0x80) < 4 {
+        ((key as u32 & 0xffff_ff7f) + 0xc) as usize
+    } else {
+        key as usize
+    };
+    (row_kind(idx) == 2).then_some(key)
+}
+
+/// `0x007490d0`: reads the latched hotkey byte; 0 when the latch is off or
+/// (lock clear and the current mode is outside 0x80..0x83).
+pub fn w31a07_latched_key(latch_on: bool, lock: u32, mode: u32, latched: u32) -> u8 {
+    let active = latch_on && !(lock == 0 && mode.wrapping_sub(0x80) >= 4);
+    if active { latched as u8 } else { 0 }
+}
+
+/// `0x0072e710`: builds the two-byte packet `[0x5f, value]` when networking
+/// is on and either 5000 ms passed since `last` or `force` is set.
+pub fn w31a07_throttled_packet(
+    online: bool,
+    now: u32,
+    last: u32,
+    force: bool,
+    value: u8,
+) -> Option<[u8; 2]> {
+    if online && (last <= now.wrapping_sub(5000) || force) {
+        Some([0x5f, value])
+    } else {
+        None
+    }
+}
+
+/// `0x0072c4d0`: five-byte packet, opcode `0x12` followed by `param` (LE).
+pub fn w31a07_packet_12(param: u32) -> [u8; 5] {
+    let b = param.to_le_bytes();
+    [0x12, b[0], b[1], b[2], b[3]]
+}
+
+/// `0x0074cbf0`: run-length table lookup for the selected cell.  `blob` is
+/// the record whose header holds x/y offsets (bytes 0x26/0x27), width/height
+/// (0x28/0x29) and the data offset (u32 at 0x2a, top bit ignored).  Returns
+/// the cell byte (0 when out of range or inside a skip run).
+pub fn w31a07_rle_cell(blob: &[u8]) -> u8 {
+    let get = |i: usize| blob.get(i).copied();
+    let (Some(h26), Some(h27), Some(h28), Some(h29)) = (get(0x26), get(0x27), get(0x28), get(0x29))
+    else {
+        return 0;
+    };
+    let mut col = -(h26 as i32);
+    let row = -(h27 as i32);
+    if !(col > -1 && row > -1 && col < h28 as i32 && row < h29 as i32) {
+        return 0;
+    }
+    let Some(off) = blob
+        .get(0x2a..0x2e)
+        .map(|b| (u32::from_le_bytes([b[0], b[1], b[2], b[3]]) & 0x7fff_ffff) as usize)
+    else {
+        return 0;
+    };
+    let Some(rp) = off.checked_sub(h27 as usize * 2) else {
+        return 0;
+    };
+    let Some(rel) = blob
+        .get(rp..rp + 2)
+        .map(|b| u16::from_le_bytes([b[0], b[1]]) as usize)
+    else {
+        return 0;
+    };
+    let mut p = off + rel;
+    loop {
+        let Some(h) = get(p) else { return 0 };
+        let run = (h & 0x3f) as i32;
+        if col < run {
+            if h & 0x80 != 0 {
+                return 0;
+            }
+            return if h & 0x40 == 0 {
+                get(p + 1 + col as usize).unwrap_or(0)
+            } else {
+                get(p + 1).unwrap_or(0)
+            };
+        }
+        col -= run;
+        let mut next = p + 1;
+        if h & 0x80 == 0 {
+            next = if h & 0x40 == 0 {
+                next + run as usize
+            } else {
+                p + 2
+            };
+        }
+        p = next;
+        if col < 0 {
+            return 0;
+        }
+    }
+}
+
+/// Menu-flow step emitted by the back/escape handlers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum W31a07Step {
+    /// Enter the alternate screen routine.
+    EnterAlt,
+    /// Run the pre-step routine.
+    Pre,
+    /// Run the screen switch with the given code.
+    Switch(u8),
+    /// Run the extra online-less routine.
+    Extra,
+    /// Run the common finish routine.
+    Finish,
+    /// Run the secondary-screen routine.
+    Secondary,
+}
+
+/// `0x0074cf00`: back handler.  Returns the steps and the new counter.
+pub fn w31a07_back_flow(sel: i32, counter: i8) -> (Vec<W31a07Step>, i8) {
+    if sel == -99 {
+        return (vec![W31a07Step::EnterAlt], counter);
+    }
+    if sel == -2 {
+        return (
+            vec![W31a07Step::Pre, W31a07Step::Switch(2), W31a07Step::Finish],
+            counter,
+        );
+    }
+    let c = counter.wrapping_sub(1);
+    if c != 0 {
+        (vec![W31a07Step::Secondary], counter.wrapping_sub(2))
+    } else {
+        (vec![W31a07Step::Finish], c)
+    }
+}
+
+/// `0x0074cf80`: back handler variant.  `online` is the connection flag,
+/// `slot_state_is_3` the retail slot-state test.
+pub fn w31a07_back_flow2(
+    sel: i32,
+    counter: i8,
+    online: bool,
+    slot_state_is_3: bool,
+) -> (Vec<W31a07Step>, i8) {
+    if sel == -2 {
+        if !online {
+            return (
+                vec![
+                    W31a07Step::Pre,
+                    W31a07Step::Switch(4),
+                    W31a07Step::Extra,
+                    W31a07Step::Finish,
+                ],
+                counter,
+            );
+        }
+        if !slot_state_is_3 {
+            return (
+                vec![W31a07Step::Pre, W31a07Step::Switch(8), W31a07Step::Finish],
+                counter,
+            );
+        }
+        return (
+            vec![W31a07Step::Pre, W31a07Step::Switch(7), W31a07Step::Finish],
+            counter,
+        );
+    }
+    if sel == 1 {
+        return (vec![W31a07Step::Finish], 0);
+    }
+    let c = counter.wrapping_sub(1);
+    if c != 0 {
+        (vec![W31a07Step::Secondary], counter.wrapping_sub(2))
+    } else {
+        (vec![W31a07Step::Finish], c)
+    }
+}
+
+#[cfg(test)]
+mod tests_wave31_agent07 {
+    use super::*;
+
+    #[test]
+    fn tally() {
+        let mut s = [0u32; 12];
+        s[0] = 0x10000;
+        s[1] = 0x10000 | 0x40000;
+        let (o, c, f, n) = w31a07_slot_tally(&s);
+        assert_eq!((o, c, f), (2, 1, Some(1)));
+        assert_eq!(n, vec![0]);
+        s[2] = 0x10000;
+        s[3] = 0x10000;
+        assert_eq!(w31a07_slot_tally(&s).2, Some(2));
+        s = [0u32; 12];
+        s[0] = 0x10000;
+        s[1] = 0x50000;
+        s[8] = 0x10000;
+        assert!(w31a07_slot_tally(&s).3.contains(&(8 + 0x78)));
+    }
+
+    #[test]
+    fn hotkey() {
+        assert_eq!(
+            w31a07_hotkey_latch(0x81, 0, |i| if i == 0xd { 2 } else { 0 }),
+            Some(0x81)
+        );
+        assert_eq!(w31a07_hotkey_latch(0x81, 1, |_| 2), None);
+        assert_eq!(w31a07_latched_key(true, 0, 0x90, 5), 0);
+        assert_eq!(w31a07_latched_key(true, 0, 0x81, 5), 5);
+        assert_eq!(w31a07_latched_key(false, 1, 0x81, 5), 0);
+    }
+
+    #[test]
+    fn packets() {
+        assert_eq!(w31a07_packet_12(0x01020304), [0x12, 4, 3, 2, 1]);
+        assert_eq!(
+            w31a07_throttled_packet(true, 6000, 1000, false, 9),
+            Some([0x5f, 9])
+        );
+        assert_eq!(w31a07_throttled_packet(true, 5999, 1000, false, 9), None);
+        assert_eq!(
+            w31a07_throttled_packet(true, 10, 1000, true, 9),
+            Some([0x5f, 9])
+        );
+        assert_eq!(w31a07_throttled_packet(false, 6000, 0, true, 9), None);
+    }
+
+    #[test]
+    fn rle() {
+        let mut b = vec![0u8; 0x40];
+        b[0x28] = 4;
+        b[0x29] = 1;
+        b[0x2a] = 0x30;
+        b[0x30] = 0;
+        b[0x31] = 0;
+        b[0x32] = 0x03; // literal run of 3
+        b[0x33] = 7;
+        b[0x34] = 8;
+        b[0x35] = 9;
+        assert_eq!(w31a07_rle_cell(&b), 7);
+        b[0x32] = 0x43; // repeat run
+        assert_eq!(w31a07_rle_cell(&b), 7);
+        b[0x32] = 0x83; // skip run
+        assert_eq!(w31a07_rle_cell(&b), 0);
+        b[0x26] = 1;
+        assert_eq!(w31a07_rle_cell(&b), 0);
+    }
+
+    #[test]
+    fn flows() {
+        assert_eq!(w31a07_back_flow(-99, 3).0, vec![W31a07Step::EnterAlt]);
+        assert_eq!(w31a07_back_flow(0, 3), (vec![W31a07Step::Secondary], 1));
+        assert_eq!(w31a07_back_flow(0, 1), (vec![W31a07Step::Finish], 0));
+        assert_eq!(
+            w31a07_back_flow2(1, 5, true, true),
+            (vec![W31a07Step::Finish], 0)
+        );
+        assert_eq!(
+            w31a07_back_flow2(-2, 5, false, true).0[1],
+            W31a07Step::Switch(4)
+        );
+        assert_eq!(
+            w31a07_back_flow2(-2, 5, true, true).0[1],
+            W31a07Step::Switch(7)
+        );
+        assert_eq!(
+            w31a07_back_flow2(-2, 5, true, false).0[1],
+            W31a07Step::Switch(8)
+        );
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave31/agent08.rs
+// ===========================================================================
+// Wave 31 translation batch 08.
+
+/// `0x00775750`: scroll direction from keys or edge state.  Returns `(x, y)`
+/// each in -1/0/1.  `edge` is `Some((cur_x, cur_y, ref_x, ref_y))` when the
+/// edge-scroll flag is set; otherwise `key(code)` queries pressed keys.
+pub fn w31a08_scroll_direction(
+    edge: Option<(i32, i32, i32, i32)>,
+    key: &dyn Fn(u32) -> bool,
+) -> (i32, i32) {
+    let (mut x, mut y) = (0i32, 0i32);
+    if let Some((cx, cy, rx, ry)) = edge {
+        if cx < rx {
+            x = -1;
+        } else if rx < cx {
+            x = 1;
+        }
+        if ry > cy {
+            y = -1;
+        } else if cy > ry {
+            y = 1;
+        }
+        return (x, y);
+    }
+    if key(99) || key(0x22) {
+        return (1, 1);
+    }
+    if key(0x61) || key(0x23) {
+        return (-1, 1);
+    }
+    if key(0x67) || key(0x24) {
+        return (-1, -1);
+    }
+    if key(0x69) || key(0x21) {
+        return (1, -1);
+    }
+    if key(0x28) || key(0x62) {
+        y = 1;
+    } else if key(0x26) || key(0x68) {
+        y = -1;
+    }
+    if key(0x27) || key(0x66) {
+        x = 1;
+    } else if key(0x25) || key(100) {
+        x = -1;
+    }
+    (x, y)
+}
+
+/// `0x0075fe10`: copies a 0x30-byte rect/state block into a 0x180 offset
+/// shadow area and then mirrors the shadow fields into the live fields.
+/// Both slices are little-endian u32 words.
+pub fn w31a08_copy_state(dst: &mut [u32], src: &[u32]) {
+    let rd16 = |w: &[u32], byte: usize| -> u16 { (w[byte / 4] >> ((byte % 4) * 8)) as u16 };
+    let wr16 = |w: &mut [u32], byte: usize, v: u16| {
+        let sh = (byte % 4) * 8;
+        let i = byte / 4;
+        w[i] = (w[i] & !(0xffffu32 << sh)) | ((v as u32) << sh);
+    };
+    dst[0x5d..0x5d + 4].copy_from_slice(&src[..4]);
+    for off in [0x10usize, 0x12, 0x14, 0x16, 0x28, 0x2a, 0x2c, 0x2e] {
+        let v = rd16(src, off);
+        let d = match off {
+            0x10 => 0x184,
+            0x12 => 0x186,
+            0x14 => 0x188,
+            0x16 => 0x18a,
+            o => o,
+        };
+        wr16(dst, d, v);
+    }
+    for i in 0..4 {
+        dst[i] = dst[0x5d + i];
+    }
+    for (a, b) in [
+        (0x10usize, 0x184usize),
+        (0x12, 0x186),
+        (0x14, 0x188),
+        (0x16, 0x18a),
+    ] {
+        let v = rd16(dst, b);
+        wr16(dst, a, v);
+    }
+}
+
+/// `0x0077e780`: sets the flag byte at offset 0x80 of each 0xb0-byte record.
+pub fn w31a08_mark_records(table: &mut [u8], count: i32) {
+    for i in 0..count.max(0) as usize {
+        table[i * 0xb0 + 0x80] = 1;
+    }
+}
+
+/// `0x007564c0`: with `active`, releases the first handle and, when the
+/// guard word is zero, reports a reset of the third.  Returns
+/// `(release_first, reset_third)`.
+pub fn w31a08_release_guard(active: bool, guard: i32) -> (bool, bool) {
+    (active, active && guard == 0)
+}
+
+/// `0x007564f0`: releases the first handle only when `active`.
+pub fn w31a08_release_if_active(active: bool) -> bool {
+    active
+}
+
+/// `0x00785e30`: pre-dispatch for message type 0xe.  Returns the action:
+/// 1 = call the init helper (sub-code 0), 2 = two refresh calls (sub-code 1),
+/// 0 = none; the handler table index is the ushort at +0x3c.
+pub fn w31a08_pre_dispatch(msg_type: i16, sub: i32) -> u8 {
+    if msg_type != 0xe {
+        return 0;
+    }
+    match sub {
+        0 => 1,
+        1 => 2,
+        _ => 0,
+    }
+}
+
+/// `0x00785f00`: classification of message types before default handling.
+/// Returns `Some(0)` for types 0, 1 and 0xf (handled, no default), else
+/// `None`.
+pub fn w31a08_msg_early_out(msg_type: i16) -> Option<u32> {
+    match msg_type {
+        0 | 1 | 0xf => Some(0),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests_wave31_agent08 {
+    use super::*;
+
+    #[test]
+    fn scroll() {
+        assert_eq!(
+            w31a08_scroll_direction(Some((1, 5, 3, 2)), &|_| false),
+            (-1, 1)
+        );
+        assert_eq!(
+            w31a08_scroll_direction(Some((3, 2, 3, 2)), &|_| false),
+            (0, 0)
+        );
+        assert_eq!(w31a08_scroll_direction(None, &|k| k == 99), (1, 1));
+        assert_eq!(w31a08_scroll_direction(None, &|k| k == 0x23), (-1, 1));
+        assert_eq!(w31a08_scroll_direction(None, &|k| k == 0x69), (1, -1));
+        assert_eq!(
+            w31a08_scroll_direction(None, &|k| k == 0x28 || k == 0x25),
+            (-1, 1)
+        );
+        assert_eq!(w31a08_scroll_direction(None, &|_| false), (0, 0));
+    }
+
+    #[test]
+    fn copy() {
+        let mut src = [0u32; 12];
+        src[0] = 7;
+        src[4] = 0x0002_0001;
+        src[5] = 0x0004_0003;
+        let mut dst = vec![0u32; 0x70];
+        w31a08_copy_state(&mut dst, &src);
+        assert_eq!(dst[0], 7);
+        assert_eq!(dst[0x5d], 7);
+        assert_eq!(dst[4], 0x0002_0001);
+        assert_eq!(dst[0x61], 0x0002_0001);
+        assert_eq!(dst[5], 0x0004_0003);
+    }
+
+    #[test]
+    fn misc() {
+        let mut t = vec![0u8; 0xb0 * 3];
+        w31a08_mark_records(&mut t, 2);
+        assert_eq!((t[0x80], t[0x130], t[0x1e0]), (1, 1, 0));
+        assert_eq!(w31a08_release_guard(true, 0), (true, true));
+        assert_eq!(w31a08_release_guard(true, 1), (true, false));
+        assert!(!w31a08_release_if_active(false));
+        assert_eq!(w31a08_pre_dispatch(0xe, 1), 2);
+        assert_eq!(w31a08_pre_dispatch(3, 0), 0);
+        assert_eq!(w31a08_msg_early_out(0xf), Some(0));
+        assert_eq!(w31a08_msg_early_out(3), None);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave31/agent09.rs
+// ===========================================================================
+// Wave 31 agent 09 translations.
+
+/// Record fields touched by `0x00797340` (offsets 0x124..0x134).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct W31a09PingRecord {
+    /// +0x124 send tick.
+    pub sent_tick: u32,
+    /// +0x128 expected token.
+    pub expected: u32,
+    /// +0x12c acknowledged token.
+    pub acked: u32,
+    /// +0x130 last round trip.
+    pub rtt: u32,
+    /// +0x134 max round trip.
+    pub max_rtt: u32,
+}
+
+/// `0x00797340`: record a reply. When a 4-byte payload is present its token
+/// must equal `expected` (else the reply is ignored), then it is stored.
+/// rtt = now - sent_tick; max_rtt keeps the maximum.
+pub fn w31a09_record_reply(
+    rec: Option<&mut W31a09PingRecord>,
+    payload: Option<(u32, u32)>,
+    now: u32,
+) {
+    let Some(rec) = rec else { return };
+    if let Some((token, len)) = payload {
+        if len == 4 {
+            if token != rec.expected {
+                return;
+            }
+            rec.acked = token;
+        }
+    }
+    let rtt = now.wrapping_sub(rec.sent_tick);
+    rec.rtt = rtt;
+    if rec.max_rtt <= rtt {
+        rec.max_rtt = rtt;
+    }
+}
+
+/// Blink state used by `0x007a0b20` (dword indices 0x172..0x177).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct W31a09Blink {
+    /// [0x172] toggled phase.
+    pub phase: u32,
+    /// [0x173] accumulated time.
+    pub elapsed: u32,
+    /// [0x174] low byte: expiry enabled.
+    pub expire_enabled: u32,
+    /// [0x177] step.
+    pub step: u32,
+}
+
+/// `0x007a0b20`: toggle phase, add step; returns true when elapsed exceeds
+/// 1999 and the low byte of the enable flag is set (caller then runs the
+/// close callbacks).
+pub fn w31a09_blink_tick(b: &mut W31a09Blink) -> bool {
+    b.phase = u32::from(b.phase == 0);
+    b.elapsed = b.elapsed.wrapping_add(b.step);
+    (b.elapsed as i32) > 1999 && (b.expire_enabled & 0xff) != 0
+}
+
+/// `0x007a73c0`: walk a NUL-terminated byte string validating each lead
+/// byte. Control bytes 1-8, 0xe-0x11, 0x15-0x19, 0x1b-0x1f and 0,9,10,12,13,
+/// 0x12,0x13 advance one; others go to `validate(pos)` (the callee at
+/// 76b0), then ASCII advances 1 and UTF-8 leads advance 2/3/4. An invalid
+/// lead returns false (the original would spin on it).
+pub fn w31a09_utf8_walk(s: &[u8], validate: &mut dyn FnMut(usize) -> bool) -> bool {
+    let mut pos = 0usize;
+    loop {
+        let b = s.get(pos).copied().unwrap_or(0);
+        if b == 0 {
+            return true;
+        }
+        let step = match b {
+            1..=8
+            | 0x0e..=0x11
+            | 0x15..=0x19
+            | 0x1b..=0x1f
+            | 9
+            | 10
+            | 0x0c
+            | 0x0d
+            | 0x12
+            | 0x13 => 1,
+            _ => {
+                if !validate(pos) {
+                    return false;
+                }
+                if b < 0x80 {
+                    1
+                } else if (b & 0xe0) == 0xc0 && b > 0xc1 {
+                    2
+                } else if (b & 0xf0) == 0xe0 {
+                    3
+                } else if (b & 0xf8) == 0xf0 && b < 0xf5 {
+                    4
+                } else {
+                    return false;
+                }
+            }
+        };
+        pos += step;
+    }
+}
+
+/// Drag-select rectangle state for `0x007a7e00`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct W31a09DragRect {
+    /// DAT 011b8678 active flag.
+    pub active: bool,
+    /// Anchor point (011b867c, 011b867e).
+    pub anchor: (i16, i16),
+    /// left, top, right, bottom (011b8680..011b8686).
+    pub rect: (i16, i16, i16, i16),
+}
+
+/// `0x007a7e00`: update the drag rectangle from the point at (x, y). When
+/// the anchor differs from the point, `fix_anchor` runs (cursor/clip check)
+/// and returns the anchor to use afterwards.
+pub fn w31a09_update_drag(
+    d: &mut W31a09DragRect,
+    x: i16,
+    y: i16,
+    fix_anchor: &mut dyn FnMut() -> (i16, i16),
+) {
+    if d.anchor != (x, y) {
+        d.anchor = fix_anchor();
+    }
+    let (ax, ay) = d.anchor;
+    d.active = true;
+    let (l, r) = if ax <= x { (ax, x) } else { (x, ax) };
+    let (t, b) = if y < ay { (y, ay) } else { (ay, y) };
+    d.rect = (l, t, r, b);
+}
+
+/// `0x007a89e0`: clears the active flag; returns true when it was set
+/// (caller then runs the follow-up routine).
+pub fn w31a09_end_drag(d: &mut W31a09DragRect) -> bool {
+    if d.active {
+        d.active = false;
+        true
+    } else {
+        false
+    }
+}
+
+/// `0x007b1900`: scale a point by two factors (truncating toward zero).
+pub fn w31a09_scale_point(fx: f64, fy: f64, x: i32, y: i32) -> (i32, i32) {
+    ((fx * x as f64) as i32, (fy * y as f64) as i32)
+}
+
+/// `0x007b2d30`: divide a point by two factors (truncating).
+pub fn w31a09_unscale_point(fx: f64, fy: f64, x: i32, y: i32) -> (i32, i32) {
+    ((x as f64 / fx) as i32, (y as f64 / fy) as i32)
+}
+
+/// `0x007b2d80`: like the unscale above, then add the origin `(ox, oy)`.
+pub fn w31a09_unscale_point_offset(
+    fx: f64,
+    fy: f64,
+    x: i32,
+    y: i32,
+    origin: (i32, i32),
+) -> (i32, i32) {
+    (
+        origin.0.wrapping_add((x as f64 / fx) as i32),
+        origin.1.wrapping_add((y as f64 / fy) as i32),
+    )
+}
+
+#[cfg(test)]
+mod tests_wave31_agent09 {
+    use super::*;
+
+    #[test]
+    fn reply() {
+        let mut r = W31a09PingRecord {
+            sent_tick: 10,
+            expected: 7,
+            max_rtt: 50,
+            ..Default::default()
+        };
+        w31a09_record_reply(Some(&mut r), Some((8, 4)), 100);
+        assert_eq!(r.rtt, 0);
+        w31a09_record_reply(Some(&mut r), Some((7, 4)), 30);
+        assert_eq!((r.acked, r.rtt, r.max_rtt), (7, 20, 50));
+        w31a09_record_reply(Some(&mut r), None, 90);
+        assert_eq!((r.rtt, r.max_rtt), (80, 80));
+        w31a09_record_reply(None, None, 1);
+    }
+
+    #[test]
+    fn blink() {
+        let mut b = W31a09Blink {
+            elapsed: 1990,
+            expire_enabled: 1,
+            step: 10,
+            ..Default::default()
+        };
+        assert!(w31a09_blink_tick(&mut b));
+        assert_eq!(b.phase, 1);
+        b.expire_enabled = 0x100;
+        assert!(!w31a09_blink_tick(&mut b));
+        assert_eq!(b.phase, 0);
+    }
+
+    #[test]
+    fn walk() {
+        let mut ok = |_p: usize| true;
+        assert!(w31a09_utf8_walk(b"", &mut ok));
+        assert!(w31a09_utf8_walk(
+            "ab\u{e9}\u{20ac}\u{1f600}\n".as_bytes(),
+            &mut ok
+        ));
+        assert!(!w31a09_utf8_walk(&[0xc0, 0x80], &mut ok));
+        assert!(!w31a09_utf8_walk(&[0xf5], &mut ok));
+        let mut no = |_p: usize| false;
+        assert!(!w31a09_utf8_walk(b"a", &mut no));
+        assert!(w31a09_utf8_walk(&[1, 9, 0x13], &mut no));
+    }
+
+    #[test]
+    fn drag() {
+        let mut d = W31a09DragRect {
+            anchor: (10, 20),
+            ..Default::default()
+        };
+        w31a09_update_drag(&mut d, 5, 30, &mut || (10, 20));
+        assert!(d.active);
+        assert_eq!(d.rect, (5, 20, 10, 30));
+        w31a09_update_drag(&mut d, 15, 2, &mut || (10, 20));
+        assert_eq!(d.rect, (10, 2, 15, 20));
+        assert!(w31a09_end_drag(&mut d));
+        assert!(!w31a09_end_drag(&mut d));
+    }
+
+    #[test]
+    fn scale() {
+        assert_eq!(w31a09_scale_point(1.5, 2.0, 3, -3), (4, -6));
+        assert_eq!(w31a09_unscale_point(2.0, 4.0, 5, -9), (2, -2));
+        assert_eq!(
+            w31a09_unscale_point_offset(2.0, 2.0, 4, 6, (100, 200)),
+            (102, 203)
+        );
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave31/agent10.rs
+// ===========================================================================
+// Wave 31 agent 10 translations (client glue helpers).
+
+/// `0x007cbbb0`: forwards three args to the base initialiser (with a
+/// trailing zero) and then sets the byte flag at `this+0x8c`.
+pub fn w31a10_init_with_flag(
+    flag_byte: &mut u8,
+    args: (u32, u32, u32),
+    base: impl FnOnce(u32, u32, u32, u32),
+) {
+    base(args.0, args.1, args.2, 0);
+    *flag_byte = 1;
+}
+
+/// `0x007e7460`: calls the base setter with `(param, 2)` and sets the byte
+/// flag at `this+0x30`.
+pub fn w31a10_set_with_mode2(flag_byte: &mut u8, param: u32, base: impl FnOnce(u32, u32)) {
+    base(param, 2);
+    *flag_byte = 1;
+}
+
+/// `0x007f26c0`: when the predicate is false, runs the registration call,
+/// marks byte `this+0x238` and stamps `this+0x248` with the running
+/// counter, which is then incremented.
+pub fn w31a10_register_once(
+    already: bool,
+    marked: &mut u8,
+    stamp: &mut i32,
+    counter: &mut i32,
+    register: impl FnOnce(),
+) {
+    if !already {
+        register();
+        *marked = 1;
+        *stamp = *counter;
+        *counter = counter.wrapping_add(1);
+    }
+}
+
+/// `0x007d6e60`: when `*flag != 0` sets state (`+0x24`) to 2, releases the
+/// buffer handle at `+0x20` (two release calls, then zeroes it) and runs the
+/// follow-up; otherwise runs the alternate path.  Returns true when the
+/// flagged branch was taken.
+pub fn w31a10_toggle_state(
+    flag: u8,
+    state: &mut u32,
+    handle: &mut u32,
+    release_prep: impl FnOnce(),
+    release: impl FnOnce(u32),
+    on_set: impl FnOnce(),
+    on_clear: impl FnOnce(),
+) -> bool {
+    if flag == 0 {
+        on_clear();
+        return false;
+    }
+    *state = 2;
+    if *handle != 0 {
+        release_prep();
+        release(*handle);
+        *handle = 0;
+    }
+    on_set();
+    true
+}
+
+#[cfg(test)]
+mod tests_wave31_agent10 {
+    use super::*;
+
+    #[test]
+    fn init_and_set() {
+        let mut f = 0u8;
+        let mut seen = (0, 0, 0, 9);
+        w31a10_init_with_flag(&mut f, (1, 2, 3), |a, b, c, d| seen = (a, b, c, d));
+        assert_eq!((f, seen), (1, (1, 2, 3, 0)));
+        let mut g = 0u8;
+        let mut m = (0, 0);
+        w31a10_set_with_mode2(&mut g, 7, |a, b| m = (a, b));
+        assert_eq!((g, m), (1, (7, 2)));
+    }
+
+    #[test]
+    fn register() {
+        let (mut m, mut s, mut c, mut n) = (0u8, 0, 5, 0);
+        w31a10_register_once(true, &mut m, &mut s, &mut c, || n += 1);
+        assert_eq!((m, s, c, n), (0, 0, 5, 0));
+        w31a10_register_once(false, &mut m, &mut s, &mut c, || n += 1);
+        assert_eq!((m, s, c, n), (1, 5, 6, 1));
+    }
+
+    #[test]
+    fn toggle() {
+        let (mut st, mut h) = (0, 4);
+        let cell = std::cell::Cell::new(0);
+        let r = w31a10_toggle_state(
+            1,
+            &mut st,
+            &mut h,
+            || cell.set(cell.get() + 1),
+            |x| cell.set(cell.get() + x),
+            || cell.set(cell.get() + 100),
+            || cell.set(0),
+        );
+        assert!(r);
+        assert_eq!((st, h, cell.get()), (2, 0, 105));
+        let r = w31a10_toggle_state(0, &mut st, &mut h, || {}, |_| {}, || {}, || cell.set(0));
+        assert!(!r);
+        assert_eq!(cell.get(), 0);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave31/agent11.rs
+// ===========================================================================
+// Wave 31 agent 11 translations.
+
+/// `0x007fa6c0`: returns 1 when both objects have a non-zero field at
+/// offset 4 and the callee `FUN_00646d60` (supplied as `check`) accepts
+/// the second object; otherwise 0.
+pub fn w31a11_both_ready_and_check(
+    a_field4: u32,
+    b_field4: u32,
+    check: impl FnOnce() -> u32,
+) -> u32 {
+    if a_field4 != 0 && b_field4 != 0 && check() != 0 {
+        1
+    } else {
+        0
+    }
+}
+
+/// Recovered view of the record compared by `0x00807c00`.
+#[derive(Clone, Debug, Default)]
+pub struct W31a11Record {
+    pub w0: u32,
+    pub w1: u32,
+    /// Sub-object at word 2 (compared through `FUN_00539640`).
+    pub sub_a: u32,
+    /// Sub-object at word 9 (compared through `FUN_00539640`).
+    pub sub_b: u32,
+    /// Bytes at offsets 0x40..=0x49.
+    pub flags: [u8; 10],
+    pub w15: u32,
+    /// Values of the intrusive list (sentinel at word 0x13).
+    pub list: Vec<u32>,
+}
+
+/// `0x00807c00`: returns 0 when the two records are equal, 1 otherwise.
+/// `sub_eq` models `FUN_00539640`.  If the other list is shorter than
+/// this one the records are reported different.
+pub fn w31a11_record_differs(
+    this: &W31a11Record,
+    other: &W31a11Record,
+    sub_eq: impl Fn(u32, u32) -> bool,
+) -> u32 {
+    let same = this.w0 == other.w0
+        && this.w1 == other.w1
+        && sub_eq(this.sub_a, other.sub_a)
+        && sub_eq(this.sub_b, other.sub_b)
+        && this.flags == other.flags
+        && this.w15 == other.w15
+        && this.list.len() <= other.list.len()
+        && this.list.iter().zip(other.list.iter()).all(|(a, b)| a == b);
+    if same { 0 } else { 1 }
+}
+
+#[cfg(test)]
+mod tests_wave31_agent11 {
+    use super::*;
+
+    #[test]
+    fn ready_check() {
+        assert_eq!(w31a11_both_ready_and_check(1, 1, || 5), 1);
+        assert_eq!(w31a11_both_ready_and_check(0, 1, || 5), 0);
+        assert_eq!(w31a11_both_ready_and_check(1, 0, || 5), 0);
+        assert_eq!(w31a11_both_ready_and_check(1, 1, || 0), 0);
+    }
+
+    #[test]
+    fn record_compare() {
+        let a = W31a11Record {
+            list: vec![1, 2],
+            ..Default::default()
+        };
+        let mut b = a.clone();
+        assert_eq!(w31a11_record_differs(&a, &b, |x, y| x == y), 0);
+        b.flags[3] = 1;
+        assert_eq!(w31a11_record_differs(&a, &b, |x, y| x == y), 1);
+        b = a.clone();
+        b.list[1] = 9;
+        assert_eq!(w31a11_record_differs(&a, &b, |x, y| x == y), 1);
+        assert_eq!(w31a11_record_differs(&a, &a, |_, _| false), 1);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave31/agent12.rs
+// ===========================================================================
+// Wave 31 agent 12: small client-side comparison and lookup helpers.
+
+/// `0x00848900`: inequality test of two records.  Returns 0 when both
+/// leading words match and the caller-supplied tail comparison
+/// (`FUN_00539640` in retail) reports equality, otherwise 1.
+pub fn w31a12_record_not_equal(
+    a: (u32, u32),
+    b: (u32, u32),
+    tail_equal: impl FnOnce() -> bool,
+) -> u32 {
+    if a.0 == b.0 && a.1 == b.1 && tail_equal() {
+        0
+    } else {
+        1
+    }
+}
+
+/// `0x00854940`: scans a list of entries in order and returns the first
+/// whose name compares equal (comparator result 0, as `FUN_0053a3e0` in
+/// retail) to `key`; `None` when no entry matches.
+pub fn w31a12_find_by_name<'a, T>(
+    entries: &'a [T],
+    name_of: impl Fn(&T) -> &str,
+    key: &str,
+    compare: impl Fn(&str, &str) -> i32,
+) -> Option<&'a T> {
+    entries.iter().find(|e| compare(key, name_of(e)) == 0)
+}
+
+#[cfg(test)]
+mod tests_wave31_agent12 {
+    use super::*;
+
+    #[test]
+    fn not_equal_cases() {
+        assert_eq!(w31a12_record_not_equal((1, 2), (1, 2), || true), 0);
+        assert_eq!(w31a12_record_not_equal((1, 2), (1, 2), || false), 1);
+        assert_eq!(w31a12_record_not_equal((1, 2), (1, 3), || true), 1);
+        assert_eq!(w31a12_record_not_equal((0, 2), (1, 2), || true), 1);
+    }
+
+    #[test]
+    fn find_by_name_first_match() {
+        let v = ["a", "b", "b"];
+        let cmp = |x: &str, y: &str| if x == y { 0 } else { 1 };
+        let r = w31a12_find_by_name(&v, |s| s, "b", cmp).unwrap();
+        assert!(std::ptr::eq(r, &v[1]));
+        assert!(w31a12_find_by_name(&v, |s| s, "z", cmp).is_none());
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave31/agent13.rs
+// ===========================================================================
+// Wave 31 agent 13 translations (client glue helpers).
+
+/// `0x00878300`: resolves `handle`; when the lookup is non-zero the
+/// result is passed to the follow-up call.  Returns whether it fired.
+pub fn w31a13_resolve_and_notify(
+    handle: u32,
+    lookup: impl Fn(u32) -> i32,
+    mut notify: impl FnMut(i32),
+) -> bool {
+    let r = lookup(handle);
+    if r != 0 {
+        notify(r);
+        true
+    } else {
+        false
+    }
+}
+
+/// `0x00878350`: forwards the global at `DAT_00fc9d8c` to its handler.
+pub fn w31a13_forward_global(global: u32, mut f: impl FnMut(u32)) {
+    f(global);
+}
+
+/// `0x00878480`: calls the first handler with the global, then the second.
+pub fn w31a13_forward_then_finish(
+    global: u32,
+    mut first: impl FnMut(u32),
+    mut second: impl FnMut(),
+) {
+    first(global);
+    second();
+}
+
+/// `0x0087b450`: releases the handle (low 16 bits of field `+0x4c`) and
+/// resets `+0x4c` to -1 and `+0x48` to 0.
+pub fn w31a13_release_handle_slot(
+    field_48: &mut u32,
+    field_4c: &mut u32,
+    mut release: impl FnMut(u16),
+) {
+    release(*field_4c as u16);
+    *field_4c = 0xffff_ffff;
+    *field_48 = 0;
+}
+
+/// `0x0087c1f0`: invokes the optional callback (object `+0x18`) with the
+/// object's context (`+4`) and four arguments.
+pub fn w31a13_invoke_callback(
+    callback: Option<&dyn Fn(u32, u32, u32, u32, u32)>,
+    context: u32,
+    args: [u32; 4],
+) -> bool {
+    match callback {
+        Some(cb) => {
+            cb(context, args[0], args[1], args[2], args[3]);
+            true
+        }
+        None => false,
+    }
+}
+
+/// `0x00880ca0`: collects the entries of the handle list whose looked-up
+/// record has type `0xf` at offset `+0x3c`, in order.
+pub fn w31a13_collect_type_f(handles: &[u32], record_type: impl Fn(u32) -> u16) -> Vec<u32> {
+    handles
+        .iter()
+        .copied()
+        .filter(|&h| record_type(h) == 0xf)
+        .collect()
+}
+
+/// `0x008964f0`: after a pre-call, scans entries `0..count` for one equal to
+/// `(wanted, 0)`; when found at an index other than `current`, removes it.
+/// Returns the removed index.
+pub fn w31a13_remove_matching(
+    wanted: u32,
+    entries: &[(u32, u32)],
+    current: i32,
+    mut remove: impl FnMut(usize),
+) -> Option<usize> {
+    let idx = entries
+        .iter()
+        .position(|&(lo, hi)| lo == wanted && hi == 0)?;
+    if current != idx as i32 {
+        remove(idx);
+        Some(idx)
+    } else {
+        None
+    }
+}
+
+/// `0x00897770`: forwards the container's inner field to the count query.
+pub fn w31a13_count_of(inner: u32, count: impl Fn(u32) -> u8) -> u8 {
+    count(inner)
+}
+
+/// `0x008a01c0`: walks a singly linked list; returns the node preceding the
+/// first one satisfying `pred`, the last node when none does, and `None`
+/// (the list head) for an empty list or a match on the first node.
+pub fn w31a13_find_prev(len: usize, pred: impl Fn(usize) -> bool) -> Option<usize> {
+    for i in 0..len {
+        if pred(i) {
+            return i.checked_sub(1);
+        }
+    }
+    len.checked_sub(1)
+}
+
+#[cfg(test)]
+mod tests_wave31_agent13 {
+    use super::*;
+
+    #[test]
+    fn small_helpers() {
+        let mut got = vec![];
+        assert!(w31a13_resolve_and_notify(3, |h| h as i32, |r| got.push(r)));
+        assert!(!w31a13_resolve_and_notify(3, |_| 0, |r| got.push(r)));
+        assert_eq!(got, vec![3]);
+        let mut v = 0;
+        w31a13_forward_global(9, |g| v = g);
+        assert_eq!(v, 9);
+        let mut log = vec![];
+        let mut l2 = vec![];
+        w31a13_forward_then_finish(5, |g| log.push(g), || l2.push(1));
+        assert_eq!((log, l2), (vec![5], vec![1]));
+        assert_eq!(w31a13_count_of(4, |x| x as u8 + 1), 5);
+    }
+
+    #[test]
+    fn slot_release() {
+        let (mut a, mut b) = (7, 0x1_0005);
+        let mut r = 0;
+        w31a13_release_handle_slot(&mut a, &mut b, |h| r = h);
+        assert_eq!((a, b, r), (0, 0xffff_ffff, 5));
+    }
+
+    #[test]
+    fn callback() {
+        assert!(!w31a13_invoke_callback(None, 1, [0; 4]));
+        let f =
+            |c: u32, a: u32, b: u32, d: u32, e: u32| assert_eq!((c, a, b, d, e), (1, 2, 3, 4, 5));
+        assert!(w31a13_invoke_callback(Some(&f), 1, [2, 3, 4, 5]));
+    }
+
+    #[test]
+    fn collect_and_remove() {
+        let t = |h: u32| if h % 2 == 0 { 0xf } else { 1 };
+        assert_eq!(w31a13_collect_type_f(&[1, 2, 4, 5], t), vec![2, 4]);
+        let mut removed = vec![];
+        let e = [(1, 0), (2, 1), (2, 0)];
+        assert_eq!(
+            w31a13_remove_matching(2, &e, 0, |i| removed.push(i)),
+            Some(2)
+        );
+        assert_eq!(w31a13_remove_matching(2, &e, 2, |i| removed.push(i)), None);
+        assert_eq!(w31a13_remove_matching(9, &e, 0, |i| removed.push(i)), None);
+        assert_eq!(removed, vec![2]);
+    }
+
+    #[test]
+    fn find_prev() {
+        assert_eq!(w31a13_find_prev(0, |_| true), None);
+        assert_eq!(w31a13_find_prev(3, |i| i == 0), None);
+        assert_eq!(w31a13_find_prev(3, |i| i == 2), Some(1));
+        assert_eq!(w31a13_find_prev(3, |_| false), Some(2));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave31/agent14.rs
+// ===========================================================================
+// Wave 31 translation batch 14.
+
+/// Event code (field at offset 0xe of the message) that yields a true flag.
+pub const W31A14_EVENT_FLAG_CODE: i16 = 10;
+
+fn w31a14_flag(event_code: i16) -> bool {
+    event_code == W31A14_EVENT_FLAG_CODE
+}
+
+/// `0x008ae6c0`: forwards `event_code == 10` to the sink.
+pub fn w31a14_ae6c0_forward_flag(event_code: i16, mut sink: impl FnMut(bool)) {
+    sink(w31a14_flag(event_code));
+}
+
+/// `0x008ae990`: teardown sequence.  `handle` is the field at index 0xfa
+/// (-1 = none); `release` is called with it when valid; `is_overridden`
+/// is the virtual at +0xa0; `owned` is the field 0xfb (taken and dropped).
+pub fn w31a14_ae990_teardown<T>(
+    handle: i32,
+    mut release: impl FnMut(i32),
+    is_overridden: bool,
+    mut default_cleanup: impl FnMut(),
+    owned: &mut Option<T>,
+    mut tail: impl FnMut(),
+) {
+    if handle != -1 {
+        release(handle);
+    }
+    if !is_overridden {
+        default_cleanup();
+    }
+    drop(owned.take());
+    tail();
+}
+
+/// `0x008a78c0`: returns the refresh step list.  Each node yields
+/// `(a, b, word)`; `resolve` maps `(a, b)` to a handle, `push` receives
+/// `(handle, word)`.  Returns true when `count > 0` (draw path), false
+/// otherwise (clear path).
+pub fn w31a14_a78c0_collect<N: Copy>(
+    nodes: &[(N, N, u16)],
+    mut resolve: impl FnMut(N, N) -> u32,
+    mut push: impl FnMut(u32, [u32; 2]),
+    count: i32,
+) -> bool {
+    for &(a, b, w) in nodes {
+        let h = resolve(a, b);
+        push(h, [w as u32, 0]);
+    }
+    count > 0
+}
+
+/// `0x008ae690`: flag computed, then action, then sink; flag is `event_code == 10`.
+pub fn w31a14_8ae690_dispatch(
+    event_code: i16,
+    mut action: impl FnMut(),
+    mut sink: impl FnMut(bool),
+) {
+    let flag = w31a14_flag(event_code);
+    action();
+    sink(flag);
+}
+
+/// `0x008ae6e0`: action, then sink; flag is `event_code == 10`.
+pub fn w31a14_8ae6e0_dispatch(
+    event_code: i16,
+    mut action: impl FnMut(),
+    mut sink: impl FnMut(bool),
+) {
+    action();
+    sink(w31a14_flag(event_code));
+}
+
+/// `0x008ae710`: action, then sink; flag is `event_code == 10`.
+pub fn w31a14_8ae710_dispatch(
+    event_code: i16,
+    mut action: impl FnMut(),
+    mut sink: impl FnMut(bool),
+) {
+    action();
+    sink(w31a14_flag(event_code));
+}
+
+/// `0x008ae740`: action, then sink; flag is `event_code == 10`.
+pub fn w31a14_8ae740_dispatch(
+    event_code: i16,
+    mut action: impl FnMut(),
+    mut sink: impl FnMut(bool),
+) {
+    action();
+    sink(w31a14_flag(event_code));
+}
+
+/// `0x008aede0`: flag computed, then action, then sink; flag is `event_code == 10`.
+pub fn w31a14_8aede0_dispatch(
+    event_code: i16,
+    mut action: impl FnMut(),
+    mut sink: impl FnMut(bool),
+) {
+    let flag = w31a14_flag(event_code);
+    action();
+    sink(flag);
+}
+
+/// `0x008af100`: flag computed, then action, then sink; flag is `event_code == 10`.
+pub fn w31a14_8af100_dispatch(
+    event_code: i16,
+    mut action: impl FnMut(),
+    mut sink: impl FnMut(bool),
+) {
+    let flag = w31a14_flag(event_code);
+    action();
+    sink(flag);
+}
+
+/// `0x008af160`: action, then sink; flag is `event_code == 10`.
+pub fn w31a14_8af160_dispatch(
+    event_code: i16,
+    mut action: impl FnMut(),
+    mut sink: impl FnMut(bool),
+) {
+    action();
+    sink(w31a14_flag(event_code));
+}
+
+/// `0x008af1d0`: action, then sink; flag is `event_code == 10`.
+pub fn w31a14_8af1d0_dispatch(
+    event_code: i16,
+    mut action: impl FnMut(),
+    mut sink: impl FnMut(bool),
+) {
+    action();
+    sink(w31a14_flag(event_code));
+}
+
+/// `0x008af6c0`: flag computed, then action, then sink; flag is `event_code == 10`.
+pub fn w31a14_8af6c0_dispatch(
+    event_code: i16,
+    mut action: impl FnMut(),
+    mut sink: impl FnMut(bool),
+) {
+    let flag = w31a14_flag(event_code);
+    action();
+    sink(flag);
+}
+
+/// `0x008af6f0`: flag computed, then action, then sink; flag is `event_code == 10`.
+pub fn w31a14_8af6f0_dispatch(
+    event_code: i16,
+    mut action: impl FnMut(),
+    mut sink: impl FnMut(bool),
+) {
+    let flag = w31a14_flag(event_code);
+    action();
+    sink(flag);
+}
+
+/// `0x008af7a0`: action, then sink; flag is `event_code == 10`.
+pub fn w31a14_8af7a0_dispatch(
+    event_code: i16,
+    mut action: impl FnMut(),
+    mut sink: impl FnMut(bool),
+) {
+    action();
+    sink(w31a14_flag(event_code));
+}
+
+/// `0x008afa60`: action, then sink; flag is `event_code == 10`.
+pub fn w31a14_8afa60_dispatch(
+    event_code: i16,
+    mut action: impl FnMut(),
+    mut sink: impl FnMut(bool),
+) {
+    action();
+    sink(w31a14_flag(event_code));
+}
+
+/// `0x008afac0`: flag computed, then action, then sink; flag is `event_code == 10`.
+pub fn w31a14_8afac0_dispatch(
+    event_code: i16,
+    mut action: impl FnMut(),
+    mut sink: impl FnMut(bool),
+) {
+    let flag = w31a14_flag(event_code);
+    action();
+    sink(flag);
+}
+
+/// `0x008b0510`: flag computed, then action, then sink; flag is `event_code == 10`.
+pub fn w31a14_8b0510_dispatch(
+    event_code: i16,
+    mut action: impl FnMut(),
+    mut sink: impl FnMut(bool),
+) {
+    let flag = w31a14_flag(event_code);
+    action();
+    sink(flag);
+}
+
+#[cfg(test)]
+mod tests_wave31_agent14 {
+    use super::*;
+
+    #[test]
+    fn flag_dispatch() {
+        let log = std::cell::RefCell::new(Vec::new());
+        w31a14_8ae690_dispatch(
+            10,
+            || log.borrow_mut().push("a"),
+            |f| log.borrow_mut().push(if f { "t" } else { "f" }),
+        );
+        assert_eq!(*log.borrow(), ["a", "t"]);
+        let mut got = None;
+        w31a14_8b0510_dispatch(9, || {}, |f| got = Some(f));
+        assert_eq!(got, Some(false));
+        w31a14_ae6c0_forward_flag(10, |f| assert!(f));
+    }
+
+    #[test]
+    fn teardown_and_collect() {
+        let mut o = Some(1);
+        let mut rel = vec![];
+        let mut flag = false;
+        w31a14_ae990_teardown(-1, |h| rel.push(h), false, || flag = true, &mut o, || {});
+        assert!(flag && rel.is_empty());
+        assert!(o.is_none());
+        let mut pushed = vec![];
+        let r = w31a14_a78c0_collect(
+            &[(1u8, 2u8, 7)],
+            |a, b| (a + b) as u32,
+            |h, w| pushed.push((h, w)),
+            1,
+        );
+        assert!(r);
+        assert_eq!(pushed, [(3, [7, 0])]);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave31/agent15.rs
+// ===========================================================================
+// Wave 31 agent 15: small client-side helpers.
+
+/// `0x008c5390`: if the handle is not `-1`, releases it through `release`
+/// and resets it to `-1`.
+pub fn w31a15_release_handle(handle: &mut i32, mut release: impl FnMut(i32)) {
+    if *handle != -1 {
+        release(*handle);
+        *handle = -1;
+    }
+}
+
+/// `0x008c1c10`: calls `probe`; when it returns false, releases the 16-bit
+/// handle in the slot (offset `0x804`) and resets the slot to `0xffffffff`.
+/// Returns the probe result.
+pub fn w31a15_probe_or_release(
+    slot: &mut u32,
+    probe: impl FnOnce() -> bool,
+    mut release: impl FnMut(u16),
+) -> bool {
+    let ok = probe();
+    if !ok {
+        release(*slot as u16);
+        *slot = 0xffff_ffff;
+    }
+    ok
+}
+
+/// `0x008c5ef0`: forwards its argument to a callee and returns it unchanged.
+pub fn w31a15_forward_arg(value: u32, mut callee: impl FnMut(u32)) -> u32 {
+    callee(value);
+    value
+}
+
+/// `0x008c0f60`: walks the list entries (`(ptr, len, handle)` triples) and
+/// returns the index of the first whose compare against `name` yields 0.
+/// `cmp(ptr, len, name_bytes)` models the callee `compare`.
+pub fn w31a15_find_entry<T>(
+    entries: &[T],
+    name: &[u8],
+    mut cmp: impl FnMut(&T, &[u8]) -> i32,
+) -> Option<usize> {
+    let len = name.iter().position(|&b| b == 0).unwrap_or(name.len());
+    entries.iter().position(|e| cmp(e, &name[..len]) == 0)
+}
+
+/// `0x008b0920`: flag passed to the callee is whether the u16 at +0xe equals 10.
+pub fn w31a15_is_kind_10_a(kind: u16) -> bool {
+    kind == 10
+}
+
+#[cfg(test)]
+mod tests_wave31_agent15 {
+    use super::*;
+
+    #[test]
+    fn release_and_probe() {
+        let mut h = 5;
+        let mut got = vec![];
+        w31a15_release_handle(&mut h, |x| got.push(x));
+        w31a15_release_handle(&mut h, |x| got.push(x));
+        assert_eq!((h, got), (-1, vec![5]));
+        let mut s = 0x1_0007u32;
+        let mut r = 0;
+        assert!(w31a15_probe_or_release(&mut s, || true, |x| r = x));
+        assert!(!w31a15_probe_or_release(&mut s, || false, |x| r = x));
+        assert_eq!((s, r), (0xffff_ffff, 7));
+    }
+
+    #[test]
+    fn forward_find_kind() {
+        let mut seen = 0;
+        assert_eq!(w31a15_forward_arg(9, |v| seen = v), 9);
+        assert_eq!(seen, 9);
+        let e = ["a", "bb", "cc"];
+        let f = w31a15_find_entry(&e, b"cc\0zz", |x, n| (x.as_bytes() != n) as i32);
+        assert_eq!(f, Some(2));
+        assert!(w31a15_is_kind_10_a(10) && !w31a15_is_kind_10_a(9));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave31/agent16.rs
+// ===========================================================================
+// Wave 31 agent 16: small UI input handlers (mouse/event glue).
+
+/// `0x008c68a0`: runs `action` and returns true unless `blocked` (the result
+/// of the 9651f0 check) is set, in which case it returns false.
+pub fn w31a16_try_action(blocked: bool, action: impl FnOnce()) -> bool {
+    if blocked {
+        return false;
+    }
+    action();
+    true
+}
+
+/// `0x008c68e0`: invokes the callee and always reports handled (true).
+pub fn w31a16_always_handled(action: impl FnOnce()) -> bool {
+    action();
+    true
+}
+
+/// Local-space mouse position helper shared by 0x008c6920 and 0x008c69a0:
+/// `(p - origin) - inner` per axis.
+pub fn w31a16_local_pos(p: (i32, i32), origin: (i32, i32), inner: (i32, i32)) -> (i32, i32) {
+    (
+        p.0.wrapping_sub(origin.0).wrapping_sub(inner.0),
+        p.1.wrapping_sub(origin.1).wrapping_sub(inner.1),
+    )
+}
+
+/// `0x008c6920`: when `hit`, forwards the local position to `sink`; always
+/// returns 1.
+pub fn w31a16_mouse_move(
+    hit: bool,
+    p: (i32, i32),
+    origin: (i32, i32),
+    inner: (i32, i32),
+    sink: impl FnOnce(i32, i32),
+) -> u32 {
+    if hit {
+        let (x, y) = w31a16_local_pos(p, origin, inner);
+        sink(x, y);
+    }
+    1
+}
+
+/// `0x008c69a0`: like `w31a16_mouse_move` but also forwards `param * 100`.
+pub fn w31a16_mouse_scroll(
+    hit: bool,
+    p: (i32, i32),
+    origin: (i32, i32),
+    inner: (i32, i32),
+    param: i32,
+    sink: impl FnOnce(i32, i32, i32),
+) -> u32 {
+    if hit {
+        let (x, y) = w31a16_local_pos(p, origin, inner);
+        sink(x, y, param.wrapping_mul(100));
+    }
+    1
+}
+
+/// `0x008c6c30`: when `ready`, runs `update`; otherwise sets the flag byte
+/// at object offset `0x1e1`.
+pub fn w31a16_update_or_flag(ready: bool, flag_1e1: &mut u8, update: impl FnOnce()) {
+    if ready {
+        update();
+    } else {
+        *flag_1e1 = 1;
+    }
+}
+
+/// `0x008db680`: takes the owned object at `+0xf48` (dropping it) and
+/// resets the id at `+0xf4c` to all-ones after releasing `old_id`
+/// (low 16 bits). Returns the released id.
+pub fn w31a16_release_slot<T>(obj: &mut Option<T>, id: &mut u32) -> u16 {
+    drop(obj.take());
+    let released = *id as u16;
+    *id = 0xffff_ffff;
+    released
+}
+
+/// `0x0090c6c0`: calls the two handlers in order.
+pub fn w31a16_call_both(first: impl FnOnce(), second: impl FnOnce()) {
+    first();
+    second();
+}
+
+/// `0x0090c850`: if the suppress flag at `+0x1c0` is set, clears it and
+/// returns 0 (the secondary handler is skipped); otherwise runs both
+/// handlers and returns the second result.
+pub fn w31a16_suppressible_handler(
+    flag_1c0: &mut u8,
+    first: impl FnOnce(),
+    second: impl FnOnce() -> u32,
+) -> u32 {
+    if *flag_1c0 != 0 {
+        *flag_1c0 = 0;
+        return 0;
+    }
+    first();
+    second()
+}
+
+#[cfg(test)]
+mod tests_wave31_agent16 {
+    use super::*;
+
+    #[test]
+    fn actions() {
+        let mut n = 0;
+        assert!(!w31a16_try_action(true, || n += 1));
+        assert_eq!(n, 0);
+        assert!(w31a16_try_action(false, || n += 1));
+        assert!(w31a16_always_handled(|| n += 1));
+        assert_eq!(n, 2);
+    }
+
+    #[test]
+    fn mouse() {
+        let mut got = None;
+        assert_eq!(
+            w31a16_mouse_move(true, (10, 20), (1, 2), (3, 4), |x, y| got = Some((x, y))),
+            1
+        );
+        assert_eq!(got, Some((6, 14)));
+        let mut got3 = None;
+        w31a16_mouse_scroll(true, (10, 20), (1, 2), (3, 4), 3, |x, y, z| {
+            got3 = Some((x, y, z))
+        });
+        assert_eq!(got3, Some((6, 14, 300)));
+        assert_eq!(
+            w31a16_mouse_move(false, (0, 0), (0, 0), (0, 0), |_, _| panic!()),
+            1
+        );
+    }
+
+    #[test]
+    fn flags_and_slots() {
+        let mut f = 0u8;
+        w31a16_update_or_flag(false, &mut f, || panic!());
+        assert_eq!(f, 1);
+        w31a16_update_or_flag(true, &mut f, || {});
+        let mut o = Some(5);
+        let mut id = 0x1_0007;
+        assert_eq!(w31a16_release_slot(&mut o, &mut id), 7);
+        assert!(o.is_none());
+        assert_eq!(id, 0xffff_ffff);
+        let mut s = 1u8;
+        assert_eq!(w31a16_suppressible_handler(&mut s, || panic!(), || 9), 0);
+        assert_eq!(s, 0);
+        assert_eq!(w31a16_suppressible_handler(&mut s, || {}, || 9), 9);
+        let mut order = vec![];
+        let o2 = std::cell::RefCell::new(&mut order);
+        w31a16_call_both(|| o2.borrow_mut().push(1), || o2.borrow_mut().push(2));
+        assert_eq!(order, vec![1, 2]);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave31/agent17.rs
+// ===========================================================================
+// Wave 31 agent 17 translations (client helpers).
+
+/// `0x00932140`: maps `mode` (1 -> 9, 2 -> 1, else -1), calls `inner(*cursor,
+/// mode_code)`.  On success (`true`) the cursor is updated from the inner
+/// result and the out value is cleared; on failure with `soft_fail == 0`
+/// returns 1; otherwise the cursor is reset to `fallback`, out cleared.
+/// Returns `(status, cursor, out)`.
+pub fn w31a17_try_advance(
+    cursor: u32,
+    fallback: u32,
+    mode: i32,
+    soft_fail: i32,
+    inner: impl FnOnce(u32, u32) -> Option<u32>,
+) -> (u32, u32, u32) {
+    let code = match mode {
+        1 => 9,
+        2 => 1,
+        _ => 0xffff_ffff,
+    };
+    match inner(cursor, code) {
+        Some(new_cursor) => (0, new_cursor, 0),
+        None if soft_fail == 0 => (1, cursor, 0),
+        None => (0, fallback, 0),
+    }
+}
+
+/// `0x00940aa0`: forwards to the generic dispatcher with selector 8.
+pub fn w31a17_dispatch8<R>(a: u32, b: u32, f: impl FnOnce(u32, u32, u32) -> R) -> R {
+    f(8, a, b)
+}
+
+/// `0x00944e70`: bit 15 of the state returned by `query` for the slot
+/// mapped from `kind` (1->1, 2->4, 4->2, 8->5, 0x10->6); other kinds give 0.
+pub fn w31a17_key_state_bit(kind: u32, query: impl FnOnce(u32) -> u32) -> u32 {
+    let slot = match kind {
+        1 => 1,
+        2 => 4,
+        4 => 2,
+        8 => 5,
+        0x10 => 6,
+        _ => return 0,
+    };
+    (query(slot) >> 15) & 1
+}
+
+/// `0x009546d0`: sets bit 0 of the flag byte of 0x14-byte record `idx`.
+pub fn w31a17_set_record_flag(flags: &mut [u8], idx: u8) {
+    flags[idx as usize * 0x14] |= 1;
+}
+
+/// State block shifted by `0x00958370`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct W31a17Pair {
+    pub quad: [u32; 4],
+    pub tail: u32,
+    pub prev_quad: [u32; 4],
+    pub prev_tail: u32,
+}
+
+/// `0x00958370`: pushes current values into the "previous" slots and stores
+/// the new quad and tail.
+pub fn w31a17_push_state(s: &mut W31a17Pair, quad: [u32; 4], tail: u32) {
+    s.prev_tail = s.tail;
+    s.prev_quad = s.quad;
+    s.tail = tail;
+    s.quad = quad;
+}
+
+/// `0x00959280`: maps `kind` (1->0x30, 2->0x21, 4->0x25, 8->0x40, else
+/// 0x10), and returns true when the call result is not 2.
+pub fn w31a17_dialog_not_two(kind: u16, call: impl FnOnce(u32) -> i32) -> bool {
+    let flags = match kind {
+        1 => 0x30,
+        2 => 0x21,
+        4 => 0x25,
+        8 => 0x40,
+        _ => 0x10,
+    };
+    call(flags) != 2
+}
+
+#[cfg(test)]
+mod tests_wave31_agent17 {
+    use super::*;
+
+    #[test]
+    fn advance() {
+        assert_eq!(
+            w31a17_try_advance(5, 9, 1, 0, |c, m| {
+                assert_eq!(m, 9);
+                Some(c + 1)
+            }),
+            (0, 6, 0)
+        );
+        assert_eq!(
+            w31a17_try_advance(5, 9, 3, 0, |_, m| {
+                assert_eq!(m, u32::MAX);
+                None
+            }),
+            (1, 5, 0)
+        );
+        assert_eq!(
+            w31a17_try_advance(5, 9, 2, 1, |_, m| {
+                assert_eq!(m, 1);
+                None
+            }),
+            (0, 9, 0)
+        );
+    }
+
+    #[test]
+    fn small() {
+        assert_eq!(w31a17_dispatch8(1, 2, |a, b, c| a + b + c), 11);
+        assert_eq!(
+            w31a17_key_state_bit(8, |s| if s == 5 { 0x8000 } else { 0 }),
+            1
+        );
+        assert_eq!(w31a17_key_state_bit(3, |_| 0xffff), 0);
+        let mut f = vec![0u8; 0x14 * 3];
+        w31a17_set_record_flag(&mut f, 2);
+        assert_eq!(f[0x28], 1);
+        assert_eq!(
+            w31a17_dialog_not_two(4, |x| {
+                assert_eq!(x, 0x25);
+                2
+            }),
+            false
+        );
+        assert!(w31a17_dialog_not_two(0x20, |x| {
+            assert_eq!(x, 0x10);
+            1
+        }));
+        let mut s = W31a17Pair::default();
+        w31a17_push_state(&mut s, [1, 2, 3, 4], 5);
+        w31a17_push_state(&mut s, [6, 7, 8, 9], 10);
+        assert_eq!((s.prev_quad, s.prev_tail, s.tail), ([1, 2, 3, 4], 5, 10));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave31/agent18.rs
+// ===========================================================================
+// Wave 31 agent 18: small client/audio-object helpers.
+
+/// `0x00964a30`: copies the entry `table[idx - 1]` into `*slot` when the
+/// object has a positive 16-bit index (`+0x3a`), a non-zero count (`+0x3c`)
+/// and the entry is non-zero.
+pub fn w31a18_select_entry(idx: i16, count: i16, table: &[u32], slot: &mut u32) {
+    if idx > 0 && count != 0 {
+        if let Some(&v) = table.get(idx as usize - 1) {
+            if v != 0 {
+                *slot = v;
+            }
+        }
+    }
+}
+
+/// `0x0097a320`: swaps `value` into `slots[index]` and returns the old one.
+pub fn w31a18_swap_slot(slots: &mut [u32], index: u8, value: u32) -> u32 {
+    std::mem::replace(&mut slots[index as usize], value)
+}
+
+/// `0x00989c70`: handle out-param validator. `0x25` for a missing output,
+/// `0x24` for a null handle, else stores the handle and returns 0.
+pub fn w31a18_store_handle(handle: u32, out: Option<&mut u32>) -> u32 {
+    match out {
+        None => 0x25,
+        Some(_) if handle == 0 => 0x24,
+        Some(o) => {
+            *o = handle;
+            0
+        }
+    }
+}
+
+/// `0x009945c0`: validates that `handle` is a member of the intrusive list
+/// (`members` holds the handles currently linked).  Null handle gives
+/// `0x24`, missing output `0x25`, a non-member `0x24`.
+pub fn w31a18_validate_member(handle: u32, members: &[u32], out: Option<&mut u32>) -> u32 {
+    if handle != 0 {
+        let Some(o) = out else { return 0x25 };
+        if members.contains(&handle) {
+            *o = handle;
+            return 0;
+        }
+    }
+    0x24
+}
+
+/// `0x00a8fa40`: unpacks a `0xAABBGGRR` colour into four floats in `[0,1]`.
+pub fn w31a18_unpack_color(c: u32) -> [f32; 4] {
+    [
+        (c & 0xff) as f32 / 255.0,
+        (c >> 8 & 0xff) as f32 / 255.0,
+        (c >> 16 & 0xff) as f32 / 255.0,
+        (c >> 24) as f32 / 255.0,
+    ]
+}
+
+/// Model of the voice-group object used by the volume/pan setters.
+#[derive(Clone, Debug, Default)]
+pub struct W31a18Group {
+    pub has_primary: bool,
+    pub voice_count: usize,
+    pub primary_flags: u8,
+    pub flags90: u8,
+    pub volume: f32,
+    pub pan: f32,
+    pub pan_dirty: u32,
+}
+
+/// `0x00997ac0`: clamps `pan` to `[-1,1]`, stores it (`+0xf4`), clears the
+/// dirty word (`+0x94`) and, unless the primary flag `0x10` is set, applies
+/// it to each voice via `apply(i, pan)` returning the first non-zero error.
+/// Returns `0x24` when there is no primary voice.
+pub fn w31a18_set_pan(
+    g: &mut W31a18Group,
+    pan: f32,
+    propagate: bool,
+    mut apply: impl FnMut(usize, f32) -> i32,
+) -> i32 {
+    if !g.has_primary {
+        return 0x24;
+    }
+    let p = pan.clamp(-1.0, 1.0);
+    g.pan_dirty = 0;
+    g.pan = p;
+    if g.primary_flags & 0x10 != 0 {
+        return 0;
+    }
+    let mut err = 0;
+    if propagate {
+        for i in 0..g.voice_count {
+            let r = apply(i, p);
+            if err == 0 {
+                err = r;
+            }
+        }
+    }
+    err
+}
+
+/// `0x00998790`: clamps `vol` to `[0,1]`, stores it (`+0xec`), forces 0 when
+/// flag `0x08` of `+0x90` is set, applies to every voice (last result kept)
+/// and calls `refresh` when the value changed or `force` is set.
+pub fn w31a18_set_volume(
+    g: &mut W31a18Group,
+    vol: f32,
+    force: bool,
+    mut apply: impl FnMut(usize, f32) -> u32,
+    mut refresh: impl FnMut() -> u32,
+) -> u32 {
+    if !g.has_primary {
+        return 0x24;
+    }
+    let v = vol.clamp(0.0, 1.0);
+    let changed = g.volume != v;
+    g.volume = v;
+    let eff = if g.flags90 & 8 != 0 { 0.0 } else { v };
+    let mut r = 0;
+    for i in 0..g.voice_count {
+        r = apply(i, eff);
+    }
+    if changed || force {
+        r = refresh();
+    }
+    r
+}
+
+#[cfg(test)]
+mod tests_wave31_agent18 {
+    use super::*;
+
+    #[test]
+    fn entries_and_slots() {
+        let mut s = 7;
+        w31a18_select_entry(2, 1, &[5, 9], &mut s);
+        assert_eq!(s, 9);
+        w31a18_select_entry(0, 1, &[5, 9], &mut s);
+        w31a18_select_entry(1, 0, &[5, 9], &mut s);
+        w31a18_select_entry(1, 1, &[0], &mut s);
+        assert_eq!(s, 9);
+        let mut v = [1, 2];
+        assert_eq!(w31a18_swap_slot(&mut v, 1, 8), 2);
+        assert_eq!(v, [1, 8]);
+    }
+
+    #[test]
+    fn handles() {
+        let mut o = 0;
+        assert_eq!(w31a18_store_handle(1, None), 0x25);
+        assert_eq!(w31a18_store_handle(0, Some(&mut o)), 0x24);
+        assert_eq!(w31a18_store_handle(3, Some(&mut o)), 0);
+        assert_eq!(o, 3);
+        let mut o2 = 0;
+        assert_eq!(w31a18_validate_member(3, &[3], Some(&mut o2)), 0);
+        assert_eq!(w31a18_validate_member(4, &[3], Some(&mut o2)), 0x24);
+        assert_eq!(w31a18_validate_member(3, &[3], None), 0x25);
+        assert_eq!(w31a18_validate_member(0, &[3], None), 0x24);
+    }
+
+    #[test]
+    fn color() {
+        let c = w31a18_unpack_color(0xff00_0080);
+        assert_eq!(c[3], 1.0);
+        assert_eq!(c[0], 128.0 / 255.0);
+        assert_eq!(c[1], 0.0);
+    }
+
+    #[test]
+    fn pan_volume() {
+        let mut g = W31a18Group {
+            has_primary: true,
+            voice_count: 2,
+            ..Default::default()
+        };
+        let mut calls = 0;
+        assert_eq!(
+            w31a18_set_pan(&mut g, 5.0, true, |_, p| {
+                calls += 1;
+                assert_eq!(p, 1.0);
+                if calls == 2 { 9 } else { 0 }
+            }),
+            9
+        );
+        assert_eq!(g.pan, 1.0);
+        g.primary_flags = 0x10;
+        assert_eq!(w31a18_set_pan(&mut g, -3.0, true, |_, _| 1), 0);
+        assert_eq!(g.pan, -1.0);
+        g.has_primary = false;
+        assert_eq!(w31a18_set_pan(&mut g, 0.0, false, |_, _| 0), 0x24);
+
+        g.has_primary = true;
+        g.flags90 = 8;
+        let mut seen = vec![];
+        let r = w31a18_set_volume(
+            &mut g,
+            2.0,
+            false,
+            |_, v| {
+                seen.push(v);
+                0
+            },
+            || 4,
+        );
+        assert_eq!(r, 4);
+        assert_eq!(g.volume, 1.0);
+        assert_eq!(seen, vec![0.0, 0.0]);
+        assert_eq!(w31a18_set_volume(&mut g, 1.0, false, |_, _| 6, || 4), 6);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave31/agent19.rs
+// ===========================================================================
+// Wave 31 translation batch 19: draw buffer sizing, string-key lookups.
+
+/// `0x00a986c0`: byte-count helper: `(count / elems(mode)) * k` where `k` is
+/// 6 for mode 1 and -1 otherwise.  `elems` models `FUN_00a98750`.
+pub fn w31a19_index_budget(mode: i32, count: u32, elems: impl Fn(i32) -> u32) -> i32 {
+    let k: i32 = if mode == 1 { 6 } else { -1 };
+    let e = elems(mode);
+    ((count / e) as i32).wrapping_mul(k)
+}
+
+/// `0x00a98610`: byte address of element `index` of a vertex buffer.
+/// `buf_base` is `*(this+8)`, `offset` is `*(param_1+0x2c)` (-1 gives 0),
+/// `mode` is `*(param_1+0x24)`; `flags` are the vertex flag bits.
+pub fn w31a19_vertex_address(
+    buf_base: i32,
+    offset: i32,
+    mode: i32,
+    index: u32,
+    flags: u32,
+    elems: impl Fn(i32) -> u32,
+) -> i32 {
+    if offset == -1 {
+        return 0;
+    }
+    let count = match mode {
+        4 => {
+            if index > 1 {
+                index.wrapping_add(2)
+            } else {
+                0
+            }
+        }
+        5 => index.wrapping_mul(3),
+        m => elems(m).wrapping_mul(index),
+    };
+    let mut s = (flags & 1) * 8;
+    if flags & 2 != 0 {
+        s += 8;
+    }
+    if flags & 4 != 0 {
+        s += 8;
+    }
+    if flags & 8 != 0 {
+        s += 8;
+    }
+    if flags & 0x10 != 0 {
+        s += 4;
+    }
+    if flags & 0x20 != 0 {
+        s += 8;
+    }
+    buf_base
+        .wrapping_add(offset)
+        .wrapping_add(((s >> 2).wrapping_mul(count).wrapping_mul(4)) as i32)
+}
+
+/// Fields touched by `0x00a97a30` and `0x00a98c20`.
+#[derive(Default, Debug, Clone, PartialEq, Eq)]
+pub struct W31a19Buffers {
+    pub width: u32,
+    pub width_double: bool,
+    pub width_dirty: bool,
+    pub height: u32,
+    pub height_double: bool,
+    pub height_dirty: bool,
+}
+
+/// `0x00a97a30`: doubles width/height when their double flags are set,
+/// marks both dirty, and returns the surface size `(width*4, height*2)`.
+pub fn w31a19_resize_buffers(b: &mut W31a19Buffers) -> (u32, u32) {
+    if b.width_double {
+        b.width = b.width.wrapping_mul(2);
+    }
+    b.width_dirty = true;
+    if b.height_double {
+        b.height = b.height.wrapping_mul(2);
+    }
+    b.height_dirty = true;
+    (b.width.wrapping_mul(4), b.height.wrapping_mul(2))
+}
+
+/// `0x00a98c20`: doubles `size` when `double` is set, flags dirty, and
+/// returns the allocation size `(size & 0xfffffff) << 2`.
+pub fn w31a19_grow_buffer(size: &mut u32, double: bool, dirty: &mut bool) -> u32 {
+    if double {
+        *size = size.wrapping_mul(2);
+    }
+    *dirty = true;
+    (*size & 0x0fff_ffff) << 2
+}
+
+/// `0x00a96720`: xorshift32 random float between `a` and `b`, scaled by the
+/// global range `[lo, hi]`.  `state` must already be non-zero (the seed
+/// fallback of 1 is applied when the lazily seeded value is 0).
+pub fn w31a19_random_between(a: f32, b: f32, state: &mut u32, lo: f32, hi: f32) -> f32 {
+    let (mn, mx) = if b < a { (b, a) } else { (a, b) };
+    if *state == 0 {
+        *state = 1;
+    }
+    let old = *state;
+    let mut x = old << 13 ^ old;
+    x ^= x >> 17;
+    *state = x ^ (x << 5);
+    let r = ((state.wrapping_add(old) & 0x7f_ffff) as f32 + 0.0) * 1.192_092_9e-7;
+    (r * (hi - lo) + lo) * (mx - mn) + mn
+}
+
+/// `0x00ac67b0`: element-wise equality of two 28-byte-record vectors whose
+/// leading (ptr,len) string is compared with `FUN_0053a3e0` against the
+/// string at the same offset in the other vector.
+pub fn w31a19_records_equal(a: &[(Vec<u8>, Vec<u8>)], b: &[(Vec<u8>, Vec<u8>)]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b).all(|(x, y)| {
+        crate::client::w20a01_bounded_compare(
+            &x.0,
+            x.0.len() as u32,
+            0,
+            x.0.len() as u32,
+            &y.0,
+            y.0.len() as u32,
+        ) == 0
+    })
+}
+
+/// `0x00ac7ac0`: true when the string equals the stored name.
+pub fn w31a19_name_matches(name: &[u8], other: &[u8]) -> bool {
+    crate::client::w20a01_bounded_compare(
+        name,
+        name.len() as u32,
+        0,
+        name.len() as u32,
+        other,
+        other.len() as u32,
+    ) == 0
+}
+
+/// One node of the intrusive list walked by `0x00ac7030`.
+#[derive(Debug, Clone)]
+pub struct W31a19Entry {
+    pub name: Vec<u8>,
+    pub flag: bool,
+}
+
+/// `0x00ac7030`: first entry whose name equals `wanted` and whose flag is set; with
+/// `None` the first entry with its flag set (offset 0x40).  Returns the index.
+pub fn w31a19_find_entry(entries: &[W31a19Entry], wanted: Option<&[u8]>) -> Option<usize> {
+    entries.iter().position(|e| match wanted {
+        None => e.flag,
+        Some(w) => w31a19_name_matches(&e.name, w) && e.flag,
+    })
+}
+
+/// Tree node used by `0x00b64c40` (fields +4 left, +8 right, +0x10 key).
+#[derive(Debug, Clone)]
+pub struct W31a19Node {
+    pub ge: Option<usize>,
+    pub lt: Option<usize>,
+    pub key: Vec<u8>,
+}
+
+/// `0x00b64c40`: lower-bound search in a string-keyed tree.  Compares by
+/// bytes over the shorter length, then by length; returns the last node
+/// not less than `key` and only when `key` compares >= its key.
+pub fn w31a19_tree_find(nodes: &[W31a19Node], root: Option<usize>, key: &[u8]) -> Option<usize> {
+    let mut cur = root;
+    let mut cand: Option<usize> = None;
+    while let Some(i) = cur {
+        let n = &nodes[i];
+        let m = n.key.len().min(key.len());
+        let mut c: i64 = match n.key[..m].cmp(&key[..m]) {
+            std::cmp::Ordering::Less => -1,
+            std::cmp::Ordering::Greater => 1,
+            std::cmp::Ordering::Equal => 0,
+        };
+        if c == 0 {
+            c = n.key.len() as i64 - key.len() as i64;
+        }
+        if c < 0 {
+            cur = n.lt;
+        } else {
+            cand = Some(i);
+            cur = n.ge;
+        }
+    }
+    let i = cand?;
+    let r = crate::client::w20a01_bounded_compare(
+        key,
+        key.len() as u32,
+        0,
+        key.len() as u32,
+        &nodes[i].key,
+        nodes[i].key.len() as u32,
+    );
+    if r >= 0 { Some(i) } else { None }
+}
+
+#[cfg(test)]
+mod tests_wave31_agent19 {
+    use super::*;
+
+    fn el(m: i32) -> u32 {
+        if m == 2 { 10 } else { 4 }
+    }
+
+    #[test]
+    fn budget_and_address() {
+        assert_eq!(w31a19_index_budget(1, 8, el), 12);
+        assert_eq!(w31a19_index_budget(0, 8, el), -2);
+        assert_eq!(w31a19_vertex_address(100, -1, 0, 1, 0, el), 0);
+        assert_eq!(
+            w31a19_vertex_address(100, 4, 5, 2, 1, el),
+            100 + 4 + 2 * 3 * 4 * 2
+        );
+        assert_eq!(w31a19_vertex_address(0, 0, 4, 1, 1, el), 0);
+    }
+
+    #[test]
+    fn buffers() {
+        let mut b = W31a19Buffers {
+            width: 8,
+            width_double: true,
+            height: 4,
+            ..Default::default()
+        };
+        assert_eq!(w31a19_resize_buffers(&mut b), (64, 8));
+        let (mut s, mut d) = (0x1000_0001u32, false);
+        assert_eq!(w31a19_grow_buffer(&mut s, true, &mut d), 8);
+        assert!(d);
+    }
+
+    #[test]
+    fn random_and_names() {
+        let mut st = 1;
+        let v = w31a19_random_between(5.0, 1.0, &mut st, 0.0, 1.0);
+        assert!((1.0..=5.0).contains(&v));
+        assert_ne!(st, 1);
+        assert!(w31a19_name_matches(b"ab", b"ab"));
+        assert!(!w31a19_name_matches(b"ab", b"abc"));
+        let a = vec![(b"x".to_vec(), vec![])];
+        assert!(w31a19_records_equal(&a, &a.clone()));
+        assert!(!w31a19_records_equal(&a, &[]));
+    }
+
+    #[test]
+    fn find_and_tree() {
+        let es = vec![
+            W31a19Entry {
+                name: b"a".to_vec(),
+                flag: false,
+            },
+            W31a19Entry {
+                name: b"b".to_vec(),
+                flag: false,
+            },
+        ];
+        assert_eq!(w31a19_find_entry(&es, Some(b"b")), None);
+        assert_eq!(w31a19_find_entry(&es, None), None);
+        let nodes = vec![
+            W31a19Node {
+                ge: Some(1),
+                lt: None,
+                key: b"m".to_vec(),
+            },
+            W31a19Node {
+                ge: None,
+                lt: None,
+                key: b"c".to_vec(),
+            },
+        ];
+        assert_eq!(w31a19_tree_find(&nodes, Some(0), b"m"), Some(0));
+        assert_eq!(w31a19_tree_find(&nodes, Some(0), b"a"), None);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave31/agent20.rs
+// ===========================================================================
+// Wave 31 translation batch 20: hash-bucket helpers used by the render
+// command-list containers.  The TLS/SChannel certificate routines in this
+// assignment are online-service code and were skipped.
+
+/// Murmur-style finaliser shared by the two bucket routines below
+/// (constants `-0x7a143595` and `-0x3d4d51cb` as `u32`).
+pub fn w31a20_hash_mix(key: u32) -> u32 {
+    let mut h = (key >> 16 ^ key).wrapping_mul(0x85eb_ca6b);
+    h = (h >> 13 ^ h).wrapping_mul(0xc2b2_ae35);
+    h >> 16 ^ h
+}
+
+/// Hash map node: one `(key, value)` entry of a bucket chain.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct W31a20Node<V> {
+    pub key: u32,
+    pub value: V,
+}
+
+/// Bucket table; `buckets.len()` must be a power of two (mask = len - 1).
+#[derive(Clone, Debug, Default)]
+pub struct W31a20Table<V> {
+    pub buckets: Vec<Vec<W31a20Node<V>>>,
+}
+
+impl<V> W31a20Table<V> {
+    fn bucket_index(&self, key: u32) -> Option<usize> {
+        if self.buckets.is_empty() {
+            return None;
+        }
+        Some((w31a20_hash_mix(key) as usize) & (self.buckets.len() - 1))
+    }
+}
+
+/// `0x00c15df0`: looks up `key` in the bucket table and returns a reference
+/// to the stored value.  The retail code calls a non-returning error path
+/// when the table is unallocated or the key is absent; here both are `None`.
+pub fn w31a20_lookup<V>(t: &W31a20Table<V>, key: u32) -> Option<&V> {
+    let idx = t.bucket_index(key)?;
+    t.buckets[idx]
+        .iter()
+        .find(|n| n.key == key)
+        .map(|n| &n.value)
+}
+
+/// `0x00c41460`: appends `value` to the vector stored under the key of
+/// `node_key` (skipped when `None`; a missing entry is the non-returning
+/// error path, reported as `false`), then always appends `value` to
+/// `shared`.  Returns `true` on success.
+pub fn w31a20_push_both(
+    t: &mut W31a20Table<Vec<u32>>,
+    node_key: Option<u32>,
+    shared: &mut Vec<u32>,
+    value: u32,
+) -> bool {
+    if let Some(k) = node_key {
+        let Some(idx) = t.bucket_index(k) else {
+            return false;
+        };
+        match t.buckets[idx].iter_mut().find(|n| n.key == k) {
+            Some(n) => n.value.push(value),
+            None => return false,
+        }
+    }
+    shared.push(value);
+    true
+}
+
+#[cfg(test)]
+mod tests_wave31_agent20 {
+    use super::*;
+
+    fn table() -> W31a20Table<Vec<u32>> {
+        let mut t = W31a20Table {
+            buckets: vec![Vec::new(); 4],
+        };
+        for k in [1u32, 2, 3, 100] {
+            let i = (w31a20_hash_mix(k) as usize) & 3;
+            t.buckets[i].push(W31a20Node {
+                key: k,
+                value: vec![k],
+            });
+        }
+        t
+    }
+
+    #[test]
+    fn hash_and_lookup() {
+        assert_eq!(w31a20_hash_mix(0), 0);
+        let t = table();
+        assert_eq!(w31a20_lookup(&t, 100), Some(&vec![100]));
+        assert_eq!(w31a20_lookup(&t, 7), None);
+        let e: W31a20Table<u32> = W31a20Table { buckets: vec![] };
+        assert_eq!(w31a20_lookup(&e, 1), None);
+    }
+
+    #[test]
+    fn push_both() {
+        let mut t = table();
+        let mut s = vec![];
+        assert!(w31a20_push_both(&mut t, Some(2), &mut s, 9));
+        assert_eq!(w31a20_lookup(&t, 2), Some(&vec![2, 9]));
+        assert_eq!(s, vec![9]);
+        assert!(w31a20_push_both(&mut t, None, &mut s, 5));
+        assert_eq!(s, vec![9, 5]);
+        assert!(!w31a20_push_both(&mut t, Some(77), &mut s, 1));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave31/agent21.rs
+// ===========================================================================
+// Wave 31 batch 21: hash/arithmetic helpers from the CRT/library region.
+//
+// Skipped (no 0x prefix): FUN_00c54850 (shrink branch ends in a
+// non-returning call), FUN_00c66f80 (MD5 update loop ending in a
+// non-returning call), FUN_00c6c360, FUN_00c6c400 (SEH string ctor glue),
+// FUN_00c86b59 (wrapper over unresolved callee), FUN_00c87120,
+// FUN_00c87160 (empty), FUN_00c872dd (TLS/lock glue), FUN_00c8a430 (SSE2
+// strchr, opaque flag), FUN_00c9b19a (printf glue over unknown state).
+
+/// `0x00c62800`: MurmurHash3 x86_32 finalised with the length (seed `h`).
+pub fn w31a21_murmur3_32(data: &[u8], seed: u32) -> u32 {
+    let len = data.len() as u32;
+    let mut h = seed;
+    let blocks = data.len() / 4;
+    for i in 0..blocks {
+        let mut k = u32::from_le_bytes([
+            data[i * 4],
+            data[i * 4 + 1],
+            data[i * 4 + 2],
+            data[i * 4 + 3],
+        ]);
+        k = k
+            .wrapping_mul(0xcc9e2d51)
+            .rotate_left(15)
+            .wrapping_mul(0x1b873593);
+        h ^= k;
+        h = h.rotate_left(13).wrapping_mul(5).wrapping_add(0xe6546b64);
+    }
+    let tail = &data[blocks * 4..];
+    if !tail.is_empty() {
+        let mut k = 0u32;
+        for (i, b) in tail.iter().enumerate() {
+            k ^= (*b as u32) << (8 * i);
+        }
+        k = k
+            .wrapping_mul(0xcc9e2d51)
+            .rotate_left(15)
+            .wrapping_mul(0x1b873593);
+        h ^= k;
+    }
+    h ^= len;
+    h ^= h >> 16;
+    h = h.wrapping_mul(0x85ebca6b);
+    h ^= h >> 13;
+    h = h.wrapping_mul(0xc2b2ae35);
+    h ^ (h >> 16)
+}
+
+/// `0x00c663d0`: true when the first word of the object is non-zero.
+pub fn w31a21_is_set(first_word: i32) -> bool {
+    first_word != 0
+}
+
+/// `0x00c86d80`: 64-bit multiply built from 32-bit halves (low 64 bits).
+pub fn w31a21_mul64(a: u64, b: u64) -> u64 {
+    a.wrapping_mul(b)
+}
+
+/// `0x00c874e0`: unsigned 64-bit division (`__aulldiv`); divisor must be
+/// non-zero (the original traps).
+pub fn w31a21_udiv64(n: u64, d: u64) -> Option<u64> {
+    n.checked_div(d)
+}
+
+/// `0x00c93789`: ASCII tolower for the C locale branch (`A..Z` -> `a..z`).
+pub fn w31a21_tolower_c(c: i32) -> i32 {
+    if (c.wrapping_sub(0x41) as u32) < 0x1a {
+        c + 0x20
+    } else {
+        c
+    }
+}
+
+/// `0x00c66df0`: MD5 block transform.  `x` is the 16-word block, `state`
+/// the (a, b, c, d) words; `index`, `shift`, `k` are the retail tables
+/// (word order, rotate counts, additive constants, 64 entries each).
+pub fn w31a21_md5_transform(
+    state: &mut [u32; 4],
+    x: &[u32; 16],
+    index: &[u8; 64],
+    shift: &[u8; 64],
+    k: &[u32; 64],
+) {
+    let (mut a, mut b, mut c, mut d) = (state[0], state[1], state[2], state[3]);
+    for i in 0..64 {
+        let f = match i / 16 {
+            0 => ((c ^ d) & b) ^ d,
+            1 => ((b ^ c) & d) ^ c,
+            2 => b ^ c ^ d,
+            _ => (!d | b) ^ c,
+        };
+        let t = f
+            .wrapping_add(x[index[i] as usize])
+            .wrapping_add(k[i])
+            .wrapping_add(a);
+        let nb = t.rotate_left((shift[i] & 0x1f) as u32).wrapping_add(b);
+        a = d;
+        d = c;
+        c = b;
+        b = nb;
+    }
+    state[0] = state[0].wrapping_add(a);
+    state[1] = state[1].wrapping_add(b);
+    state[2] = state[2].wrapping_add(c);
+    state[3] = state[3].wrapping_add(d);
+}
+
+/// `0x00c94110`: `ceil` for doubles (SSE4 fast path semantics: negative
+/// results in (-1, 0) give -0.0, NaN/inf/large values pass through).
+pub fn w31a21_ceil(x: f64) -> f64 {
+    let bits = x.to_bits();
+    let hi = (bits >> 32) as u32;
+    let e = hi >> 20;
+    let sh = 0x433u32.wrapping_sub(e & 0x7ff);
+    if e & 0x800 == 0 {
+        if e < 0x3ff {
+            return if x > 0.0 { 1.0 } else { 0.0 };
+        }
+        if e < 0x433 {
+            let t = f64::from_bits((bits >> sh) << sh);
+            return if t < x { t + 1.0 } else { t };
+        }
+    } else {
+        if e < 0xbff {
+            return -0.0;
+        }
+        if e < 0xc33 {
+            return f64::from_bits((bits >> sh) << sh);
+        }
+    }
+    x
+}
+
+#[cfg(test)]
+mod tests_wave31_agent21 {
+    use super::*;
+
+    #[test]
+    fn small_helpers() {
+        assert!(!w31a21_is_set(0) && w31a21_is_set(-1));
+        assert_eq!(
+            w31a21_mul64(0x1_0000_0001, 0x1_0000_0003),
+            0x1_0000_0001u64.wrapping_mul(0x1_0000_0003)
+        );
+        assert_eq!(w31a21_udiv64(1 << 40, 3), Some((1u64 << 40) / 3));
+        assert_eq!(w31a21_udiv64(5, 0), None);
+        assert_eq!(w31a21_tolower_c(0x41), 0x61);
+        assert_eq!(w31a21_tolower_c(0x5a), 0x7a);
+        assert_eq!(w31a21_tolower_c(0x5b), 0x5b);
+        assert_eq!(w31a21_tolower_c(0x40), 0x40);
+    }
+
+    #[test]
+    fn murmur_known() {
+        assert_eq!(w31a21_murmur3_32(b"", 0), 0);
+        assert_eq!(w31a21_murmur3_32(b"", 1), 0x514e28b7);
+        assert_eq!(w31a21_murmur3_32(b"hello", 0), 0x248bfa47);
+    }
+
+    #[test]
+    fn ceil_matches_std() {
+        for v in [
+            0.5,
+            1.0,
+            1.2,
+            2.9999,
+            -0.5,
+            -1.0,
+            -1.5,
+            -2.7,
+            1e300,
+            -1e300,
+            4503599627370496.5,
+            0.0,
+            1e-300,
+            -1e-300,
+        ] {
+            let r = w31a21_ceil(v);
+            let e = v.ceil();
+            assert!(
+                r == e && r.is_sign_negative() == e.is_sign_negative(),
+                "{v}: {r} vs {e}"
+            );
+        }
+        assert!(w31a21_ceil(f64::NAN).is_nan());
+        assert_eq!(w31a21_ceil(f64::INFINITY), f64::INFINITY);
+    }
+
+    #[test]
+    fn md5_abc() {
+        let mut index = [0u8; 64];
+        let mut shift = [0u8; 64];
+        let mut k = [0u32; 64];
+        let s = [
+            [7, 12, 17, 22],
+            [5, 9, 14, 20],
+            [4, 11, 16, 23],
+            [6, 10, 15, 21],
+        ];
+        for i in 0..64 {
+            index[i] = match i / 16 {
+                0 => i,
+                1 => (5 * i + 1) % 16,
+                2 => (3 * i + 5) % 16,
+                _ => (7 * i) % 16,
+            } as u8;
+            shift[i] = s[i / 16][i % 4];
+            k[i] = ((i as f64 + 1.0).sin().abs() * 4294967296.0) as u32;
+        }
+        let mut x = [0u32; 16];
+        x[0] = u32::from_le_bytes([b'a', b'b', b'c', 0x80]);
+        x[14] = 24;
+        let mut st = [0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476];
+        w31a21_md5_transform(&mut st, &x, &index, &shift, &k);
+        let mut out = Vec::new();
+        for w in st {
+            out.extend_from_slice(&w.to_le_bytes());
+        }
+        let hex: String = out.iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(hex, "900150983cd24fb0d6963f7d28e17f72");
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave31/agent22.rs
+// ===========================================================================
+// Wave 31 agent 22 translations (queue, client.rs target).
+
+/// `0x00688230`: reads a block through `read(&mut capacity, a, b, 1)` with
+/// an initial capacity of `0x2000`.  Returns `(capacity, handle)` on
+/// success (status 0), else `None` (the retail returns 0 and leaves the
+/// out-handle untouched).
+pub fn w31a22_read_block(
+    handle: u32,
+    a: u32,
+    b: u32,
+    read: impl FnOnce(u32, &mut u32, u32, u32, u32) -> i32,
+) -> Option<(u32, u32)> {
+    let mut cap = 0x2000u32;
+    if read(handle, &mut cap, a, b, 1) != 0 {
+        return None;
+    }
+    Some((cap, handle))
+}
+
+/// `0x007a35c0`: when neither guard flag is set, runs the first step and,
+/// if the record at `record` has a non-zero u16 at offset 2, runs the
+/// second step on the payload at offset 8.  Returns whether step one ran.
+pub fn w31a22_update_record(
+    flag_a: u8,
+    flag_b: u32,
+    record: Option<&[u8]>,
+    step1: &mut dyn FnMut(),
+    step2: &mut dyn FnMut(&[u8]),
+) -> bool {
+    if flag_a != 0 || flag_b != 0 {
+        return false;
+    }
+    step1();
+    if let Some(r) = record
+        && r.len() >= 8
+        && u16::from_le_bytes([r[2], r[3]]) != 0
+    {
+        step2(&r[8..]);
+    }
+    true
+}
+
+/// `0x00a89520`: scales a rect (x0,y0,x1,y1) by dividing x components by
+/// `sx` and y components by `sy`.
+pub fn w31a22_scale_rect(x0: f32, y0: f32, x1: f32, y1: f32, sx: f32, sy: f32) -> [f32; 4] {
+    [x0 / sx, y0 / sy, x1 / sx, y1 / sy]
+}
+
+/// `0x00c9c4cb`: CRT dispatch.  When the mode global is non-zero calls
+/// `alt`; otherwise valid (both non-zero) args call `main`; invalid args
+/// yield `0x7fffffff` (EINVAL = 0x16 is set by the caller).
+pub fn w31a22_crt_dispatch(
+    mode: u32,
+    p1: u32,
+    p2: u32,
+    alt: impl FnOnce() -> u32,
+    main: impl FnOnce() -> u32,
+) -> Result<u32, u32> {
+    if mode != 0 {
+        return Ok(alt());
+    }
+    if p1 != 0 && p2 != 0 {
+        return Ok(main());
+    }
+    Err(0x16)
+}
+
+/// `0x00c9c5ae`: rounds `x` away from zero by 1.0 unless the classifier
+/// (`class(x, 1)`) returns 1 or 2, or `class(x, 0)` returns 0.
+pub fn w31a22_round_away(x: f32, class: impl Fn(f32, i32) -> i16) -> f32 {
+    let c = class(x, 1);
+    if !(1..=2).contains(&c) && class(x, 0) != 0 {
+        if x.to_bits() & 0x8000_0000 == 0 {
+            x + 1.0
+        } else {
+            x - 1.0
+        }
+    } else {
+        x
+    }
+}
+
+#[cfg(test)]
+mod tests_wave31_agent22 {
+    use super::*;
+
+    #[test]
+    fn read_block() {
+        assert_eq!(
+            w31a22_read_block(7, 1, 2, |_, c, _, _, _| {
+                assert_eq!(*c, 0x2000);
+                *c = 5;
+                0
+            }),
+            Some((5, 7))
+        );
+        assert_eq!(w31a22_read_block(7, 1, 2, |_, _, _, _, _| 1), None);
+    }
+
+    #[test]
+    fn update_record() {
+        let rec = [0, 0, 1, 0, 0, 0, 0, 0, 9];
+        let mut n = 0;
+        let mut got = 0;
+        assert!(w31a22_update_record(
+            0,
+            0,
+            Some(&rec),
+            &mut || n += 1,
+            &mut |p| got = p[0]
+        ));
+        assert_eq!((n, got), (1, 9));
+        assert!(!w31a22_update_record(
+            1,
+            0,
+            Some(&rec),
+            &mut || {},
+            &mut |_| {}
+        ));
+    }
+
+    #[test]
+    fn scale() {
+        assert_eq!(
+            w31a22_scale_rect(2.0, 4.0, 6.0, 8.0, 2.0, 4.0),
+            [1.0, 1.0, 3.0, 2.0]
+        );
+    }
+
+    #[test]
+    fn dispatch_and_round() {
+        assert_eq!(w31a22_crt_dispatch(1, 0, 0, || 3, || 4), Ok(3));
+        assert_eq!(w31a22_crt_dispatch(0, 1, 1, || 3, || 4), Ok(4));
+        assert_eq!(w31a22_crt_dispatch(0, 0, 1, || 3, || 4), Err(0x16));
+        assert_eq!(
+            w31a22_round_away(1.5, |_, m| if m == 1 { 0 } else { 3 }),
+            2.5
+        );
+        assert_eq!(
+            w31a22_round_away(-1.5, |_, m| if m == 1 { 0 } else { 3 }),
+            -2.5
+        );
+        assert_eq!(
+            w31a22_round_away(1.5, |_, m| if m == 1 { 1 } else { 3 }),
+            1.5
+        );
+    }
+}
