@@ -23,31 +23,31 @@ wire it into the engine**.  Read this file first, then
    (`cargo test -q --test waveW_agentNN`); the full suite runs once, after
    the merge.
 
-## Current state (2026-11-11, after wave 15)
+## Current state (2026-11-11, after wave 16)
 
 | item | value |
 |---|---|
-| ledger `translated` | 2873 of 56128 functions |
-| `decompiled_uncited` | 52363 (only ~7.8k worth translating, see below) |
+| ledger `translated` | 2957 of 56128 functions |
+| `decompiled_uncited` | 52279 (only ~7.6k worth translating, see below) |
 | `decompile_failed` | 622 — known ceiling, do not retry |
-| tests | `cargo test --lib` 2856 pass; `cargo test` 3132 pass |
-| next wave | 16 (queue mode) |
+| tests | `cargo test --lib` 2908 pass; `cargo test` 3184 pass |
+| next wave | 17 (queue mode) |
 
 Triage of the 52435 uncited rows (`scripts/triage_corpus.py`):
 
 | category | rows | action |
 |---|---|---|
-| `clean` tier 1 (next to gameplay code) | 351 | **translate first** |
-| `clean` tier 2 (two hops from gameplay) | 6884 | translate next |
-| `clean` tier 3 (next to client/render/audio) | 530 | after tier 2 |
-| `clean` tier 4 (unrelated engine/library glue) | 15500 | only on demand |
+| `clean` tier 1 (next to gameplay code) | 196 | **translate first** |
+| `clean` tier 2 (two hops from gameplay) | 6887 | translate next |
+| `clean` tier 3 (next to client/render/audio) | 519 | after tier 2 |
+| `clean` tier 4 (unrelated engine/library glue) | 15463 | only on demand |
 | `unwind` (compiler exception funclets) | 15305 | never |
 | `fragment` (`unaff_*`/`in_*` mid-function blocks) | 6392 | never |
 | `library` (OpenGL loader, FMOD, OpenSSL, png, zlib) | 3041 | never |
 | `obfuscated` (anti-tamper, bad instruction data) | 2136 | never |
 | `trivial` (thunks, ≤ 8 bytes) | 2058 | never |
 | `hub` (CRT/allocator helpers with > 150 callers) | 38 | never |
-| `skipped` (assigned to a wave, not translatable yet) | 128 | never (`skiplist.tsv`) |
+| `skipped` (assigned to a wave, not translatable yet) | 244 | never (`skiplist.tsv`) |
 
 ## Local data (not in git, must exist)
 
@@ -89,7 +89,7 @@ rg -n 'w14a03_' engine-rust/src                        # find a merged helper
 In opencode: `/wave W` runs the whole cycle with the `translator` subagent
 (`.opencode/commands/wave.md`, `.opencode/agents/translator.md`).
 
-Yield note: wave 15 (tier 1, 200 rows) gave +72 translated (36%).  Most
+Yield note: wave 15 gave +72 (36%), wave 16 +84 (42%) per 200 rows.  Most
 skips end in non-returning calls or depend on unmodelled callees; that is
 expected.  Do not retry skiplist rows until a callee they need is translated.
 
