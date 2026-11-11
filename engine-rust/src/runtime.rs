@@ -35696,3 +35696,1940 @@ mod tests_wave19_agent09 {
         assert_eq!(seen, [10, 11, 12, 12]);
     }
 }
+
+// ===========================================================================
+// Merged from src/wave20/agent04.rs
+// ===========================================================================
+// Wave 20 agent 04: motion-estimation SAD kernels, small helpers.
+// Strides are in bytes, as in the retail code.
+
+/// Generic SAD of `w` x `h` blocks (helper for the kernels below).
+fn w20a04_sad_block(a: &[u8], sa: usize, b: &[u8], sb: usize, w: usize, h: usize) -> u32 {
+    let mut s = 0u32;
+    for y in 0..h {
+        for x in 0..w {
+            s += (a[y * sa + x] as i32 - b[y * sb + x] as i32).unsigned_abs();
+        }
+    }
+    s
+}
+
+/// `0x004c4fa0`: 8x8 sum of absolute differences between `ref_` (stride
+/// `sa`) and `cur` (stride `sb`).
+pub fn w20a04_sad_8x8(ref_: &[u8], sa: usize, cur: &[u8], sb: usize) -> u32 {
+    w20a04_sad_block(ref_, sa, cur, sb, 8, 8)
+}
+
+/// `0x004c5010`: 8x4 sum of absolute differences.
+pub fn w20a04_sad_8x4(ref_: &[u8], sa: usize, cur: &[u8], sb: usize) -> u32 {
+    w20a04_sad_block(ref_, sa, cur, sb, 8, 4)
+}
+
+/// `0x004c52b0`: 4x4 sum of absolute differences.
+pub fn w20a04_sad_4x4(ref_: &[u8], sa: usize, cur: &[u8], sb: usize) -> u32 {
+    w20a04_sad_block(ref_, sa, cur, sb, 4, 4)
+}
+
+/// SAD of `cur` averaged (pavgb, `(a+b+1)>>1`) with a packed `pred`
+/// block (rows of `w` bytes) against `ref_`.
+fn w20a04_sad_avg(
+    ref_: &[u8],
+    sa: usize,
+    cur: &[u8],
+    sb: usize,
+    pred: &[u8],
+    w: usize,
+    h: usize,
+) -> u32 {
+    let mut s = 0u32;
+    for y in 0..h {
+        for x in 0..w {
+            let avg = ((cur[y * sb + x] as u32 + pred[y * w + x] as u32 + 1) >> 1) as i32;
+            s += (avg - ref_[y * sa + x] as i32).unsigned_abs();
+        }
+    }
+    s
+}
+
+/// `0x004c5080`: 8x16 SAD of `ref_` against `cur` averaged with the packed
+/// 8-byte-per-row prediction `pred` (0x20 bytes per 4 rows).
+pub fn w20a04_sad_8x16_avg(ref_: &[u8], sa: usize, cur: &[u8], sb: usize, pred: &[u8]) -> u32 {
+    w20a04_sad_avg(ref_, sa, cur, sb, pred, 8, 16)
+}
+
+/// `0x004c5330`: 4x8 SAD of `ref_` against `cur` averaged with the packed
+/// 4-byte-per-row prediction `pred` (0x10 bytes per 4 rows).
+pub fn w20a04_sad_4x8_avg(ref_: &[u8], sa: usize, cur: &[u8], sb: usize, pred: &[u8]) -> u32 {
+    w20a04_sad_avg(ref_, sa, cur, sb, pred, 4, 8)
+}
+
+fn w20a04_sad3(ref_: &[u8], sa: usize, cur: &[u8], sb: usize, w: usize, h: usize) -> [u32; 3] {
+    let mut out = [0u32; 3];
+    for (k, o) in out.iter_mut().enumerate() {
+        for y in 0..h {
+            for x in 0..w {
+                let d = ref_[y * sa + x] as i32 - cur[y * sb + k + x] as i32;
+                *o += d.unsigned_abs();
+            }
+        }
+    }
+    out
+}
+
+/// `0x004c5952`: 8-wide, 16-row SADs of `ref_` against `cur` shifted by
+/// 0, 1 and 2 bytes; result is written as three u32 (`param_5`).
+pub fn w20a04_sad_8x16_x3(ref_: &[u8], sa: usize, cur: &[u8], sb: usize) -> [u32; 3] {
+    w20a04_sad3(ref_, sa, cur, sb, 8, 16)
+}
+
+/// `0x004c5bb7`: as above for 8x8 blocks.
+pub fn w20a04_sad_8x8_x3(ref_: &[u8], sa: usize, cur: &[u8], sb: usize) -> [u32; 3] {
+    w20a04_sad3(ref_, sa, cur, sb, 8, 8)
+}
+
+/// `0x004c5cf4`: as above for 4x4 blocks.
+pub fn w20a04_sad_4x4_x3(ref_: &[u8], sa: usize, cur: &[u8], sb: usize) -> [u32; 3] {
+    w20a04_sad3(ref_, sa, cur, sb, 4, 4)
+}
+
+/// `0x004c3ad0`: fills four 4-byte rows (row stride `stride`) with the
+/// bytes of the little-endian word `v`: row `i` = byte `i` repeated 4x.
+pub fn w20a04_splat_rows(dst: &mut [u8], stride: usize, v: u32) {
+    for (i, b) in v.to_le_bytes().iter().enumerate() {
+        dst[i * stride..i * stride + 4].fill(*b);
+    }
+}
+
+/// `0x00c9c63a`: leap-year test on a `tm_year`-style value (years since
+/// 1900): divisible by 4 and not by 100, or `year + 1900` divisible by 400.
+pub fn w20a04_is_leap_tm_year(year: i32) -> bool {
+    if year % 4 == 0 && year % 100 != 0 {
+        return true;
+    }
+    year.wrapping_add(0x76c) % 400 == 0
+}
+
+/// `0x00c9c8c1`: calls `get` (unresolved callee); when nonzero asks
+/// `reject(value, arg)` and returns 0 if it reports nonzero, else the value.
+pub fn w20a04_checked_value(
+    arg: u32,
+    get: impl FnOnce() -> u32,
+    reject: impl FnOnce(u32, u32) -> i32,
+) -> u32 {
+    let v = get();
+    if v != 0 && reject(v, arg) == 0 { v } else { 0 }
+}
+
+/// `0x00c9d5d7`: runs `f(&mut slot, 1)`; the stored value is 0 on a return
+/// of 1 (with whatever `f` wrote) and `0xffffffff` otherwise.
+pub fn w20a04_read_u32_or_ff(f: impl FnOnce(&mut [u32; 1], i32) -> i32) -> u32 {
+    let mut l = [0u32; 1];
+    if f(&mut l, 1) != 1 {
+        l[0] = 0xffff_ffff;
+    }
+    l[0]
+}
+
+/// `0x00c9d609`: two-word variant of the above (both words become
+/// `0xffffffff` when `f(&mut buf, 1)` does not return 1).
+pub fn w20a04_read_u64_or_ff(f: impl FnOnce(&mut [u32; 4], i32) -> i32) -> [u32; 2] {
+    let mut l = [0u32; 4];
+    if f(&mut l, 1) != 1 {
+        l[0] = 0xffff_ffff;
+        l[1] = 0xffff_ffff;
+    }
+    [l[0], l[1]]
+}
+
+#[cfg(test)]
+mod tests_wave20_agent04 {
+    use super::*;
+
+    fn img(n: usize, seed: u32) -> Vec<u8> {
+        (0..n)
+            .map(|i| ((i as u32 * 37 + seed * 11) % 251) as u8)
+            .collect()
+    }
+
+    #[test]
+    fn sad_basic() {
+        let a = vec![10u8; 16 * 16];
+        let b = vec![13u8; 16 * 16];
+        assert_eq!(w20a04_sad_8x8(&a, 16, &b, 16), 3 * 64);
+        assert_eq!(w20a04_sad_8x4(&a, 16, &b, 16), 3 * 32);
+        assert_eq!(w20a04_sad_4x4(&a, 16, &b, 16), 3 * 16);
+    }
+
+    #[test]
+    fn sad_avg() {
+        let r = vec![5u8; 16 * 16];
+        let c = vec![4u8; 16 * 16];
+        let p = vec![7u8; 128];
+        // avg(4,7)=6 -> |6-5| = 1
+        assert_eq!(w20a04_sad_8x16_avg(&r, 16, &c, 16, &p), 128);
+        assert_eq!(w20a04_sad_4x8_avg(&r, 16, &c, 16, &p), 32);
+    }
+
+    #[test]
+    fn sad_x3() {
+        let r = img(32 * 20, 1);
+        let c = img(32 * 20, 2);
+        let o = w20a04_sad_8x16_x3(&r, 32, &c, 32);
+        for k in 0..3 {
+            assert_eq!(o[k], w20a04_sad_block(&r, 32, &c[k..], 32, 8, 16));
+        }
+        let o = w20a04_sad_8x8_x3(&r, 32, &c, 32);
+        assert_eq!(o[2], w20a04_sad_block(&r, 32, &c[2..], 32, 8, 8));
+        let o = w20a04_sad_4x4_x3(&r, 32, &c, 32);
+        assert_eq!(o[1], w20a04_sad_block(&r, 32, &c[1..], 32, 4, 4));
+    }
+
+    #[test]
+    fn splat() {
+        let mut d = [0u8; 32];
+        w20a04_splat_rows(&mut d, 8, 0x04030201);
+        assert_eq!(&d[0..4], &[1; 4]);
+        assert_eq!(&d[8..12], &[2; 4]);
+        assert_eq!(&d[16..20], &[3; 4]);
+        assert_eq!(&d[24..28], &[4; 4]);
+    }
+
+    #[test]
+    fn leap() {
+        assert!(w20a04_is_leap_tm_year(96));
+        assert!(w20a04_is_leap_tm_year(100));
+        assert!(!w20a04_is_leap_tm_year(200));
+        assert!(!w20a04_is_leap_tm_year(97));
+    }
+
+    #[test]
+    fn callbacks() {
+        assert_eq!(w20a04_checked_value(1, || 9, |_, _| 0), 9);
+        assert_eq!(w20a04_checked_value(1, || 9, |_, _| 1), 0);
+        assert_eq!(w20a04_checked_value(1, || 0, |_, _| 0), 0);
+        assert_eq!(
+            w20a04_read_u32_or_ff(|s, _| {
+                s[0] = 5;
+                1
+            }),
+            5
+        );
+        assert_eq!(w20a04_read_u32_or_ff(|_, _| 0), 0xffff_ffff);
+        assert_eq!(
+            w20a04_read_u64_or_ff(|s, _| {
+                s[1] = 7;
+                1
+            }),
+            [0, 7]
+        );
+        assert_eq!(w20a04_read_u64_or_ff(|_, _| 0), [u32::MAX; 2]);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave20/agent05.rs
+// ===========================================================================
+// Wave 20 translation batch 05: fmt v6 integer/spec writers and one SAD kernel.
+//
+// All helpers are pure; the `fmt` output buffer is modelled as a `Vec<u8>`.
+
+/// Pair table the retail code indexes with `value % 100 * 2`.
+#[allow(dead_code)]
+const W20A05_DIGIT_PAIRS: &[u8; 200] = b"0001020304050607080910111213141516171819\
+2021222324252627282930313233343536373839\
+4041424344454647484950515253545556575859\
+6061626364656667686970717273747576777879\
+8081828384858687888990919293949596979899";
+
+/// Fields the `fmt::v6::basic_format_specs` pointer exposes to the writers.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[allow(dead_code)]
+pub struct W20a05Specs {
+    /// Field width (`+0x0`).
+    pub width: usize,
+    /// Fill byte (`+0x11`).
+    pub fill: u8,
+    /// Alignment: sign-extended low nibble of `+0xc` (2 right, 3 centre,
+    /// anything else pads on the right).
+    pub align: i8,
+}
+
+/// Format spec flags set by `w20a05_chrono_spec`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[allow(dead_code)]
+pub struct W20a05Flags {
+    /// Byte 0 is the caller's expected upper-case letter (`G`, `A`, `E`, `F`).
+    pub expect: u8,
+    pub b1: bool,
+    pub b2: bool,
+    pub b3: bool,
+    pub b4: bool,
+}
+
+/// `0x00556d40`: marks the format-spec flag bytes for a presentation type.
+/// `0`/`G`/`g` set b1 when `expect == 'G'`; `%` sets b2 and b3; `A`/`a`
+/// and `E`/`e` set b1 when expect matches the upper-case letter; `F`/`f`
+/// always set b2 and set b1 when expect is `F`; `n` sets b4.  Any other
+/// type yields the "invalid type specifier" format error.
+#[allow(dead_code)]
+pub fn w20a05_chrono_spec(ty: u8, f: &mut W20a05Flags) -> Result<(), &'static str> {
+    match ty {
+        0 | b'G' | b'g' => {
+            if f.expect == b'G' {
+                f.b1 = true;
+            }
+        }
+        b'%' => {
+            f.b2 = true;
+            f.b3 = true;
+        }
+        b'A' | b'a' => {
+            if f.expect == b'A' {
+                f.b1 = true;
+            }
+        }
+        b'E' | b'e' => {
+            if f.expect == b'E' {
+                f.b1 = true;
+            }
+        }
+        b'F' | b'f' => {
+            f.b2 = true;
+            if f.expect == b'F' {
+                f.b1 = true;
+            }
+        }
+        b'n' => f.b4 = true,
+        _ => return Err("invalid type specifier"),
+    }
+    Ok(())
+}
+
+/// `0x00556510`: writes `value` in decimal two digits at a time (division
+/// by 100, `DIGIT_PAIRS` lookup, a single leading digit when < 10).
+#[allow(dead_code)]
+pub fn w20a05_format_decimal(value: u64) -> Vec<u8> {
+    let mut rev: Vec<u8> = Vec::new();
+    let mut v = value;
+    while v >= 100 {
+        let r = (v % 100) as usize * 2;
+        v /= 100;
+        rev.push(W20A05_DIGIT_PAIRS[r + 1]);
+        rev.push(W20A05_DIGIT_PAIRS[r]);
+    }
+    if v < 10 {
+        rev.push(v as u8 + b'0');
+    } else {
+        let r = v as usize * 2;
+        rev.push(W20A05_DIGIT_PAIRS[r + 1]);
+        rev.push(W20A05_DIGIT_PAIRS[r]);
+    }
+    rev.reverse();
+    rev
+}
+
+/// `0x00556380`: like the decimal writer but with digit grouping.  The
+/// shared counter `*counter` is incremented after every digit written
+/// except the most significant; whenever it reaches a multiple of 3 and
+/// digits remain, `sep` is inserted before the next more-significant digit.
+#[allow(dead_code)]
+pub fn w20a05_format_decimal_grouped(value: u64, sep: u8, counter: &mut u32) -> Vec<u8> {
+    let plain = w20a05_format_decimal(value);
+    let n = plain.len();
+    let mut rev: Vec<u8> = Vec::new();
+    for (i, &d) in plain.iter().rev().enumerate() {
+        rev.push(d);
+        if i + 1 < n {
+            *counter += 1;
+            if (*counter).is_multiple_of(3) {
+                rev.push(sep);
+            }
+        }
+    }
+    rev.reverse();
+    rev
+}
+
+/// Shared padding step of the int writers (`write_padded`): right (2)
+/// fills left; centre (3) puts `n/2` fill before and the remainder after;
+/// any other alignment writes the body first.  A width not above the body
+/// length writes the body alone.
+#[allow(dead_code)]
+fn w20a05_write_padded(out: &mut Vec<u8>, specs: &W20a05Specs, body: &[u8]) {
+    if specs.width <= body.len() {
+        out.extend_from_slice(body);
+        return;
+    }
+    let n = specs.width - body.len();
+    match specs.align {
+        2 => {
+            out.extend(std::iter::repeat_n(specs.fill, n));
+            out.extend_from_slice(body);
+        }
+        3 => {
+            out.extend(std::iter::repeat_n(specs.fill, n >> 1));
+            out.extend_from_slice(body);
+            out.extend(std::iter::repeat_n(specs.fill, n - (n >> 1)));
+        }
+        _ => {
+            out.extend_from_slice(body);
+            out.extend(std::iter::repeat_n(specs.fill, n));
+        }
+    }
+}
+
+/// Writes `value` into exactly `ndigits` bytes, least significant first
+/// from the end, `shift` bits per digit, using `table`.
+#[allow(dead_code)]
+fn w20a05_radix_digits(mut value: u64, ndigits: usize, shift: u32, table: &[u8]) -> Vec<u8> {
+    let mut buf = vec![b'0'; ndigits];
+    let mask = (1u64 << shift) - 1;
+    let mut i = ndigits;
+    loop {
+        if i == 0 {
+            break;
+        }
+        i -= 1;
+        buf[i] = table[(value & mask) as usize];
+        value >>= shift;
+        if value == 0 {
+            break;
+        }
+    }
+    buf
+}
+
+/// `0x00559c60`: writes a pointer: `0x` followed by `ndigits` lower-case
+/// hex digits (total `ndigits + 2`), padded according to `specs`.
+#[allow(dead_code)]
+pub fn w20a05_write_pointer(out: &mut Vec<u8>, specs: &W20a05Specs, value: u32, ndigits: usize) {
+    let mut body = b"0x".to_vec();
+    body.extend(w20a05_radix_digits(
+        value as u64,
+        ndigits,
+        4,
+        b"0123456789abcdef",
+    ));
+    w20a05_write_padded(out, specs, &body);
+}
+
+/// Prefix, precision zeros and digit record behind the radix writers
+/// (`param_2[1..]`): prefix bytes, zero count with its fill byte, value
+/// and digit count.  `size` is the total body length (`param_2[0]`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[allow(dead_code)]
+pub struct W20a05IntBody<'a> {
+    pub size: usize,
+    pub prefix: &'a [u8],
+    pub zero_fill: u8,
+    pub zeros: usize,
+    pub value: u64,
+    pub ndigits: usize,
+}
+
+#[allow(dead_code)]
+fn w20a05_write_radix(out: &mut Vec<u8>, specs: &W20a05Specs, b: &W20a05IntBody<'_>, shift: u32) {
+    let mut body = b.prefix.to_vec();
+    body.extend(std::iter::repeat_n(b.zero_fill, b.zeros));
+    body.extend(w20a05_radix_digits(b.value, b.ndigits, shift, b"01234567"));
+    // `size` governs the padding decision in the retail code.
+    let _ = b.size;
+    w20a05_write_padded(out, specs, &body);
+}
+
+/// `0x00559db0`: binary (`0b`) integer body, 32-bit value, 1 bit/digit.
+#[allow(dead_code)]
+pub fn w20a05_write_bin32(out: &mut Vec<u8>, specs: &W20a05Specs, b: &W20a05IntBody<'_>) {
+    let mut b = b.clone();
+    b.value &= 0xffff_ffff;
+    w20a05_write_radix(out, specs, &b, 1);
+}
+
+/// `0x00559f20`: binary integer body with a 64-bit value (low/high words
+/// shifted right together), 1 bit/digit.
+#[allow(dead_code)]
+pub fn w20a05_write_bin64(out: &mut Vec<u8>, specs: &W20a05Specs, b: &W20a05IntBody<'_>) {
+    w20a05_write_radix(out, specs, b, 1);
+}
+
+/// `0x0055a0a0`: octal integer body, 32-bit value, 3 bits/digit.
+#[allow(dead_code)]
+pub fn w20a05_write_oct32(out: &mut Vec<u8>, specs: &W20a05Specs, b: &W20a05IntBody<'_>) {
+    let mut b = b.clone();
+    b.value &= 0xffff_ffff;
+    w20a05_write_radix(out, specs, &b, 3);
+}
+
+/// `0x004d7778`: 4x4 block SAD over eight horizontal offsets.  For each of
+/// four rows (strides `stride_a` on `src`, `stride_b` on `refp`; rows 0/1
+/// from `refp` at +0/+stride_b then +2*stride_b/+3*stride_b) it runs
+/// `mpsadbw` imm 0: `out[j] += sum_k |ref[j+k] - src[k]|`, j in 0..8,
+/// k in 0..4.  Result lanes are the eight sums zero-extended to u32.
+#[allow(dead_code)]
+pub fn w20a05_sad4x4_x8(src: &[u8], stride_a: usize, refp: &[u8], stride_b: usize) -> [u32; 8] {
+    let mut out = [0u32; 8];
+    for row in 0..4 {
+        let s = &src[row * stride_a..row * stride_a + 4];
+        let r = &refp[row * stride_b..row * stride_b + 16];
+        for (j, o) in out.iter_mut().enumerate() {
+            for k in 0..4 {
+                *o += (r[j + k] as i32 - s[k] as i32).unsigned_abs();
+            }
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests_wave20_agent05 {
+    use super::*;
+
+    #[test]
+    fn chrono_spec_flags() {
+        let mut f = W20a05Flags {
+            expect: b'F',
+            ..Default::default()
+        };
+        w20a05_chrono_spec(b'f', &mut f).unwrap();
+        assert!(f.b1 && f.b2);
+        let mut g = W20a05Flags::default();
+        w20a05_chrono_spec(b'%', &mut g).unwrap();
+        assert!(g.b2 && g.b3 && !g.b1);
+        w20a05_chrono_spec(b'n', &mut g).unwrap();
+        assert!(g.b4);
+        assert!(w20a05_chrono_spec(b'z', &mut g).is_err());
+    }
+
+    #[test]
+    fn decimal() {
+        for v in [0u64, 7, 10, 99, 100, 12345, u64::MAX] {
+            assert_eq!(w20a05_format_decimal(v), v.to_string().into_bytes());
+        }
+    }
+
+    #[test]
+    fn grouped() {
+        let mut c = 0;
+        assert_eq!(
+            w20a05_format_decimal_grouped(1234567, b',', &mut c),
+            b"1,234,567"
+        );
+        assert_eq!(c, 6);
+        let mut c = 0;
+        assert_eq!(
+            w20a05_format_decimal_grouped(123456, b',', &mut c),
+            b"123,456"
+        );
+        let mut c = 0;
+        assert_eq!(w20a05_format_decimal_grouped(12, b',', &mut c), b"12");
+    }
+
+    #[test]
+    fn pointer_and_padding() {
+        let mut out = Vec::new();
+        let s = W20a05Specs {
+            width: 0,
+            fill: b' ',
+            align: 0,
+        };
+        w20a05_write_pointer(&mut out, &s, 0xbeef, 4);
+        assert_eq!(out, b"0xbeef");
+        let mut out = Vec::new();
+        let s = W20a05Specs {
+            width: 10,
+            fill: b'*',
+            align: 2,
+        };
+        w20a05_write_pointer(&mut out, &s, 0xf, 1);
+        assert_eq!(out, b"*******0xf");
+        let mut out = Vec::new();
+        let s = W20a05Specs {
+            width: 9,
+            fill: b'.',
+            align: 3,
+        };
+        w20a05_write_pointer(&mut out, &s, 0xf, 1);
+        assert_eq!(out, b"...0xf...");
+    }
+
+    #[test]
+    fn radix_bodies() {
+        let b = W20a05IntBody {
+            size: 6,
+            prefix: b"0b",
+            zero_fill: b'0',
+            zeros: 2,
+            value: 5,
+            ndigits: 3,
+        };
+        let mut out = Vec::new();
+        let s = W20a05Specs {
+            width: 0,
+            fill: b' ',
+            align: 2,
+        };
+        w20a05_write_bin32(&mut out, &s, &b);
+        assert_eq!(out, b"0b00101");
+        let b = W20a05IntBody {
+            size: 4,
+            prefix: b"0",
+            zero_fill: b'0',
+            zeros: 0,
+            value: 0o755,
+            ndigits: 3,
+        };
+        let mut out = Vec::new();
+        w20a05_write_oct32(&mut out, &s, &b);
+        assert_eq!(out, b"0755");
+        let b = W20a05IntBody {
+            size: 0,
+            prefix: b"",
+            zero_fill: b'0',
+            zeros: 0,
+            value: 1 << 40,
+            ndigits: 41,
+        };
+        let mut out = Vec::new();
+        w20a05_write_bin64(&mut out, &s, &b);
+        assert_eq!(out.len(), 41);
+        assert_eq!(out[0], b'1');
+        let b = W20a05IntBody {
+            size: 3,
+            prefix: b"",
+            zero_fill: b'0',
+            zeros: 0,
+            value: 5,
+            ndigits: 3,
+        };
+        let s = W20a05Specs {
+            width: 6,
+            fill: b'_',
+            align: 1,
+        };
+        let mut out = Vec::new();
+        w20a05_write_bin32(&mut out, &s, &b);
+        assert_eq!(out, b"101___");
+    }
+
+    #[test]
+    fn sad() {
+        let src = [1u8; 16];
+        let mut r = [0u8; 64];
+        for (i, v) in r.iter_mut().enumerate() {
+            *v = (i % 16) as u8;
+        }
+        let out = w20a05_sad4x4_x8(&src, 4, &r, 16);
+        // row sums for offset 0: |0..3 - 1| = 1+0+1+2 = 4 per row
+        assert_eq!(out[0], 16);
+        assert_eq!(out[1], 4 * 6);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave20/agent06.rs
+// ===========================================================================
+// Wave 20 translation batch 06: fmt v6 padded-writer helpers.
+//
+// The buffer is modelled as `Vec<u8>` (retail: `{vtable, ptr, size, cap}`,
+// grow slot called when `cap < new_size`).  The format spec is modelled as
+// [`W20a06Spec`] (`width` at +0, fill byte at +0x11, signed low nibble of
+// the dword at +0xC is the alignment: 2 right, 3 center, otherwise left).
+
+/// Format spec fields read by every padded writer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct W20a06Spec {
+    /// Field width (dword at +0).
+    pub width: u32,
+    /// Fill byte (byte at +0x11).
+    pub fill: u8,
+    /// Raw dword at +0xC; only the low nibble (sign-extended) matters.
+    pub align_word: u32,
+}
+
+/// Sign-extended low nibble of the alignment dword, as `(x << 28) >> 28`.
+pub fn w20a06_align(spec: &W20a06Spec) -> i32 {
+    ((spec.align_word << 28) as i32) >> 28
+}
+
+/// Shared padding skeleton of the writers below: when `width <= size` the
+/// body is emitted as is, otherwise `width - size` fill bytes go before
+/// (align 2), split around (align 3, left half is `pad >> 1`) or after
+/// (any other align) the body.
+pub fn w20a06_write_padded(
+    out: &mut Vec<u8>,
+    spec: &W20a06Spec,
+    size: u32,
+    body: impl FnOnce(&mut Vec<u8>),
+) {
+    if spec.width <= size {
+        body(out);
+        return;
+    }
+    let pad = (spec.width - size) as usize;
+    match w20a06_align(spec) {
+        2 => {
+            out.resize(out.len() + pad, spec.fill);
+            body(out);
+        }
+        3 => {
+            let left = pad >> 1;
+            out.resize(out.len() + left, spec.fill);
+            body(out);
+            out.resize(out.len() + (pad - left), spec.fill);
+        }
+        _ => {
+            body(out);
+            out.resize(out.len() + pad, spec.fill);
+        }
+    }
+}
+
+/// Integer writer record shared by the numeric writers: `size` (+0), prefix
+/// bytes (+4/+8), zero padding `(fill, count)` (+0xC/+0x10).
+#[derive(Clone, Debug, Default)]
+pub struct W20a06IntParts<'a> {
+    /// Total emitted size (+0).
+    pub size: u32,
+    /// Prefix bytes (sign / base prefix).
+    pub prefix: &'a [u8],
+    /// Zero-padding fill byte.
+    pub zero_fill: u8,
+    /// Zero-padding count.
+    pub zero_count: u32,
+}
+
+fn w20a06_head(out: &mut Vec<u8>, p: &W20a06IntParts) {
+    out.extend_from_slice(p.prefix);
+    out.resize(out.len() + p.zero_count as usize, p.zero_fill);
+}
+
+/// Writes `ndigits` slots filled backwards from the end with `radix`
+/// digits of `value` (do/while: at least one digit).
+fn w20a06_digits_back(out: &mut Vec<u8>, mut value: u64, ndigits: u32, shift: u32, table: &[u8]) {
+    let start = out.len();
+    out.resize(start + ndigits as usize, 0);
+    let mask = (1u64 << shift) - 1;
+    let mut pos = ndigits as usize;
+    loop {
+        if pos == 0 {
+            break;
+        }
+        pos -= 1;
+        out[start + pos] = table[(value & mask) as usize];
+        value >>= shift;
+        if value == 0 {
+            break;
+        }
+    }
+}
+
+/// `0x0055a220`: padded octal integer.  Value is a 64-bit pair (+0x18/+0x1C),
+/// digit count at +0x20; digits are `'0' + (v & 7)`, written backwards.
+pub fn w20a06_0055a220(
+    out: &mut Vec<u8>,
+    spec: &W20a06Spec,
+    p: &W20a06IntParts,
+    value: u64,
+    ndigits: u32,
+) {
+    w20a06_write_padded(out, spec, p.size, |o| {
+        w20a06_head(o, p);
+        w20a06_digits_back(o, value, ndigits, 3, b"01234567");
+    });
+}
+
+/// `0x0055a3a0`: padded integer whose digits come from the inner writer
+/// at FUN_005562d0 (supplied as `inner`).
+pub fn w20a06_0055a3a0(
+    out: &mut Vec<u8>,
+    spec: &W20a06Spec,
+    p: &W20a06IntParts,
+    inner: impl FnOnce(&mut Vec<u8>),
+) {
+    w20a06_write_padded(out, spec, p.size, |o| {
+        w20a06_head(o, p);
+        inner(o);
+    });
+}
+
+/// `0x0055a510`: same skeleton as `0x0055a3a0`, digits from the inner
+/// writer at FUN_00556510.
+pub fn w20a06_0055a510(
+    out: &mut Vec<u8>,
+    spec: &W20a06Spec,
+    p: &W20a06IntParts,
+    inner: impl FnOnce(&mut Vec<u8>),
+) {
+    w20a06_write_padded(out, spec, p.size, |o| {
+        w20a06_head(o, p);
+        inner(o);
+    });
+}
+
+/// `0x0055a680`: padded hexadecimal integer; lowercase table when the type
+/// character is `'x'`, uppercase otherwise.  `ndigits` is at +0x18.
+pub fn w20a06_0055a680(
+    out: &mut Vec<u8>,
+    spec: &W20a06Spec,
+    p: &W20a06IntParts,
+    value: u32,
+    lowercase: bool,
+    ndigits: u32,
+) {
+    let table: &[u8] = if lowercase {
+        b"0123456789abcdef"
+    } else {
+        b"0123456789ABCDEF"
+    };
+    w20a06_write_padded(out, spec, p.size, |o| {
+        w20a06_head(o, p);
+        w20a06_digits_back(o, value as u64, ndigits, 4, table);
+    });
+}
+
+/// `0x0055a820`: padded integer body written by FUN_00555ec0 after the
+/// prefix and zero padding.
+pub fn w20a06_0055a820(
+    out: &mut Vec<u8>,
+    spec: &W20a06Spec,
+    p: &W20a06IntParts,
+    inner: impl FnOnce(&mut Vec<u8>),
+) {
+    w20a06_write_padded(out, spec, p.size, |o| {
+        w20a06_head(o, p);
+        inner(o);
+    });
+}
+
+/// `0x0055a990`: padded float body; after prefix and zero padding the
+/// inner writer FUN_00556160 is invoked (supplied as `inner`).
+pub fn w20a06_0055a990(
+    out: &mut Vec<u8>,
+    spec: &W20a06Spec,
+    p: &W20a06IntParts,
+    inner: impl FnOnce(&mut Vec<u8>),
+) {
+    w20a06_write_padded(out, spec, p.size, |o| {
+        w20a06_head(o, p);
+        inner(o);
+    });
+}
+
+/// `0x0055ab30`: as `0x0055a990` with the FUN_00556380 float writer.
+pub fn w20a06_0055ab30(
+    out: &mut Vec<u8>,
+    spec: &W20a06Spec,
+    p: &W20a06IntParts,
+    inner: impl FnOnce(&mut Vec<u8>),
+) {
+    w20a06_write_padded(out, spec, p.size, |o| {
+        w20a06_head(o, p);
+        inner(o);
+    });
+}
+
+/// `0x0055acd0`: padded string; size is the string length, the body is the
+/// string bytes.
+pub fn w20a06_0055acd0(out: &mut Vec<u8>, spec: &W20a06Spec, s: &[u8]) {
+    w20a06_write_padded(out, spec, s.len() as u32, |o| o.extend_from_slice(s));
+}
+
+/// `0x0055ae20`: padded `[sign] + bytes` field (size is `sign != 0` plus the
+/// byte count).
+pub fn w20a06_0055ae20(out: &mut Vec<u8>, spec: &W20a06Spec, sign: u8, body: &[u8]) {
+    let size = (sign != 0) as u32 + body.len() as u32;
+    w20a06_write_padded(out, spec, size, |o| {
+        if sign != 0 {
+            o.push(sign);
+        }
+        o.extend_from_slice(body);
+    });
+}
+
+/// `0x0055afa0`: padded `[sign] + 3 bytes` (inf / nan text); size is
+/// `(byte1 != 0) + (sign != 0) + 3` as decoded.
+pub fn w20a06_0055afa0(out: &mut Vec<u8>, spec: &W20a06Spec, sign: u8, second: u8, text: &[u8; 3]) {
+    let size = (second != 0) as u32 + (sign != 0) as u32 + 3;
+    w20a06_write_padded(out, spec, size, |o| {
+        if sign != 0 {
+            o.push(sign);
+        }
+        o.extend_from_slice(text);
+    });
+}
+
+/// `0x0055b120`: padded `[sign] + inner` field with size `len + (sign != 0)`;
+/// when the width does not exceed the size no fill is written.
+pub fn w20a06_0055b120(
+    out: &mut Vec<u8>,
+    spec: &W20a06Spec,
+    sign: u8,
+    len: u32,
+    inner: impl FnOnce(&mut Vec<u8>),
+) {
+    let size = (sign != 0) as u32 + len;
+    w20a06_write_padded(out, spec, size, |o| {
+        if sign != 0 {
+            o.push(sign);
+        }
+        inner(o);
+    });
+}
+
+/// `0x0055b5d0`: copies literal format-string text `[begin, end)`.  With no
+/// `'}'` the whole range is appended; a `"}}"` pair appends text up to and
+/// including the first brace; a lone brace is the error
+/// `unmatched '}' in format string`.  Returns the offset after the text
+/// consumed (`end` or past the escaped pair).
+pub fn w20a06_0055b5d0(out: &mut Vec<u8>, text: &[u8]) -> Result<usize, &'static str> {
+    if text.is_empty() {
+        return Ok(0);
+    }
+    match text.iter().position(|&b| b == b'}') {
+        None => {
+            out.extend_from_slice(text);
+            Ok(text.len())
+        }
+        Some(i) => {
+            let p = i + 1;
+            if p != text.len() && text[p] == b'}' {
+                out.extend_from_slice(&text[..p]);
+                Ok(p + 1)
+            } else {
+                Err("unmatched '}' in format string")
+            }
+        }
+    }
+}
+
+/// `0x0055bad0`: periodic trigger; true (the original calls the flush at
+/// FUN_0055bb70) when the enabled flag is set and `count % interval == 0`.
+/// A zero interval is a hardware divide fault in retail; here it is false.
+pub fn w20a06_0055bad0(enabled: bool, interval: u32, count: u32) -> bool {
+    enabled && interval != 0 && count % interval == 0
+}
+
+#[cfg(test)]
+mod tests_wave20_agent06 {
+    use super::*;
+
+    fn spec(width: u32, align: u32) -> W20a06Spec {
+        W20a06Spec {
+            width,
+            fill: b'*',
+            align_word: align,
+        }
+    }
+    fn parts(size: u32) -> W20a06IntParts<'static> {
+        W20a06IntParts {
+            size,
+            prefix: b"0",
+            zero_fill: b'0',
+            zero_count: 1,
+        }
+    }
+
+    #[test]
+    fn padding_alignments() {
+        let mut o = vec![];
+        w20a06_0055acd0(&mut o, &spec(7, 2), b"ab");
+        assert_eq!(o, b"*****ab");
+        o.clear();
+        w20a06_0055acd0(&mut o, &spec(7, 3), b"ab");
+        assert_eq!(o, b"**ab***");
+        o.clear();
+        w20a06_0055acd0(&mut o, &spec(7, 1), b"ab");
+        assert_eq!(o, b"ab*****");
+        o.clear();
+        w20a06_0055acd0(&mut o, &spec(2, 2), b"ab");
+        assert_eq!(o, b"ab");
+        assert_eq!(w20a06_align(&spec(0, 0xfffffff2)), 2);
+        assert_eq!(w20a06_align(&spec(0, 0x1a)), -6);
+    }
+
+    #[test]
+    fn octal_and_hex() {
+        let mut o = vec![];
+        w20a06_0055a220(&mut o, &spec(8, 2), &parts(5), 0o755, 3);
+        assert_eq!(o, b"***00755");
+        o.clear();
+        w20a06_0055a220(&mut o, &spec(0, 0), &parts(3), 0, 1);
+        assert_eq!(o, b"000");
+        o.clear();
+        w20a06_0055a680(&mut o, &spec(0, 0), &parts(4), 0xbeef, true, 4);
+        assert_eq!(o, b"00beef");
+        o.clear();
+        w20a06_0055a680(&mut o, &spec(9, 1), &parts(6), 0xBEEF, false, 4);
+        assert_eq!(o, b"00BEEF***");
+    }
+
+    #[test]
+    fn inner_writers() {
+        for f in [
+            w20a06_0055a3a0 as fn(&mut Vec<u8>, &W20a06Spec, &W20a06IntParts, _),
+            w20a06_0055a510,
+            w20a06_0055a820,
+            w20a06_0055a990,
+            w20a06_0055ab30,
+        ] {
+            let mut o = vec![];
+            f(&mut o, &spec(6, 3), &parts(4), |b: &mut Vec<u8>| {
+                b.extend_from_slice(b"12")
+            });
+            assert_eq!(o, b"*0012*");
+        }
+    }
+
+    #[test]
+    fn sign_and_text_fields() {
+        let mut o = vec![];
+        w20a06_0055ae20(&mut o, &spec(6, 2), b'-', b"12");
+        assert_eq!(o, b"***-12");
+        o.clear();
+        w20a06_0055afa0(&mut o, &spec(4, 1), 0, 0, b"inf");
+        assert_eq!(o, b"inf*");
+        o.clear();
+        w20a06_0055b120(&mut o, &spec(5, 2), b'+', 2, |b| b.extend_from_slice(b"99"));
+        assert_eq!(o, b"**+99");
+        o.clear();
+        w20a06_0055b120(&mut o, &spec(2, 2), 0, 2, |b| b.extend_from_slice(b"99"));
+        assert_eq!(o, b"99");
+    }
+
+    #[test]
+    fn literal_text_and_trigger() {
+        let mut o = vec![];
+        assert_eq!(w20a06_0055b5d0(&mut o, b"abc"), Ok(3));
+        assert_eq!(o, b"abc");
+        o.clear();
+        assert_eq!(w20a06_0055b5d0(&mut o, b"a}}b"), Ok(3));
+        assert_eq!(o, b"a}");
+        assert!(w20a06_0055b5d0(&mut o, b"a}b").is_err());
+        assert!(w20a06_0055b5d0(&mut o, b"a}").is_err());
+        assert_eq!(w20a06_0055b5d0(&mut o, b""), Ok(0));
+        assert!(w20a06_0055bad0(true, 4, 8));
+        assert!(!w20a06_0055bad0(true, 4, 9));
+        assert!(!w20a06_0055bad0(false, 4, 8));
+        assert!(!w20a06_0055bad0(true, 0, 8));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave20/agent07.rs
+// ===========================================================================
+// Wave 20 translation batch 07: fmt v6 helpers (argument lookup, hex and
+// char writers, string-view row search).  Most other rows of the assignment
+// were SEH/destructor glue ending in non-returning calls and are skipped.
+
+/// Alignment mode of a fmt v6 format spec (low nibble of the flags word,
+/// sign-extended): 2 = right, 3 = center, anything else = left.
+pub const W20A07_ALIGN_RIGHT: i32 = 2;
+/// Center alignment code.
+pub const W20A07_ALIGN_CENTER: i32 = 3;
+
+/// Format spec subset read by `0x0055c9f0`: width (`spec[0]`), fill byte
+/// (`+0x11`) and the sign-extended low nibble of the word at `+0xc`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct W20a07CharSpec {
+    pub width: u32,
+    pub fill: u8,
+    pub flags_word: u32,
+}
+
+/// `0x0055c9f0`: appends one character to `out` honouring width/fill/align.
+/// With no spec or width < 2 the byte is appended alone.  Otherwise `width`
+/// bytes are appended: padding `width-1` split by alignment (right = all
+/// before, center = `pad/2` before and the rest after, left = all after).
+pub fn w20a07_write_char(out: &mut Vec<u8>, spec: Option<&W20a07CharSpec>, ch: u8) {
+    let spec = match spec {
+        Some(s) if s.width >= 2 => s,
+        _ => {
+            out.push(ch);
+            return;
+        }
+    };
+    let pad = (spec.width - 1) as usize;
+    let align = ((spec.flags_word << 28) as i32) >> 28;
+    let (before, after) = match align {
+        W20A07_ALIGN_RIGHT => (pad, 0),
+        W20A07_ALIGN_CENTER => (pad >> 1, pad - (pad >> 1)),
+        _ => (0, pad),
+    };
+    out.extend(std::iter::repeat_n(spec.fill, before));
+    out.push(ch);
+    out.extend(std::iter::repeat_n(spec.fill, after));
+}
+
+/// Number of hex digits of `v` (at least 1), the `>> 4` loop of `0x0055cb00`.
+pub fn w20a07_hex_digit_count(mut v: u32) -> usize {
+    let mut n = 0;
+    loop {
+        v >>= 4;
+        n += 1;
+        if v == 0 {
+            return n;
+        }
+    }
+}
+
+/// `0x0055cb00`: no-spec path; appends `"0x"` followed by lowercase hex
+/// digits of `v` (`2 + digits` bytes).  The spec path calls the padded
+/// writer and is not modelled.
+pub fn w20a07_write_hex_prefixed(out: &mut Vec<u8>, v: u32) {
+    out.extend_from_slice(b"0x");
+    let n = w20a07_hex_digit_count(v);
+    for i in (0..n).rev() {
+        out.push(b"0123456789abcdef"[((v >> (4 * i)) & 0xf) as usize]);
+    }
+}
+
+/// One named-argument entry of `0x0055c300`: stride 6 words
+/// `[name_ptr, name_len, value0, value1, value2, value3]`.
+pub type W20a07NamedArg = [u32; 6];
+
+/// `0x0055c300`: finds the named argument whose length equals `name_len`
+/// and whose first `min(len, name_len)` bytes compare equal (`cmp(entry_name,
+/// name_ptr, n) == 0`, the `0x55_c520` compare).  Returns the 4-word value;
+/// `Err("argument not found")` when absent or when the value's third word is 0.
+pub fn w20a07_find_named_arg(
+    entries: &[W20a07NamedArg],
+    name_ptr: u32,
+    name_len: u32,
+    mut cmp: impl FnMut(u32, u32, u32) -> i32,
+) -> Result<[u32; 4], &'static str> {
+    for e in entries {
+        let n = e[1].min(name_len);
+        if cmp(e[0], name_ptr, n) == 0 && e[1] == name_len {
+            let v = [e[2], e[3], e[4], e[5]];
+            if v[2] != 0 {
+                return Ok(v);
+            }
+            return Err("argument not found");
+        }
+    }
+    Err("argument not found")
+}
+
+/// String-view row of `0x0055cbe0` (8 words = 32 bytes).  Flag `0x1000` in
+/// the u16 at `+0xe` means inline: length `0xd - (i8)byte[0xd]`, data is the
+/// row itself; else length is word 0 and the data pointer is word 2.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct W20a07Row(pub [u8; 32]);
+
+impl W20a07Row {
+    fn inline(&self) -> bool {
+        u16::from_le_bytes([self.0[0xe], self.0[0xf]]) & 0x1000 != 0
+    }
+    fn word(&self, i: usize) -> u32 {
+        u32::from_le_bytes(self.0[i * 4..i * 4 + 4].try_into().unwrap())
+    }
+    /// Length per the inline/heap rule.
+    pub fn len(&self) -> u32 {
+        if self.inline() {
+            0xd_i32.wrapping_sub(self.0[0xd] as i8 as i32) as u32
+        } else {
+            self.word(0)
+        }
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+/// `0x0055cbe0`: returns the index of the first row whose string equals
+/// `wanted` (equal length, then pointer identity or byte equality), or
+/// `rows.len()` when none (the end sentinel).  `heap(ptr, len)` resolves a
+/// heap data pointer to bytes.
+pub fn w20a07_find_row(
+    rows: &[W20a07Row],
+    wanted: &W20a07Row,
+    heap: impl Fn(u32, u32) -> Vec<u8>,
+) -> usize {
+    let bytes = |r: &W20a07Row| -> (Vec<u8>, Option<u32>) {
+        let n = r.len();
+        if r.inline() {
+            (r.0[..(n as usize).min(32)].to_vec(), None)
+        } else {
+            (heap(r.word(2), n), Some(r.word(2)))
+        }
+    };
+    let (wb, wp) = bytes(wanted);
+    for (i, r) in rows.iter().enumerate() {
+        if r.len() != wanted.len() {
+            continue;
+        }
+        let (rb, rp) = bytes(r);
+        let ident = match (wp, rp) {
+            (Some(a), Some(b)) => a == b,
+            _ => false,
+        };
+        if ident || rb == wb {
+            return i;
+        }
+    }
+    rows.len()
+}
+
+#[cfg(test)]
+mod tests_wave20_agent07 {
+    use super::*;
+
+    #[test]
+    fn char_padding() {
+        let mut o = vec![];
+        w20a07_write_char(&mut o, None, b'a');
+        assert_eq!(o, b"a");
+        let s = |f| W20a07CharSpec {
+            width: 4,
+            fill: b'.',
+            flags_word: f,
+        };
+        let mut o = vec![];
+        w20a07_write_char(&mut o, Some(&s(2)), b'x');
+        assert_eq!(o, b"...x");
+        let mut o = vec![];
+        w20a07_write_char(&mut o, Some(&s(3)), b'x');
+        assert_eq!(o, b".x..");
+        let mut o = vec![];
+        w20a07_write_char(&mut o, Some(&s(1)), b'x');
+        assert_eq!(o, b"x...");
+        let mut o = vec![];
+        let one = W20a07CharSpec {
+            width: 1,
+            fill: b'.',
+            flags_word: 2,
+        };
+        w20a07_write_char(&mut o, Some(&one), b'x');
+        assert_eq!(o, b"x");
+    }
+
+    #[test]
+    fn hex() {
+        assert_eq!(w20a07_hex_digit_count(0), 1);
+        assert_eq!(w20a07_hex_digit_count(0xf), 1);
+        assert_eq!(w20a07_hex_digit_count(0x10), 2);
+        assert_eq!(w20a07_hex_digit_count(u32::MAX), 8);
+        let mut o = vec![];
+        w20a07_write_hex_prefixed(&mut o, 0xbeef0);
+        assert_eq!(o, b"0xbeef0");
+        let mut o = vec![];
+        w20a07_write_hex_prefixed(&mut o, 0);
+        assert_eq!(o, b"0x0");
+    }
+
+    #[test]
+    fn named_arg() {
+        let names = [b"ab".to_vec(), b"abc".to_vec()];
+        let entries = [[0, 2, 1, 2, 3, 4], [1, 3, 5, 6, 7, 8]];
+        let cmp = |a: u32, b: u32, n: u32| {
+            let (x, y) = (&names[a as usize], &names[b as usize]);
+            (x[..n as usize] != y[..n as usize]) as i32
+        };
+        assert_eq!(w20a07_find_named_arg(&entries, 1, 3, cmp), Ok([5, 6, 7, 8]));
+        assert_eq!(w20a07_find_named_arg(&entries, 0, 2, cmp), Ok([1, 2, 3, 4]));
+        let zero = [[0, 2, 1, 2, 0, 4]];
+        assert!(w20a07_find_named_arg(&zero, 0, 2, cmp).is_err());
+        assert!(w20a07_find_named_arg(&[], 0, 2, cmp).is_err());
+    }
+
+    fn inline_row(s: &[u8]) -> W20a07Row {
+        let mut r = [0u8; 32];
+        r[..s.len()].copy_from_slice(s);
+        r[0xd] = (0xd - s.len()) as u8;
+        r[0xf] = 0x10;
+        W20a07Row(r)
+    }
+    fn heap_row(len: u32, ptr: u32) -> W20a07Row {
+        let mut r = [0u8; 32];
+        r[0..4].copy_from_slice(&len.to_le_bytes());
+        r[8..12].copy_from_slice(&ptr.to_le_bytes());
+        W20a07Row(r)
+    }
+
+    #[test]
+    fn find_row() {
+        let rows = [inline_row(b"abc"), inline_row(b"hello"), heap_row(5, 7)];
+        let heap = |_p: u32, n: u32| b"hello"[..n as usize].to_vec();
+        assert_eq!(rows[0].len(), 3);
+        assert_eq!(w20a07_find_row(&rows, &inline_row(b"hello"), heap), 1);
+        assert_eq!(w20a07_find_row(&rows, &heap_row(5, 7), heap), 1);
+        assert_eq!(w20a07_find_row(&rows, &inline_row(b"nope"), heap), 3);
+        assert_eq!(w20a07_find_row(&[], &inline_row(b"a"), heap), 0);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave20/agent08.rs
+// ===========================================================================
+// Wave 20 agent 08: small container helpers (hash capacity, SSO string, heap-flag scans).
+
+/// Unsigned 32-bit value to `f32` the way the x87 code does it (signed
+/// convert plus the 2^32 fixup from the constant table when negative).
+fn w20a08_u32_f32(v: u32) -> f32 {
+    ((v as i32) as f64 + if (v as i32) < 0 { 4294967296.0 } else { 0.0 }) as f32
+}
+
+/// `0x005611d0`: bucket capacity chosen for a hash container.  `size` is
+/// `[2]`, `buckets` the current bucket value (callee result), `load` the
+/// `f32` at `[3]`, `want` the argument.  Starts at `buckets`, or
+/// `buckets + 1` when `size > buckets * load`; raises to `want`; rounds up
+/// to a power of two with a floor of 8.  Returns `(capacity, unchanged)`
+/// where `unchanged` is true when it equals `cur_cap` and `cur_ptr_nonzero`
+/// (the early-return path; otherwise the original reallocates).
+pub fn w20a08_hash_capacity(
+    size: u32,
+    buckets: u32,
+    load: f32,
+    want: u32,
+    cur_cap: u32,
+    cur_ptr_nonzero: bool,
+) -> (u32, bool) {
+    let mut n = buckets.wrapping_add(1);
+    if w20a08_u32_f32(size) <= w20a08_u32_f32(buckets) * load {
+        n = buckets;
+    }
+    if n < want {
+        n = want;
+    }
+    let mut cap: u32 = 8;
+    if n > 8 {
+        while cap < n {
+            cap = cap.wrapping_mul(2);
+        }
+    }
+    (cap, cap == cur_cap && cur_ptr_nonzero)
+}
+
+/// `0x005618b0`: size to request when appending the NUL-terminated `s`
+/// to a string whose length field (`[1]`) is `len`: `len + strlen(s)`.
+pub fn w20a08_append_request(s: &[u8], len: u32) -> u32 {
+    let n = s.iter().position(|&b| b == 0).unwrap_or(s.len());
+    len.wrapping_add(n as u32)
+}
+
+/// Fields of a small-string-optimised header (`ptr`, `len`, `cap`, inline byte).
+#[derive(Debug, PartialEq, Eq)]
+pub struct W20a08SsoInit {
+    pub ptr_is_inline: bool,
+    pub len: u32,
+    pub cap: u32,
+    pub inline0: u8,
+    /// Size handed to the allocator call (`other.len`).
+    pub request: u32,
+}
+
+/// `0x00561b10`: initialise an empty SSO string (`len = 0`, `cap = 0x8000000f`,
+/// pointer to the inline buffer at `+0xc`, first byte 0) and request `other_len`.
+pub fn w20a08_sso_init(other_len: u32) -> W20a08SsoInit {
+    W20a08SsoInit {
+        ptr_is_inline: true,
+        len: 0,
+        cap: 0x8000_000f,
+        inline0: 0,
+        request: other_len,
+    }
+}
+
+fn w20a08_rd_i32(b: &[u8], off: usize) -> Option<i32> {
+    Some(i32::from_le_bytes(b.get(off..off + 4)?.try_into().ok()?))
+}
+
+/// `0x00561b70`: scan `0x24`-byte records of `rows` (index range `from..to`)
+/// and return the first whose i32 at `+8` is non-negative (heap-owned
+/// capacity flag clear; the original then frees), else `None`.
+pub fn w20a08_first_heap_record_24(rows: &[u8], from: usize, to: usize) -> Option<usize> {
+    (from..to).find(|&i| w20a08_rd_i32(rows, i * 0x24 + 8).is_some_and(|v| v >= 0))
+}
+
+/// `0x00561ff0`: destructor scan over a vector (`count` records of `0x24`
+/// bytes) with capacity word `cap`; returns true when something must be
+/// freed (a record per `0x00561b70`, or `cap >= 0`).
+pub fn w20a08_vec24_needs_free(rows: &[u8], count: usize, cap: i32) -> bool {
+    w20a08_first_heap_record_24(rows, 0, count).is_some() || cap >= 0
+}
+
+/// `0x00562060`: destructor scan over `count` records of `0x68` bytes; each
+/// is checked at `+0x64`, `+0x58`, `+0x0c` (i32 >= 0 means owned heap).
+/// Returns the first `(index, offset)` needing a free, else checks `cap`
+/// and returns `Some((count, usize::MAX))` when the vector buffer itself is owned.
+pub fn w20a08_vec68_first_free(rows: &[u8], count: usize, cap: i32) -> Option<(usize, usize)> {
+    for i in 0..count {
+        for off in [0x64usize, 0x58, 0x0c] {
+            if w20a08_rd_i32(rows, i * 0x68 + off).is_some_and(|v| v >= 0) {
+                return Some((i, off));
+            }
+        }
+    }
+    (cap >= 0).then_some((count, usize::MAX))
+}
+
+#[cfg(test)]
+mod tests_wave20_agent08 {
+    use super::*;
+
+    #[test]
+    fn capacity_rounding() {
+        assert_eq!(w20a08_hash_capacity(0, 0, 1.0, 0, 0, false), (8, false));
+        assert_eq!(w20a08_hash_capacity(5, 8, 1.0, 0, 8, true), (8, true));
+        // size > buckets*load -> buckets+1 = 9 -> 16
+        assert_eq!(w20a08_hash_capacity(9, 8, 1.0, 0, 8, true).0, 16);
+        assert_eq!(w20a08_hash_capacity(0, 4, 1.0, 100, 0, false).0, 128);
+    }
+
+    #[test]
+    fn append_and_sso() {
+        assert_eq!(w20a08_append_request(b"abc\0xyz", 10), 13);
+        assert_eq!(w20a08_append_request(b"", 4), 4);
+        let s = w20a08_sso_init(7);
+        assert_eq!((s.len, s.cap, s.request), (0, 0x8000_000f, 7));
+    }
+
+    #[test]
+    fn scans() {
+        let mut v = vec![0u8; 0x24 * 3];
+        for i in 0..3 {
+            v[i * 0x24 + 8..i * 0x24 + 12].copy_from_slice(&(-1i32).to_le_bytes());
+        }
+        assert_eq!(w20a08_first_heap_record_24(&v, 0, 3), None);
+        assert!(!w20a08_vec24_needs_free(&v, 3, -1));
+        v[2 * 0x24 + 8..2 * 0x24 + 12].copy_from_slice(&5i32.to_le_bytes());
+        assert_eq!(w20a08_first_heap_record_24(&v, 0, 3), Some(2));
+        assert!(w20a08_vec24_needs_free(&v, 3, -1));
+        assert!(w20a08_vec24_needs_free(&[], 0, 0));
+    }
+
+    #[test]
+    fn scan68() {
+        let mut v = vec![0u8; 0x68 * 2];
+        for i in 0..2 {
+            for off in [0x64, 0x58, 0x0c] {
+                v[i * 0x68 + off..i * 0x68 + off + 4].copy_from_slice(&(-1i32).to_le_bytes());
+            }
+        }
+        assert_eq!(w20a08_vec68_first_free(&v, 2, -1), None);
+        assert_eq!(w20a08_vec68_first_free(&v, 2, 0), Some((2, usize::MAX)));
+        v[0x68 + 0x58..0x68 + 0x5c].copy_from_slice(&0i32.to_le_bytes());
+        assert_eq!(w20a08_vec68_first_free(&v, 2, -1), Some((1, 0x58)));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave20/agent09.rs
+// ===========================================================================
+// Wave 20 agent 09: small vector/list helpers and unit-target filters.
+
+/// `0x00565c30`: source index of the pushed element when the argument
+/// aliases the vector storage (stride `0x24`): `(arg - base) / 0x24`; the
+/// element is re-read from the vector only when that index is `< len`.
+pub fn w20a09_push_alias_source(base: u32, len: u32, arg: u32) -> Option<u32> {
+    let idx = (arg.wrapping_sub(base) as i32).wrapping_div(0x24) as u32;
+    if idx < len { Some(idx) } else { None }
+}
+
+/// `0x00565c30`: growth step of the capacity word (low 31 bits capacity,
+/// top bit preserved).  Returns `None` when the vector is not full
+/// (`len != cap`) or on overflow; otherwise the new capacity word.
+pub fn w20a09_push_grow(len: u32, cap_word: u32) -> Option<u32> {
+    let cap = cap_word & 0x7fff_ffff;
+    if len != cap || cap.checked_add(1).is_none() {
+        return None;
+    }
+    let half = (cap_word >> 1) & 0x3fff_ffff;
+    let step = if cap.checked_add(half).is_some_and(|s| cap < s) {
+        half
+    } else {
+        1
+    };
+    let new_cap = step.wrapping_add(cap);
+    Some(((new_cap ^ cap_word) & 0x7fff_ffff) ^ cap_word)
+}
+
+/// `0x00566340`: circular list sentinel reset.  Node = `[next, prev, size]`
+/// words; sets prev=self, next=self, size=0 and returns the old prev link
+/// (nodes to free when it differs from self).
+pub fn w20a09_list_reset_a(node: &mut [u32; 3], self_addr: u32) -> u32 {
+    let old = node[1];
+    node[1] = self_addr;
+    node[0] = self_addr;
+    node[2] = 0;
+    old
+}
+
+/// `0x00567210`: same sentinel reset as `0x00566340`, followed by zeroing
+/// the `0xc0` bytes at offset `0xc`.  Returns the old prev link.
+pub fn w20a09_list_reset_clear(obj: &mut [u8], self_addr: u32) -> u32 {
+    let old = u32::from_le_bytes(obj[4..8].try_into().unwrap());
+    obj[0..4].copy_from_slice(&self_addr.to_le_bytes());
+    obj[4..8].copy_from_slice(&self_addr.to_le_bytes());
+    obj[8..12].copy_from_slice(&0u32.to_le_bytes());
+    obj[0xc..0xc + 0xc0].fill(0);
+    old
+}
+
+/// `0x005668f0`: slot guard; true when `row < 12`, `col < 4` (signed) and
+/// the owner's field at `+8` is non-zero (the following lookup is opaque).
+pub fn w20a09_slot_guard_rc(row: u32, col: i32, owner_field8: u32) -> bool {
+    row < 0xc && col < 4 && owner_field8 != 0
+}
+
+/// `0x005670a0`: slot guard without the column test.
+pub fn w20a09_slot_guard_r(row: u32, owner_field8: u32) -> bool {
+    row < 0xc && owner_field8 != 0
+}
+
+/// `0x00566f40`: for mode 1/2 returns the column (0/1) and the byte offsets
+/// written in the owner: `0xd0 + (col + row*4)*4` and `400 + (col+row*4)*4`.
+pub fn w20a09_mode_slot(mode: i32, row: i32) -> Option<(i32, usize, usize)> {
+    let col = match mode {
+        1 => 0,
+        2 => 1,
+        _ => return None,
+    };
+    let k = (col + row.wrapping_mul(4)).wrapping_mul(4);
+    Some((col, (0xd0 + k) as usize, (400 + k) as usize))
+}
+
+/// `0x00567be0`: candidate collection predicate.  `cand`/`owner` hold the
+/// fields read at `+0x4c`, `+0x60`, `+0x5c`, `+100`.  `can_target(kind)`,
+/// `check_a`, `check_b` model the opaque callees.  Pushes into `list`;
+/// returns true when the owner's own target is chosen (list reset to it).
+#[allow(clippy::too_many_arguments)]
+pub fn w20a09_collect_candidate(
+    cand: u32,
+    cand_byte4c: u8,
+    owner_byte4c: u8,
+    owner_kind: u8,
+    owner_f5c: u32,
+    owner_f64: u32,
+    can_target: impl Fn(u8, u32) -> bool,
+    check_a: impl Fn(u32) -> bool,
+    check_b: impl Fn(u32) -> bool,
+    list: &mut Vec<u32>,
+) -> bool {
+    if cand == owner_f64 {
+        return false;
+    }
+    if cand_byte4c == owner_byte4c && cand != owner_f5c {
+        return false;
+    }
+    if !can_target(owner_kind, cand) || !check_a(cand) {
+        return false;
+    }
+    if check_b(cand) && cand == owner_f5c {
+        list.clear();
+        list.push(cand);
+        return true;
+    }
+    list.push(cand);
+    false
+}
+
+/// `0x00567d40`: byte copy of the four fields at `+0x60..+0x63` from the
+/// source object to the destination (other calls are opaque).
+pub fn w20a09_copy_state_bytes(src: &[u8], dst: &mut [u8]) {
+    dst[0x60..0x64].copy_from_slice(&src[0x60..0x64]);
+}
+
+/// Outcome of `0x00567dc0`.
+#[derive(Debug, PartialEq, Eq)]
+pub enum W20a09Move {
+    None,
+    /// order 5 toward unit (`+0x5c`), then `(1,1)` follow-up
+    Unit(u32),
+    /// order 5 toward the point at `+0x58/+0x5a`
+    Point(i16, i16),
+}
+
+/// `0x00567dc0`: step counter.  `f28/f2a` = current pos, `f10/f12` = prior
+/// pos, `f58/f5a` = destination, `f5c` = target unit, `counter` = byte at
+/// `+0x61`, `w/h` = map limits.  Returns the new counter and the decision.
+#[allow(clippy::too_many_arguments)]
+pub fn w20a09_step_move(
+    f28: i16,
+    f2a: i16,
+    f10: i16,
+    f12: i16,
+    f58: i16,
+    f5a: i16,
+    f5c: u32,
+    counter: u8,
+    w: u16,
+    h: u16,
+) -> (u8, W20a09Move) {
+    let mut c = counter;
+    if f28 < 0 || (w as i32) <= f28 as i32 || f2a < 0 || (h as i32) <= f2a as i32 {
+        c = 0;
+    }
+    let old = c;
+    c = c.wrapping_sub(1);
+    if old == 0 || (f10 == f28 && f12 == f2a) {
+        if f5c != 0 {
+            return (c, W20a09Move::Unit(f5c));
+        }
+        return (c, W20a09Move::Point(f58, f5a));
+    }
+    (c, W20a09Move::None)
+}
+
+#[cfg(test)]
+mod tests_wave20_agent09 {
+    use super::*;
+
+    #[test]
+    fn push_alias_and_grow() {
+        assert_eq!(w20a09_push_alias_source(1000, 4, 1000 + 0x24 * 2), Some(2));
+        assert_eq!(w20a09_push_alias_source(1000, 4, 1000 + 0x24 * 4), None);
+        assert_eq!(w20a09_push_alias_source(1000, 4, 5000), None);
+        assert_eq!(w20a09_push_grow(3, 4), None);
+        assert_eq!(w20a09_push_grow(0, 0), Some(1));
+        assert_eq!(w20a09_push_grow(4, 4), Some(6));
+        assert_eq!(w20a09_push_grow(4, 0x8000_0004), Some(0x8000_0006));
+    }
+
+    #[test]
+    fn list_resets() {
+        let mut n = [1, 2, 3];
+        assert_eq!(w20a09_list_reset_a(&mut n, 77), 2);
+        assert_eq!(n, [77, 77, 0]);
+        let mut o = vec![0xffu8; 0xc + 0xc0 + 4];
+        o[4..8].copy_from_slice(&9u32.to_le_bytes());
+        assert_eq!(w20a09_list_reset_clear(&mut o, 5), 9);
+        assert_eq!(&o[0..4], &5u32.to_le_bytes());
+        assert_eq!(o[8], 0);
+        assert!(o[0xc..0xcc].iter().all(|&b| b == 0));
+        assert_eq!(o[0xcc], 0xff);
+    }
+
+    #[test]
+    fn slot_guards() {
+        assert!(w20a09_slot_guard_rc(11, 3, 1));
+        assert!(!w20a09_slot_guard_rc(12, 0, 1));
+        assert!(!w20a09_slot_guard_rc(0, 4, 1));
+        assert!(!w20a09_slot_guard_rc(0, 0, 0));
+        assert!(w20a09_slot_guard_r(0, 1));
+        assert!(!w20a09_slot_guard_r(12, 1));
+        assert_eq!(w20a09_mode_slot(1, 2), Some((0, 0xd0 + 32, 400 + 32)));
+        assert_eq!(w20a09_mode_slot(2, 0), Some((1, 0xd4, 404)));
+        assert_eq!(w20a09_mode_slot(0, 0), None);
+    }
+
+    #[test]
+    fn collect_candidate() {
+        let mut l = vec![];
+        let t = |_k: u8, _c: u32| true;
+        assert!(!w20a09_collect_candidate(
+            5,
+            1,
+            2,
+            0,
+            9,
+            7,
+            t,
+            |_| true,
+            |_| false,
+            &mut l
+        ));
+        assert_eq!(l, vec![5]);
+        assert!(!w20a09_collect_candidate(
+            7,
+            1,
+            2,
+            0,
+            9,
+            7,
+            t,
+            |_| true,
+            |_| true,
+            &mut l
+        ));
+        assert!(!w20a09_collect_candidate(
+            6,
+            2,
+            2,
+            0,
+            9,
+            7,
+            t,
+            |_| true,
+            |_| true,
+            &mut l
+        ));
+        assert!(w20a09_collect_candidate(
+            9,
+            2,
+            2,
+            0,
+            9,
+            7,
+            t,
+            |_| true,
+            |_| true,
+            &mut l
+        ));
+        assert_eq!(l, vec![9]);
+    }
+
+    #[test]
+    fn copy_and_step() {
+        let mut s = vec![0u8; 0x70];
+        s[0x60..0x64].copy_from_slice(&[1, 2, 3, 4]);
+        let mut d = vec![0u8; 0x70];
+        w20a09_copy_state_bytes(&s, &mut d);
+        assert_eq!(&d[0x60..0x64], &[1, 2, 3, 4]);
+        assert_eq!(
+            w20a09_step_move(1, 1, 0, 0, 8, 9, 0, 3, 10, 10),
+            (2, W20a09Move::None)
+        );
+        assert_eq!(
+            w20a09_step_move(1, 1, 1, 1, 8, 9, 0, 3, 10, 10),
+            (2, W20a09Move::Point(8, 9))
+        );
+        assert_eq!(
+            w20a09_step_move(1, 1, 0, 0, 8, 9, 4, 0, 10, 10),
+            (255, W20a09Move::Unit(4))
+        );
+        assert_eq!(
+            w20a09_step_move(-1, 1, 0, 0, 8, 9, 0, 3, 10, 10).1,
+            W20a09Move::Point(8, 9)
+        );
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave20/agent10.rs
+// ===========================================================================
+// Wave 20 agent 10 translations (runtime helpers).
+
+/// Selector chosen by `0x00568820`: either a pointer-like handle or a tile pair.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum W20a10Target {
+    /// Handle at `+0x5c` was non-zero (callee takes `param, handle`).
+    Handle(i32),
+    /// Handle was zero (callee takes `param, x, y`, i16 pair at `+0x58/+0x5a`).
+    Pos(i16, i16),
+}
+
+/// `0x00568820`: picks the handle when `+0x5c` is non-zero, else the i16
+/// position at `+0x58`/`+0x5a`.
+pub fn w20a10_select_target(handle: i32, x: i16, y: i16) -> W20a10Target {
+    if handle != 0 {
+        W20a10Target::Handle(handle)
+    } else {
+        W20a10Target::Pos(x, y)
+    }
+}
+
+/// Outcome of `0x00568e40`.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub struct W20a10Notify {
+    /// Direct notification code (5) when `Some`, else the wrapper code.
+    pub direct: bool,
+    /// Code passed to the target callee (5 when direct, else 1..=6).
+    pub code: u32,
+    /// Value passed as first arg of the follow-up call (second arg is 1).
+    pub follow: u32,
+}
+
+/// `0x00568e40`: if bit 0 of the flags byte (`+0x4f`) is set, clears it and
+/// maps the class `kind` (table at `+0x60`) to a notification.
+pub fn w20a10_flag_notify(flags: &mut u8, kind: u8) -> Option<W20a10Notify> {
+    if *flags & 1 == 0 {
+        return None;
+    }
+    *flags &= 0xfe;
+    Some(match kind {
+        2 | 4 | 5 | 6 => W20a10Notify {
+            direct: true,
+            code: 5,
+            follow: 1,
+        },
+        1 => W20a10Notify {
+            direct: false,
+            code: 2,
+            follow: 2,
+        },
+        7 => W20a10Notify {
+            direct: false,
+            code: 3,
+            follow: 2,
+        },
+        3 => W20a10Notify {
+            direct: false,
+            code: 4,
+            follow: 0xe,
+        },
+        8 => W20a10Notify {
+            direct: false,
+            code: 6,
+            follow: 2,
+        },
+        _ => W20a10Notify {
+            direct: false,
+            code: 1,
+            follow: 2,
+        },
+    })
+}
+
+/// `0x00568f20`: clears the global word at the list-state area.
+pub fn w20a10_clear_word(slot: &mut u32) {
+    *slot = 0;
+}
+
+/// `0x00568f9b`: true when `limit(0) <= arg` (unsigned).
+pub fn w20a10_le_limit(limit: u32, arg: u32) -> bool {
+    limit <= arg
+}
+
+/// `0x0058b3f0`: stores a byte at offset `0xf` of the record referenced by `+0xc`.
+pub fn w20a10_set_byte_0f(record: &mut [u8], value: u8) {
+    record[0xf] = value;
+}
+
+/// `0x0058ddb0`: when the target pair at `+0xf8/+0xfa` is non-zero and
+/// differs from the current pair at `+0x28/+0x2a`, returns the pair to pass on.
+pub fn w20a10_pending_move(target: (i16, i16), current: (i16, i16)) -> Option<(i16, i16)> {
+    if (target.0 != 0 || target.1 != 0) && target != current {
+        Some(target)
+    } else {
+        None
+    }
+}
+
+/// `0x006e90d0`: reads (u16 at `+0x18`, u8 at `+0x10`) for the callee; always returns 1.
+pub fn w20a10_read_pair(rec: &[u8]) -> (u16, u8, u32) {
+    (u16::from_le_bytes([rec[0x18], rec[0x19]]), rec[0x10], 1)
+}
+
+/// `0x006e9b50`: on the sub-record, reports whether a pending handle (`+8`)
+/// must be released, then sets `+0xc = 2` and `+0xe = value`.
+pub fn w20a10_set_mode_two(sub: &mut [u8], value: u16) -> bool {
+    let pending = sub[8..12] != [0; 4];
+    sub[0xc..0xe].copy_from_slice(&2u16.to_le_bytes());
+    sub[0xe..0x10].copy_from_slice(&value.to_le_bytes());
+    pending
+}
+
+/// `0x00983dd0`: true when `a*a*100 + b*b*256 > 0x9c_4000` (wrapping i32).
+pub fn w20a10_dist_exceeds(a: i32, b: i32) -> bool {
+    let v = b
+        .wrapping_mul(b)
+        .wrapping_mul(0x100)
+        .wrapping_add(a.wrapping_mul(a).wrapping_mul(100));
+    0x9c4000u32 < v as u32
+}
+
+/// Result of `0x0056869b`.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub struct W20a10Rebuild {
+    pub first_free: Option<usize>,
+    pub first_used: Option<usize>,
+    pub used_count: u32,
+}
+
+/// `0x0056869b`: rebuilds free/used cursors over 0x70-byte records (28 words;
+/// word 3 = in-use flag).  `on_release(i)` stands for the per-record callee
+/// (called for later free records in pass one and for later used ones in
+/// pass two, after words 0 and 1 are zeroed).
+#[allow(clippy::needless_range_loop)]
+pub fn w20a10_rebuild_lists(
+    recs: &mut [[u32; 0x1c]],
+    mut on_release: impl FnMut(usize),
+) -> W20a10Rebuild {
+    let n = recs.len();
+    let first_free = (0..n).find(|&i| recs[i][3] == 0);
+    if let Some(f) = first_free {
+        for j in f + 1..n {
+            if recs[j][3] == 0 {
+                on_release(j);
+            }
+        }
+    }
+    let first_used = (0..n).find(|&i| recs[i][3] != 0);
+    let mut used_count = 0;
+    if let Some(u) = first_used {
+        recs[u][0] = 0;
+        recs[u][1] = 0;
+        used_count = 1;
+        for j in u + 1..n {
+            if recs[j][3] != 0 {
+                recs[j][0] = 0;
+                recs[j][1] = 0;
+                on_release(j);
+                used_count += 1;
+            }
+        }
+    }
+    W20a10Rebuild {
+        first_free,
+        first_used,
+        used_count,
+    }
+}
+
+#[cfg(test)]
+mod tests_wave20_agent10 {
+    use super::*;
+
+    #[test]
+    fn select_and_flag() {
+        assert_eq!(w20a10_select_target(5, 1, 2), W20a10Target::Handle(5));
+        assert_eq!(w20a10_select_target(0, 1, 2), W20a10Target::Pos(1, 2));
+        let mut f = 0x03;
+        let r = w20a10_flag_notify(&mut f, 3).unwrap();
+        assert_eq!((f, r.code, r.follow, r.direct), (2, 4, 0xe, false));
+        assert!(w20a10_flag_notify(&mut f, 3).is_none());
+        let mut f = 1;
+        assert!(w20a10_flag_notify(&mut f, 6).unwrap().direct);
+        let mut f = 1;
+        assert_eq!(w20a10_flag_notify(&mut f, 8).unwrap().code, 6);
+        let mut f = 1;
+        assert_eq!(w20a10_flag_notify(&mut f, 9).unwrap().code, 1);
+    }
+
+    #[test]
+    fn small_helpers() {
+        let mut w = 7;
+        w20a10_clear_word(&mut w);
+        assert_eq!(w, 0);
+        assert!(w20a10_le_limit(3, 3) && !w20a10_le_limit(4, 3));
+        let mut r = [0u8; 16];
+        w20a10_set_byte_0f(&mut r, 9);
+        assert_eq!(r[15], 9);
+        assert_eq!(w20a10_pending_move((0, 0), (1, 1)), None);
+        assert_eq!(w20a10_pending_move((2, 3), (2, 3)), None);
+        assert_eq!(w20a10_pending_move((0, 3), (2, 3)), Some((0, 3)));
+        let mut b = [0u8; 0x20];
+        b[0x18] = 0x34;
+        b[0x19] = 0x12;
+        b[0x10] = 7;
+        assert_eq!(w20a10_read_pair(&b), (0x1234, 7, 1));
+        let mut s = [0u8; 16];
+        s[8] = 1;
+        assert!(w20a10_set_mode_two(&mut s, 0xabcd));
+        assert_eq!((s[0xc], s[0xe], s[0xf]), (2, 0xcd, 0xab));
+        assert!(!w20a10_dist_exceeds(0, 0));
+        assert!(!w20a10_dist_exceeds(0, 200));
+        assert!(w20a10_dist_exceeds(0, 201));
+    }
+
+    #[test]
+    fn rebuild() {
+        let mut r = vec![[0u32; 0x1c]; 4];
+        r[1][3] = 1;
+        r[3][3] = 1;
+        r[3][0] = 9;
+        let mut calls = vec![];
+        let out = w20a10_rebuild_lists(&mut r, |i| calls.push(i));
+        assert_eq!(
+            out,
+            W20a10Rebuild {
+                first_free: Some(0),
+                first_used: Some(1),
+                used_count: 2
+            }
+        );
+        assert_eq!(calls, vec![2, 3]);
+        assert_eq!(r[3][0], 0);
+    }
+}
