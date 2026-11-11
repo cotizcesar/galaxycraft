@@ -63477,3 +63477,3741 @@ mod tests_wave27_agent20 {
         assert!(w27a20_parse_vorbis_ident(|_| it.next().unwrap()).is_none());
     }
 }
+
+// ===========================================================================
+// Merged from src/wave28/agent02.rs
+// ===========================================================================
+// Wave 28 translation batch 02: small libvorbis/ogg buffer helpers.
+//
+// Implements 0x009f2520, 0x009f3530, 0x009f74a0, 0x009f03e0, 0x009f8bb0, 0x009f1e70.
+
+/// Ogg byte buffer header used by `0x009f2520` (fields at +0,+4,+8,+0xc).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct W28a02OggBuf {
+    pub storage: Vec<u8>,
+    pub capacity: i32,
+    pub fill: i32,
+    pub returned: i32,
+}
+
+/// `0x009f2520`: reserve `need` bytes in an ogg buffer.  Returns the write
+/// offset (`fill`) or `None` on failure.  `alloc_ok` models the allocator;
+/// `on_fail` is the cleanup call made when it fails.
+pub fn w28a02_oggpack_reserve(
+    b: &mut W28a02OggBuf,
+    need: i32,
+    alloc_ok: bool,
+    on_fail: &mut dyn FnMut(&mut W28a02OggBuf),
+) -> Option<usize> {
+    if b.capacity < 0 {
+        return None;
+    }
+    if b.returned != 0 {
+        b.fill -= b.returned;
+        if b.fill > 0 {
+            let r = b.returned as usize;
+            let n = b.fill as usize;
+            b.storage.copy_within(r..r + n, 0);
+        }
+        b.returned = 0;
+    }
+    if b.capacity - b.fill < need {
+        let new_cap = need + 0x1000 + b.fill;
+        if !alloc_ok {
+            b.storage = Vec::new();
+            on_fail(b);
+            return None;
+        }
+        b.storage.resize(new_cap as usize, 0);
+        b.capacity = new_cap;
+    }
+    Some(b.fill as usize)
+}
+
+/// `0x009f3530`: returns true (1) when the field at +0x1c is zero; otherwise
+/// the original clears the 0x68-byte record.
+pub fn w28a02_field_1c_is_zero(field_1c: u32) -> bool {
+    field_1c == 0
+}
+
+/// `0x009f74a0`: true when the clear branch (0x70-byte memset) is taken:
+/// `f2 > 0 && f0 >= 0x40 && f0 <= f1` of the block at +0x1c.
+pub fn w28a02_block_clear_condition(present: bool, f0: i32, f1: i32, f2: i32) -> bool {
+    present && f2 > 0 && f0 > 0x3f && f0 <= f1
+}
+
+/// `0x009f03e0`: free the five pointers at words 4..=8 and zero the 0x2c-byte
+/// record (11 words).
+pub fn w28a02_free_five_and_clear(rec: &mut [u32; 11], free: &mut dyn FnMut(u32)) {
+    for &w in &rec[4..9] {
+        if w != 0 {
+            free(w);
+        }
+    }
+    *rec = [0; 11];
+}
+
+/// `0x009f8bb0`: same shape as above for a 0x38-byte record (14 words),
+/// freeing words 4..=8.
+pub fn w28a02_free_five_and_clear_38(rec: &mut [u32; 14], free: &mut dyn FnMut(u32)) {
+    for &w in &rec[4..9] {
+        if w != 0 {
+            free(w);
+        }
+    }
+    *rec = [0; 14];
+}
+
+/// `0x009f1e70`: free words 0, 4, 5 of a 0x168-byte record (90 words) and zero
+/// it; returns 0 always (including for a missing record).
+pub fn w28a02_free_three_and_clear(rec: Option<&mut [u32; 90]>, free: &mut dyn FnMut(u32)) -> i32 {
+    if let Some(r) = rec {
+        for i in [0usize, 4, 5] {
+            if r[i] != 0 {
+                free(r[i]);
+            }
+        }
+        *r = [0; 90];
+    }
+    0
+}
+
+#[cfg(test)]
+mod tests_wave28_agent02 {
+    use super::*;
+
+    #[test]
+    fn reserve() {
+        let mut b = W28a02OggBuf::default();
+        assert_eq!(
+            w28a02_oggpack_reserve(&mut b, 10, true, &mut |_| {}),
+            Some(0)
+        );
+        assert_eq!(b.capacity, 10 + 0x1000);
+        b.fill = 5;
+        b.returned = 2;
+        b.storage[2..5].copy_from_slice(&[7, 8, 9]);
+        assert_eq!(
+            w28a02_oggpack_reserve(&mut b, 1, true, &mut |_| {}),
+            Some(3)
+        );
+        assert_eq!(&b.storage[..3], &[7, 8, 9]);
+        b.capacity = -1;
+        assert_eq!(w28a02_oggpack_reserve(&mut b, 1, true, &mut |_| {}), None);
+        let mut c = W28a02OggBuf::default();
+        let mut called = false;
+        assert_eq!(
+            w28a02_oggpack_reserve(&mut c, 1, false, &mut |_| called = true),
+            None
+        );
+        assert!(called);
+    }
+
+    #[test]
+    fn predicates() {
+        assert!(w28a02_field_1c_is_zero(0));
+        assert!(!w28a02_field_1c_is_zero(1));
+        assert!(w28a02_block_clear_condition(true, 0x40, 0x40, 1));
+        assert!(!w28a02_block_clear_condition(true, 0x3f, 0x40, 1));
+        assert!(!w28a02_block_clear_condition(true, 0x41, 0x40, 1));
+        assert!(!w28a02_block_clear_condition(false, 0x40, 0x40, 1));
+        assert!(!w28a02_block_clear_condition(true, 0x40, 0x40, 0));
+    }
+
+    #[test]
+    fn frees() {
+        let mut r = [1u32; 11];
+        r[6] = 0;
+        let mut f = vec![];
+        w28a02_free_five_and_clear(&mut r, &mut |p| f.push(p));
+        assert_eq!(f.len(), 4);
+        assert_eq!(r, [0; 11]);
+        let mut r = [2u32; 14];
+        let mut n = 0;
+        w28a02_free_five_and_clear_38(&mut r, &mut |_| n += 1);
+        assert_eq!((n, r), (5, [0; 14]));
+        let mut r = [3u32; 90];
+        let mut n = 0;
+        assert_eq!(
+            w28a02_free_three_and_clear(Some(&mut r), &mut |_| n += 1),
+            0
+        );
+        assert_eq!((n, r[0]), (3, 0));
+        assert_eq!(w28a02_free_three_and_clear(None, &mut |_| n += 1), 0);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave28/agent03.rs
+// ===========================================================================
+// Wave 28 translation batch 03.
+//
+// Third-party codec glue (VP8 frame tag, Vorbis residue setup) plus
+// zeroing helpers for fixed-size codec state blocks.
+
+/// `0x009fa1c0`: clears a `0x208`-byte state block when present.
+pub fn w28a03_clear_208(buf: Option<&mut [u8]>) {
+    if let Some(b) = buf {
+        let n = b.len().min(0x208);
+        b[..n].fill(0);
+    }
+}
+
+/// `0x009ff3e0`: clears a `0x30`-byte state block.
+pub fn w28a03_clear_30(buf: &mut [u8]) {
+    let n = buf.len().min(0x30);
+    buf[..n].fill(0);
+}
+
+/// `0x009ff670`: clears a `0x60`-byte state block when present.
+pub fn w28a03_clear_60(buf: Option<&mut [u8]>) {
+    if let Some(b) = buf {
+        let n = b.len().min(0x60);
+        b[..n].fill(0);
+    }
+}
+
+/// Result of the VP8 frame-tag parse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct W28a03Vp8Info {
+    /// Dword at +0xc: 1 when the frame is a key frame.
+    pub key_frame: u32,
+    /// Dword at +4 (14-bit width), only set on key frames.
+    pub width: u32,
+    /// Dword at +8 (14-bit height), only set on key frames.
+    pub height: u32,
+}
+
+/// `0x00a05a10`: parses a VP8 frame tag (key-frame flag, start code
+/// `9d 01 2a`, 14-bit width/height).  `decrypt` optionally copies up to
+/// 10 bytes through a transform first.  `None` is the non-returning
+/// failure path (bad start code, zero dimension, bad range).
+#[allow(clippy::type_complexity)]
+pub fn w28a03_vp8_frame_info(
+    data: &[u8],
+    decrypt: Option<&dyn Fn(&[u8], &mut [u8; 12], usize)>,
+) -> Option<W28a03Vp8Info> {
+    let size = data.len();
+    let mut local = [0u8; 12];
+    let hdr: &[u8] = if let Some(f) = decrypt {
+        f(data, &mut local, size.min(10));
+        &local
+    } else {
+        data
+    };
+    let mut info = W28a03Vp8Info::default();
+    if size > 9 && hdr.len() >= 10 && hdr[0] & 1 == 0 {
+        info.key_frame = 1;
+        if hdr[3] != 0x9d || hdr[4] != 1 || hdr[5] != 0x2a {
+            return None;
+        }
+        let w = u16::from_le_bytes([hdr[6], hdr[7]]) as u32 & 0x3fff;
+        let h = u16::from_le_bytes([hdr[8], hdr[9]]) as u32 & 0x3fff;
+        info.width = w;
+        info.height = h;
+        if w == 0 || h == 0 {
+            return None;
+        }
+    }
+    Some(info)
+}
+
+/// Vorbis residue setup record (`0xb18`-byte block in the original).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct W28a03Residue {
+    pub begin: i32,
+    pub end: i32,
+    pub grouping: i32,
+    pub partitions: i32,
+    pub groupbook: i32,
+    pub part_vals: i32,
+    pub cascade: Vec<u32>,
+    pub booklist: Vec<i32>,
+}
+
+/// `0x00a024c0`: unpacks a residue header from a bit reader (`read(bits)`,
+/// negative = EOF).  `book_count` is the codebook count; `book_info(i)`
+/// returns `(dim, entries, has_codes)` for codebook `i`.  Returns `None`
+/// on any validation failure.
+pub fn w28a03_residue_unpack(
+    mut read: impl FnMut(u32) -> i32,
+    book_count: i32,
+    book_info: impl Fn(usize) -> (i32, i32, bool),
+) -> Option<W28a03Residue> {
+    let mut r = W28a03Residue {
+        begin: read(24),
+        end: read(24),
+        grouping: read(24).wrapping_add(1),
+        partitions: read(6).wrapping_add(1),
+        groupbook: read(8),
+        ..Default::default()
+    };
+    if r.groupbook < 0 {
+        return None;
+    }
+    let mut acc = 0i32;
+    for _ in 0..r.partitions.max(0) {
+        let mut v = read(3) as u32;
+        let flag = read(1);
+        if flag < 0 {
+            return None;
+        }
+        if flag != 0 {
+            let hi = read(5);
+            if hi < 0 {
+                return None;
+            }
+            v |= (hi as u32) << 3;
+        }
+        r.cascade.push(v);
+        acc += v.count_ones() as i32;
+    }
+    for _ in 0..acc {
+        let b = read(8);
+        if b < 0 {
+            return None;
+        }
+        r.booklist.push(b);
+    }
+    if r.groupbook >= book_count {
+        return None;
+    }
+    for &b in &r.booklist {
+        if b >= book_count || !book_info(b as usize).2 {
+            return None;
+        }
+    }
+    let (mut dim, entries, _) = book_info(r.groupbook as usize);
+    let mut ac = 1i32;
+    if dim > 0 {
+        loop {
+            ac = ac.wrapping_mul(r.partitions);
+            if ac > entries {
+                return None;
+            }
+            dim -= 1;
+            if dim < 1 {
+                r.part_vals = ac;
+                return Some(r);
+            }
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests_wave28_agent03 {
+    use super::*;
+
+    #[test]
+    fn clears() {
+        let mut a = [1u8; 0x300];
+        w28a03_clear_208(Some(&mut a));
+        assert!(a[..0x208].iter().all(|&x| x == 0) && a[0x208] == 1);
+        w28a03_clear_208(None);
+        let mut b = [1u8; 0x40];
+        w28a03_clear_30(&mut b);
+        assert!(b[..0x30].iter().all(|&x| x == 0) && b[0x30] == 1);
+        let mut c = [1u8; 0x80];
+        w28a03_clear_60(Some(&mut c));
+        assert!(c[..0x60].iter().all(|&x| x == 0) && c[0x60] == 1);
+    }
+
+    #[test]
+    fn vp8() {
+        let key = [0x10, 0, 0, 0x9d, 1, 0x2a, 0x40, 0xc1, 0x20, 0];
+        let i = w28a03_vp8_frame_info(&key, None).unwrap();
+        assert_eq!((i.key_frame, i.width, i.height), (1, 0x140, 0x20));
+        let inter = [1u8; 10];
+        assert_eq!(w28a03_vp8_frame_info(&inter, None).unwrap().key_frame, 0);
+        let mut bad = key;
+        bad[3] = 0;
+        assert!(w28a03_vp8_frame_info(&bad, None).is_none());
+        let mut zero = key;
+        zero[6] = 0;
+        zero[7] = 0;
+        assert!(w28a03_vp8_frame_info(&zero, None).is_none());
+        assert_eq!(w28a03_vp8_frame_info(&key[..9], None).unwrap().key_frame, 0);
+    }
+
+    #[test]
+    fn residue() {
+        let vals = [0, 8, 3, 1, 0, 0b101, 0, 0, 0];
+        let mut it = vals.iter().copied();
+        let r = w28a03_residue_unpack(|_| it.next().unwrap_or(0), 4, |_| (2, 100, true));
+        // begin 0,end 8,grouping 4,partitions 2,groupbook 0
+        let r = r.unwrap();
+        assert_eq!((r.end, r.grouping, r.partitions), (8, 4, 2));
+        assert_eq!(r.part_vals, 4);
+        let bad = w28a03_residue_unpack(|_| 0, 4, |_| (2, 100, false));
+        assert!(bad.is_none() || bad.unwrap().booklist.is_empty());
+        assert!(w28a03_residue_unpack(|_| -1, 4, |_| (1, 1, true)).is_none());
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave28/agent04.rs
+// ===========================================================================
+// Wave 28 translation batch 04 (libvpx-style decoder helpers).
+
+/// `0x00a08a00`: once-init gate.  State 0 -> 1 claims and runs `init`, then
+/// bumps to 2; other callers spin (calling `yield_now`) until state is 2.
+pub fn w28a04_once_gate(
+    state: &std::sync::atomic::AtomicI32,
+    init: &mut dyn FnMut(),
+    yield_now: &mut dyn FnMut(),
+) {
+    use std::sync::atomic::Ordering::SeqCst;
+    if state.compare_exchange(0, 1, SeqCst, SeqCst).is_ok() {
+        init();
+        state.fetch_add(1, SeqCst);
+        return;
+    }
+    while state.load(SeqCst) != 2 {
+        yield_now();
+    }
+}
+
+/// `0x00a090b0`: aligned calloc geometry.  Returns `(raw_size, aligned_ptr)`
+/// for a request of `count * size` bytes: raw block is `count*size + 0xb`,
+/// the user pointer is `(raw + 0xb) & !7` with the raw pointer stored at
+/// `aligned - 4`.
+pub fn w28a04_aligned_calloc_layout(count: u32, size: u32, raw_ptr: u32) -> (u32, u32) {
+    (
+        count.wrapping_mul(size).wrapping_add(0xb),
+        raw_ptr.wrapping_add(0xb) & 0xffff_fff8,
+    )
+}
+
+/// `0x00a0ab30`: decoder thread-count setup.  Inputs are the configured
+/// thread count (`+0x3188`) and the available count (`+0x3000`).  Returns
+/// `(multithread_enabled, worker_count)`; workers are `min(min(cfg,8),avail)-1`
+/// and multithreading is only enabled when that minimum exceeds 1.
+pub fn w28a04_thread_setup(configured: i32, available: i32) -> (bool, i32) {
+    let n = configured.min(8);
+    let t = if n <= available { n } else { available };
+    if t > 1 { (true, t - 1) } else { (false, 0) }
+}
+
+/// `0x00a11250`: parses a packed trailer at the end of `data`.  Last byte
+/// `b` must satisfy `b & 0xe0 == 0xc0`; count `n = (b&7)+1`, width
+/// `w = ((b>>3)&3)+1`; the block is `w*n+2` bytes long, starts with the same
+/// byte `b`, and holds `n` little-endian `w`-byte values.  Returns the values
+/// or an empty vector when invalid.
+pub fn w28a04_parse_trailer(data: &[u8]) -> Vec<u32> {
+    let Some(&b) = data.last() else {
+        return Vec::new();
+    };
+    if b & 0xe0 != 0xc0 {
+        return Vec::new();
+    }
+    let n = (b & 7) as usize + 1;
+    let w = ((b >> 3) & 3) as usize + 1;
+    let total = w * n + 2;
+    if total > data.len() {
+        return Vec::new();
+    }
+    let start = data.len() - total;
+    if data[start] != b {
+        return Vec::new();
+    }
+    data[start + 1..start + 1 + w * n]
+        .chunks(w)
+        .map(|c| {
+            c.iter()
+                .enumerate()
+                .fold(0u32, |a, (i, &v)| a | (v as u32) << (8 * i))
+        })
+        .collect()
+}
+
+/// `0x00a11990`: two-tap bilinear 2D filter.  First pass produces `h + 1`
+/// rows of `w` u16 values `(s[i]*hf[0] + s[i+1]*hf[1] + 0x40) >> 7`; second
+/// pass writes `h` rows `(t[i]*vf[0] + t[i+w]*vf[1] + 0x40) >> 7` as bytes.
+#[allow(clippy::too_many_arguments)]
+pub fn w28a04_bilinear_2d(
+    src: &[u8],
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    hf: [i16; 2],
+    vf: [i16; 2],
+    w: usize,
+    h: usize,
+) {
+    let mut tmp = vec![0u16; w * (h + 1)];
+    for r in 0..=h {
+        for i in 0..w {
+            let a = src[r * src_stride + i] as i32;
+            let b = src[r * src_stride + i + 1] as i32;
+            tmp[r * w + i] = ((b * hf[1] as i32 + 0x40 + a * hf[0] as i32) >> 7) as u16;
+        }
+    }
+    for r in 0..h {
+        for i in 0..w {
+            let a = tmp[r * w + i] as i32;
+            let b = tmp[(r + 1) * w + i] as i32;
+            dst[r * dst_stride + i] = ((vf[0] as i32 * a + 0x40 + b * vf[1] as i32) >> 7) as u8;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests_wave28_agent04 {
+    use super::*;
+    use std::sync::atomic::{AtomicI32, Ordering};
+
+    #[test]
+    fn once_gate() {
+        let s = AtomicI32::new(0);
+        let mut n = 0;
+        w28a04_once_gate(&s, &mut || n += 1, &mut || {});
+        assert_eq!((n, s.load(Ordering::SeqCst)), (1, 2));
+        w28a04_once_gate(&s, &mut || n += 1, &mut || panic!());
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn layout_and_threads() {
+        assert_eq!(w28a04_aligned_calloc_layout(4, 3, 0x1001), (0x17, 0x1008));
+        assert_eq!(w28a04_thread_setup(16, 12), (true, 7));
+        assert_eq!(w28a04_thread_setup(4, 1), (false, 0));
+        assert_eq!(w28a04_thread_setup(2, 8), (true, 1));
+    }
+
+    #[test]
+    fn trailer() {
+        // n=2, w=2 -> b = 0xc0 | (1<<3) | 1 = 0xc9
+        let d = [9, 0xc9, 1, 2, 3, 4, 0xc9];
+        assert_eq!(w28a04_parse_trailer(&d), vec![0x0201, 0x0403]);
+        assert!(w28a04_parse_trailer(&[0xc9]).is_empty());
+        assert!(w28a04_parse_trailer(&[0xc8, 1, 0xc9]).is_empty());
+        assert!(w28a04_parse_trailer(&[0x10]).is_empty());
+    }
+
+    #[test]
+    fn bilinear() {
+        let src = [10u8; 12];
+        let mut dst = [0u8; 4];
+        w28a04_bilinear_2d(&src, 4, &mut dst, 2, [128, 0], [128, 0], 2, 2);
+        assert_eq!(dst, [10; 4]);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave28/agent05.rs
+// ===========================================================================
+// Wave 28 translation batch 05: block-sum / SAD / sub-pel filter helpers
+// from the video-codec region of the retail image (pure functions over
+// byte slices).
+
+/// `0x00a1a840`: rounded mean of a 4x4 byte block.  Four rows of one
+/// little-endian dword at `base`, `base + stride`, ...; result is
+/// `(sum + 8) >> 4`.
+pub fn w28a05_mean_4x4(src: &[u8], base: usize, stride: usize) -> i32 {
+    let mut sum = 0i32;
+    for r in 0..4 {
+        for c in 0..4 {
+            sum += src[base + r * stride + c] as i32;
+        }
+    }
+    (sum + 8) >> 4
+}
+
+/// `0x00a1a890`: rounded mean of an 8x8 byte block, `(sum + 0x20) >> 6`.
+pub fn w28a05_mean_8x8(src: &[u8], base: usize, stride: usize) -> i32 {
+    let mut sum = 0i32;
+    for r in 0..8 {
+        for c in 0..8 {
+            sum += src[base + r * stride + c] as i32;
+        }
+    }
+    (sum + 0x20) >> 6
+}
+
+/// `0x00a1b5b0`: column sums of 16 byte columns over `rows` rows (wrapping
+/// 16-bit accumulate), each divided (truncating) by `rows >> 1`.  Returns
+/// `None` when that divisor is zero (retail would fault).
+pub fn w28a05_column_avg16(src: &[u8], base: usize, stride: usize, rows: i32) -> Option<[i16; 16]> {
+    let div = rows >> 1;
+    if div == 0 {
+        return None;
+    }
+    let mut out = [0i16; 16];
+    for (c, o) in out.iter_mut().enumerate() {
+        let mut acc: i16 = 0;
+        for r in 0..rows.max(0) as usize {
+            acc = acc.wrapping_add(src[base + c + r * stride] as i16);
+        }
+        *o = ((acc as i32) / div) as i16;
+    }
+    Some(out)
+}
+
+/// `0x00a1bcd0`: mean of the first four bytes of four rows (SSE saturating
+/// 16-bit lane adds; the high four lanes are dropped by the fold),
+/// `(sum + 8) >> 4`.
+pub fn w28a05_mean_4x4_sse(src: &[u8], base: usize, stride: usize) -> u32 {
+    let mut sum = 0u32;
+    for r in 0..4 {
+        for c in 0..4 {
+            sum += src[base + r * stride + c] as u32;
+        }
+    }
+    (sum.min(0xffff) + 8) >> 4
+}
+
+/// `0x00a1c070`: sum of absolute bytes (psadbw) over `ceil(len / 16)`
+/// 16-byte rows (at least one), accumulated with unsigned 16-bit
+/// saturation; the two 64-bit halves are folded together.
+pub fn w28a05_sad_rows(src: &[u8], len: i32) -> u16 {
+    let rows = if len > 16 {
+        ((len - 0x11) as u32 >> 4) as usize + 2
+    } else {
+        1
+    };
+    let mut lo = 0u16;
+    let mut hi = 0u16;
+    for r in 0..rows {
+        let row = &src[r * 16..r * 16 + 16];
+        let l: u16 = row[..8].iter().map(|&b| b as u16).sum();
+        let h: u16 = row[8..].iter().map(|&b| b as u16).sum();
+        lo = lo.saturating_add(l);
+        hi = hi.saturating_add(h);
+    }
+    lo.saturating_add(hi)
+}
+
+/// `0x00a1b620`: min and max of `|a - b|` over an 8x8 block of two byte
+/// images with independent strides.  Returns `(min, max)`, starting from
+/// `(255, 0)`.
+pub fn w28a05_abs_diff_range(
+    a: &[u8],
+    a_base: usize,
+    a_stride: usize,
+    b: &[u8],
+    b_base: usize,
+    b_stride: usize,
+) -> (i32, i32) {
+    let (mut min, mut max) = (0xff, 0);
+    for r in 0..8 {
+        for c in 0..8 {
+            let d =
+                (a[a_base + r * a_stride + c] as i32 - b[b_base + r * b_stride + c] as i32).abs();
+            min = min.min(d);
+            max = max.max(d);
+        }
+    }
+    (min, max)
+}
+
+/// `0x00a1c860`: horizontal 8-tap sub-pel filter averaged into `dst`.
+/// `taps` is 16 phases of 8 `i16`; `phase0` is the low byte of the retail
+/// phase pointer, `step` the per-pixel increment; the source pointer is
+/// `src_base - 3`.  Each output is clamped to 0..=255 after
+/// `(sum + 0x40) >> 7`, then rounded-averaged with the existing `dst`.
+#[allow(clippy::too_many_arguments)]
+pub fn w28a05_subpel_h8_avg(
+    src: &[u8],
+    src_base: usize,
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_base: usize,
+    dst_stride: usize,
+    taps: &[i16],
+    phase0: u32,
+    step: i32,
+    width: i32,
+    height: i32,
+) {
+    let mut s = src_base - 3;
+    let mut d = dst_base;
+    for _ in 0..height.max(0) {
+        let mut pos = ((phase0 & 0xff) as i32) >> 4;
+        for x in 0..width.max(0) as usize {
+            let p = s + (pos >> 4) as usize;
+            let t = ((pos & 0xf) * 8) as usize;
+            let mut sum = 0x40i32;
+            for k in 0..8 {
+                sum = sum.wrapping_add((src[p + k] as i32).wrapping_mul(taps[t + k] as i32));
+            }
+            let v = (sum >> 7).clamp(0, 255) as u32;
+            pos = pos.wrapping_add(step);
+            dst[d + x] = ((v & 0xff) + dst[d + x] as u32 + 1 >> 1) as u8;
+        }
+        s += src_stride;
+        d += dst_stride;
+    }
+}
+
+#[cfg(test)]
+mod tests_wave28_agent05 {
+    use super::*;
+
+    #[test]
+    fn means() {
+        let s = [10u8; 64];
+        assert_eq!(w28a05_mean_4x4(&s, 0, 8), 10);
+        assert_eq!(w28a05_mean_8x8(&s, 0, 8), 10);
+        assert_eq!(w28a05_mean_4x4_sse(&s, 0, 8), 10);
+        let t = [1u8; 64];
+        assert_eq!(w28a05_mean_4x4(&t, 0, 8), 1);
+    }
+
+    #[test]
+    fn column_avg() {
+        let s = [4u8; 64];
+        assert_eq!(w28a05_column_avg16(&s, 0, 16, 4).unwrap(), [8; 16]);
+        assert!(w28a05_column_avg16(&s, 0, 16, 1).is_none());
+    }
+
+    #[test]
+    fn sad() {
+        let s = [1u8; 64];
+        assert_eq!(w28a05_sad_rows(&s, 16), 16);
+        assert_eq!(w28a05_sad_rows(&s, 17), 32);
+        assert_eq!(w28a05_sad_rows(&s, 33), 48);
+    }
+
+    #[test]
+    fn range() {
+        let a = [5u8; 64];
+        let mut b = [5u8; 64];
+        b[9] = 105;
+        b[0] = 4;
+        assert_eq!(w28a05_abs_diff_range(&a, 0, 8, &b, 0, 8), (0, 100));
+    }
+
+    #[test]
+    fn subpel() {
+        let src = [100u8; 64];
+        let mut taps = [0i16; 128];
+        taps[3] = 128;
+        let mut dst = [50u8; 16];
+        w28a05_subpel_h8_avg(&src, 3, 16, &mut dst, 0, 4, &taps, 0, 16, 4, 1);
+        assert_eq!(&dst[..4], &[75; 4]);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave28/agent06.rs
+// ===========================================================================
+// Wave 28 translation batch 06: H.264-style intra predictors and dispatch
+// helpers from the video decoder (module target `runtime.rs`).
+//
+// Skipped (SIMD / noreturn tails / bad decompile): FUN_00a1dee0,
+// FUN_00a1e010, FUN_00a1f420, FUN_00a20940, FUN_00a20bb0, FUN_00a20eb0,
+// FUN_00a21090.
+
+/// Callee selector for the block-filter dispatchers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum W28a06Kind {
+    /// Coefficient triple is zero, 16-wide step.
+    Zero16,
+    /// Coefficient triple is zero, 8-wide tail.
+    Zero8,
+    /// Coefficient triple is zero, 4-wide tail.
+    Zero4,
+    /// Non-zero coefficients, 16-wide step (source pointer biased by -3 rows).
+    Nz16,
+    /// Non-zero coefficients, 8-wide tail.
+    Nz8,
+    /// Non-zero coefficients, 4-wide tail.
+    Nz4,
+}
+
+fn w28a06_dispatch<F: FnMut(W28a06Kind, [i32; 5])>(
+    args: [i32; 5],
+    coefs: [i16; 3],
+    width: i32,
+    f: &mut F,
+) {
+    let [p1, p2, p3, p4, p10] = args;
+    let mut p1 = p1;
+    let mut p3 = p3;
+    let zero = coefs == [0, 0, 0];
+    let mut rem = width;
+    if zero {
+        if width > 15 {
+            for _ in 0..(width >> 4) {
+                f(W28a06Kind::Zero16, [p1, p2, p3, p4, p10]);
+                p1 = p1.wrapping_add(16);
+                p3 = p3.wrapping_add(16);
+            }
+            rem = width - (width >> 4) * 16;
+        }
+        if rem == 8 {
+            f(W28a06Kind::Zero8, [p1, p2, p3, p4, p10]);
+        } else if rem == 4 {
+            f(W28a06Kind::Zero4, [p1, p2, p3, p4, p10]);
+        }
+    } else {
+        let bias = p2.wrapping_mul(-3);
+        let mut it = p1.wrapping_add(bias);
+        if width > 15 {
+            let n = width >> 4;
+            rem = width - n * 16;
+            p1 = p1.wrapping_add(n * 16);
+            for _ in 0..n {
+                f(W28a06Kind::Nz16, [it, p2, p3, p4, p10]);
+                it = it.wrapping_add(16);
+                p3 = p3.wrapping_add(16);
+            }
+        }
+        let base = p1.wrapping_add(bias);
+        if rem == 8 {
+            f(W28a06Kind::Nz8, [base, p2, p3, p4, p10]);
+        } else if rem == 4 {
+            f(W28a06Kind::Nz4, [base, p2, p3, p4, p10]);
+        }
+    }
+}
+
+/// `0x00a1e470`: splits `width` into 16-wide steps plus an 8/4 tail and calls
+/// the matching worker (zero-coefficient workers when the three coefficient
+/// shorts are all zero, otherwise the -3-row-biased ones).  Workers are
+/// modelled by `f(kind, [src, stride, dst, p4, p10])`.
+pub fn w28a06_filter_dispatch_a<F: FnMut(W28a06Kind, [i32; 5])>(
+    args: [i32; 5],
+    coefs: [i16; 3],
+    width: i32,
+    mut f: F,
+) {
+    w28a06_dispatch(args, coefs, width, &mut f);
+}
+
+/// `0x00a1e810`: same control flow as the sibling at 00a1e470 with a different
+/// worker set.
+pub fn w28a06_filter_dispatch_b<F: FnMut(W28a06Kind, [i32; 5])>(
+    args: [i32; 5],
+    coefs: [i16; 3],
+    width: i32,
+    mut f: F,
+) {
+    w28a06_dispatch(args, coefs, width, &mut f);
+}
+
+/// `0x00a1e970`: splits two packed values into `(v & !0xff, (v & 0xff) >> 4)`
+/// pairs and returns the 12 arguments forwarded to the callee (FUN_00a1d850).
+#[allow(clippy::too_many_arguments)]
+pub fn w28a06_split_args(
+    p1: u32,
+    p2: u32,
+    p3: u32,
+    p4: u32,
+    p5: u32,
+    p6: u32,
+    p7: u32,
+    p8: u32,
+    p9: u32,
+    p10: u32,
+) -> [u32; 12] {
+    let a = p5 & 0xffff_ff00;
+    let b = p7 & 0xffff_ff00;
+    [
+        p1,
+        p2,
+        p3,
+        p4,
+        a,
+        ((p5.wrapping_sub(a)) as i32 >> 4) as u32,
+        p6,
+        b,
+        ((p7.wrapping_sub(b)) as i32 >> 4) as u32,
+        p8,
+        p9,
+        p10,
+    ]
+}
+
+/// `0x00a20ad0`: 4x4 diagonal-down-left style intra predictor from 8 edge
+/// samples (last pixel copied from edge sample 7).
+pub fn w28a06_pred4x4_diag(dst: &mut [u8], stride: usize, e: &[u8; 8]) {
+    let p: [u32; 8] = e.map(u32::from);
+    let t = |a: usize, b: usize, c: usize| ((p[a] + 2 * p[b] + p[c] + 2) >> 2) as u8;
+    let v = [
+        t(0, 1, 2),
+        t(1, 2, 3),
+        t(2, 3, 4),
+        t(3, 4, 5),
+        t(4, 5, 6),
+        ((p[7] + p[5] + 2 * p[6] + 2) >> 2) as u8,
+    ];
+    for y in 0..4 {
+        for x in 0..4 {
+            let k = x + y;
+            dst[y * stride + x] = if k <= 5 { v[k] } else { e[7] };
+        }
+    }
+}
+
+/// `0x00a20fa0`: 4x4 vertical-left style predictor (alternating 2-tap and
+/// 3-tap filters of 7 edge samples).
+pub fn w28a06_pred4x4_vert_left(dst: &mut [u8], stride: usize, e: &[u8; 7]) {
+    let p: [u32; 7] = e.map(u32::from);
+    let avg = |a: usize, b: usize| ((p[a] + p[b] + 1) >> 1) as u8;
+    let f3 = |a: usize, b: usize, c: usize| ((p[a] + 2 * p[b] + p[c] + 2) >> 2) as u8;
+    let s = stride;
+    dst[0] = avg(0, 1);
+    dst[2 * s] = avg(1, 2);
+    dst[1] = avg(1, 2);
+    dst[2 * s + 1] = avg(3, 2);
+    dst[2] = avg(3, 2);
+    dst[2 * s + 2] = avg(3, 4);
+    dst[3] = avg(3, 4);
+    dst[2 * s + 3] = avg(5, 4);
+    dst[s] = f3(0, 1, 2);
+    dst[3 * s] = f3(1, 2, 3);
+    dst[s + 1] = f3(1, 2, 3);
+    dst[3 * s + 1] = f3(2, 3, 4);
+    dst[s + 2] = f3(2, 3, 4);
+    dst[3 * s + 2] = f3(3, 4, 5);
+    dst[s + 3] = f3(3, 4, 5);
+    dst[3 * s + 3] = f3(4, 5, 6);
+}
+
+/// `0x00a21420`: fills an 8x8 block (8 rows of 8 bytes) with 0x80.
+pub fn w28a06_fill_8x8_grey(dst: &mut [u8], stride: usize) {
+    for y in 0..8 {
+        dst[y * stride..y * stride + 8].fill(0x80);
+    }
+}
+
+/// `0x00a21840`: chroma 4x4 DC from four top and four left samples,
+/// `(sum + 4) >> 3`, replicated over a 4x4 block.
+pub fn w28a06_dc4x4_both(dst: &mut [u8], stride: usize, top: &[u8; 4], left: &[u8; 4]) {
+    let sum: u32 = top.iter().chain(left.iter()).map(|&b| u32::from(b)).sum();
+    let v = ((sum + 4) >> 3) as u8;
+    for y in 0..4 {
+        dst[y * stride..y * stride + 4].fill(v);
+    }
+}
+
+/// `0x00a21950`: 16x16 DC from 16 samples, `(sum + 8) >> 4`.
+pub fn w28a06_dc16x16_one(dst: &mut [u8], stride: usize, edge: &[u8; 16]) {
+    let sum: i32 = edge.iter().map(|&b| i32::from(b)).sum::<i32>() + 8;
+    let v = ((sum + ((sum >> 31) & 0xf)) >> 4) as u8;
+    for y in 0..16 {
+        dst[y * stride..y * stride + 16].fill(v);
+    }
+}
+
+/// `0x00a21680`: 16x16 DC from 16 top and 16 left samples, `(sum + 16) >> 5`.
+pub fn w28a06_dc16x16_both(dst: &mut [u8], stride: usize, left: &[u8; 16], top: &[u8; 16]) {
+    let sum: i32 = left
+        .iter()
+        .chain(top.iter())
+        .map(|&b| i32::from(b))
+        .sum::<i32>()
+        + 16;
+    let v = ((sum + ((sum >> 31) & 0x1f)) >> 5) as u8;
+    for y in 0..16 {
+        dst[y * stride..y * stride + 16].fill(v);
+    }
+}
+
+/// `0x00a21b80`: 16x16 horizontal prediction, each row filled with `left[y]`.
+pub fn w28a06_pred16x16_horizontal(dst: &mut [u8], stride: usize, left: &[u8; 16]) {
+    for (y, &l) in left.iter().enumerate() {
+        dst[y * stride..y * stride + 16].fill(l);
+    }
+}
+
+/// `0x00a21c00`: 4x4 horizontal prediction, each row filled with `left[y]`.
+pub fn w28a06_pred4x4_horizontal(dst: &mut [u8], stride: usize, left: &[u8; 4]) {
+    for (y, &l) in left.iter().enumerate() {
+        dst[y * stride..y * stride + 4].fill(l);
+    }
+}
+
+/// `0x00a21ed0`: 8x8 plane/gradient predictor
+/// `clamp(top[x] - corner + left[y], 0, 255)`.
+pub fn w28a06_pred8x8_gradient(
+    dst: &mut [u8],
+    stride: usize,
+    corner: u8,
+    top: &[u8; 8],
+    left: &[u8; 8],
+) {
+    for y in 0..8 {
+        for x in 0..8 {
+            let v = i32::from(top[x]) - i32::from(corner) + i32::from(left[y]);
+            dst[y * stride + x] = v.clamp(0, 255) as u8;
+        }
+    }
+}
+
+/// `0x00a22180`: sums a 16x16 block of i16 (row stride `stride` shorts) and
+/// returns `sum >> 1` truncated to i16.
+pub fn w28a06_sum16x16_half(block: &[i16], stride: usize) -> i16 {
+    let mut sum: i32 = 0;
+    for y in 0..16 {
+        for x in 0..16 {
+            sum = sum.wrapping_add(i32::from(block[y * stride + x]));
+        }
+    }
+    (sum >> 1) as i16
+}
+
+#[cfg(test)]
+mod tests_wave28_agent06 {
+    use super::*;
+
+    #[test]
+    fn dispatch_zero_and_nz() {
+        let mut calls = vec![];
+        w28a06_filter_dispatch_a([100, 10, 0, 1, 2], [0, 0, 0], 36, |k, a| calls.push((k, a)));
+        assert_eq!(calls.len(), 3);
+        assert_eq!(calls[1], (W28a06Kind::Zero16, [116, 10, 16, 1, 2]));
+        assert_eq!(calls[2].0, W28a06Kind::Zero4);
+        let mut calls = vec![];
+        w28a06_filter_dispatch_b([100, 10, 0, 1, 2], [0, 1, 0], 24, |k, a| calls.push((k, a)));
+        assert_eq!(calls[0], (W28a06Kind::Nz16, [70, 10, 0, 1, 2]));
+        assert_eq!(calls[1], (W28a06Kind::Nz8, [100 + 16 - 30, 10, 16, 1, 2]));
+        let mut n = 0;
+        w28a06_filter_dispatch_a([0; 5], [0; 3], 6, |_, _| n += 1);
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn split() {
+        let r = w28a06_split_args(1, 2, 3, 4, 0x1234, 6, 0x2ff, 8, 9, 10);
+        assert_eq!(r[4], 0x1200);
+        assert_eq!(r[5], 3);
+        assert_eq!(r[7], 0x200);
+        assert_eq!(r[8], 0xf);
+    }
+
+    #[test]
+    fn diag() {
+        let mut d = [0u8; 16];
+        w28a06_pred4x4_diag(&mut d, 4, &[10, 10, 10, 10, 10, 10, 10, 50]);
+        assert_eq!(d[0], 10);
+        assert_eq!(d[15], 50);
+        assert_eq!(d[3], d[6]);
+        assert_eq!(d[12], d[3]);
+    }
+
+    #[test]
+    fn vert_left() {
+        let mut d = [0u8; 16];
+        w28a06_pred4x4_vert_left(&mut d, 4, &[0, 4, 8, 12, 16, 20, 24]);
+        assert_eq!(d[0], 2);
+        assert_eq!(d[4], 4);
+        assert_eq!(d[8], 6);
+        assert_eq!(d[15], 20);
+    }
+
+    #[test]
+    fn fills_and_dc() {
+        let mut d = [0u8; 64];
+        w28a06_fill_8x8_grey(&mut d, 8);
+        assert!(d.iter().all(|&b| b == 0x80));
+        let mut d = [0u8; 16];
+        w28a06_dc4x4_both(&mut d, 4, &[1, 2, 3, 4], &[5, 6, 7, 8]);
+        assert!(d.iter().all(|&b| b == 5));
+        let mut d = [0u8; 256];
+        w28a06_dc16x16_one(&mut d, 16, &[255; 16]);
+        assert!(d.iter().all(|&b| b == 255));
+        w28a06_dc16x16_both(&mut d, 16, &[10; 16], &[20; 16]);
+        assert!(d.iter().all(|&b| b == 15));
+    }
+
+    #[test]
+    fn horizontal() {
+        let mut d = [0u8; 256];
+        let l: [u8; 16] = core::array::from_fn(|i| i as u8);
+        w28a06_pred16x16_horizontal(&mut d, 16, &l);
+        assert_eq!(d[16 * 5 + 15], 5);
+        let mut d = [0u8; 16];
+        w28a06_pred4x4_horizontal(&mut d, 4, &[1, 2, 3, 4]);
+        assert_eq!(d[8], 3);
+    }
+
+    #[test]
+    fn gradient_and_sum() {
+        let mut d = [0u8; 64];
+        w28a06_pred8x8_gradient(&mut d, 8, 10, &[250; 8], &[20; 8]);
+        assert_eq!(d[0], 255);
+        w28a06_pred8x8_gradient(&mut d, 8, 100, &[10; 8], &[20; 8]);
+        assert_eq!(d[0], 0);
+        let b = [3i16; 256];
+        assert_eq!(w28a06_sum16x16_half(&b, 16), 384);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave28/agent07.rs
+// ===========================================================================
+// Wave 28 translation batch 07: video-codec block metrics (sum / SSD /
+// variance) helpers.  Unresolved callees become closures.
+
+/// `0x00a23e20`: sum of a 4x4 block of `i16` (row stride `stride` shorts),
+/// wrapping in 16 bits, then doubled.
+pub fn w28a07_sum4x4_x2(src: &[i16], stride: usize) -> i16 {
+    let mut s: i16 = 0;
+    for r in 0..4 {
+        for c in 0..4 {
+            s = s.wrapping_add(src[r * stride + c]);
+        }
+    }
+    s.wrapping_mul(2)
+}
+
+/// `0x00a24010`: wrapping 16-bit sum of an 8x8 block of `i16`.
+pub fn w28a07_sum8x8(src: &[i16], stride: usize) -> i16 {
+    let mut s: i16 = 0;
+    for r in 0..8 {
+        for c in 0..8 {
+            s = s.wrapping_add(src[r * stride + c]);
+        }
+    }
+    s
+}
+
+/// `0x00a24450`: 16x16 block of `i16`; eight per-column-lane 16-bit
+/// accumulators (lane = column mod 8), summed in 32 bits and halved.
+pub fn w28a07_sum16x16_half(src: &[i16], stride: usize) -> i16 {
+    let mut lanes = [0i16; 8];
+    for r in 0..16 {
+        for c in 0..16 {
+            lanes[c & 7] = lanes[c & 7].wrapping_add(src[r * stride + c]);
+        }
+    }
+    (lanes.iter().map(|&v| v as i32).sum::<i32>() >> 1) as i16
+}
+
+/// `0x00a30c00`: sum of 4 rows of four `i16` (row `r` starts `r * 2 *
+/// stride_bytes` bytes in; i.e. `r * stride_bytes` shorts), doubled.
+pub fn w28a07_sum4x4_bytes_stride_x2(src: &[i16], stride_bytes: usize) -> i16 {
+    let mut s: i16 = 0;
+    for r in 0..4 {
+        let base = r * stride_bytes; // byte offset param_3 * 2 * r, in shorts
+        for c in 0..4 {
+            s = s.wrapping_add(src[base + c]);
+        }
+    }
+    s.wrapping_mul(2)
+}
+
+/// `0x00a317f0`: sum of squared differences of two 16x16 byte blocks.
+/// Returns `(sse, sse)` (the routine stores the running total through its
+/// out pointer too).
+pub fn w28a07_ssd16x16(a: &[u8], a_stride: usize, b: &[u8], b_stride: usize) -> (i32, i32) {
+    let mut t: i32 = 0;
+    for r in 0..16 {
+        for c in 0..16 {
+            let d = a[r * a_stride + c] as i32 - b[r * b_stride + c] as i32;
+            t = t.wrapping_add(d.wrapping_mul(d));
+        }
+    }
+    (t, t)
+}
+
+/// `0x00a36d00`: 16x8 variance; `sad(...)` returns `(sum, sse)`; result is
+/// `(sse, sse - (sum^2 >> 7))` (unsigned shift).
+pub fn w28a07_var16x8(sub: impl FnOnce() -> (i32, i32)) -> (i32, i32) {
+    let (sum, sse) = sub();
+    (
+        sse,
+        sse.wrapping_sub(((sum.wrapping_mul(sum)) as u32 >> 7) as i32),
+    )
+}
+
+/// `0x00a37810`: 16x16 variance, unsigned `>> 8`.  Returns `(sse, var)`.
+pub fn w28a07_var16_u8(sub: impl FnOnce() -> (i32, i32)) -> (i32, i32) {
+    let (sum, sse) = sub();
+    (
+        sse,
+        sse.wrapping_sub(((sum.wrapping_mul(sum)) as u32 >> 8) as i32),
+    )
+}
+
+fn w28a07_shr64(sum: i32, sh: u32) -> i32 {
+    let p = (sum as i64).wrapping_mul(sum as i64) as u64;
+    (p >> sh) as u32 as i32
+}
+
+/// `0x00a37850`: 32-wide variance, 64-bit square `>> 9`.  `(sse, var)`.
+pub fn w28a07_var32_s9(sub: impl FnOnce() -> (i32, i32)) -> (i32, i32) {
+    let (sum, sse) = sub();
+    (sse, sse.wrapping_sub(w28a07_shr64(sum, 9)))
+}
+
+/// `0x00a37930`: 8-wide variance, signed `>> 7`.  `(sse, var)`.
+pub fn w28a07_var_s7_a(sub: impl FnOnce() -> (i32, i32)) -> (i32, i32) {
+    let (sum, sse) = sub();
+    (sse, sse.wrapping_sub(sum.wrapping_mul(sum) >> 7))
+}
+
+/// `0x00a38130`: variance, signed `>> 7`.  `(sse, var)`.
+pub fn w28a07_var_s7_b(sub: impl FnOnce() -> (i32, i32)) -> (i32, i32) {
+    w28a07_var_s7_a(sub)
+}
+
+/// `0x00a37cb0`: 4-wide variance, signed `>> 4`.  `(sse, var)`.
+pub fn w28a07_var_s4(sub: impl FnOnce() -> (i32, i32)) -> (i32, i32) {
+    let (sum, sse) = sub();
+    (sse, sse.wrapping_sub(sum.wrapping_mul(sum) >> 4))
+}
+
+/// `0x00a37cf0`: variance, signed `>> 5`.  `(sse, var)`.
+pub fn w28a07_var_s5_a(sub: impl FnOnce() -> (i32, i32)) -> (i32, i32) {
+    let (sum, sse) = sub();
+    (sse, sse.wrapping_sub(sum.wrapping_mul(sum) >> 5))
+}
+
+/// `0x00a37d30`: variance, signed `>> 5`.  `(sse, var)`.
+pub fn w28a07_var_s5_b(sub: impl FnOnce() -> (i32, i32)) -> (i32, i32) {
+    w28a07_var_s5_a(sub)
+}
+
+/// `0x00a38170`: variance, signed `>> 5`.  `(sse, var)`.
+pub fn w28a07_var_s5_c(sub: impl FnOnce() -> (i32, i32)) -> (i32, i32) {
+    w28a07_var_s5_a(sub)
+}
+
+/// `0x00a37970`: two 16-wide halves (offsets 0 and 16) combined, 64-bit
+/// square `>> 9`.  `sub(offset)` returns `(sum, sse)`.
+pub fn w28a07_var_two_halves_9(mut sub: impl FnMut(usize) -> (i32, i32)) -> (i32, i32) {
+    let (s0, e0) = sub(0);
+    let (s1, e1) = sub(0x10);
+    let sse = e0.wrapping_add(e1);
+    (sse, sse.wrapping_sub(w28a07_shr64(s0.wrapping_add(s1), 9)))
+}
+
+/// `0x00a37bf0`: two 16-wide halves, 64-bit square `>> 11`.
+pub fn w28a07_var_two_halves_11(mut sub: impl FnMut(usize) -> (i32, i32)) -> (i32, i32) {
+    let (s0, e0) = sub(0);
+    let (s1, e1) = sub(0x10);
+    let sse = e0.wrapping_add(e1);
+    (sse, sse.wrapping_sub(w28a07_shr64(s0.wrapping_add(s1), 11)))
+}
+
+/// `0x00a37d70`: four 16-wide quarters (offsets 0, 0x10, 0x20, 0x30),
+/// 64-bit square `>> 11`.
+pub fn w28a07_var_four_quarters_11(mut sub: impl FnMut(usize) -> (i32, i32)) -> (i32, i32) {
+    let mut sum = 0i32;
+    let mut sse = 0i32;
+    for k in 0..4 {
+        let (s, e) = sub(k * 0x10);
+        sum = sum.wrapping_add(s);
+        sse = sse.wrapping_add(e);
+    }
+    (sse, sse.wrapping_sub(w28a07_shr64(sum, 11)))
+}
+
+#[cfg(test)]
+mod tests_wave28_agent07 {
+    use super::*;
+
+    #[test]
+    fn sums() {
+        let a = [1i16; 64];
+        assert_eq!(w28a07_sum4x4_x2(&a, 8), 32);
+        assert_eq!(w28a07_sum8x8(&a, 8), 64);
+        let b = [3i16; 256];
+        assert_eq!(w28a07_sum16x16_half(&b, 16), 384);
+        assert_eq!(w28a07_sum4x4_bytes_stride_x2(&[2i16; 64], 4), 64);
+    }
+
+    #[test]
+    fn ssd() {
+        let a = [5u8; 256];
+        let b = [3u8; 256];
+        assert_eq!(w28a07_ssd16x16(&a, 16, &b, 16), (1024, 1024));
+    }
+
+    #[test]
+    fn variances() {
+        assert_eq!(w28a07_var16x8(|| (128, 1000)), (1000, 1000 - 128));
+        assert_eq!(w28a07_var16_u8(|| (16, 300)), (300, 299));
+        assert_eq!(w28a07_var32_s9(|| (512, 5000)), (5000, 5000 - 512));
+        assert_eq!(w28a07_var_s7_a(|| (-16, 100)), (100, 98));
+        assert_eq!(w28a07_var_s7_b(|| (-16, 100)), (100, 98));
+        assert_eq!(w28a07_var_s4(|| (4, 10)), (10, 9));
+        assert_eq!(w28a07_var_s5_a(|| (8, 10)), (10, 8));
+        assert_eq!(w28a07_var_s5_b(|| (8, 10)), (10, 8));
+        assert_eq!(w28a07_var_s5_c(|| (8, 10)), (10, 8));
+    }
+
+    #[test]
+    fn composite() {
+        let r = w28a07_var_two_halves_9(|o| if o == 0 { (256, 10) } else { (256, 20) });
+        assert_eq!(r, (30, 30 - 512));
+        let r = w28a07_var_two_halves_11(|o| (o as i32, 1));
+        assert_eq!(r, (2, 2));
+        let r = w28a07_var_four_quarters_11(|_| (64, 100));
+        assert_eq!(r, (400, 400 - 32));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave28/agent08.rs
+// ===========================================================================
+// Wave 28 translation batch 08.
+//
+// libvpx-style variance tails, IDCT add helpers and an 8-wide loop filter.
+// Unresolved callees (sum/SSE kernels, 1-D 8-point transform) are closures.
+
+/// Variance tail with a signed 32-bit square: `sse - ((sum * sum) >> shift)`.
+pub fn w28a08_var_sub_i32(sse: i32, sum: i32, shift: u32) -> i32 {
+    sse.wrapping_sub(sum.wrapping_mul(sum) >> shift)
+}
+
+/// Variance tail with an unsigned 32-bit square.
+pub fn w28a08_var_sub_u32(sse: i32, sum: i32, shift: u32) -> i32 {
+    sse.wrapping_sub(((sum.wrapping_mul(sum) as u32) >> shift) as i32)
+}
+
+/// Variance tail with a 64-bit square, truncated to 32 bits after the shift.
+pub fn w28a08_var_sub_i64(sse: i32, sum: i32, shift: u32) -> i32 {
+    let p = (sum as i64) * (sum as i64);
+    sse.wrapping_sub((p >> shift) as i32)
+}
+
+/// `0x00a381b0`: kernel returns the sum and writes sse; result is
+/// `sse - (sum*sum >> 5)`.  Returns `(variance, sse)`.
+pub fn w28a08_var_a381b0(kernel: impl FnOnce() -> (i32, i32)) -> (i32, i32) {
+    let (sum, sse) = kernel();
+    (w28a08_var_sub_i32(sse, sum, 5), sse)
+}
+
+/// `0x00a381f0`: shift 6, signed square; kernel returns `(sum, sse)`.
+pub fn w28a08_var_a381f0(kernel: impl FnOnce() -> (i32, i32)) -> (i32, i32) {
+    let (sum, sse) = kernel();
+    (w28a08_var_sub_i32(sse, sum, 6), sse)
+}
+
+/// `0x00a38230`: shift 6, signed square; kernel returns `(sum, sse)`.
+pub fn w28a08_var_a38230(kernel: impl FnOnce() -> (i32, i32)) -> (i32, i32) {
+    let (sum, sse) = kernel();
+    (w28a08_var_sub_i32(sse, sum, 6), sse)
+}
+
+/// `0x00a38270`: kernel yields `(sum, sse)`; unsigned square shift 8.
+pub fn w28a08_var_a38270(kernel: impl FnOnce() -> (i32, i32)) -> (i32, i32) {
+    let (sum, sse) = kernel();
+    (w28a08_var_sub_u32(sse, sum, 8), sse)
+}
+
+/// `0x00a382f0`: signed square shift 7.
+pub fn w28a08_var_a382f0(kernel: impl FnOnce() -> (i32, i32)) -> (i32, i32) {
+    let (sum, sse) = kernel();
+    (w28a08_var_sub_i32(sse, sum, 7), sse)
+}
+
+/// `0x00a38330`: 64-bit square shift 9 (blocks 32x16).
+pub fn w28a08_var_a38330(kernel: impl FnOnce() -> (i32, i32)) -> (i32, i32) {
+    let (sum, sse) = kernel();
+    (w28a08_var_sub_i64(sse, sum, 9), sse)
+}
+
+/// `0x00a38370`: 64-bit square shift 10 (32x32).
+pub fn w28a08_var_a38370(kernel: impl FnOnce() -> (i32, i32)) -> (i32, i32) {
+    let (sum, sse) = kernel();
+    (w28a08_var_sub_i64(sse, sum, 10), sse)
+}
+
+/// `0x00a383b0`: 64-bit square shift 11 (32x64).
+pub fn w28a08_var_a383b0(kernel: impl FnOnce() -> (i32, i32)) -> (i32, i32) {
+    let (sum, sse) = kernel();
+    (w28a08_var_sub_i64(sse, sum, 11), sse)
+}
+
+/// `0x00a383f0`: signed square shift 4.
+pub fn w28a08_var_a383f0(kernel: impl FnOnce() -> (i32, i32)) -> (i32, i32) {
+    let (sum, sse) = kernel();
+    (w28a08_var_sub_i32(sse, sum, 4), sse)
+}
+
+/// `0x00a38470`: 64-bit square shift 11 (64x32).
+pub fn w28a08_var_a38470(kernel: impl FnOnce() -> (i32, i32)) -> (i32, i32) {
+    let (sum, sse) = kernel();
+    (w28a08_var_sub_i64(sse, sum, 11), sse)
+}
+
+/// `0x00a384b0`: 64-bit square shift 12 (64x64).
+pub fn w28a08_var_a384b0(kernel: impl FnOnce() -> (i32, i32)) -> (i32, i32) {
+    let (sum, sse) = kernel();
+    (w28a08_var_sub_i64(sse, sum, 12), sse)
+}
+
+/// `0x00a384f0`: signed square shift 7.
+pub fn w28a08_var_a384f0(kernel: impl FnOnce() -> (i32, i32)) -> (i32, i32) {
+    let (sum, sse) = kernel();
+    (w28a08_var_sub_i32(sse, sum, 7), sse)
+}
+
+/// `0x00a38530`: signed square shift 5.
+pub fn w28a08_var_a38530(kernel: impl FnOnce() -> (i32, i32)) -> (i32, i32) {
+    let (sum, sse) = kernel();
+    (w28a08_var_sub_i32(sse, sum, 5), sse)
+}
+
+/// `0x00a38570`: signed square shift 6.
+pub fn w28a08_var_a38570(kernel: impl FnOnce() -> (i32, i32)) -> (i32, i32) {
+    let (sum, sse) = kernel();
+    (w28a08_var_sub_i32(sse, sum, 6), sse)
+}
+
+/// Saturate to `0..=255` (the `< 0x100` / `< 0` ladder of the retail code).
+fn w28a08_clamp_u8(v: i32) -> u8 {
+    v.clamp(0, 255) as u8
+}
+
+/// `0x00a3b560`: 8x8 inverse transform added to `dst` (row stride `stride`,
+/// block at `base`).  `tx` is the 1-D 8-point transform (callee a3a490).
+/// Pass 1 transforms each coefficient row, pass 2 each column; every output is
+/// `((v + 0x10) >> 5)` added to the pixel with saturation.
+pub fn w28a08_idct8_add(
+    coeffs: &[i16; 64],
+    dst: &mut [u8],
+    base: usize,
+    stride: usize,
+    mut tx: impl FnMut(&[i16; 8]) -> [i16; 8],
+) {
+    let mut tmp = [[0i16; 8]; 8];
+    for (r, row) in tmp.iter_mut().enumerate() {
+        let mut inp = [0i16; 8];
+        inp.copy_from_slice(&coeffs[r * 8..r * 8 + 8]);
+        *row = tx(&inp);
+    }
+    for c in 0..8 {
+        let mut col = [0i16; 8];
+        for (r, v) in col.iter_mut().enumerate() {
+            *v = tmp[r][c];
+        }
+        let out = tx(&col);
+        for (r, &o) in out.iter().enumerate() {
+            let idx = base + r * stride + c;
+            let v = ((o as i32 + 0x10) >> 5) + dst[idx] as i32;
+            dst[idx] = w28a08_clamp_u8(v);
+        }
+    }
+}
+
+/// `0x00a3ba10`: 4x4 add of a single DC-style coefficient with the odd
+/// per-column split (`dc>>2 - dc>>3` for column 0, `dc>>3` for the others);
+/// the first row gets `v - (v>>1) + v`, the
+/// other rows `v>>1`.
+pub fn w28a08_dc_add_4x4_split(dc: i16, dst: &mut [u8], base: usize, stride: usize) {
+    let t3 = dc >> 3;
+    let t = [(dc >> 2).wrapping_sub(t3), t3, t3, t3];
+    for (i, &v) in t.iter().enumerate() {
+        let v = v as i32;
+        let h = v >> 1;
+        let i0 = base + i;
+        dst[i0] = w28a08_clamp_u8(dst[i0] as i32 - h + v);
+        for r in 1..4 {
+            let idx = i0 + r * stride;
+            dst[idx] = w28a08_clamp_u8(dst[idx] as i32 + h);
+        }
+    }
+}
+
+/// `0x00a48e50`: DC-only 4x4 inverse transform add.  The DC passes through two
+/// `* 0x2d41 + 0x2000 >> 14` stages, `+8 >> 4`, truncated to i16, then added to
+/// all 16 pixels with saturation (16-bit wrapping add first).
+pub fn w28a08_dc_only_idct_add_4x4(dc: i16, dst: &mut [u8], base: usize, stride: usize) {
+    let a = (dc as i32 * 0x2d41 + 0x2000) >> 14;
+    let b = (a * 0x2d41 + 0x2000) >> 14;
+    let dc16 = ((b + 8) >> 4) as i16;
+    for r in 0..4 {
+        for c in 0..4 {
+            let idx = base + r * stride + c;
+            let s = (dst[idx] as i16).wrapping_add(dc16);
+            dst[idx] = w28a08_clamp_u8(s as i32);
+        }
+    }
+}
+
+fn w28a08_sat_i8(v: i32) -> i32 {
+    v.clamp(-128, 127)
+}
+
+/// `0x00a4aaf0`: VP8-style normal loop filter across a horizontal edge for 8
+/// columns.  `s` is the index of the first q0 pixel (needs 4 rows above and 3
+/// below); `blimit`, `limit` and `thresh` are the scalar bytes the retail code
+/// reads (without advancing) from its three pointers.
+pub fn w28a08_loop_filter_h8(
+    buf: &mut [u8],
+    s: usize,
+    pitch: usize,
+    blimit: u8,
+    limit: u8,
+    thresh: u8,
+) {
+    let (blimit, limit, thresh) = (blimit as i32, limit as i32, thresh as i32);
+    for i in 0..8 {
+        let q0i = s + i;
+        let p0i = q0i - pitch;
+        let p1i = q0i - 2 * pitch;
+        let q1i = q0i + pitch;
+        let g = |ix: usize| buf[ix] as i32;
+        let (p3, p2, p1, p0) = (g(q0i - 4 * pitch), g(q0i - 3 * pitch), g(p1i), g(p0i));
+        let (q0, q1, q2, q3) = (g(q0i), g(q1i), g(q0i + 2 * pitch), g(q0i + 3 * pitch));
+        let mut mask = false;
+        mask |= (p1 - q1).abs() / 2 + (p0 - q0).abs() * 2 > blimit;
+        mask |= (p3 - p2).abs() > limit;
+        mask |= (q3 - q2).abs() > limit;
+        mask |= (q2 - q1).abs() > limit;
+        mask |= (q1 - q0).abs() > limit;
+        mask |= (p1 - p0).abs() > limit;
+        mask |= (p2 - p1).abs() > limit;
+        let hev = (q1 - q0).abs() > thresh || (p1 - p0).abs() > thresh;
+        let sg = |v: i32| v - 128;
+        let (ps1, ps0, qs0, qs1) = (sg(p1), sg(p0), sg(q0), sg(q1));
+        let mut f = w28a08_sat_i8(ps1 - qs1);
+        if !hev {
+            f = 0;
+        }
+        f = w28a08_sat_i8(f + (qs0 - ps0) * 3);
+        if mask {
+            f = 0;
+        }
+        let f1 = w28a08_sat_i8(f + 4) >> 3;
+        let f2 = w28a08_sat_i8(f + 3) >> 3;
+        buf[q0i] = (w28a08_sat_i8(qs0 - f1) + 128) as u8;
+        buf[p0i] = (w28a08_sat_i8(f2 + ps0) + 128) as u8;
+        let f3 = if hev { 0 } else { (f1 + 1) >> 1 };
+        buf[q1i] = (w28a08_sat_i8(qs1 - f3) + 128) as u8;
+        buf[p1i] = (w28a08_sat_i8(ps1 + f3) + 128) as u8;
+    }
+}
+
+#[cfg(test)]
+mod tests_wave28_agent08 {
+    use super::*;
+
+    #[test]
+    fn variance_tails() {
+        assert_eq!(w28a08_var_a381b0(|| (64, 1000)), (1000 - 128, 1000));
+        assert_eq!(w28a08_var_a381f0(|| (-64, 500)), (500 - 64, 500));
+        assert_eq!(w28a08_var_a38230(|| (8, 10)), (9, 10));
+        assert_eq!(w28a08_var_a38270(|| (16, 300)).0, 299);
+        assert_eq!(w28a08_var_a382f0(|| (16, 300)).0, 298);
+        assert_eq!(w28a08_var_a383f0(|| (4, 20)).0, 19);
+        assert_eq!(w28a08_var_a384f0(|| (16, 300)).0, 298);
+        assert_eq!(w28a08_var_a38530(|| (8, 100)).0, 98);
+        assert_eq!(w28a08_var_a38570(|| (8, 100)).0, 99);
+        assert_eq!(w28a08_var_a38330(|| (1024, 0)).0, -(1 << 11));
+        assert_eq!(w28a08_var_a38370(|| (1024, 0)).0, -(1 << 10));
+        assert_eq!(w28a08_var_a383b0(|| (1024, 0)).0, -(1 << 9));
+        assert_eq!(w28a08_var_a38470(|| (1024, 0)).0, -(1 << 9));
+        assert_eq!(w28a08_var_a384b0(|| (1024, 0)).0, -(1 << 8));
+        // 64-bit path keeps the high bits that the u32 path would lose
+        assert_eq!(w28a08_var_sub_i64(0, 1 << 17, 12), -(1 << 22));
+        assert_eq!(w28a08_var_sub_u32(0, 1 << 16, 8), 0);
+    }
+
+    #[test]
+    fn idct8_identity_add() {
+        let mut c = [0i16; 64];
+        c[0] = 64;
+        let mut dst = vec![100u8; 64];
+        // pass-through transform: output = input
+        w28a08_idct8_add(&c, &mut dst, 0, 8, |v| *v);
+        // only tmp[0][0] = 64 -> (64+16)>>5 = 2; others (16>>5)=0
+        assert_eq!(dst[0], 102);
+        assert_eq!(dst[1], 100);
+        let mut sat = vec![250u8; 64];
+        c[0] = 32000;
+        w28a08_idct8_add(&c, &mut sat, 0, 8, |v| *v);
+        assert_eq!(sat[0], 255);
+        c[0] = -32000;
+        w28a08_idct8_add(&c, &mut sat, 0, 8, |v| *v);
+        assert_eq!(sat[0], 0);
+    }
+
+    #[test]
+    fn dc_add_split() {
+        let mut d = vec![50u8; 16];
+        w28a08_dc_add_4x4_split(64, &mut d, 0, 4);
+        // t = [8, 8,8,8]; row0: 50 - 4 + 8 = 54, other rows +4
+        assert_eq!(d[0], 54);
+        assert_eq!(d[4], 54);
+        assert_eq!(d[12], 54);
+        let mut e = vec![255u8; 16];
+        w28a08_dc_add_4x4_split(800, &mut e, 0, 4);
+        assert!(e.iter().all(|&x| x == 255));
+    }
+
+    #[test]
+    fn dc_only_add() {
+        let mut d = vec![10u8; 16];
+        w28a08_dc_only_idct_add_4x4(128, &mut d, 0, 4);
+        // ((128*0x2d41+0x2000)>>14)=91; (91*0x2d41+0x2000)>>14=64; (64+8)>>4=4
+        assert!(d.iter().all(|&x| x == 14));
+        let mut e = vec![3u8; 16];
+        w28a08_dc_only_idct_add_4x4(-128, &mut e, 0, 4);
+        assert!(e.iter().all(|&x| x == 0));
+    }
+
+    #[test]
+    fn loop_filter_flat_and_step() {
+        let pitch = 8;
+        let mut flat = vec![100u8; 8 * pitch];
+        w28a08_loop_filter_h8(&mut flat, 4 * pitch, pitch, 40, 10, 5);
+        assert!(flat.iter().all(|&x| x == 100));
+        // small step across the edge gets smoothed
+        let mut b = vec![100u8; 8 * pitch];
+        for v in b[4 * pitch..].iter_mut() {
+            *v = 108;
+        }
+        w28a08_loop_filter_h8(&mut b, 4 * pitch, pitch, 255, 255, 255);
+        assert!(b[3 * pitch] > 100 && b[4 * pitch] < 108);
+        // mask off (limit 0, large step) leaves data alone
+        let mut c = vec![100u8; 8 * pitch];
+        for v in c[4 * pitch..].iter_mut() {
+            *v = 160;
+        }
+        let orig = c.clone();
+        w28a08_loop_filter_h8(&mut c, 4 * pitch, pitch, 10, 10, 5);
+        assert_eq!(c, orig);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave28/agent09.rs
+// ===========================================================================
+// Wave 28 translation batch 09: VP8-style in-loop deblocking filters
+// (scalar versions) and a row smoother from the bundled video decoder.
+//
+// Taps are named `A..H` = indices 0..7; the edge lies between `D` (3) and
+// `E` (4).  `blimit`, `limit` and `thresh` are the three bytes the
+// pseudocode reads through its `param_3..param_5` pointers.
+
+fn w28a09_clamp(v: i32) -> i32 {
+    v.clamp(-0x80, 0x7f)
+}
+
+/// Shared mask + normal 4-tap filter; returns `(filter_mask_off, hev)`
+/// inputs applied to `px` (indices 1..=6 may change).
+fn w28a09_filter_taps(px: &mut [u8; 8], blimit: u8, limit: u8, thresh: u8, wide: bool) {
+    let [a, b, c, d, e, f, g, h] = px.map(|v| v as i32);
+    let lim = limit as i32;
+    let ad_cf = (c - f).abs();
+    let ad_cf = if ad_cf < 0 { ad_cf + 1 } else { ad_cf };
+    let d_fe = (f - e).abs();
+    let d_cd = (c - d).abs();
+    let mask_off = ((ad_cf >> 1) + (d - e).abs() * 2 > blimit as i32)
+        || (h - g).abs() > lim
+        || (g - f).abs() > lim
+        || d_fe > lim
+        || d_cd > lim
+        || (b - c).abs() > lim
+        || (a - b).abs() > lim;
+    let hev = d_cd > thresh as i32 || d_fe > thresh as i32;
+    let flat_off = (h - e).abs() >= 2
+        || (g - e).abs() >= 2
+        || d_fe >= 2
+        || d_cd >= 2
+        || (b - d).abs() >= 2
+        || (a - d).abs() >= 2;
+    if wide && !flat_off && !mask_off {
+        let o = [
+            (3 * a + e + 2 * b + 4 + d + c) >> 3,
+            (b + (a + 2 + c) * 2 + d + e + f) >> 3,
+            (b + 2 * d + 4 + c + a + e + g + f) >> 3,
+            (h + 2 * e + 4 + b + c + d + g + f) >> 3,
+            (c + 4 + (h + f) * 2 + d + e + g) >> 3,
+            (3 * h + d + 2 * g + e + 4 + f) >> 3,
+        ];
+        for (i, v) in o.iter().enumerate() {
+            px[i + 1] = *v as u8;
+        }
+        return;
+    }
+    let sx = |v: i32| v - 0x80;
+    let (ps1, ps0, qs0, qs1) = (sx(c), sx(d), sx(e), sx(f));
+    let mut filt = w28a09_clamp(ps1 - qs1);
+    if !hev {
+        filt = 0;
+    }
+    filt = w28a09_clamp(filt + (qs0 - ps0) * 3);
+    if mask_off {
+        filt = 0;
+    }
+    let f1 = w28a09_clamp(filt + 4) >> 3;
+    let f2 = w28a09_clamp(filt + 3) >> 3;
+    let nq0 = w28a09_clamp(qs0 - f1);
+    let np0 = w28a09_clamp(f2 + ps0);
+    let mut f3 = (f1 + 1) >> 1;
+    if hev {
+        f3 = 0;
+    }
+    let nq1 = w28a09_clamp(qs1 - f3);
+    let np1 = w28a09_clamp(ps1 + f3);
+    px[2] = (np1 ^ 0x80) as u8;
+    px[3] = (np0 ^ 0x80) as u8;
+    px[4] = (nq0 ^ 0x80) as u8;
+    px[5] = (nq1 ^ 0x80) as u8;
+}
+
+fn w28a09_edge(
+    buf: &mut [u8],
+    e_idx: usize,
+    tap_step: usize,
+    row_step: usize,
+    t: [u8; 3],
+    wide: bool,
+) {
+    for r in 0..8 {
+        let base = e_idx + r * row_step;
+        let mut px = [0u8; 8];
+        for (k, p) in px.iter_mut().enumerate() {
+            *p = buf[base + k * tap_step - 4 * tap_step];
+        }
+        w28a09_filter_taps(&mut px, t[0], t[1], t[2], wide);
+        for (k, p) in px.iter().enumerate() {
+            buf[base + k * tap_step - 4 * tap_step] = *p;
+        }
+    }
+}
+
+/// `0x00a4ae00`: loop filter across a horizontal edge, 8 columns; `e_idx` is
+/// the first pixel below the edge, `stride` the row pitch.  Uses the wide
+/// 7-tap smoother on flat areas, else the normal 4-tap filter.
+pub fn w28a09_filter_horiz_edge(buf: &mut [u8], e_idx: usize, stride: usize, t: [u8; 3]) {
+    w28a09_edge(buf, e_idx, stride, 1, t, true);
+}
+
+/// `0x00a4b5b0`: same filter across a vertical edge, 8 rows; `e_idx` is the
+/// first pixel right of the edge.
+pub fn w28a09_filter_vert_edge(buf: &mut [u8], e_idx: usize, stride: usize, t: [u8; 3]) {
+    w28a09_edge(buf, e_idx, 1, stride, t, true);
+}
+
+/// `0x00a4b2e0`: vertical-edge filter, normal 4-tap only (no flat branch).
+pub fn w28a09_filter_vert_edge_normal(buf: &mut [u8], e_idx: usize, stride: usize, t: [u8; 3]) {
+    w28a09_edge(buf, e_idx, 1, stride, t, false);
+}
+
+/// `0x00a4b220`: filters two adjacent 8-wide horizontal edge segments
+/// (`e_idx` and `e_idx + 8`) with separate threshold triples.
+pub fn w28a09_filter_horiz_edge_16(
+    buf: &mut [u8],
+    e_idx: usize,
+    stride: usize,
+    t0: [u8; 3],
+    t1: [u8; 3],
+) {
+    w28a09_filter_horiz_edge(buf, e_idx, stride, t0);
+    w28a09_filter_horiz_edge(buf, e_idx + 8, stride, t1);
+}
+
+/// `0x00a4b280`: forwards its five arguments plus a trailing `1` to the
+/// helper at FUN_00a49ae0 (supplied as a closure).
+pub fn w28a09_fwd_a49ae0<T: Copy>(a: [T; 5], mut f: impl FnMut([T; 5], u32)) {
+    f(a, 1);
+}
+
+/// `0x00a4b2a0`: forwards its five arguments plus `8` to FUN_00a4a370.
+pub fn w28a09_fwd_a4a370_8<T: Copy>(a: [T; 5], mut f: impl FnMut([T; 5], u32)) {
+    f(a, 8);
+}
+
+/// `0x00a4b2c0`: forwards its five arguments plus `0x10` to FUN_00a4a370.
+pub fn w28a09_fwd_a4a370_16<T: Copy>(a: [T; 5], mut f: impl FnMut([T; 5], u32)) {
+    f(a, 0x10);
+}
+
+/// `0x00a4fb30`: horizontal 16-tap smoother over `rows` rows of `cols`
+/// pixels (row pitch `stride`, rows start at `start` which must be >= 8).
+/// Left edge replicated 8 px, right edge 17 px; where local variance
+/// (`15*sumsq - sum^2`) is below `flimit` the pixel becomes the rounded
+/// window mean.
+pub fn w28a09_smooth_rows(
+    buf: &mut [u8],
+    start: usize,
+    stride: usize,
+    rows: i32,
+    cols: i32,
+    flimit: i32,
+) {
+    for row in 0..rows.max(0) as usize {
+        let p = start + row * stride;
+        let first = buf[p];
+        for k in 0..8 {
+            buf[p - 8 + k] = first;
+        }
+        let last = buf[(p as i64 + cols as i64 - 1) as usize];
+        for k in 0..0x11i64 {
+            buf[(p as i64 + cols as i64 + k) as usize] = last;
+        }
+        let mut sum: i32 = 0;
+        let mut sq: i32 = 0;
+        let mut win = [0u8; 16];
+        for i in 0..15 {
+            let v = buf[p - 8 + i] as i32;
+            sum += v;
+            sq = sq.wrapping_add(v * v);
+        }
+        if cols > -8 {
+            for u in 0..(cols + 8) as usize {
+                let hi = buf[p + u + 7] as i32;
+                let lo = buf[p + u - 8] as i32;
+                let d = hi - lo;
+                sum += d;
+                sq = sq.wrapping_add((hi + lo) * d);
+                let cur = buf[p + u];
+                win[u & 15] = cur;
+                if sq.wrapping_mul(15).wrapping_sub(sum.wrapping_mul(sum)) < flimit {
+                    win[u & 15] = ((cur as i32 + 8 + sum) >> 4) as u8;
+                }
+                buf[p + u - 8] = win[(u + 8) & 15];
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests_wave28_agent09 {
+    use super::*;
+
+    #[test]
+    fn flat_region_unchanged() {
+        let mut b = vec![100u8; 8 * 8];
+        let o = b.clone();
+        w28a09_filter_vert_edge(&mut b, 4, 8, [20, 10, 4]);
+        assert_eq!(b, o);
+        w28a09_filter_vert_edge_normal(&mut b, 4, 8, [20, 10, 4]);
+        assert_eq!(b, o);
+    }
+
+    #[test]
+    fn step_edge_is_smoothed() {
+        let mut b = vec![0u8; 64];
+        for r in 0..8 {
+            for c in 0..8 {
+                b[r * 8 + c] = if c < 4 { 100 } else { 104 };
+            }
+        }
+        w28a09_filter_vert_edge(&mut b, 4, 8, [40, 20, 10]);
+        // flat step: wide filter smooths monotonically
+        assert!(b[3] > 100 && b[4] < 104);
+        assert_eq!(b[0], 100);
+        assert_eq!(b[7], 104);
+    }
+
+    #[test]
+    fn horiz_matches_vert_transposed() {
+        let src = [90u8, 92, 95, 99, 130, 128, 127, 125];
+        let mut v = vec![0u8; 64];
+        let mut h = vec![0u8; 64];
+        for r in 0..8 {
+            for c in 0..8 {
+                v[r * 8 + c] = src[c];
+                h[c * 8 + r] = src[c];
+            }
+        }
+        let t = [30, 8, 3];
+        w28a09_filter_vert_edge_normal(&mut v, 4, 8, t);
+        w28a09_filter_horiz_edge(&mut h, 4 * 8, 8, t);
+        let mut vt = vec![0u8; 64];
+        for r in 0..8 {
+            for c in 0..8 {
+                vt[c * 8 + r] = v[r * 8 + c];
+            }
+        }
+        // strong edge (31 > blimit/limit): filtered off, equal in both
+        assert_eq!(vt, h);
+    }
+
+    #[test]
+    fn two_segments_use_own_thresholds() {
+        let mut b = vec![100u8; 16 * 8];
+        for r in 4..8 {
+            for c in 0..16 {
+                b[r * 16 + c] = 108;
+            }
+        }
+        w28a09_filter_horiz_edge_16(&mut b, 4 * 16, 16, [60, 20, 10], [0, 0, 0]);
+        assert_ne!(b[3 * 16], 100);
+        assert_eq!(b[3 * 16 + 8], 100);
+    }
+
+    #[test]
+    fn forwarders() {
+        let mut got = vec![];
+        w28a09_fwd_a49ae0([1, 2, 3, 4, 5], |a, k| got.push((a, k)));
+        w28a09_fwd_a4a370_8([1, 2, 3, 4, 5], |a, k| got.push((a, k)));
+        w28a09_fwd_a4a370_16([1, 2, 3, 4, 5], |a, k| got.push((a, k)));
+        assert_eq!(got.iter().map(|g| g.1).collect::<Vec<_>>(), [1, 8, 16]);
+    }
+
+    #[test]
+    fn smooth_rows_flat_and_noisy() {
+        let mut b = vec![50u8; 8 + 16 + 17 + 8];
+        w28a09_smooth_rows(&mut b, 8, 0, 1, 16, 1 << 20);
+        assert!(b[8..24].iter().all(|&v| v == 50));
+        let mut n = vec![0u8; 8 + 16 + 17 + 8];
+        for (i, v) in n.iter_mut().enumerate().skip(8) {
+            *v = if i % 2 == 0 { 10 } else { 200 };
+        }
+        w28a09_smooth_rows(&mut n, 8, 0, 1, 16, 0);
+        // limit 0: no smoothing; output lags 8 px behind (ring starts zeroed)
+        assert!(n[..8].iter().all(|&v| v == 0));
+        assert_eq!(n[8], 10);
+        assert_eq!(n[9], 200);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave28/agent10.rs
+// ===========================================================================
+// Wave 28 translation batch 10: SSE2 sum-of-absolute-differences kernels
+// (video codec motion search) from the retail image.
+
+/// Shared SAD helper: sums `|src - ref|` over a `w` x `h` block.
+pub fn w28a10_sad(
+    src: &[u8],
+    src_stride: usize,
+    rf: &[u8],
+    ref_stride: usize,
+    w: usize,
+    h: usize,
+) -> u32 {
+    let mut sum = 0u32;
+    for y in 0..h {
+        let a = &src[y * src_stride..y * src_stride + w];
+        let b = &rf[y * ref_stride..y * ref_stride + w];
+        sum += a
+            .iter()
+            .zip(b)
+            .map(|(&p, &q)| p.abs_diff(q) as u32)
+            .sum::<u32>();
+    }
+    sum
+}
+
+/// Shared x4d helper: one SAD per reference block (four blocks).
+pub fn w28a10_sad_x4d(
+    src: &[u8],
+    src_stride: usize,
+    refs: [&[u8]; 4],
+    ref_stride: usize,
+    w: usize,
+    h: usize,
+    out: &mut [u32; 4],
+) {
+    for (o, r) in out.iter_mut().zip(refs) {
+        *o = w28a10_sad(src, src_stride, r, ref_stride, w, h);
+    }
+}
+
+/// `0x00a508a0`: 16x16 SAD.
+pub fn w28a10_sad16x16(s: &[u8], ss: usize, r: &[u8], rs: usize) -> u32 {
+    w28a10_sad(s, ss, r, rs, 16, 16)
+}
+/// `0x00a50aa0`: 16x32 SAD.
+pub fn w28a10_sad16x32(s: &[u8], ss: usize, r: &[u8], rs: usize) -> u32 {
+    w28a10_sad(s, ss, r, rs, 16, 32)
+}
+/// `0x00a50be0`: 16x8 SAD.
+pub fn w28a10_sad16x8(s: &[u8], ss: usize, r: &[u8], rs: usize) -> u32 {
+    w28a10_sad(s, ss, r, rs, 16, 8)
+}
+/// `0x00a50e60`: 32x16 SAD against four references.
+pub fn w28a10_sad32x16x4d(s: &[u8], ss: usize, refs: [&[u8]; 4], rs: usize, out: &mut [u32; 4]) {
+    w28a10_sad_x4d(s, ss, refs, rs, 32, 16, out)
+}
+/// `0x00a50fe0`: 32x32 SAD against four references.
+pub fn w28a10_sad32x32x4d(s: &[u8], ss: usize, refs: [&[u8]; 4], rs: usize, out: &mut [u32; 4]) {
+    w28a10_sad_x4d(s, ss, refs, rs, 32, 32, out)
+}
+/// `0x00a51160`: 32x64 SAD against four references.
+pub fn w28a10_sad32x64x4d(s: &[u8], ss: usize, refs: [&[u8]; 4], rs: usize, out: &mut [u32; 4]) {
+    w28a10_sad_x4d(s, ss, refs, rs, 32, 64, out)
+}
+/// `0x00a516f0`: 64x32 SAD.
+pub fn w28a10_sad64x32(s: &[u8], ss: usize, r: &[u8], rs: usize) -> u32 {
+    w28a10_sad(s, ss, r, rs, 64, 32)
+}
+/// `0x00a51760`: 64x32 SAD against four references.
+pub fn w28a10_sad64x32x4d(s: &[u8], ss: usize, refs: [&[u8]; 4], rs: usize, out: &mut [u32; 4]) {
+    w28a10_sad_x4d(s, ss, refs, rs, 64, 32, out)
+}
+/// `0x00a518d0`: 64x64 SAD.
+pub fn w28a10_sad64x64(s: &[u8], ss: usize, r: &[u8], rs: usize) -> u32 {
+    w28a10_sad(s, ss, r, rs, 64, 64)
+}
+/// `0x00a51940`: 64x64 SAD against four references.
+pub fn w28a10_sad64x64x4d(s: &[u8], ss: usize, refs: [&[u8]; 4], rs: usize, out: &mut [u32; 4]) {
+    w28a10_sad_x4d(s, ss, refs, rs, 64, 64, out)
+}
+
+#[cfg(test)]
+mod tests_wave28_agent10 {
+    use super::*;
+
+    fn buf(n: usize, k: u8) -> Vec<u8> {
+        (0..n).map(|i| (i as u8).wrapping_mul(k)).collect()
+    }
+
+    #[test]
+    fn sad_single() {
+        let a = vec![10u8; 64 * 64];
+        let b = vec![13u8; 64 * 64];
+        assert_eq!(w28a10_sad16x16(&a, 64, &b, 64), 3 * 256);
+        assert_eq!(w28a10_sad16x32(&a, 64, &b, 64), 3 * 512);
+        assert_eq!(w28a10_sad16x8(&a, 64, &b, 64), 3 * 128);
+        assert_eq!(w28a10_sad64x32(&a, 64, &b, 64), 3 * 2048);
+        assert_eq!(w28a10_sad64x64(&a, 64, &b, 64), 3 * 4096);
+        assert_eq!(w28a10_sad16x16(&a, 64, &a, 64), 0);
+    }
+
+    #[test]
+    fn sad_strides() {
+        let a = buf(40 * 16, 7);
+        let b = buf(40 * 16, 3);
+        let mut e = 0;
+        for y in 0..8 {
+            for x in 0..16 {
+                e += a[y * 40 + x].abs_diff(b[y * 40 + x]) as u32;
+            }
+        }
+        assert_eq!(w28a10_sad16x8(&a, 40, &b, 40), e);
+    }
+
+    #[test]
+    fn sad_x4d() {
+        let a = vec![0u8; 64 * 64];
+        let r: Vec<Vec<u8>> = (1..=4).map(|k| vec![k as u8; 64 * 64]).collect();
+        let refs = [&r[0][..], &r[1][..], &r[2][..], &r[3][..]];
+        let mut o = [0u32; 4];
+        w28a10_sad32x16x4d(&a, 64, refs, 64, &mut o);
+        assert_eq!(o, [512, 1024, 1536, 2048]);
+        w28a10_sad32x32x4d(&a, 64, refs, 64, &mut o);
+        assert_eq!(o[3], 4 * 1024);
+        w28a10_sad32x64x4d(&a, 64, refs, 64, &mut o);
+        assert_eq!(o[0], 2048);
+        w28a10_sad64x32x4d(&a, 64, refs, 64, &mut o);
+        assert_eq!(o[1], 2 * 2048);
+        w28a10_sad64x64x4d(&a, 64, refs, 64, &mut o);
+        assert_eq!(o[2], 3 * 4096);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave28/agent11.rs
+// ===========================================================================
+// Wave 28 translation batch 11: image-codec border/probability helpers.
+
+/// `0x00a56bb0`: fills `width + 5` bytes with `0x7f`, starting one byte
+/// before `plane_origin - stride` (the top border row of a plane).
+pub fn w28a11_fill_top_border(buf: &mut [u8], plane_origin: usize, stride: usize, width: usize) {
+    let start = plane_origin.wrapping_sub(stride).wrapping_sub(1);
+    let end = start.saturating_add(width + 5).min(buf.len());
+    if start < end {
+        buf[start..end].fill(0x7f);
+    }
+}
+
+/// `0x00a58a70`: zeroes the 0x60 bytes starting at offset 0x10 of a state block.
+pub fn w28a11_clear_state_block(block: &mut [u8]) {
+    let end = 0x70.min(block.len());
+    if block.len() > 0x10 {
+        block[0x10..end].fill(0);
+    }
+}
+
+/// `0x00a5aaa0`: when `enabled`, zeroes `((bits + 7) >> 3) * rows * 0xa0`
+/// bytes of the mask buffer (clamped to the buffer length).
+pub fn w28a11_clear_mask_buffer(mask: &mut [u8], enabled: bool, bits: i32, rows: i32) {
+    if !enabled {
+        return;
+    }
+    let n = (((bits + 7) >> 3) as i64 * rows as i64 * 0xa0).max(0) as usize;
+    let n = n.min(mask.len());
+    mask[..n].fill(0);
+}
+
+/// `0x00a56de0`: per-probability blend step.  `c0`/`c1` are the two counts,
+/// `old` the previous probability, `limit` (nonzero) the saturation count and
+/// `scale` the blend numerator.  Returns the new 8-bit probability.
+pub fn w28a11_blend_prob(c0: u32, c1: u32, old: u8, limit: u32, scale: u32) -> u8 {
+    let total = c0.wrapping_add(c1);
+    let prob: u32 = if total == 0 {
+        0x80
+    } else {
+        let q = ((c0 as u64 * 0x100 + (total >> 1) as u64) / total as u64) as u32 as i32;
+        if q < 0x100 {
+            (q.max(1) as u32) & 0xff
+        } else {
+            0xff
+        }
+    };
+    let w = (total.min(limit) as u64 * scale as u64 / limit as u64) as u32;
+    ((prob * w + 0x80 + old as u32 * 0x100u32.wrapping_sub(w)) >> 8) as u8
+}
+
+#[cfg(test)]
+mod tests_wave28_agent11 {
+    use super::*;
+
+    #[test]
+    fn border_fill() {
+        let mut b = vec![0u8; 32];
+        w28a11_fill_top_border(&mut b, 20, 10, 3);
+        assert_eq!(&b[9..17], &[0x7f; 8]);
+        assert_eq!(b[8], 0);
+        assert_eq!(b[17], 0);
+    }
+
+    #[test]
+    fn clear_state() {
+        let mut b = vec![1u8; 0x80];
+        w28a11_clear_state_block(&mut b);
+        assert_eq!(b[0xf], 1);
+        assert!(b[0x10..0x70].iter().all(|&x| x == 0));
+        assert_eq!(b[0x70], 1);
+    }
+
+    #[test]
+    fn clear_mask() {
+        let mut m = vec![1u8; 0x400];
+        w28a11_clear_mask_buffer(&mut m, false, 8, 1);
+        assert_eq!(m[0], 1);
+        w28a11_clear_mask_buffer(&mut m, true, 8, 2);
+        assert!(m[..0x140].iter().all(|&x| x == 0));
+        assert_eq!(m[0x140], 1);
+    }
+
+    #[test]
+    fn blend() {
+        assert_eq!(
+            w28a11_blend_prob(0, 0, 0x40, 20, 10),
+            ((0x80u32 * 0 + 0x80 + 0x40 * 0x100) >> 8) as u8
+        );
+        // all counts on c0: prob 0xff, full weight 0x100 -> 0xff
+        assert_eq!(w28a11_blend_prob(30, 0, 0x10, 20, 0x100), 0xff);
+        // all on c1: prob clamps to 1
+        assert_eq!(w28a11_blend_prob(0, 30, 0x10, 20, 0x100), 1);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave28/agent12.rs
+// ===========================================================================
+// Wave 28 agent 12: libwebm `mkvparser` cluster helpers (retail 1.23.10 image).
+// Most assigned rows are destructors that end in a non-returning free; only
+// the two with real logic are translated.
+
+/// Outcome of [`w28a12_insert_entry`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum W28a12Insert {
+    /// Entry stored at its index, count incremented (returns true).
+    Stored,
+    /// Rejected (returns false).
+    Rejected,
+    /// Array is full; retail allocates a new array of `new_cap` slots.
+    NeedsGrow { new_cap: i32 },
+}
+
+/// `0x00a6cde0`: insert an entry into the cluster entry-pointer array
+/// (`this+0x84` base, `+0x88` count, `+0x8c` preloaded, `+0x90` capacity).
+/// `elements` holds each slot's entry index (`entry+0x10`, `None` = null
+/// slot).  `entry_idx` is the new entry's index (negative or null = reject).
+pub fn w28a12_insert_entry(
+    elements: &mut [Option<i32>],
+    count: &mut i32,
+    preload: i32,
+    cap: i32,
+    entry_idx: Option<i32>,
+) -> W28a12Insert {
+    let Some(idx) = entry_idx else {
+        return W28a12Insert::Rejected;
+    };
+    if idx < 0 {
+        return W28a12Insert::Rejected;
+    }
+    let total = count.wrapping_add(preload);
+    if total > cap || idx != *count {
+        return W28a12Insert::Rejected;
+    }
+    if total < cap {
+        let store = |elements: &mut [Option<i32>], count: &mut i32| {
+            elements[idx as usize] = Some(idx);
+            *count += 1;
+            W28a12Insert::Stored
+        };
+        if preload < 1 {
+            return store(elements, count);
+        }
+        let first = elements[*count as usize];
+        if matches!(first, Some(p) if p < 0) {
+            let mut i = (*count + preload) as usize;
+            if (i as i32) < cap {
+                while let Some(p) = elements[i - 1] {
+                    if p >= 0 {
+                        break;
+                    }
+                    elements[i] = elements[i - 1];
+                    if i - 1 == *count as usize {
+                        return store(elements, count);
+                    }
+                    i -= 1;
+                }
+            }
+            return W28a12Insert::Rejected;
+        }
+        // Slot empty or already a real entry: falls through to false.
+        return W28a12Insert::Rejected;
+    }
+    W28a12Insert::NeedsGrow {
+        new_cap: if cap < 1 { 0x800 } else { cap.wrapping_mul(2) },
+    }
+}
+
+/// Decision taken by [`w28a12_add_child`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum W28a12Child {
+    /// Id not 0xa0/0xa3 (high dword 0): returns -1.
+    Reject,
+    /// First use: capacity set to 0x400, 0x1000 bytes allocated, count 0.
+    InitArray,
+    /// Array full: capacity doubled (allocation of `cap*2*4` bytes).
+    GrowArray { new_cap: i32 },
+    /// Id 0xa0 (BlockGroup): delegate to the group parser.
+    ParseBlockGroup,
+    /// Id 0xa3 (SimpleBlock): create entry at index `count`.
+    CreateSimpleBlock { index: i32 },
+}
+
+/// `0x00a6d200`: `Cluster::ParseBlockEntry`-style dispatcher on element id
+/// (`id_lo`, `id_hi`), with `this+0x30` array, `+0x34` capacity, `+0x38`
+/// count (negative = not yet allocated).
+pub fn w28a12_add_child(id_lo: i32, id_hi: i32, cap: i32, count: i32) -> W28a12Child {
+    if !((id_lo == 0xa0 || id_lo == 0xa3) && id_hi == 0) {
+        return W28a12Child::Reject;
+    }
+    if count < 0 {
+        return W28a12Child::InitArray;
+    }
+    if cap <= count {
+        return W28a12Child::GrowArray {
+            new_cap: cap.wrapping_mul(2),
+        };
+    }
+    if id_lo == 0xa0 {
+        W28a12Child::ParseBlockGroup
+    } else {
+        W28a12Child::CreateSimpleBlock { index: count }
+    }
+}
+
+#[cfg(test)]
+mod tests_wave28_agent12 {
+    use super::*;
+
+    #[test]
+    fn insert_basic_and_reject() {
+        let mut el = vec![None; 4];
+        let mut c = 0;
+        assert_eq!(
+            w28a12_insert_entry(&mut el, &mut c, 0, 4, Some(0)),
+            W28a12Insert::Stored
+        );
+        assert_eq!(c, 1);
+        assert_eq!(
+            w28a12_insert_entry(&mut el, &mut c, 0, 4, Some(5)),
+            W28a12Insert::Rejected
+        );
+        assert_eq!(
+            w28a12_insert_entry(&mut el, &mut c, 0, 4, None),
+            W28a12Insert::Rejected
+        );
+        assert_eq!(
+            w28a12_insert_entry(&mut el, &mut c, 0, 4, Some(-1)),
+            W28a12Insert::Rejected
+        );
+    }
+
+    #[test]
+    fn insert_grow_and_shift() {
+        let mut el = vec![None; 2];
+        let mut c = 0;
+        assert_eq!(
+            w28a12_insert_entry(&mut el, &mut c, 0, 0, Some(0)),
+            W28a12Insert::NeedsGrow { new_cap: 0x800 }
+        );
+        let mut el = vec![None; 2];
+        assert_eq!(
+            w28a12_insert_entry(&mut el, &mut c, 2, 2, Some(0)),
+            W28a12Insert::NeedsGrow { new_cap: 4 }
+        );
+        // one preloaded (negative) entry at slot 0, capacity 3
+        let mut el = vec![Some(-1), None, None];
+        let mut c = 0;
+        assert_eq!(
+            w28a12_insert_entry(&mut el, &mut c, 1, 3, Some(0)),
+            W28a12Insert::Stored
+        );
+        assert_eq!(el, vec![Some(0), Some(-1), None]);
+        assert_eq!(c, 1);
+    }
+
+    #[test]
+    fn child_dispatch() {
+        assert_eq!(w28a12_add_child(0x81, 0, 4, 0), W28a12Child::Reject);
+        assert_eq!(w28a12_add_child(0xa0, 1, 4, 0), W28a12Child::Reject);
+        assert_eq!(w28a12_add_child(0xa0, 0, 0, -1), W28a12Child::InitArray);
+        assert_eq!(
+            w28a12_add_child(0xa3, 0, 4, 4),
+            W28a12Child::GrowArray { new_cap: 8 }
+        );
+        assert_eq!(
+            w28a12_add_child(0xa0, 0, 4, 1),
+            W28a12Child::ParseBlockGroup
+        );
+        assert_eq!(
+            w28a12_add_child(0xa3, 0, 4, 2),
+            W28a12Child::CreateSimpleBlock { index: 2 }
+        );
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave28/agent13.rs
+// ===========================================================================
+// Wave 28 agent 13: EBML-style reader helpers (vector accessors, vint and
+// big-endian unsigned readers).
+
+/// Reader callback: `(pos_lo, pos_hi, len, out) -> status` (negative = error,
+/// positive = short read, zero = ok).
+pub type W28a13Reader<'a> = dyn FnMut(u32, i32, i32, &mut u8) -> i32 + 'a;
+
+/// `0x00a6e530`: returns the first element of the pointer vector (stride 4,
+/// count at `+0x38`).  If empty, calls `refill`; a negative status is
+/// returned with out = 0.  Still empty afterwards gives `(0, 0)`.
+pub fn w28a13_first_element(
+    items: &mut Vec<u32>,
+    mut refill: impl FnMut(&mut Vec<u32>) -> i32,
+) -> (i32, u32) {
+    if items.is_empty() {
+        let r = refill(items);
+        if r < 0 {
+            return (r, 0);
+        }
+        if items.is_empty() {
+            return (0, 0);
+        }
+    }
+    (0, items[0])
+}
+
+/// `0x00a6e790`: returns element `cur_index + 1`; when out of range calls
+/// `refill` (negative -> error with out 0, positive -> `(0, 0)`).  A still
+/// out-of-range index after a zero status yields 0 (retail reads raw memory).
+pub fn w28a13_next_element(
+    items: &mut Vec<u32>,
+    cur_index: u32,
+    mut refill: impl FnMut(&mut Vec<u32>) -> i32,
+) -> (i32, u32) {
+    let idx = cur_index.wrapping_add(1);
+    if items.len() as u32 <= idx {
+        let r = refill(items);
+        if r < 0 {
+            return (r, 0);
+        }
+        if r > 0 {
+            return (0, 0);
+        }
+    }
+    (0, items.get(idx as usize).copied().unwrap_or(0))
+}
+
+/// `0x00a6eb30`: base (the i16 at `+0x18`, sign-extended) plus an optional
+/// 64-bit offset; `-1` on a missing/negative offset or signed overflow.
+/// `offset` is `None` when the argument is absent (returns the base).
+pub fn w28a13_offset_sum(
+    base: i16,
+    has_arg: bool,
+    mut lookup: impl FnMut() -> Result<i64, i32>,
+) -> i64 {
+    let base = base as i64;
+    if !has_arg {
+        return base;
+    }
+    let off = lookup().unwrap_or(-1);
+    if off >= 0 {
+        base.checked_add(off).unwrap_or(-1)
+    } else {
+        -1
+    }
+}
+
+/// `0x00a6f380`: resets an 14-word state block: pairs (1,0), (1,0), (4,0),
+/// (8,0) at words 0..8, words 10..14 = (1,0,1,0).  Returns true when word 8
+/// (an owned pointer) was non-zero, i.e. retail frees it (never returns).
+pub fn w28a13_reset_sizes(w: &mut [u32; 14]) -> bool {
+    w[0] = 1;
+    w[1] = 0;
+    w[2] = 1;
+    w[3] = 0;
+    w[4] = 4;
+    w[5] = 0;
+    w[6] = 8;
+    w[7] = 0;
+    let owned = w[8] != 0;
+    w[10] = 1;
+    w[11] = 0;
+    w[12] = 1;
+    w[13] = 0;
+    owned
+}
+
+/// `0x00a76170`: reads an EBML variable-length integer at `(pos_lo, pos_hi)`.
+/// Returns the value (marker bit stripped) and stores the byte length in
+/// `len`.  `-2` for bad args/zero first byte, `-3` for a short read, or the
+/// reader's negative status.
+pub fn w28a13_read_vint(
+    read: &mut W28a13Reader,
+    mut pos_lo: u32,
+    mut pos_hi: i32,
+    len: &mut i32,
+) -> i64 {
+    if pos_hi < 0 {
+        return -2;
+    }
+    *len = 1;
+    let mut b = 0u8;
+    let r = read(pos_lo, pos_hi, 1, &mut b);
+    if r < 0 {
+        return r as i64;
+    }
+    if r > 0 {
+        return -3;
+    }
+    if b == 0 {
+        return -2;
+    }
+    let mut mask = 0x80u8;
+    let mut n = *len;
+    if (b as i8) >= 0 {
+        loop {
+            mask >>= 1;
+            n = *len + 1;
+            *len = n;
+            if b & mask != 0 {
+                break;
+            }
+        }
+    }
+    let mut hi = 0u32;
+    let mut lo = !(mask as u32) & b as u32;
+    let mut i = 1;
+    pos_hi += (0xffff_fffe < pos_lo) as i32;
+    if n > 1 {
+        loop {
+            let np = pos_lo.wrapping_add(1);
+            let mut nb = 0u8;
+            let r = read(np, pos_hi, 1, &mut nb);
+            if r < 0 {
+                *len = 1;
+                return r as i64;
+            }
+            if r > 0 {
+                *len = 1;
+                return -3;
+            }
+            hi = hi << 8 | lo >> 24;
+            lo = lo << 8 | nb as u32;
+            pos_hi += (0xffff_fffe < np) as i32;
+            i += 1;
+            pos_lo = np;
+            if i >= *len {
+                break;
+            }
+        }
+    }
+    ((hi as u64) << 32 | lo as u64) as i64
+}
+
+/// `0x00a766d0`: reads a big-endian unsigned integer of `size` bytes (1..=8,
+/// `size_hi` must be 0) at `(pos_lo, pos_hi)`.  Returns `Err(status)`
+/// (`-2` bad args, or the reader status) or `Ok(value)`.
+pub fn w28a13_read_uint_be(
+    read: &mut W28a13Reader,
+    pos_lo: u32,
+    pos_hi: i32,
+    size: u32,
+    size_hi: i32,
+) -> Result<u64, i32> {
+    if pos_hi < 0 || size_hi != 0 || size == 0 || size > 8 {
+        return Err(-2);
+    }
+    let mut b = 0u8;
+    let r = read(pos_lo, pos_hi, 1, &mut b);
+    if r < 0 {
+        return Err(r);
+    }
+    let mut v = b as u64;
+    let mut p = pos_lo.wrapping_add(1);
+    let mut h = pos_hi + (0xffff_fffe < pos_lo) as i32;
+    let mut i = 1;
+    while i < size {
+        let r = read(p, h, 1, &mut b);
+        if r < 0 {
+            return Err(r);
+        }
+        v = v << 8 | b as u64;
+        h += (0xffff_fffe < p) as i32;
+        p = p.wrapping_add(1);
+        i += 1;
+    }
+    Ok(v)
+}
+
+#[cfg(test)]
+mod tests_wave28_agent13 {
+    use super::*;
+
+    fn rd(data: Vec<u8>) -> impl FnMut(u32, i32, i32, &mut u8) -> i32 {
+        move |lo, _hi, _n, out| match data.get(lo as usize) {
+            Some(b) => {
+                *out = *b;
+                0
+            }
+            None => -4,
+        }
+    }
+
+    #[test]
+    fn element_accessors() {
+        let mut v = vec![];
+        assert_eq!(w28a13_first_element(&mut v, |_| -5), (-5, 0));
+        assert_eq!(
+            w28a13_first_element(&mut v, |x| {
+                x.push(9);
+                0
+            }),
+            (0, 9)
+        );
+        let mut v = vec![1, 2];
+        assert_eq!(w28a13_next_element(&mut v, 0, |_| -1), (0, 2));
+        assert_eq!(w28a13_next_element(&mut v, 1, |_| -1), (-1, 0));
+        assert_eq!(w28a13_next_element(&mut v, 1, |_| 1), (0, 0));
+    }
+
+    #[test]
+    fn offset_sum() {
+        assert_eq!(w28a13_offset_sum(-3, false, || Ok(1)), -3);
+        assert_eq!(w28a13_offset_sum(5, true, || Ok(10)), 15);
+        assert_eq!(w28a13_offset_sum(5, true, || Err(-1)), -1);
+        assert_eq!(w28a13_offset_sum(5, true, || Ok(i64::MAX)), -1);
+    }
+
+    #[test]
+    fn reset() {
+        let mut w = [7u32; 14];
+        assert!(w28a13_reset_sizes(&mut w));
+        assert_eq!(&w[..8], &[1, 0, 1, 0, 4, 0, 8, 0]);
+        assert_eq!(&w[10..], &[1, 0, 1, 0]);
+        w[8] = 0;
+        assert!(!w28a13_reset_sizes(&mut w));
+    }
+
+    #[test]
+    fn vint() {
+        let mut len = 0;
+        assert_eq!(w28a13_read_vint(&mut rd(vec![0x81]), 0, 0, &mut len), 1);
+        assert_eq!(len, 1);
+        assert_eq!(
+            w28a13_read_vint(&mut rd(vec![0x41, 0x02]), 0, 0, &mut len),
+            0x102
+        );
+        assert_eq!(len, 2);
+        assert_eq!(w28a13_read_vint(&mut rd(vec![0x00]), 0, 0, &mut len), -2);
+        assert_eq!(w28a13_read_vint(&mut rd(vec![0x41]), 0, 0, &mut len), -4);
+        assert_eq!(w28a13_read_vint(&mut |_, _, _, _| 1, 0, 0, &mut len), -3);
+        assert_eq!(w28a13_read_vint(&mut rd(vec![0x81]), 0, -1, &mut len), -2);
+    }
+
+    #[test]
+    fn uint_be() {
+        assert_eq!(
+            w28a13_read_uint_be(&mut rd(vec![1, 2, 3]), 0, 0, 3, 0),
+            Ok(0x010203)
+        );
+        assert_eq!(w28a13_read_uint_be(&mut rd(vec![7]), 0, 0, 1, 0), Ok(7));
+        assert_eq!(w28a13_read_uint_be(&mut rd(vec![7]), 0, 0, 9, 0), Err(-2));
+        assert_eq!(w28a13_read_uint_be(&mut rd(vec![7]), 0, 0, 0, 0), Err(-2));
+        assert_eq!(w28a13_read_uint_be(&mut rd(vec![7]), 0, 0, 2, 0), Err(-4));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave28/agent15.rs
+// ===========================================================================
+// Wave 28 agent 15: tinyxml2 pool/printer/StrPair helpers and a stream buffer.
+
+/// Stream buffer cursor (fields at `+0x2c`, `+0x34`, `+0x38`, `+0x3c`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct W28a15Buf {
+    pub consumed: i32,
+    pub pos: i32,
+    pub end: i32,
+    pub cap_end: i32,
+}
+
+/// `0x00a79420`: bytes copied out of the buffer: `min(want, end - pos)`.
+pub fn w28a15_readable_len(b: &W28a15Buf, want: u32) -> u32 {
+    let avail = b.end.wrapping_sub(b.pos) as u32;
+    want.min(avail)
+}
+
+/// `0x00a795e0`: compacts the buffer. Adds `end - pos` to `consumed` and
+/// returns `(src_offset = end, dst_offset = pos, len = cap_end - end)` for
+/// the memmove the original performs.
+pub fn w28a15_compact(b: &mut W28a15Buf) -> (i32, i32, i32) {
+    let end = b.end;
+    b.consumed = b.consumed.wrapping_add(end.wrapping_sub(b.pos));
+    (end, b.pos, b.cap_end.wrapping_sub(end))
+}
+
+/// `0x00a7a240`: true when the heap pointer differs from the inline buffer
+/// (i.e. the original would free it).
+pub fn w28a15_needs_free_buffer(ptr: u32, inline_ptr: u32) -> bool {
+    ptr != inline_ptr
+}
+
+/// tinyxml2 StrPair `{flags, start, end}`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct W28a15StrPair {
+    pub flags: u32,
+    pub start: u32,
+    pub end: u32,
+}
+
+/// `0x00a7a270`: StrPair reset. Returns the pointer to free when the
+/// `0x200` (needs-delete) flag is set, then zeroes all three fields.
+pub fn w28a15_strpair_reset(p: &mut W28a15StrPair) -> Option<u32> {
+    let free = if p.flags & 0x200 != 0 {
+        Some(p.start)
+    } else {
+        None
+    };
+    *p = W28a15StrPair::default();
+    free
+}
+
+/// `0x00a7a5c0`: XMLAttribute destructor body: resets the value StrPair
+/// (`+0x10`) then the name StrPair (`+0x04`); returns pointers to free in
+/// that order.
+pub fn w28a15_attribute_release(
+    name: &mut W28a15StrPair,
+    value: &mut W28a15StrPair,
+) -> [Option<u32>; 2] {
+    let v = w28a15_strpair_reset(value);
+    let n = w28a15_strpair_reset(name);
+    [v, n]
+}
+
+/// XMLPrinter state set up by the constructor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct W28a15Printer {
+    pub first_element: bool,
+    pub depth: i32,
+    pub text_depth: i32,
+    pub fp: u32,
+    pub compact: bool,
+    pub elem_just_opened: bool,
+    pub process_entities: bool,
+    pub entity_flag: [bool; 64],
+    pub restricted_entity_flag: [bool; 64],
+    pub buffer_cap: i32,
+    pub buffer_len: i32,
+    pub stack_cap: i32,
+    pub stack_len: i32,
+    pub mem_size: u32,
+}
+
+/// `0x00a7a0d0`: XMLPrinter constructor `(fp, compact, depth)`.
+/// Pushes one NUL into the buffer (len 1), with entity flag tables zeroed
+/// then `\n`,`\r`... entries as written (`+0x70` = 1, `+0x74..` = 0x101).
+pub fn w28a15_printer_new(fp: u32, compact: bool, depth: u32) -> W28a15Printer {
+    W28a15Printer {
+        first_element: true,
+        depth: depth as i32,
+        text_depth: -1,
+        fp,
+        compact,
+        elem_just_opened: false,
+        process_entities: true,
+        entity_flag: [false; 64],
+        restricted_entity_flag: [false; 64],
+        buffer_cap: 0x14,
+        buffer_len: 1,
+        stack_cap: 10,
+        stack_len: 0,
+        mem_size: 0,
+    }
+}
+
+/// MemPool allocation state (`+0x38` free head, `+0x3c` current, `+0x40`
+/// nallocs, `+0x44` max, `+0x48` untracked).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct W28a15Pool {
+    pub free_head: Option<u32>,
+    pub current: i32,
+    pub nallocs: i32,
+    pub max: i32,
+    pub untracked: i32,
+}
+
+fn w28a15_pool_alloc(p: &mut W28a15Pool, next_of: impl FnOnce(u32) -> Option<u32>) -> Option<u32> {
+    let item = p.free_head?;
+    p.free_head = next_of(item);
+    p.current += 1;
+    if p.max < p.current {
+        p.max = p.current;
+    }
+    p.nallocs += 1;
+    p.untracked += 1;
+    Some(item)
+}
+
+/// `0x00a7a9a0`: MemPoolT alloc (item size 0xff0 block). `None` when the
+/// free list is empty (original asserts after allocating a new block).
+pub fn w28a15_pool_alloc_a(
+    p: &mut W28a15Pool,
+    next_of: impl FnOnce(u32) -> Option<u32>,
+) -> Option<u32> {
+    w28a15_pool_alloc(p, next_of)
+}
+
+/// `0x00a7ab70`: same allocation step for the 0xfd8 block pool.
+pub fn w28a15_pool_alloc_b(
+    p: &mut W28a15Pool,
+    next_of: impl FnOnce(u32) -> Option<u32>,
+) -> Option<u32> {
+    w28a15_pool_alloc(p, next_of)
+}
+
+#[cfg(test)]
+mod tests_wave28_agent15 {
+    use super::*;
+
+    #[test]
+    fn buffer_helpers() {
+        let mut b = W28a15Buf {
+            consumed: 5,
+            pos: 10,
+            end: 14,
+            cap_end: 20,
+        };
+        assert_eq!(w28a15_readable_len(&b, 100), 4);
+        assert_eq!(w28a15_readable_len(&b, 2), 2);
+        assert_eq!(w28a15_compact(&mut b), (14, 10, 6));
+        assert_eq!(b.consumed, 9);
+        assert!(w28a15_needs_free_buffer(1, 2));
+        assert!(!w28a15_needs_free_buffer(2, 2));
+    }
+
+    #[test]
+    fn strpair() {
+        let mut p = W28a15StrPair {
+            flags: 0x200,
+            start: 7,
+            end: 9,
+        };
+        assert_eq!(w28a15_strpair_reset(&mut p), Some(7));
+        assert_eq!(p, W28a15StrPair::default());
+        let mut q = W28a15StrPair {
+            flags: 1,
+            start: 3,
+            end: 4,
+        };
+        assert_eq!(w28a15_strpair_reset(&mut q), None);
+        let mut n = W28a15StrPair {
+            flags: 0x200,
+            start: 1,
+            end: 0,
+        };
+        let mut v = W28a15StrPair {
+            flags: 0x200,
+            start: 2,
+            end: 0,
+        };
+        assert_eq!(w28a15_attribute_release(&mut n, &mut v), [Some(2), Some(1)]);
+    }
+
+    #[test]
+    fn printer() {
+        let p = w28a15_printer_new(5, true, 3);
+        assert_eq!(p.text_depth, -1);
+        assert_eq!((p.buffer_cap, p.buffer_len, p.stack_cap), (0x14, 1, 10));
+        assert!(p.first_element && p.process_entities && p.compact);
+    }
+
+    #[test]
+    fn pool() {
+        let mut p = W28a15Pool {
+            free_head: Some(1),
+            ..Default::default()
+        };
+        assert_eq!(w28a15_pool_alloc_a(&mut p, |_| None), Some(1));
+        assert_eq!((p.current, p.max, p.nallocs, p.untracked), (1, 1, 1, 1));
+        assert_eq!(w28a15_pool_alloc_b(&mut p, |_| None), None);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave28/agent16.rs
+// ===========================================================================
+// Wave 28 agent 16: TinyXML-style pool / string-scan helpers.
+
+/// Pool header fields of the 0xA7xxxx allocator family (offsets 0x34..0x48).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct W28a16Pool {
+    pub block_count: i32,
+    pub free_head: Option<usize>,
+    pub in_use: i32,
+    pub allocs_total: i32,
+    pub peak: i32,
+    pub allocs_counter: i32,
+}
+
+/// `0x00a7ad40`: pops the free-list head (`+0x38`); `next_of` reads the link
+/// stored in the node.  Empty list is a non-returning error: `None`.
+/// Updates in-use (`+0x3c`), peak (`+0x44`) and the counters at `+0x40`/`+0x48`.
+pub fn w28a16_pool_alloc_a(
+    p: &mut W28a16Pool,
+    next_of: impl Fn(usize) -> Option<usize>,
+) -> Option<usize> {
+    w28a16_pool_pop(p, next_of)
+}
+
+/// `0x00a7af00`: same pop as the sibling pool allocator (different node size
+/// in the error path only).
+pub fn w28a16_pool_alloc_b(
+    p: &mut W28a16Pool,
+    next_of: impl Fn(usize) -> Option<usize>,
+) -> Option<usize> {
+    w28a16_pool_pop(p, next_of)
+}
+
+fn w28a16_pool_pop(p: &mut W28a16Pool, next_of: impl Fn(usize) -> Option<usize>) -> Option<usize> {
+    let head = p.free_head?;
+    p.free_head = next_of(head);
+    p.in_use += 1;
+    if p.peak < p.in_use {
+        p.peak = p.in_use;
+    }
+    p.allocs_total += 1;
+    p.allocs_counter += 1;
+    Some(head)
+}
+
+fn w28a16_pool_release(p: &mut W28a16Pool) -> Option<usize> {
+    if p.block_count != 0 {
+        p.block_count -= 1;
+        return Some(p.block_count as usize);
+    }
+    p.free_head = None;
+    p.in_use = 0;
+    p.allocs_total = 0;
+    p.peak = 0;
+    p.allocs_counter = 0;
+    None
+}
+
+/// `0x00a7b130`: pool teardown step.  While blocks remain it decrements the
+/// block count and returns the block index to free; once empty it zeroes the
+/// stats and returns `None`.
+pub fn w28a16_pool_release_a(p: &mut W28a16Pool) -> Option<usize> {
+    w28a16_pool_release(p)
+}
+
+/// `0x00a7b190`: same teardown step for the second pool type.
+pub fn w28a16_pool_release_b(p: &mut W28a16Pool) -> Option<usize> {
+    w28a16_pool_release(p)
+}
+
+/// `0x00a7b1f0`: same teardown step for the third pool type.
+pub fn w28a16_pool_release_c(p: &mut W28a16Pool) -> Option<usize> {
+    w28a16_pool_release(p)
+}
+
+/// `0x00a7cd30`: pushes onto a capped pointer vector (`len` at 0x30, cap at
+/// 0x2c); returns `false` where retail grows (non-returning realloc path).
+pub fn w28a16_vec_push(buf: &mut [u32], len: &mut usize, value: u32) -> bool {
+    if buf.len() < *len + 1 {
+        return false;
+    }
+    buf[*len] = value;
+    *len += 1;
+    true
+}
+
+/// `0x00a7cdb0`: reserves `n` bytes in the text buffer; returns the offset of
+/// the reserved region (old length) or `None` when capacity is exceeded.
+pub fn w28a16_buf_reserve(cap: usize, len: &mut usize, n: usize) -> Option<usize> {
+    let old = *len;
+    if cap < old + n {
+        return None;
+    }
+    *len = old + n;
+    Some(old)
+}
+
+/// `0x00a7c970`: scans an XML name.  First byte: ASCII letter, ':' or '_'
+/// (bytes >= 0x80 accepted); then letters, digits, ':', '_', '.', '-' or high
+/// bytes.  Returns the end offset, `None` if no name starts at 0.
+pub fn w28a16_scan_name(s: &[u8]) -> Option<usize> {
+    let at = |i: usize| s.get(i).copied().unwrap_or(0);
+    let first = at(0);
+    if first == 0
+        || (first < 0x80 && !first.is_ascii_alphabetic() && first != b':' && first != b'_')
+    {
+        return None;
+    }
+    let mut i = 1;
+    loop {
+        let c = at(i);
+        let ok = c != 0
+            && (c >= 0x80
+                || c.is_ascii_alphabetic()
+                || c.is_ascii_digit()
+                || c == b':'
+                || c == b'_'
+                || c == b'.'
+                || c == b'-');
+        if !ok {
+            return Some(i);
+        }
+        i += 1;
+    }
+}
+
+/// `0x00a7ca40`: finds `needle` in NUL-terminated `text`, counting `\n`
+/// bytes skipped into `lines`.  Returns `(match_start, end_after_match)`.
+pub fn w28a16_find_counting_lines(
+    text: &[u8],
+    needle: &[u8],
+    lines: &mut i32,
+) -> Option<(usize, usize)> {
+    let first = needle.first().copied().unwrap_or(0);
+    let mut i = 0;
+    while i < text.len() && text[i] != 0 {
+        if text[i] == first && text[i..].starts_with(needle) {
+            return Some((i, i + needle.len()));
+        }
+        if text[i] == b'\n' {
+            *lines += 1;
+        }
+        i += 1;
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests_wave28_agent16 {
+    use super::*;
+
+    #[test]
+    fn pool_alloc_and_release() {
+        let mut p = W28a16Pool {
+            block_count: 1,
+            free_head: Some(3),
+            ..Default::default()
+        };
+        let n = w28a16_pool_alloc_a(&mut p, |i| if i == 3 { Some(5) } else { None });
+        assert_eq!(n, Some(3));
+        assert_eq!(
+            (p.in_use, p.peak, p.allocs_total, p.allocs_counter),
+            (1, 1, 1, 1)
+        );
+        assert_eq!(p.free_head, Some(5));
+        p.free_head = None;
+        assert_eq!(w28a16_pool_alloc_b(&mut p, |_| None), None);
+        assert_eq!(w28a16_pool_release_a(&mut p), Some(0));
+        assert_eq!(w28a16_pool_release_b(&mut p), None);
+        assert_eq!(p, W28a16Pool::default());
+        assert_eq!(w28a16_pool_release_c(&mut p), None);
+    }
+
+    #[test]
+    fn vec_and_buf() {
+        let mut b = [0u32; 2];
+        let mut l = 0;
+        assert!(w28a16_vec_push(&mut b, &mut l, 7));
+        assert!(w28a16_vec_push(&mut b, &mut l, 8));
+        assert!(!w28a16_vec_push(&mut b, &mut l, 9));
+        assert_eq!(b, [7, 8]);
+        let mut len = 2;
+        assert_eq!(w28a16_buf_reserve(4, &mut len, 2), Some(2));
+        assert_eq!(w28a16_buf_reserve(4, &mut len, 1), None);
+        assert_eq!(len, 4);
+    }
+
+    #[test]
+    fn name_scan() {
+        assert_eq!(w28a16_scan_name(b"a:b-c.d=1\0"), Some(7));
+        assert_eq!(w28a16_scan_name(b"1a"), None);
+        assert_eq!(w28a16_scan_name(b""), None);
+        assert_eq!(w28a16_scan_name(b"_x y"), Some(2));
+    }
+
+    #[test]
+    fn find_lines() {
+        let mut n = 0;
+        assert_eq!(
+            w28a16_find_counting_lines(b"a\nb\n-->x\0", b"-->", &mut n),
+            Some((4, 7))
+        );
+        assert_eq!(n, 2);
+        assert_eq!(w28a16_find_counting_lines(b"abc\0", b"z", &mut n), None);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave28/agent17.rs
+// ===========================================================================
+// Wave 28 agent 17: small runtime helpers (XML-style printer, buffers).
+
+/// Output sink state of the stream printer used by the three writers below.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct W28a17Printer {
+    /// Bytes written so far (stands in for the FILE / string target).
+    pub out: Vec<u8>,
+    /// Offset 0x4: a start tag is still open and needs a closing `>`.
+    pub tag_open: bool,
+    /// Offset 0x3c: text-written flag, cleared before every write.
+    pub text_flag: bool,
+    /// Offset 0x4d: suppresses the pending newline.
+    pub no_newline: bool,
+    /// Offset 0x48: depth counter; negative means a newline is due.
+    pub depth: i32,
+    /// Offset 0x4c: last copied flag byte.
+    pub flag_4c: u8,
+}
+
+fn w28a17_close_open_tag(p: &mut W28a17Printer, newline: &mut dyn FnMut(&mut W28a17Printer)) {
+    if p.tag_open {
+        p.tag_open = false;
+        p.out.push(b'>');
+    }
+    if p.depth < 0 && !p.text_flag && !p.no_newline {
+        newline(p);
+    }
+    p.text_flag = false;
+}
+
+fn w28a17_cstr(s: &[u8]) -> &[u8] {
+    let n = s.iter().position(|&b| b == 0).unwrap_or(s.len());
+    &s[..n]
+}
+
+/// `0x00a7dab0`: writes an XML comment `<!--text-->`; text is empty when
+/// the node's virtual slot 6 (`is_empty_text`) reports non-zero.
+pub fn w28a17_write_comment(
+    p: &mut W28a17Printer,
+    text: &[u8],
+    is_empty_text: bool,
+    newline: &mut dyn FnMut(&mut W28a17Printer),
+) -> u32 {
+    let body: &[u8] = if is_empty_text {
+        &[]
+    } else {
+        w28a17_cstr(text)
+    };
+    w28a17_close_open_tag(p, newline);
+    p.out.extend_from_slice(b"<!--");
+    p.out.extend_from_slice(body);
+    p.out.extend_from_slice(b"-->");
+    1
+}
+
+/// `0x00a7dc90`: writes a declaration-style node `<!text>`.
+pub fn w28a17_write_declaration(
+    p: &mut W28a17Printer,
+    text: &[u8],
+    is_empty_text: bool,
+    newline: &mut dyn FnMut(&mut W28a17Printer),
+) -> u32 {
+    let body: &[u8] = if is_empty_text {
+        &[]
+    } else {
+        w28a17_cstr(text)
+    };
+    w28a17_close_open_tag(p, newline);
+    p.out.extend_from_slice(b"<!");
+    p.out.extend_from_slice(body);
+    p.out.push(b'>');
+    1
+}
+
+/// `0x00a7ddd0`: copies byte 0x35 of the node to the printer flag and, if
+/// byte 0x34 is set, writes the constant string `prefix` (data at the
+/// opaque global).  Always returns 1.
+pub fn w28a17_write_flagged(p: &mut W28a17Printer, node: &[u8; 0x36], prefix: &[u8]) -> u32 {
+    p.flag_4c = node[0x35];
+    if node[0x34] != 0 {
+        p.out.extend_from_slice(w28a17_cstr(prefix));
+    }
+    1
+}
+
+/// `0x00a7def0`: appends the NUL-terminated string to the output.
+pub fn w28a17_write_cstr(p: &mut W28a17Printer, s: &[u8]) {
+    p.out.extend_from_slice(w28a17_cstr(s));
+}
+
+/// `0x00a88fd0`: allocation size for `count` wide (2-byte) elements.
+/// `None` for zero; sizes under 0x1000 are exact, larger ones get 0x23
+/// bytes of header padding, saturating to `u32::MAX` on overflow.
+pub fn w28a17_alloc_size(count: u32) -> Option<u32> {
+    let mut bytes = count.wrapping_mul(2);
+    if count < 0x8000_0000 {
+        if bytes < 0x1000 {
+            return if bytes != 0 { Some(bytes) } else { None };
+        }
+    } else {
+        bytes = 0xffff_ffff;
+    }
+    let padded = bytes.wrapping_add(0x23);
+    Some(if padded <= bytes { 0xffff_ffff } else { padded })
+}
+
+/// `0x00a892d0`: zero-initialises a four-word record.
+pub fn w28a17_zero4(rec: &mut [u32; 4]) {
+    *rec = [0; 4];
+}
+
+/// `0x00a89770`: signed 16-bit field at +6 divided by the unsigned 16-bit
+/// field at +0xe (`None` when the divisor is zero).
+pub fn w28a17_div_fields(rec: &[u8; 0x10]) -> Option<i32> {
+    let a = i16::from_le_bytes([rec[6], rec[7]]) as i32;
+    let b = u16::from_le_bytes([rec[0xe], rec[0xf]]) as i32;
+    if b == 0 { None } else { Some(a / b) }
+}
+
+#[cfg(test)]
+mod tests_wave28_agent17 {
+    use super::*;
+
+    #[test]
+    fn comment_and_decl() {
+        let mut p = W28a17Printer {
+            tag_open: true,
+            ..Default::default()
+        };
+        let mut nl = |q: &mut W28a17Printer| q.out.push(b'\n');
+        assert_eq!(w28a17_write_comment(&mut p, b"hi\0zz", false, &mut nl), 1);
+        assert_eq!(p.out, b">\x3c!--hi-->".to_vec());
+        let mut q = W28a17Printer {
+            depth: -1,
+            ..Default::default()
+        };
+        w28a17_write_declaration(&mut q, b"DOC\0", false, &mut nl);
+        assert_eq!(q.out, b"\n<!DOC>".to_vec());
+        let mut r = W28a17Printer::default();
+        w28a17_write_declaration(&mut r, b"x", true, &mut nl);
+        assert_eq!(r.out, b"<!>".to_vec());
+    }
+
+    #[test]
+    fn flagged_and_cstr() {
+        let mut p = W28a17Printer::default();
+        let mut node = [0u8; 0x36];
+        node[0x35] = 7;
+        assert_eq!(w28a17_write_flagged(&mut p, &node, b"ab\0"), 1);
+        assert_eq!(p.flag_4c, 7);
+        assert!(p.out.is_empty());
+        node[0x34] = 1;
+        w28a17_write_flagged(&mut p, &node, b"ab\0");
+        w28a17_write_cstr(&mut p, b"cd\0e");
+        assert_eq!(p.out, b"abcd".to_vec());
+    }
+
+    #[test]
+    fn sizes_and_fields() {
+        assert_eq!(w28a17_alloc_size(0), None);
+        assert_eq!(w28a17_alloc_size(0x7ff), Some(0xffe));
+        assert_eq!(w28a17_alloc_size(0x800), Some(0x1023));
+        assert_eq!(w28a17_alloc_size(0x8000_0000), Some(0xffff_ffff));
+        let mut z = [1, 2, 3, 4];
+        w28a17_zero4(&mut z);
+        assert_eq!(z, [0; 4]);
+        let mut r = [0u8; 0x10];
+        r[6..8].copy_from_slice(&(-9i16).to_le_bytes());
+        assert_eq!(w28a17_div_fields(&r), None);
+        r[0xe] = 2;
+        assert_eq!(w28a17_div_fields(&r), Some(-4));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave28/agent18.rs
+// ===========================================================================
+// Wave 28 agent 18: small render-glue helpers (quad/vertex record setup).
+
+/// `0x00a89780`: width divided by the `u16` at `+0xe` (signed 16-bit at `+4`).
+/// Returns `None` when the divisor is zero.
+pub fn w28a18_cell_width(width: i16, divisor: u16) -> Option<i32> {
+    if divisor == 0 {
+        None
+    } else {
+        Some(i32::from(width) / i32::from(divisor))
+    }
+}
+
+/// `0x00a8a800`: maps a normalised rect (x, y, w, h) to pixels.  Returns
+/// `(pos, size)`; `scale` = (`DAT_011fe1e4`, `DAT_011fe1e8`), `origin` =
+/// (`_DAT_011fe1dc`, `_DAT_011fe1e0`).
+pub fn w28a18_rect_to_pixels(
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    scale: (f32, f32),
+    origin: (i32, i32),
+) -> ([i32; 2], [i32; 2]) {
+    let sw = (scale.0 * w) as i32;
+    let sh = (scale.1 * h) as i32;
+    let px = (scale.0 * x + origin.0 as f32 + sw as f32 * 0.5) as i32;
+    let py = ((scale.1 * y + origin.1 as f32) - sh as f32 * 0.5) as i32;
+    ([px, py], [sw, sh])
+}
+
+/// `0x00a8a8b0`: true when both `f` and `n` are strictly positive.
+pub fn w28a18_both_positive(f: f32, n: i32) -> bool {
+    0.0 < f && 0 < n
+}
+
+/// State block touched by `0x00a8ab00`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct W28a18FlagState {
+    /// `DAT_00f3c9d1`.
+    pub armed: bool,
+    /// `DAT_00f3c9d2`.
+    pub arg: u8,
+    /// `DAT_00f3ca34` (float bits).
+    pub value_bits: u32,
+    /// `DAT_00f3ca38`.
+    pub zero: u32,
+}
+
+/// `0x00a8ab00`: one-shot arm; sets the flag, stores `arg`, 1.0f and 0.
+pub fn w28a18_arm_once(st: &mut W28a18FlagState, arg: u8) {
+    if !st.armed {
+        st.armed = true;
+        st.arg = arg;
+        st.value_bits = 0x3f80_0000;
+        st.zero = 0;
+    }
+}
+
+fn w28a18_set(rec: &mut [u32], off: usize, v: u32) {
+    rec[off / 4] = v;
+}
+
+/// `0x00a8bd50`: after the quad record is built, stores the 12 colour words
+/// (`p6..p17`) at `+0x60,+0x64,+0x68,+0x6c`, `+0x50..+0x5c`, `+0x70..+0x7c`.
+pub fn w28a18_store_quad_colors(rec: &mut [u32], p: &[u32; 12]) {
+    for (i, off) in [
+        0x60, 0x64, 0x68, 0x6c, 0x50, 0x54, 0x58, 0x5c, 0x70, 0x74, 0x78, 0x7c,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        w28a18_set(rec, off, p[i]);
+    }
+}
+
+/// `0x00a8bde0`: stores 4 colour words at `+0x60,+0x64,+0x68,+0x6c`.
+pub fn w28a18_store_rect_colors(rec: &mut [u32], c: &[u32; 4]) {
+    for (i, off) in [0x60, 0x64, 0x68, 0x6c].into_iter().enumerate() {
+        w28a18_set(rec, off, c[i]);
+    }
+}
+
+/// `0x00a8c270`: normalises a vertical line to `(x, min(y0,y1), 0, y1max-ymin)`
+/// (the inputs of the vertex builder); returns `(x, y_min, height)`.
+pub fn w28a18_vline_extent(x: i32, y0: i32, y1: i32) -> (i32, i32, i32) {
+    let lo = y0.min(y1);
+    let hi = y0.max(y1);
+    (x, lo, hi - lo)
+}
+
+/// `0x00a8c300`: copies words `+0x8,+0x18,+0x28` of `src` to `+0x8,+0xc,+0x10`
+/// of `rec`.
+pub fn w28a18_copy_tri(rec: &mut [u32], src: &[u32]) {
+    rec[0x8 / 4] = src[0x8 / 4];
+    rec[0xc / 4] = src[0x18 / 4];
+    rec[0x10 / 4] = src[0x28 / 4];
+}
+
+/// `0x00a8c390`: like the triangle copy plus `+0x14` from `src+0x38`.
+pub fn w28a18_copy_quad(rec: &mut [u32], src: &[u32]) {
+    rec[0x8 / 4] = src[0x8 / 4];
+    rec[0xc / 4] = src[0x18 / 4];
+    rec[0x10 / 4] = src[0x28 / 4];
+    rec[0x14 / 4] = src[0x38 / 4];
+}
+
+#[cfg(test)]
+mod tests_wave28_agent18 {
+    use super::*;
+
+    #[test]
+    fn width_div() {
+        assert_eq!(w28a18_cell_width(-9, 2), Some(-4));
+        assert_eq!(w28a18_cell_width(9, 0), None);
+    }
+
+    #[test]
+    fn rect_pixels() {
+        let (p, s) = w28a18_rect_to_pixels(0.5, 0.5, 0.25, 0.5, (100.0, 200.0), (10, 20));
+        assert_eq!(s, [25, 100]);
+        assert_eq!(p, [72, 70]);
+    }
+
+    #[test]
+    fn positive() {
+        assert!(w28a18_both_positive(0.1, 1));
+        assert!(!w28a18_both_positive(0.0, 1));
+        assert!(!w28a18_both_positive(1.0, 0));
+    }
+
+    #[test]
+    fn arm() {
+        let mut s = W28a18FlagState::default();
+        w28a18_arm_once(&mut s, 7);
+        w28a18_arm_once(&mut s, 9);
+        assert_eq!((s.armed, s.arg, s.value_bits), (true, 7, 0x3f80_0000));
+    }
+
+    #[test]
+    fn stores() {
+        let mut r = [0u32; 0x20];
+        let p: [u32; 12] = core::array::from_fn(|i| i as u32 + 1);
+        w28a18_store_quad_colors(&mut r, &p);
+        assert_eq!((r[0x60 / 4], r[0x50 / 4], r[0x7c / 4]), (1, 5, 12));
+        let mut r2 = [0u32; 0x20];
+        w28a18_store_rect_colors(&mut r2, &[1, 2, 3, 4]);
+        assert_eq!(r2[0x6c / 4], 4);
+    }
+
+    #[test]
+    fn line_and_copy() {
+        assert_eq!(w28a18_vline_extent(3, 9, 4), (3, 4, 5));
+        let mut src = [0u32; 0x10];
+        for (i, v) in src.iter_mut().enumerate() {
+            *v = i as u32 * 10;
+        }
+        let mut r = [0u32; 8];
+        w28a18_copy_tri(&mut r, &src);
+        assert_eq!((r[2], r[3], r[4], r[5]), (20, 60, 100, 0));
+        w28a18_copy_quad(&mut r, &src);
+        assert_eq!(r[5], 140);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave28/agent19.rs
+// ===========================================================================
+// Wave 28 agent 19: small UI/render helper reconstructions.
+
+/// `0x00a8ecb0`: seconds elapsed between two millisecond stamps, clamped to 0.5.
+pub fn w28a19_elapsed_clamped(now_ms: i32, start_ms: i32) -> f32 {
+    let v = ((now_ms - start_ms) as f64 / 1000.0) as f32;
+    if v <= 0.5 { v } else { 0.5 }
+}
+
+/// `0x00a8eca0`: returns the two globals at consecutive addresses as one 64-bit value (low, high).
+pub fn w28a19_pair_u64(lo: u32, hi: u32) -> u64 {
+    ((hi as u64) << 32) | lo as u64
+}
+
+/// `0x00a8fc70`: alpha byte, `(int)(color[3] * 255.0)` (truncating).
+pub fn w28a19_color_alpha_byte(c: &[f32; 4]) -> i32 {
+    (c[3] as f64 * 255.0) as i32
+}
+
+/// `0x00a8fca0`: channel at index 2 scaled to a byte.
+pub fn w28a19_color_ch2_byte(c: &[f32; 4]) -> i32 {
+    (c[2] as f64 * 255.0) as i32
+}
+
+/// `0x00a8fcd0`: channel at index 1 scaled to a byte.
+pub fn w28a19_color_ch1_byte(c: &[f32; 4]) -> i32 {
+    (c[1] as f64 * 255.0) as i32
+}
+
+/// `0x00a8fd00`: channel at index 0 scaled to a byte.
+pub fn w28a19_color_ch0_byte(c: &[f32; 4]) -> i32 {
+    (c[0] as f64 * 255.0) as i32
+}
+
+/// `0x00a8fd30`: component-wise linear interpolation of two 4-float colors, `a + (b - a) * t`.
+pub fn w28a19_color_lerp(a: &[f32; 4], b: &[f32; 4], t: f32) -> [f32; 4] {
+    [
+        (b[0] - a[0]) * t + a[0],
+        (b[1] - a[1]) * t + a[1],
+        (b[2] - a[2]) * t + a[2],
+        (b[3] - a[3]) * t + a[3],
+    ]
+}
+
+/// `0x00a90e90`: address of entry `index` in the 0x38-byte record array at `base`.
+pub fn w28a19_record_addr(base: u32, index: i32) -> u32 {
+    base.wrapping_add((index as u32).wrapping_mul(0x38))
+}
+
+/// `0x00a8eb40`: vector push_back of a 4-byte value where the argument may alias an
+/// element of the vector (it is re-read from its index when it does).  Here the
+/// value is passed by index-or-value: `alias` is the element index if aliased.
+pub fn w28a19_push_u32(v: &mut Vec<u32>, value: u32, alias: Option<usize>) {
+    let value = match alias {
+        Some(i) if i < v.len() => v[i],
+        _ => value,
+    };
+    v.push(value);
+}
+
+/// `0x00a917b0`: same push_back for 2-byte elements.
+pub fn w28a19_push_u16(v: &mut Vec<u16>, value: u16, alias: Option<usize>) {
+    let value = match alias {
+        Some(i) if i < v.len() => v[i],
+        _ => value,
+    };
+    v.push(value);
+}
+
+/// `0x00a91360`: kind-to-style selector (first part). `kind` is param_3, `id` the
+/// low 16 bits of param_1, `flag` the result of the unresolved `FUN_00a8c430`,
+/// `class_of_id` the result of `FUN_00a98340(id)`, `override_val` the optional param_9.
+pub fn w28a19_style_for_kind(
+    id: u16,
+    kind: u32,
+    flag: bool,
+    class_of_id: i32,
+    override_val: Option<i32>,
+) -> i32 {
+    let base = match kind {
+        0 => {
+            if id < 4 {
+                if flag { 0x1a } else { 0xf }
+            } else if class_of_id == 2 {
+                if flag { 0x19 } else { 0xe }
+            } else {
+                0
+            }
+        }
+        2 => 5,
+        3 => 6,
+        4 => 9,
+        5 => 0xb,
+        6 => 0x1e + flag as i32,
+        7 => 0x28,
+        _ => 4,
+    };
+    override_val.unwrap_or(base)
+}
+
+/// `0x00a8de50`: width/height defaults. If an explicit size is absent the size is
+/// `(int)((dim as unsigned-corrected double) * scale)`; `dim` is the record's
+/// int at +0xc / +0x10.  The `0xd33180` table is modelled as `[0, 2^32]`.
+pub fn w28a19_default_extent(dim: i32, scale: f32, explicit: Option<i32>) -> i32 {
+    match explicit {
+        Some(v) => v,
+        None => {
+            let bias = if dim < 0 { 4294967296.0f64 } else { 0.0 };
+            ((dim as f64 + bias) as f32 * scale) as i32
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests_wave28_agent19 {
+    use super::*;
+
+    #[test]
+    fn elapsed() {
+        assert_eq!(w28a19_elapsed_clamped(1200, 1000), 0.2);
+        assert_eq!(w28a19_elapsed_clamped(5000, 1000), 0.5);
+    }
+    #[test]
+    fn pair() {
+        assert_eq!(w28a19_pair_u64(1, 2), 0x2_0000_0001);
+    }
+    #[test]
+    fn bytes() {
+        let c = [1.0, 0.5, 0.25, 0.0];
+        assert_eq!(w28a19_color_ch0_byte(&c), 255);
+        assert_eq!(w28a19_color_ch1_byte(&c), 127);
+        assert_eq!(w28a19_color_ch2_byte(&c), 63);
+        assert_eq!(w28a19_color_alpha_byte(&c), 0);
+    }
+    #[test]
+    fn lerp() {
+        let r = w28a19_color_lerp(&[0.0; 4], &[1.0, 2.0, 3.0, 4.0], 0.5);
+        assert_eq!(r, [0.5, 1.0, 1.5, 2.0]);
+    }
+    #[test]
+    fn addr() {
+        assert_eq!(w28a19_record_addr(0x1000, 2), 0x1070);
+    }
+    #[test]
+    fn push() {
+        let mut v = vec![7u32];
+        w28a19_push_u32(&mut v, 0, Some(0));
+        w28a19_push_u32(&mut v, 9, None);
+        assert_eq!(v, vec![7, 7, 9]);
+        let mut w = vec![3u16];
+        w28a19_push_u16(&mut w, 0, Some(0));
+        assert_eq!(w, vec![3, 3]);
+    }
+    #[test]
+    fn style() {
+        assert_eq!(w28a19_style_for_kind(1, 0, true, 0, None), 0x1a);
+        assert_eq!(w28a19_style_for_kind(9, 0, false, 2, None), 0xe);
+        assert_eq!(w28a19_style_for_kind(9, 0, false, 1, None), 0);
+        assert_eq!(w28a19_style_for_kind(0, 6, true, 0, None), 0x1f);
+        assert_eq!(w28a19_style_for_kind(0, 7, false, 0, None), 0x28);
+        assert_eq!(w28a19_style_for_kind(0, 1, false, 0, None), 4);
+        assert_eq!(w28a19_style_for_kind(0, 3, false, 0, Some(77)), 77);
+    }
+    #[test]
+    fn extent() {
+        assert_eq!(w28a19_default_extent(100, 0.5, None), 50);
+        assert_eq!(w28a19_default_extent(100, 0.5, Some(3)), 3);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave28/agent20.rs
+// ===========================================================================
+// Wave 28 translation batch 20: render command-buffer helpers.
+
+/// Appends a 32-bit little-endian word at `at`.
+fn w28a20_put(buf: &mut [u8], at: usize, v: u32) {
+    buf[at..at + 4].copy_from_slice(&v.to_le_bytes());
+}
+
+fn w28a20_get(buf: &[u8], at: usize) -> u32 {
+    u32::from_le_bytes([buf[at], buf[at + 1], buf[at + 2], buf[at + 3]])
+}
+
+/// Links the record at `rec_ptr` (a pointer value `base + offset`) to the end
+/// of the singly linked chain whose first link lives at `head_slot`
+/// (`param_1 + 0x44` in the retail layout); next pointers live at record
+/// offset 4.  `base` is the buffer's address.
+fn w28a20_append_chain(buf: &mut [u8], base: u32, head: &mut u32, rec_off: usize) {
+    let rec_ptr = base + rec_off as u32;
+    if *head == 0 {
+        *head = rec_ptr;
+    } else {
+        let mut cur = *head;
+        loop {
+            let nxt = w28a20_get(buf, (cur - base) as usize + 4);
+            if nxt == 0 {
+                w28a20_put(buf, (cur - base) as usize + 4, rec_ptr);
+                break;
+            }
+            cur = nxt;
+        }
+    }
+    w28a20_put(buf, rec_off + 4, 0);
+}
+
+/// `0x00a932c0`: pushes a type-4 command record (0x24 bytes: opcode 4,
+/// next 0, then the 7-dword payload) at `*cursor` and links it at the end of
+/// the chain `head`.  Returns the record offset.
+pub fn w28a20_push_cmd4(
+    buf: &mut [u8],
+    cursor: &mut usize,
+    base: u32,
+    head: &mut u32,
+    payload: &[u32; 7],
+) -> usize {
+    let off = *cursor;
+    w28a20_put(buf, off, 4);
+    w28a20_put(buf, off + 4, 0);
+    *cursor += 0x24;
+    for (i, v) in payload.iter().enumerate() {
+        w28a20_put(buf, off + 8 + i * 4, *v);
+    }
+    w28a20_append_chain(buf, base, head, off);
+    off
+}
+
+/// `0x00a934b0`: pushes a type-6 command record (0xc bytes: opcode 6,
+/// next 0, one dword) and links it at the end of the chain.
+pub fn w28a20_push_cmd6(
+    buf: &mut [u8],
+    cursor: &mut usize,
+    base: u32,
+    head: &mut u32,
+    value: u32,
+) -> usize {
+    let off = *cursor;
+    w28a20_put(buf, off, 6);
+    w28a20_put(buf, off + 4, 0);
+    *cursor += 0xc;
+    w28a20_put(buf, off + 8, value);
+    w28a20_append_chain(buf, base, head, off);
+    off
+}
+
+/// `0x00a97240`: grows a small-string style capacity word (low 31 bits =
+/// capacity, bit 31 = flag).  Returns the new word when `wanted` exceeds the
+/// capacity (growth is 1.5x, at least `wanted`), else `None`.
+pub fn w28a20_grow_capacity(word: u32, wanted: u32) -> Option<u32> {
+    let cap = word & 0x7fff_ffff;
+    if cap >= wanted {
+        return None;
+    }
+    let grown = ((word >> 1) & 0x3fff_ffff).wrapping_add(cap).max(wanted);
+    Some(((word ^ grown) & 0x7fff_ffff) ^ word)
+}
+
+/// `0x00a957f0`: unlinks `target` from the singly linked list of records
+/// (next index in `next`, `None` terminated) starting at `head`, then clears
+/// the record's six cached fields.  Returns the new head.
+pub fn w28a20_unlink_record(
+    head: Option<usize>,
+    next: &mut [Option<usize>],
+    target: usize,
+    fields: &mut [u32; 5],
+) -> Option<usize> {
+    let mut new_head = head;
+    if head == Some(target) {
+        new_head = next[target];
+    } else {
+        let mut cur = head;
+        while let Some(c) = cur {
+            if next[c] == Some(target) {
+                next[c] = next[target];
+                break;
+            }
+            cur = next[c];
+        }
+    }
+    *fields = [0; 5];
+    next[target] = None;
+    new_head
+}
+
+/// `0x00a956a0`: claims the first free 0xd8-byte slot among 0x100 entries
+/// (limit `0xd800` bytes).  Returns `(index, generation)`; `used` marks
+/// occupied slots, `gen` holds each slot's generation (bumped to at least 1).
+pub fn w28a20_alloc_slot(used: &mut [bool], gen_: &mut [u32]) -> Option<(usize, u32)> {
+    let n = used.len().min(gen_.len()).min(0xd800 / 0xd8);
+    let i = (0..n).find(|&i| !used[i])?;
+    used[i] = true;
+    gen_[i] = gen_[i].max(1);
+    Some((i, gen_[i]))
+}
+
+/// `0x00a956a0` post-processing: default positive scale to 1.0, keep the
+/// max scale, and fill non-positive width/height from the texture header.
+pub fn w28a20_fix_slot_dims(
+    scale: &mut f32,
+    max_scale: &mut f32,
+    w: &mut f32,
+    h: &mut f32,
+    tex_w: i16,
+    tex_h: i16,
+) {
+    if *scale <= 0.0 {
+        *scale = 1.0;
+    }
+    if *max_scale <= *scale {
+        *max_scale = *scale;
+    }
+    if *w <= 0.0 {
+        *w = f32::from(tex_w);
+    }
+    if *h <= 0.0 {
+        *h = f32::from(tex_h);
+    }
+}
+
+/// `0x00a974f0`: writes the quad index pattern used when the vertex format
+/// is 1: per quad base `b` (step 4) the six shorts `b, b+1, b+2, b, b+3, b+1`
+/// starting at byte `start & !1` of `indices`.  Returns the quad count
+/// `(n - 1) / 6 + 1` processed (0 when `count6` is 0).
+pub fn w28a20_fill_quad_indices(indices: &mut [u16], start_bytes: usize, count6: usize) -> usize {
+    if count6 == 0 {
+        return 0;
+    }
+    let quads = (count6 - 1) / 6 + 1;
+    let mut p = (start_bytes & !1) / 2;
+    let mut b: u16 = 0;
+    for _ in 0..quads {
+        let q = [b, b + 1, b + 2, b, b + 3, b + 1];
+        indices[p..p + 6].copy_from_slice(&q);
+        p += 6;
+        b = b.wrapping_add(4);
+    }
+    quads
+}
+
+#[cfg(test)]
+mod tests_wave28_agent20 {
+    use super::*;
+
+    #[test]
+    fn cmd_chain() {
+        let mut buf = vec![0u8; 0x100];
+        let mut cur = 0;
+        let mut head = 0u32;
+        let a = w28a20_push_cmd4(
+            &mut buf,
+            &mut cur,
+            0x1000,
+            &mut head,
+            &[1, 2, 3, 4, 5, 6, 7],
+        );
+        assert_eq!(cur, 0x24);
+        assert_eq!(head, 0x1000);
+        let b = w28a20_push_cmd6(&mut buf, &mut cur, 0x1000, &mut head, 9);
+        assert_eq!((a, b, cur), (0, 0x24, 0x30));
+        assert_eq!(w28a20_get(&buf, 4), 0x1024);
+        assert_eq!(w28a20_get(&buf, 0x24), 6);
+        assert_eq!(w28a20_get(&buf, 0x2c), 9);
+    }
+
+    #[test]
+    fn grow() {
+        assert_eq!(w28a20_grow_capacity(0x10, 8), None);
+        assert_eq!(w28a20_grow_capacity(0x10, 100), Some(100));
+        assert_eq!(w28a20_grow_capacity(0x8000_0010, 17), Some(0x8000_0018));
+    }
+
+    #[test]
+    fn unlink() {
+        let mut next = [Some(1), Some(2), None];
+        let mut f = [1; 5];
+        assert_eq!(w28a20_unlink_record(Some(0), &mut next, 1, &mut f), Some(0));
+        assert_eq!(next[0], Some(2));
+        assert_eq!(f, [0; 5]);
+        assert_eq!(w28a20_unlink_record(Some(0), &mut next, 0, &mut f), Some(2));
+    }
+
+    #[test]
+    fn slots() {
+        let mut used = [true, false];
+        let mut g = [0, 0];
+        assert_eq!(w28a20_alloc_slot(&mut used, &mut g), Some((1, 1)));
+        assert_eq!(w28a20_alloc_slot(&mut used, &mut g), None);
+        let (mut s, mut m, mut w, mut h) = (0.0, 0.5, 0.0, 3.0);
+        w28a20_fix_slot_dims(&mut s, &mut m, &mut w, &mut h, 16, 8);
+        assert_eq!((s, m, w, h), (1.0, 1.0, 16.0, 3.0));
+    }
+
+    #[test]
+    fn quads() {
+        let mut ix = [0u16; 12];
+        assert_eq!(w28a20_fill_quad_indices(&mut ix, 0, 12), 2);
+        assert_eq!(&ix[..6], &[0, 1, 2, 0, 3, 1]);
+        assert_eq!(&ix[6..], &[4, 5, 6, 4, 7, 5]);
+        assert_eq!(w28a20_fill_quad_indices(&mut ix, 0, 0), 0);
+    }
+}

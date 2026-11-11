@@ -201,3 +201,11 @@ dispatcher over a hooks trait.  No rules-core counterpart.
 schema-validator helpers, FMOD DSP unit helpers, audio stream length/bitrate
 and WAV/Vorbis header routines, vector-growth plans, UI event rectangle
 helpers.  No rules-core counterpart.
+
+## Wave 28 (2026-11-11, triage queue, tiers 2-3, 20 agents)
+
++159 exact ledger functions (ledger 4397 -> 4556) in `client.rs` and
+`runtime.rs`: libvpx video kernels (SAD, variance, 8x8 inverse transform,
+loop filters, H.264/VP8 intra predictors), libwebm/libebml parsing helpers,
+tinyxml2 printer fields and GL vertex-record writers.  No rules-core
+counterpart; the CDN/NGDP rows were skipped as Battle.net code.
