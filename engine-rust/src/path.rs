@@ -3989,3 +3989,135 @@ mod tests_wave20_agent03 {
         assert_eq!(w20a03_leap_days(2000), 1999 / 4 - 17 + (2299 / 400 - 19));
     }
 }
+
+// ===========================================================================
+// Merged from src/wave21/agent03.rs
+// ===========================================================================
+// Wave 21 agent 03: dialog flag predicates, colour modulate, scroll clamp.
+
+/// `0x0077ea00`: true when all three provider records are ready
+/// (`flag_a` byte, `flag_b` byte, `count` dword at offset 4 of each).
+pub fn w21a03_all_providers_ready(flag_a: u8, flag_b: u8, count: u32) -> bool {
+    flag_a != 0 && flag_b != 0 && count != 0
+}
+
+/// `0x0077f120`: when the three readiness checks pass, forwards to the
+/// callee (`forward`, FUN_0077ed70) and returns its value; otherwise 0.
+pub fn w21a03_guarded_forward(
+    flag_a: u8,
+    flag_b: u8,
+    count: u32,
+    forward: impl FnOnce() -> u32,
+) -> u32 {
+    if w21a03_all_providers_ready(flag_a, flag_b, count) {
+        forward()
+    } else {
+        0
+    }
+}
+
+/// `0x00964540`: dialog flag bit 8 (`flags` is the dword at offset 0x30).
+pub fn w21a03_dialog_flag_bit8(flags: u32) -> u32 {
+    (flags >> 8) & 1
+}
+
+/// `0x00964550`: dialog flag bit 9.
+pub fn w21a03_dialog_flag_bit9(flags: u32) -> u32 {
+    (flags >> 9) & 1
+}
+
+/// `0x00964680`: dialog flag bit 7.
+pub fn w21a03_dialog_flag_bit7(flags: u32) -> u32 {
+    (flags >> 7) & 1
+}
+
+/// `0x00964610`: true when none of bits 7..9 (mask `0x380`) are set.
+pub fn w21a03_dialog_flags_clear_380(flags: u32) -> bool {
+    flags & 0x380 == 0
+}
+
+/// `0x00a8f9b0`: component-wise product of two 4-float vectors.
+pub fn w21a03_vec4_mul(a: &[f32; 4], b: &[f32; 4]) -> [f32; 4] {
+    [a[0] * b[0], a[1] * b[1], a[2] * b[2], a[3] * b[3]]
+}
+
+/// Scroll-list state touched by `0x0097a3a0` (offsets 0x64 and 0x67).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct W21a03Scroll {
+    /// Byte at +0x64: visible row count.
+    pub visible: u8,
+    /// Byte at +0x67: first visible row.
+    pub top: u8,
+    /// Child dialog flags (dword +0x30 of the object at +0x50), if any.
+    pub child_flags: Option<u32>,
+}
+
+/// `0x0097a3a0`: clears child flag bits `0x60000000`, then scrolls so row
+/// `row` is visible.  Returns true when the child must be refreshed
+/// (FUN_00964f90 in the original).
+pub fn w21a03_scroll_to_row(s: &mut W21a03Scroll, row: u8) -> bool {
+    if let Some(f) = s.child_flags.as_mut()
+        && *f & 0x6000_0000 != 0
+    {
+        *f &= 0x9fff_ffff;
+    }
+    let has_child = s.child_flags.is_some();
+    if row < s.top {
+        s.top = row;
+        return has_child;
+    }
+    if s.visible as u32 + s.top as u32 <= row as u32 && row != 0xff {
+        s.top = row.wrapping_sub(s.visible).wrapping_add(1);
+        return has_child;
+    }
+    false
+}
+
+#[cfg(test)]
+mod tests_wave21_agent03 {
+    use super::*;
+
+    #[test]
+    fn providers() {
+        assert!(w21a03_all_providers_ready(1, 2, 3));
+        assert!(!w21a03_all_providers_ready(1, 0, 3));
+        assert!(!w21a03_all_providers_ready(1, 1, 0));
+        assert_eq!(w21a03_guarded_forward(1, 1, 1, || 9), 9);
+        assert_eq!(w21a03_guarded_forward(0, 1, 1, || 9), 0);
+    }
+
+    #[test]
+    fn flag_bits() {
+        assert_eq!(w21a03_dialog_flag_bit8(0x100), 1);
+        assert_eq!(w21a03_dialog_flag_bit8(0x200), 0);
+        assert_eq!(w21a03_dialog_flag_bit9(0x200), 1);
+        assert_eq!(w21a03_dialog_flag_bit7(0x80), 1);
+        assert!(w21a03_dialog_flags_clear_380(0x7f));
+        assert!(!w21a03_dialog_flags_clear_380(0x100));
+    }
+
+    #[test]
+    fn vec_mul() {
+        assert_eq!(
+            w21a03_vec4_mul(&[1.0, 2.0, 3.0, 4.0], &[2.0, 2.0, 0.5, 0.0]),
+            [2.0, 4.0, 1.5, 0.0]
+        );
+    }
+
+    #[test]
+    fn scroll() {
+        let mut s = W21a03Scroll {
+            visible: 4,
+            top: 5,
+            child_flags: Some(0x6000_0001),
+        };
+        assert!(w21a03_scroll_to_row(&mut s, 2));
+        assert_eq!((s.top, s.child_flags), (2, Some(1)));
+        assert!(w21a03_scroll_to_row(&mut s, 7));
+        assert_eq!(s.top, 4);
+        assert!(!w21a03_scroll_to_row(&mut s, 4));
+        assert!(!w21a03_scroll_to_row(&mut s, 0xff));
+        s.child_flags = None;
+        assert!(!w21a03_scroll_to_row(&mut s, 0));
+    }
+}

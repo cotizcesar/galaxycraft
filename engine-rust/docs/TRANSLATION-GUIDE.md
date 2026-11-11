@@ -41,7 +41,8 @@ Budget estimate: tiers 1–3 ≈ 7.9k functions ≈ 40 waves of 10 × 20.
 git switch -c wave-W                          # or keep one branch per batch of waves
 python3 scripts/triage_corpus.py              # ~1 min, prints counts only
 python3 scripts/prepare_wave.py --wave W --queue engine-rust/docs/triage.tsv
-#   options: --count 10 --per-agent 20 --max-tier 2
+#   options: --count 10 --per-agent 20 --max-tier 2  (the owner asked for
+#   --count 20, then 30, agents per wave; merge/validate scale with it)
 ```
 
 This writes, per agent NN:
