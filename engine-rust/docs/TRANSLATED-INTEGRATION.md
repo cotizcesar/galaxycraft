@@ -147,3 +147,10 @@ and `runtime.rs`: fmt-style padded writers, motion-estimation SAD and
 sub-pel predictors, UI control focus helpers, arena allocator and CRT time
 helpers.  No rules-core counterpart; the helpers stay auditable reference
 code.
+
+## Wave 21 (2026-11-11, triage queue, tier 2, 20 agents)
+
++124 exact ledger functions (ledger 3308 -> 3432) in `client.rs`, `path.rs`
+and `runtime.rs`: MSVC STL container/tree helpers, hash buckets, image and
+tile records, string records, UI sub-pel helpers.  No rules-core
+counterpart; the helpers stay auditable reference code.

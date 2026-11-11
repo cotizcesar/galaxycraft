@@ -127,7 +127,9 @@ that file.
    logic.  Unresolved callees become closure/`bool` parameters.
 2. After the harness passes, check your file for clippy warnings:
    `cargo clippy -q --test waveW_agentNN 2>&1 | grep -A5 agentNN | head -20`.
-3. Keep the final report to 12 lines.
+3. Name types in UpperCamelCase after the prefix (`W21a05Pair`); if you must
+   keep the lowercase prefix, add `#[allow(non_camel_case_types)]` to the type.
+4. Keep the final report to 10 lines.
 
 ## Final report
 
