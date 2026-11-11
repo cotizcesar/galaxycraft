@@ -170,3 +170,12 @@ triage queue is now empty.
 builders, dialog-handler decision enums, minimap/blitter selectors, STL
 shared_ptr and deque helpers.  No rules-core counterpart; the helpers stay
 auditable reference code.
+
+## Wave 24 (2026-11-11, triage queue, tiers 2-3, 50 agents)
+
++251 exact ledger functions (ledger 3713 -> 3964) in `client.rs` and
+`runtime.rs`: MSVC scalar-deleting-destructor wrappers, red-black tree and
+introsort helpers, line clipping (Cohen-Sutherland), LAN packet helpers,
+slot/pool index conversions.  No rules-core counterpart; the helpers stay
+auditable reference code.  Battle.net / Storm network-session rows were
+skipped.
