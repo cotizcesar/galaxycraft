@@ -11,7 +11,9 @@ The current backup is created at:
 /home/cotizcesar/Documents/galaxycraft-work-backup-2026-11-11.tar.zst
 ```
 
-Copy that file (and its `.sha256`) to an external disk or cloud storage.
+The archive is about **87 MB** compressed.  Copy it and its `.sha256` to an
+external disk or cloud storage; verify it with
+`sha256sum -c galaxycraft-work-backup-2026-11-11.tar.zst.sha256`.
 It contains:
 
 ```text

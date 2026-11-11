@@ -35,11 +35,25 @@ def main() -> int:
     parser.add_argument("--count", type=int, default=10)
     parser.add_argument("--span", type=lambda s: int(s, 0), default=0x2000)
     parser.add_argument("--out", type=Path, default=Path("/tmp/opencode"))
+    parser.add_argument(
+        "--decomp",
+        type=Path,
+        default=Path.home() / ".cache/galaxycraft/decomp_full",
+        help="decompiled-body directory; resolved by address so a moved home still works",
+    )
     parser.add_argument("--force", action="store_true",
                         help="overwrite non-placeholder staging files")
     args = parser.parse_args()
 
     rows = list(csv.DictReader(LEDGER.open(encoding="utf-8"), delimiter="\t"))
+    decomp = args.decomp.expanduser()
+
+    def body_path(row: dict) -> str:
+        if decomp.is_dir():
+            matches = sorted(decomp.glob(f"*_{row['address'][2:]}_*.c"))
+            if matches:
+                return str(matches[0])
+        return row["body"]
     wave_dir = args.out / f"wave{args.wave}"
     wave_dir.mkdir(parents=True, exist_ok=True)
     src = ROOT / "engine-rust/src" / f"wave{args.wave}"
@@ -73,7 +87,7 @@ def main() -> int:
         ]
         for r in cand:
             lines.append(
-                f"| `{r['address']}` | `{r['name']}` | {r['size']} | `{r['body']}` |"
+                f"| `{r['address']}` | `{r['name']}` | {r['size']} | `{body_path(r)}` |"
             )
         if skip:
             lines += [
