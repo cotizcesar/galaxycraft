@@ -226,3 +226,8 @@ async-memory-file helpers (CASC glue that happened to be pure arithmetic).
 The queue had reached Blizzard's TACT/CDN downloader, which is Battle.net
 code; `scripts/triage_corpus.py` now propagates the `bnet` mark through the
 call graph so those rows are no longer queued.  Waves are paused.
+
+## Wave 31 (2026-11-11, triage queue, tiers 2-3, 148 agents)
+
++596 exact ledger functions (ledger 4688 -> 5284): `runtime.rs` (~380 helpers: STL/string/hash/tree plans, CRT and locale helpers, utf-16 and ctype tables, MD5/RC4-style primitives), `client.rs` (UI/video kernels) and `audio.rs`.  No rules-core counterpart; the helpers stay auditable reference code.  27 agents returned only skips.  Tier 2 of the queue is now empty.  Only 385 of 3147 wave helpers have a non-test caller (`scripts/corpus_audit.py`): wiring is a separate integration task.
+
