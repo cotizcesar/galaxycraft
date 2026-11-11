@@ -209,3 +209,11 @@ helpers.  No rules-core counterpart.
 loop filters, H.264/VP8 intra predictors), libwebm/libebml parsing helpers,
 tinyxml2 printer fields and GL vertex-record writers.  No rules-core
 counterpart; the CDN/NGDP rows were skipped as Battle.net code.
+
+## Wave 29 (2026-11-11, triage queue, tiers 2-3, 20 agents)
+
++81 exact ledger functions (ledger 4556 -> 4637) in `client.rs` and
+`runtime.rs`: Direct3D device helpers, heap/key-compare helpers, std::vector
+and filebuf plans, a JSON-like list parser and a Crypto++-style decoder
+fragment.  Blizzard TACT/CDN rows were skipped as Battle.net code.  No
+rules-core counterpart.

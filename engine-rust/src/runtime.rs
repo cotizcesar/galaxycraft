@@ -67215,3 +67215,2449 @@ mod tests_wave28_agent20 {
         assert_eq!(w28a20_fill_quad_indices(&mut ix, 0, 0), 0);
     }
 }
+
+// ===========================================================================
+// Merged from src/wave29/agent02.rs
+// ===========================================================================
+// Wave 29 batch 02: render-target binding and GL init helpers (pure models).
+
+/// One call recorded by the render-target binders: `(slot, target)` for
+/// `SetRenderTarget` (vtable +0x94) or the viewport (vtable +0xbc).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum W29a02Op {
+    /// `SetRenderTarget(slot, target)`; `None` clears the slot.
+    SetTarget(u32, Option<u32>),
+    /// `SetViewport` with `[x, y, w, h, 0.0, 1.0]` (z range as f32 bits).
+    SetViewport([u32; 6]),
+}
+
+const W29A02_ONE_BITS: u32 = 0x3f80_0000;
+
+fn w29a02_viewport(rect: &[u32; 4]) -> W29a02Op {
+    W29a02Op::SetViewport([rect[0], rect[1], rect[2], rect[3], 0, W29A02_ONE_BITS])
+}
+
+/// `0x00a9d950`: binds every device slot below `device_slots`; slots with
+/// an entry in `targets` get that surface, the others are cleared.  Ends
+/// by applying the viewport `rect` (this+4..+0x14) with z range 0..1.
+pub fn w29a02_bind_all_targets(
+    device_slots: u32,
+    targets: &[u32],
+    rect: &[u32; 4],
+) -> Vec<W29a02Op> {
+    let mut ops = Vec::new();
+    for slot in 0..device_slots {
+        ops.push(W29a02Op::SetTarget(
+            slot,
+            targets.get(slot as usize).copied(),
+        ));
+    }
+    ops.push(w29a02_viewport(rect));
+    ops
+}
+
+/// `0x00a9da40`: binds target `index` to slot 0 and clears slots
+/// `1..device_slots`; nothing happens when `index > targets.len()`
+/// (retail compares with `<=`, so `index == len` reads past the end; here
+/// that case yields `None`).
+pub fn w29a02_bind_single_target(
+    index: u32,
+    device_slots: u32,
+    targets: &[u32],
+    rect: &[u32; 4],
+) -> Vec<W29a02Op> {
+    let mut ops = Vec::new();
+    if index as usize > targets.len() {
+        return ops;
+    }
+    for slot in 1..device_slots {
+        ops.push(W29a02Op::SetTarget(slot, None));
+    }
+    ops.push(W29a02Op::SetTarget(0, targets.get(index as usize).copied()));
+    ops.push(w29a02_viewport(rect));
+    ops
+}
+
+/// `0x00a9db40`: clears slots `count..device_slots`, then binds slot `i`
+/// (for `i < count`) to `targets[order[i]]`, then sets the viewport.
+pub fn w29a02_bind_target_list(
+    order: &[u32],
+    count: u32,
+    device_slots: u32,
+    targets: &[u32],
+    rect: &[u32; 4],
+) -> Vec<W29a02Op> {
+    let mut ops = Vec::new();
+    for slot in count..device_slots {
+        ops.push(W29a02Op::SetTarget(slot, None));
+    }
+    for i in 0..count {
+        let t = order
+            .get(i as usize)
+            .and_then(|&o| targets.get(o as usize))
+            .copied();
+        ops.push(W29a02Op::SetTarget(i, t));
+    }
+    ops.push(w29a02_viewport(rect));
+    ops
+}
+
+/// `0x00a9bd80`: reads back the framebuffer as RGBA8 (`0x1908`/`0x1401`).
+/// Allocates `w*h*4` bytes through `alloc`, fills it via `read_pixels`
+/// (x=0, y=0, w, h) and reports the size through the optional outputs.
+pub fn w29a02_read_framebuffer(
+    width: i32,
+    height: i32,
+    out_w: Option<&mut i32>,
+    out_h: Option<&mut i32>,
+    mut alloc: impl FnMut(usize) -> Vec<u8>,
+    mut read_pixels: impl FnMut(i32, i32, i32, i32, &mut [u8]),
+) -> Vec<u8> {
+    let size = (height.wrapping_mul(width).wrapping_mul(4)) as usize;
+    let mut buf = alloc(size);
+    read_pixels(0, 0, width, height, &mut buf);
+    if let Some(w) = out_w {
+        *w = width;
+    }
+    if let Some(h) = out_h {
+        *h = height;
+    }
+    buf
+}
+
+/// Outcome of the capability check in `0x00a9c060`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum W29a02GlInit {
+    /// Intel driver string found (renderer or vendor): takes the string
+    /// path with no render-target setup.
+    IntelPath,
+    /// `("GL Error", "Only 1 render target")` is reported.
+    SingleTargetError,
+    /// Blend (0xbe2) is enabled with (0x302, 0x303) and setup proceeds.
+    Ready,
+}
+
+/// `0x00a9c060`: decides GL setup from the two driver strings containing
+/// "intel" and the limits `GL_MAX_COLOR_ATTACHMENTS` (0x8cdf) and
+/// `GL_MAX_DRAW_BUFFERS` (0x8824).  Fewer than 6 of either is an error.
+pub fn w29a02_gl_init_decision(
+    renderer_has_intel: bool,
+    vendor_has_intel: bool,
+    max_color_attachments: i32,
+    max_draw_buffers: i32,
+) -> W29a02GlInit {
+    if renderer_has_intel || vendor_has_intel {
+        W29a02GlInit::IntelPath
+    } else if max_color_attachments < 6 || max_draw_buffers < 6 {
+        W29a02GlInit::SingleTargetError
+    } else {
+        W29a02GlInit::Ready
+    }
+}
+
+#[cfg(test)]
+mod tests_wave29_agent02 {
+    use super::*;
+
+    const R: [u32; 4] = [1, 2, 3, 4];
+    const VP: W29a02Op = W29a02Op::SetViewport([1, 2, 3, 4, 0, 0x3f80_0000]);
+
+    #[test]
+    fn bind_all() {
+        let ops = w29a02_bind_all_targets(3, &[10, 11], &R);
+        assert_eq!(
+            ops,
+            vec![
+                W29a02Op::SetTarget(0, Some(10)),
+                W29a02Op::SetTarget(1, Some(11)),
+                W29a02Op::SetTarget(2, None),
+                VP
+            ]
+        );
+        assert_eq!(w29a02_bind_all_targets(0, &[], &R), vec![VP]);
+    }
+
+    #[test]
+    fn bind_single() {
+        let ops = w29a02_bind_single_target(1, 3, &[10, 11], &R);
+        assert_eq!(
+            ops,
+            vec![
+                W29a02Op::SetTarget(1, None),
+                W29a02Op::SetTarget(2, None),
+                W29a02Op::SetTarget(0, Some(11)),
+                VP
+            ]
+        );
+        assert!(w29a02_bind_single_target(3, 3, &[10, 11], &R).is_empty());
+    }
+
+    #[test]
+    fn bind_list() {
+        let ops = w29a02_bind_target_list(&[1, 0], 2, 3, &[10, 11], &R);
+        assert_eq!(
+            ops,
+            vec![
+                W29a02Op::SetTarget(2, None),
+                W29a02Op::SetTarget(0, Some(11)),
+                W29a02Op::SetTarget(1, Some(10)),
+                VP
+            ]
+        );
+    }
+
+    #[test]
+    fn readback() {
+        let (mut w, mut h) = (0, 0);
+        let buf = w29a02_read_framebuffer(
+            2,
+            3,
+            Some(&mut w),
+            Some(&mut h),
+            |n| vec![0; n],
+            |x, y, ww, hh, b| {
+                assert_eq!((x, y, ww, hh), (0, 0, 2, 3));
+                b[0] = 7;
+            },
+        );
+        assert_eq!((buf.len(), buf[0], w, h), (24, 7, 2, 3));
+    }
+
+    #[test]
+    fn gl_decision() {
+        assert_eq!(
+            w29a02_gl_init_decision(true, false, 8, 8),
+            W29a02GlInit::IntelPath
+        );
+        assert_eq!(
+            w29a02_gl_init_decision(false, false, 5, 8),
+            W29a02GlInit::SingleTargetError
+        );
+        assert_eq!(
+            w29a02_gl_init_decision(false, false, 8, 5),
+            W29a02GlInit::SingleTargetError
+        );
+        assert_eq!(
+            w29a02_gl_init_decision(false, false, 6, 6),
+            W29a02GlInit::Ready
+        );
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave29/agent03.rs
+// ===========================================================================
+// Wave 29 translation batch 03: Direct3D 9 renderer glue helpers.
+
+/// `0x00a9dff0`: HRESULT check.  A negative value is a failure; the original
+/// formats `0x%08X|%s|%s` and throws, otherwise returns.  Returns the
+/// formatted prefix on failure (name/description strings are supplied by the
+/// caller because the lookup tables are opaque).
+pub fn w29a03_check_hresult(hr: i32, name: &str, desc: &str) -> Result<(), String> {
+    if hr < 0 {
+        Err(format!("0x{:08X}|{}|{}", hr as u32, name, desc))
+    } else {
+        Ok(())
+    }
+}
+
+/// One render-target surface description built by `0x00a9fe20`
+/// (record stride `0x14`: format at +4, width at +8, height at +0xc,
+/// usage at +0x10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct W29a03SurfaceDesc {
+    pub format: u32,
+    pub width: u32,
+    pub height: u32,
+    pub usage: u32,
+}
+
+/// `0x00a9fe20`: builds `count` surface descriptors.  Every surface gets
+/// format `0x15` except index `special`, which gets `0x71`; both extents are
+/// `(size & 0xff) + 1` and usage is `3`.
+pub fn w29a03_build_surfaces(count: u32, size: u32, special: u32) -> Vec<W29a03SurfaceDesc> {
+    let extent = (size & 0xff) + 1;
+    (0..count)
+        .map(|i| W29a03SurfaceDesc {
+            format: if i == special { 0x71 } else { 0x15 },
+            width: extent,
+            height: extent,
+            usage: 3,
+        })
+        .collect()
+}
+
+/// GPU vendor classification used by `0x00aa0800`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum W29a03Vendor {
+    /// PCI id `0x1002` (3-character name).
+    Amd,
+    /// PCI id `0x10de` (6-character name).
+    Nvidia,
+    /// PCI id `0x8086` ("intel").
+    Intel,
+    Other,
+}
+
+/// `0x00aa0800`: maps the adapter PCI vendor id to a vendor.
+pub fn w29a03_vendor_from_id(id: i32) -> W29a03Vendor {
+    match id {
+        0x1002 => W29a03Vendor::Amd,
+        0x10de => W29a03Vendor::Nvidia,
+        0x8086 => W29a03Vendor::Intel,
+        _ => W29a03Vendor::Other,
+    }
+}
+
+/// Viewport rectangle (left, top, right, bottom) computed in `0x00a9ec90`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct W29a03Rect {
+    pub left: i32,
+    pub top: i32,
+    pub right: i32,
+    pub bottom: i32,
+}
+
+/// `0x00a9ec90` (viewport block): converts a normalised rect
+/// `[x, y, w, h]` into pixels for a `width` x `height` target.  `y` and `h`
+/// are clamped to `[0, 1]` for the height term; the top uses the unclamped
+/// `h`; bottom carries a `+2.0` pixel margin.
+pub fn w29a03_viewport_rect(norm: [f32; 4], width: i32, height: i32) -> W29a03Rect {
+    let [x, y, w, h] = norm;
+    let (wf, hf) = (width as f32, height as f32);
+    let yc = y.clamp(0.0, 1.0);
+    let hc = h.clamp(0.0, 1.0);
+    let left = wf * x;
+    let top = ((1.0 - yc) - h) * hf;
+    W29a03Rect {
+        left: left as i32,
+        top: top as i32,
+        right: (wf * w + left) as i32,
+        bottom: (hf * hc + top + 2.0) as i32,
+    }
+}
+
+#[cfg(test)]
+mod tests_wave29_agent03 {
+    use super::*;
+
+    #[test]
+    fn hresult() {
+        assert!(w29a03_check_hresult(0, "a", "b").is_ok());
+        assert!(w29a03_check_hresult(1, "a", "b").is_ok());
+        assert_eq!(
+            w29a03_check_hresult(-1, "N", "D").unwrap_err(),
+            "0xFFFFFFFF|N|D"
+        );
+    }
+
+    #[test]
+    fn surfaces() {
+        let s = w29a03_build_surfaces(3, 0x1ff, 1);
+        assert_eq!(s.len(), 3);
+        assert_eq!(s[0].format, 0x15);
+        assert_eq!(s[1].format, 0x71);
+        assert_eq!(s[2].width, 0x100);
+        assert_eq!(s[0].usage, 3);
+        assert!(w29a03_build_surfaces(0, 0, 0).is_empty());
+    }
+
+    #[test]
+    fn vendor() {
+        assert_eq!(w29a03_vendor_from_id(0x1002), W29a03Vendor::Amd);
+        assert_eq!(w29a03_vendor_from_id(0x10de), W29a03Vendor::Nvidia);
+        assert_eq!(w29a03_vendor_from_id(0x8086), W29a03Vendor::Intel);
+        assert_eq!(w29a03_vendor_from_id(0), W29a03Vendor::Other);
+    }
+
+    #[test]
+    fn viewport() {
+        let r = w29a03_viewport_rect([0.0, 0.0, 1.0, 1.0], 100, 50);
+        assert_eq!(
+            r,
+            W29a03Rect {
+                left: 0,
+                top: 0,
+                right: 100,
+                bottom: 52
+            }
+        );
+        let r = w29a03_viewport_rect([0.5, 0.25, 0.5, 0.5], 200, 100);
+        assert_eq!(r.left, 100);
+        assert_eq!(r.top, 25);
+        assert_eq!(r.right, 200);
+        assert_eq!(r.bottom, 77);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave29/agent04.rs
+// ===========================================================================
+// Wave 29 agent 04: MSVC `std::vector` helpers over 8-byte elements.
+// The capacity word keeps its high bit as a flag; only the low 31 bits count.
+
+/// `0x00aa2420`: opens a gap of `n` slots at element index `idx` in a vector
+/// of 8-byte elements (`insert(pos, n, ..)` front half).  Returns `None` when
+/// `size + n` exceeds the capacity (retail reallocates, outside this body).
+/// Otherwise the vector grows by `n` zeroed-or-moved slots and the result is
+/// `(first, fill_begin, fill_end)` element indices the caller fills with the
+/// new values.
+pub fn w29a04_vector_open_gap(
+    elems: &mut Vec<[u32; 2]>,
+    cap_word: u32,
+    idx: usize,
+    n: usize,
+) -> Option<(usize, usize, usize)> {
+    let size = elems.len();
+    if size + n > (cap_word & 0x7fff_ffff) as usize {
+        return None;
+    }
+    let after = idx + n;
+    elems.resize(size + n, [0, 0]);
+    if size <= after {
+        for i in idx..size {
+            elems[after + (i - idx)] = elems[i];
+        }
+        Some((idx, size, after))
+    } else {
+        for i in 0..n {
+            elems[size + i] = elems[size - n + i];
+        }
+        for i in (idx..size - n).rev() {
+            elems[i + n] = elems[i];
+        }
+        Some((idx, after, after))
+    }
+}
+
+/// `0x00aa25f0`: `push_back` of an 8-byte element.  `alias_idx` is the
+/// element index when the source points inside the vector itself (it is read
+/// before any growth); otherwise `value` is appended.  Returns `false` when
+/// the vector is full (retail reallocates in code outside this body).
+pub fn w29a04_vector_push_back(
+    elems: &mut Vec<[u32; 2]>,
+    cap_word: u32,
+    value: [u32; 2],
+    alias_idx: Option<usize>,
+) -> bool {
+    if elems.len() == (cap_word & 0x7fff_ffff) as usize {
+        return false;
+    }
+    let v = match alias_idx {
+        Some(i) if i < elems.len() => elems[i],
+        _ => value,
+    };
+    elems.push(v);
+    true
+}
+
+#[cfg(test)]
+mod tests_wave29_agent04 {
+    use super::*;
+
+    fn v(n: u32) -> Vec<[u32; 2]> {
+        (0..n).map(|i| [i, i + 100]).collect()
+    }
+
+    #[test]
+    fn push_back_alias_and_full() {
+        let mut e = v(2);
+        assert!(w29a04_vector_push_back(
+            &mut e,
+            0x8000_0004,
+            [9, 9],
+            Some(1)
+        ));
+        assert_eq!(e[2], [1, 101]);
+        assert!(w29a04_vector_push_back(&mut e, 4, [9, 9], Some(7)));
+        assert_eq!(e[3], [9, 9]);
+        assert!(!w29a04_vector_push_back(&mut e, 4, [0, 0], None));
+        assert_eq!(e.len(), 4);
+    }
+
+    #[test]
+    fn open_gap_cases() {
+        let mut e = v(4);
+        assert_eq!(w29a04_vector_open_gap(&mut e, 5, 0, 2), None);
+        // size <= idx + n: tail shifts, gap spans [size, idx+n).
+        let mut e = v(3);
+        assert_eq!(w29a04_vector_open_gap(&mut e, 8, 2, 2), Some((2, 3, 4)));
+        assert_eq!(e[4], [2, 102]);
+        // middle insert.
+        let mut e = v(4);
+        assert_eq!(w29a04_vector_open_gap(&mut e, 8, 1, 2), Some((1, 3, 3)));
+        let firsts: Vec<u32> = e.iter().map(|x| x[0]).collect();
+        assert_eq!(&firsts[..1], &[0]);
+        assert_eq!(&firsts[3..], &[1, 2, 3]);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave29/agent05.rs
+// ===========================================================================
+// Wave 29 translation batch 05.
+//
+// Graphics-driver / STL glue; only two routines carry recoverable logic.
+
+/// `0x00aa6ed0`: maps a PCI vendor id to the length of the vendor string
+/// the original constructs (string bytes are not visible in the body; only
+/// the length passed to the string builder is).  Unknown vendors use 7.
+pub fn w29a05_vendor_name_len(vendor_id: u16) -> usize {
+    match vendor_id {
+        0x10de => 6,
+        0x1002 => 3,
+        0x106b => 5,
+        0x1414 => 9,
+        0x8086 => 5,
+        _ => 7,
+    }
+}
+
+/// `0x00aa90c0`: hash-table bucket count for a requested minimum.  `size`
+/// is the element count (`in_ECX[2]`), `buckets` the current count,
+/// `max_load` the load factor, `hint` the value from the unresolved sizing
+/// call (`size + 1` is used when load is above the limit).  Returns the
+/// power-of-two (>= 8) count and whether the table is already that size.
+pub fn w29a05_bucket_count(
+    size: i32,
+    cur_buckets: u32,
+    has_table: bool,
+    max_load: f32,
+    sizing: u32,
+    wanted: u32,
+) -> (u32, bool) {
+    let mut n = sizing.wrapping_add(1);
+    if (size as f64) as f32 <= (sizing as f64) as f32 * max_load {
+        n = sizing;
+    }
+    if n < wanted {
+        n = wanted;
+    }
+    let mut p = 8u32;
+    if n > 8 {
+        while p < n {
+            p *= 2;
+        }
+    }
+    (p, p == cur_buckets && has_table)
+}
+
+#[cfg(test)]
+mod tests_wave29_agent05 {
+    use super::*;
+
+    #[test]
+    fn vendor_lengths() {
+        assert_eq!(w29a05_vendor_name_len(0x10de), 6);
+        assert_eq!(w29a05_vendor_name_len(0x1002), 3);
+        assert_eq!(w29a05_vendor_name_len(0x1414), 9);
+        assert_eq!(w29a05_vendor_name_len(0x8086), 5);
+        assert_eq!(w29a05_vendor_name_len(0x106b), 5);
+        assert_eq!(w29a05_vendor_name_len(1), 7);
+    }
+
+    #[test]
+    fn bucket_count() {
+        assert_eq!(w29a05_bucket_count(1, 8, true, 1.0, 4, 0), (8, true));
+        assert_eq!(w29a05_bucket_count(1, 8, false, 1.0, 4, 0), (8, false));
+        assert_eq!(w29a05_bucket_count(100, 8, true, 1.0, 20, 0), (32, false));
+        assert_eq!(w29a05_bucket_count(1, 8, true, 1.0, 4, 100), (128, false));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave29/agent06.rs
+// ===========================================================================
+// Wave 29 translation batch 06: small container/record helpers.
+
+/// `0x00aa9590`: address of the `index`-th record of the table at
+/// `DAT_0136c2c0` (stride `0x78`); returned as a byte offset from the base.
+pub fn w29a06_record_offset(index: i32) -> i32 {
+    index.wrapping_mul(0x78)
+}
+
+/// `0x00aab280`: capacity growth for a string/vector header word `flags`
+/// (low 31 bits = capacity, top bit = flag).  When `wanted` exceeds the
+/// capacity, the new capacity is `cap + cap/2` (at least `wanted`); returns
+/// `(new_flags, new_cap)` with the top bit preserved, else `None`.
+pub fn w29a06_grow_capacity(flags: u32, wanted: u32) -> Option<(u32, u32)> {
+    if (flags & 0x7fff_ffff) >= wanted {
+        return None;
+    }
+    let mut new_cap = ((flags >> 1) & 0x3fff_ffff).wrapping_add(flags & 0x7fff_ffff);
+    if new_cap < wanted {
+        new_cap = wanted;
+    }
+    Some((((flags ^ new_cap) & 0x7fff_ffff) ^ flags, new_cap))
+}
+
+/// `0x00aac9b0`: resize a vector of 32-bit slots to `new_len`; shrinking
+/// truncates, growing zero-fills the new slots and bumps the capacity word
+/// (`cap_flags`) with the same rule as the grow helper at 0x00aab280.
+pub fn w29a06_resize_slots(slots: &mut Vec<u32>, cap_flags: &mut u32, new_len: usize) {
+    let len = slots.len();
+    if new_len < len {
+        slots.truncate(new_len);
+    } else if len < new_len {
+        if let Some((flags, _)) = w29a06_grow_capacity(*cap_flags, new_len as u32) {
+            *cap_flags = flags;
+        }
+        slots.resize(new_len, 0);
+    }
+}
+
+/// `0x00ac04b0`: formats through the callee `format` (which yields a
+/// `(buf, len)` pair) and passes it to `emit`; negative results map to -1.
+pub fn w29a06_format_result(
+    format: impl FnOnce() -> (u32, u32),
+    emit: impl FnOnce(u32, u32) -> i32,
+) -> i32 {
+    let (a, b) = format();
+    let r = emit(a, b);
+    if r < 0 { -1 } else { r }
+}
+
+/// `0x00ac08a0`: initialises a `0x18` byte record: byte 0 = low byte of the
+/// length, bytes 1..0x18 zeroed, then `len` bytes of `src` copied to byte 1
+/// (clamped to the 0x17 payload bytes).
+pub fn w29a06_init_record_with_len(src: &[u8]) -> [u8; 0x18] {
+    let mut rec = [0u8; 0x18];
+    rec[0] = src.len() as u8;
+    let n = src.len().min(0x17);
+    rec[1..1 + n].copy_from_slice(&src[..n]);
+    rec
+}
+
+/// `0x00ac08e0`: like the initialiser at 0x00ac08a0 but leaves byte 0
+/// untouched (`first`); bytes 1..0x18 are zeroed then `src` copied in.
+pub fn w29a06_reset_record(first: u8, src: &[u8]) -> [u8; 0x18] {
+    let mut rec = [0u8; 0x18];
+    rec[0] = first;
+    let n = src.len().min(0x17);
+    rec[1..1 + n].copy_from_slice(&src[..n]);
+    rec
+}
+
+#[cfg(test)]
+mod tests_wave29_agent06 {
+    use super::*;
+
+    #[test]
+    fn record_offset() {
+        assert_eq!(w29a06_record_offset(0), 0);
+        assert_eq!(w29a06_record_offset(2), 0xf0);
+    }
+
+    #[test]
+    fn grow() {
+        assert_eq!(w29a06_grow_capacity(10, 5), None);
+        assert_eq!(w29a06_grow_capacity(10, 12), Some((15, 15)));
+        assert_eq!(
+            w29a06_grow_capacity(0x8000_0010, 100),
+            Some((0x8000_0064, 100))
+        );
+    }
+
+    #[test]
+    fn resize() {
+        let mut v = vec![1, 2, 3];
+        let mut cap = 3;
+        w29a06_resize_slots(&mut v, &mut cap, 5);
+        assert_eq!(v, [1, 2, 3, 0, 0]);
+        assert_eq!(cap, 5);
+        w29a06_resize_slots(&mut v, &mut cap, 1);
+        assert_eq!(v, [1]);
+    }
+
+    #[test]
+    fn format_result() {
+        assert_eq!(w29a06_format_result(|| (1, 2), |_, _| -5), -1);
+        assert_eq!(w29a06_format_result(|| (1, 2), |a, b| (a + b) as i32), 3);
+    }
+
+    #[test]
+    fn records() {
+        let r = w29a06_init_record_with_len(&[7, 8]);
+        assert_eq!(&r[..4], &[2, 7, 8, 0]);
+        let r = w29a06_reset_record(9, &[1]);
+        assert_eq!(&r[..3], &[9, 1, 0]);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave29/agent07.rs
+// ===========================================================================
+// Wave 29 agent 07: length-prefixed compare and shared-pointer release.
+
+/// `0x00ac1cc0`: equality of two length-prefixed byte records (first byte is
+/// the length, followed by that many bytes).  Returns false on a length
+/// mismatch, otherwise true when all payload bytes match.
+pub fn w29a07_prefixed_eq(a: &[u8], b: &[u8]) -> bool {
+    let (Some(&la), Some(&lb)) = (a.first(), b.first()) else {
+        return false;
+    };
+    if la != lb {
+        return false;
+    }
+    let n = la as usize;
+    match (a.get(1..1 + n), b.get(1..1 + n)) {
+        (Some(x), Some(y)) => x == y,
+        _ => false,
+    }
+}
+
+/// Control block of an intrusive shared pointer: use count at +4, weak count
+/// at +8 (the vtable pointer sits at +0).
+pub struct W29a07Ctrl {
+    pub uses: std::sync::atomic::AtomicI32,
+    pub weaks: std::sync::atomic::AtomicI32,
+}
+
+/// Release step used by `0x00ac1950` for each of its two shared members:
+/// decrement uses; when it was 1 call `dispose` (vtable +8), then decrement
+/// weaks and when that was 1 call `destroy` (vtable +0xc).
+pub fn w29a07_release(
+    c: Option<&W29a07Ctrl>,
+    dispose: &mut dyn FnMut(),
+    destroy: &mut dyn FnMut(),
+) {
+    use std::sync::atomic::Ordering::SeqCst;
+    let Some(c) = c else { return };
+    if c.uses.fetch_sub(1, SeqCst) == 1 {
+        dispose();
+        if c.weaks.fetch_sub(1, SeqCst) == 1 {
+            destroy();
+        }
+    }
+}
+
+/// `0x00ac1950`: destructor body releasing the shared pointer at +0x10 then
+/// the one at +8 (after the `+0x48` string-free check, a caller concern).
+pub fn w29a07_drop_two_shared(
+    first: Option<&W29a07Ctrl>,
+    second: Option<&W29a07Ctrl>,
+    dispose: &mut dyn FnMut(u8),
+    destroy: &mut dyn FnMut(u8),
+) {
+    w29a07_release(first, &mut || dispose(0), &mut || destroy(0));
+    w29a07_release(second, &mut || dispose(1), &mut || destroy(1));
+}
+
+// Skipped as "bnet" (tact::ClientHandler/KeyRing, CDN client) or
+// non-returning glue: FUN_00ac0920 FUN_00ac0960 FUN_00ac0ad0 FUN_00ac0de0
+// FUN_00ac1130 FUN_00ac1500 FUN_00ac1620 FUN_00ac1690 FUN_00ac16e0
+// FUN_00ac18d0 FUN_00ac1a40 FUN_00ac1ab0 FUN_00ac1b30 FUN_00ac1b50
+// FUN_00ac1c50 FUN_00ac1d30 FUN_00ac1d60 FUN_00ac1d90.
+
+#[cfg(test)]
+mod tests_wave29_agent07 {
+    use super::*;
+    use std::sync::atomic::AtomicI32;
+
+    #[test]
+    fn prefixed_eq_cases() {
+        assert!(w29a07_prefixed_eq(&[3, 1, 2, 3], &[3, 1, 2, 3, 9]));
+        assert!(!w29a07_prefixed_eq(&[3, 1, 2, 3], &[3, 1, 2, 4]));
+        assert!(!w29a07_prefixed_eq(&[2, 1, 2], &[3, 1, 2, 3]));
+        assert!(w29a07_prefixed_eq(&[0], &[0]));
+        assert!(!w29a07_prefixed_eq(&[], &[0]));
+        assert!(!w29a07_prefixed_eq(&[5, 1], &[5, 1]));
+    }
+
+    #[test]
+    fn release_and_drop() {
+        let a = W29a07Ctrl {
+            uses: AtomicI32::new(1),
+            weaks: AtomicI32::new(1),
+        };
+        let b = W29a07Ctrl {
+            uses: AtomicI32::new(2),
+            weaks: AtomicI32::new(1),
+        };
+        let mut log = Vec::new();
+        let log_cell = std::cell::RefCell::new(&mut log);
+        w29a07_drop_two_shared(
+            Some(&a),
+            Some(&b),
+            &mut |i| log_cell.borrow_mut().push(('d', i)),
+            &mut |i| log_cell.borrow_mut().push(('x', i)),
+        );
+        assert_eq!(log, vec![('d', 0), ('x', 0)]);
+        assert_eq!(b.uses.load(std::sync::atomic::Ordering::SeqCst), 1);
+        w29a07_release(None, &mut || panic!(), &mut || panic!());
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave29/agent08.rs
+// ===========================================================================
+// Wave 29 translation batch 08 (tact client-handler glue, reference helpers).
+
+/// `0x00ac2510`: lazy once-init of a service slot.  `disabled` is the byte at
+/// +9, `init_done` the byte at +8, `value` the dword at +0.  Returns whether
+/// the slot is usable (the original returns the object or null when the
+/// disabled flag is set); on first use it zeroes the value and marks init.
+pub fn w29a08_lazy_slot_get(disabled: bool, init_done: &mut bool, value: &mut u32) -> bool {
+    if !disabled && !*init_done {
+        *value = 0;
+        *init_done = true;
+    }
+    !disabled
+}
+
+/// `0x00ac2960`: dispatches to the handler when present.  Returns `Err` when
+/// all four 32-bit ids are zero (original raises a ClientHandler error),
+/// otherwise `Ok(true)` if the handler ran and `Ok(false)` if absent.
+pub fn w29a08_dispatch_ids(
+    ids: [u32; 4],
+    handler: Option<&mut dyn FnMut([u32; 4])>,
+) -> Result<bool, ()> {
+    if ids == [0; 4] {
+        return Err(());
+    }
+    match handler {
+        Some(h) => {
+            h(ids);
+            Ok(true)
+        }
+        None => Ok(false),
+    }
+}
+
+/// `0x00ac47c0`: precondition check.  Fails when no streaming module is
+/// configured and the flag byte at +0xa7 is clear.
+pub fn w29a08_check_streaming_ready(module_present: bool, flag_a7: bool) -> Result<(), ()> {
+    if !module_present && !flag_a7 {
+        Err(())
+    } else {
+        Ok(())
+    }
+}
+
+/// `0x00ac4ba0` (reuse branch): for each of the three slots (+0x424/+0x428/
+/// +0x42c, sourced from +0x30/+0x34/+0x38) an empty destination adopts the
+/// non-null source and add-refs it.  Returns the number of adopted slots.
+pub fn w29a08_adopt_components(
+    dst: &mut [u32; 3],
+    src: [u32; 3],
+    mut add_ref: impl FnMut(u32),
+) -> usize {
+    let mut n = 0;
+    for i in 0..3 {
+        if dst[i] == 0 && src[i] != 0 {
+            dst[i] = src[i];
+            add_ref(src[i]);
+            n += 1;
+        }
+    }
+    n
+}
+
+/// `0x00ac5390`: keyring key intake.  `len` is the byte at +0x99; zero means
+/// no key (`Ok(None)`), any value except 16 is an error, otherwise the 16
+/// key bytes are returned.
+pub fn w29a08_keyring_key(len: u8, key: &[u8]) -> Result<Option<[u8; 16]>, ()> {
+    match len {
+        0 => Ok(None),
+        16 if key.len() >= 16 => {
+            let mut out = [0u8; 16];
+            out.copy_from_slice(&key[..16]);
+            Ok(Some(out))
+        }
+        _ => Err(()),
+    }
+}
+
+/// `0x00ac3f60`: zero-initialises `count` 24-byte (6 dword) records.
+pub fn w29a08_zero_records(recs: &mut [u32], count: usize) {
+    for r in recs.chunks_mut(6).take(count) {
+        for w in r.iter_mut() {
+            *w = 0;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests_wave29_agent08 {
+    use super::*;
+
+    #[test]
+    fn lazy_slot() {
+        let (mut d, mut v) = (false, 7);
+        assert!(w29a08_lazy_slot_get(false, &mut d, &mut v));
+        assert!(d && v == 0);
+        let (mut d2, mut v2) = (false, 7);
+        assert!(!w29a08_lazy_slot_get(true, &mut d2, &mut v2));
+        assert!(!d2 && v2 == 7);
+    }
+
+    #[test]
+    fn dispatch() {
+        assert!(w29a08_dispatch_ids([0; 4], None).is_err());
+        assert_eq!(w29a08_dispatch_ids([0, 0, 0, 1], None), Ok(false));
+        let mut seen = 0;
+        let mut f = |i: [u32; 4]| seen = i[3];
+        assert_eq!(w29a08_dispatch_ids([0, 0, 0, 5], Some(&mut f)), Ok(true));
+        assert_eq!(seen, 5);
+    }
+
+    #[test]
+    fn streaming_ready() {
+        assert!(w29a08_check_streaming_ready(false, false).is_err());
+        assert!(w29a08_check_streaming_ready(true, false).is_ok());
+        assert!(w29a08_check_streaming_ready(false, true).is_ok());
+    }
+
+    #[test]
+    fn adopt() {
+        let mut d = [0, 9, 0];
+        let mut refs = vec![];
+        let n = w29a08_adopt_components(&mut d, [1, 2, 0], |p| refs.push(p));
+        assert_eq!(n, 1);
+        assert_eq!(d, [1, 9, 0]);
+        assert_eq!(refs, vec![1]);
+    }
+
+    #[test]
+    fn keyring() {
+        assert_eq!(w29a08_keyring_key(0, &[]), Ok(None));
+        assert!(w29a08_keyring_key(15, &[0; 16]).is_err());
+        assert_eq!(w29a08_keyring_key(16, &[3; 16]), Ok(Some([3; 16])));
+    }
+
+    #[test]
+    fn zero() {
+        let mut r = [1u32; 18];
+        w29a08_zero_records(&mut r, 2);
+        assert!(r[..12].iter().all(|&x| x == 0));
+        assert!(r[12..].iter().all(|&x| x == 1));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave29/agent09.rs
+// ===========================================================================
+// Wave 29 translation batch 09: blz filebuf field layout helpers.
+
+/// Model of the `blz::basic_filebuf<char>` fields touched by the routines.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct W29a09Filebuf {
+    /// Fields `[1..=6]` (get/put area pointers).
+    pub area: [u32; 6],
+    /// Field 7: opened file handle.
+    pub file: u32,
+    /// Byte at +0x20: file owned flag.
+    pub file_owned: bool,
+    /// Field 9: buffer pointer (+0x24).
+    pub buf: u32,
+    /// Byte at +0x2d: buffer owned flag.
+    pub buf_owned: bool,
+    /// Field 10: buffer size (+0x28).
+    pub buf_size: u32,
+}
+
+/// `0x00ac6ad0`: filebuf constructor.  Clears the area and file fields; if the
+/// close/probe call returns other than -1, frees an owned buffer through
+/// `free_buf` and installs a fresh owned buffer of size `0x1000`.
+pub fn w29a09_filebuf_new(probe: i32, mut free_buf: impl FnMut(u32)) -> W29a09Filebuf {
+    let mut f = W29a09Filebuf::default();
+    if probe != -1 {
+        if f.buf_owned {
+            free_buf(f.buf);
+        }
+        f.buf = 0;
+        f.buf_owned = true;
+        f.buf_size = 0x1000;
+        f.area = [0; 6];
+    }
+    f
+}
+
+/// `0x00ac6bb0`: filebuf destructor.  If a file is open, resets the get area
+/// (when set), releases the file via `close_file` only if owned, then frees an
+/// owned buffer with `free_buf`.
+pub fn w29a09_filebuf_drop(
+    f: &mut W29a09Filebuf,
+    mut close_file: impl FnMut(u32),
+    mut free_buf: impl FnMut(u32),
+) {
+    if f.file != 0 {
+        if f.area[0] != 0 {
+            f.area[0] = 0;
+            f.area[1] = 0;
+            f.area[2] = 0;
+        }
+        if f.file_owned {
+            close_file(f.file);
+        }
+        f.file = 0;
+        f.file_owned = false;
+    }
+    if f.buf_owned {
+        free_buf(f.buf);
+    }
+}
+
+/// `0x00ac6c50`: frees the pointer at offset `+0x84` when non-null.
+pub fn w29a09_free_field_84(ptr: u32, mut free: impl FnMut(u32)) {
+    if ptr != 0 {
+        free(ptr);
+    }
+}
+
+#[cfg(test)]
+mod tests_wave29_agent09 {
+    use super::*;
+
+    #[test]
+    fn new_sets_buffer() {
+        let f = w29a09_filebuf_new(0, |_| panic!());
+        assert_eq!((f.buf_size, f.buf_owned), (0x1000, true));
+        let g = w29a09_filebuf_new(-1, |_| panic!());
+        assert_eq!(g, W29a09Filebuf::default());
+    }
+
+    #[test]
+    fn drop_frees_owned() {
+        let mut f = W29a09Filebuf {
+            file: 5,
+            file_owned: true,
+            area: [1, 2, 3, 0, 0, 0],
+            buf: 9,
+            buf_owned: true,
+            buf_size: 1,
+        };
+        let (mut c, mut b) = (0, 0);
+        w29a09_filebuf_drop(&mut f, |h| c = h, |p| b = p);
+        assert_eq!((c, b, f.file, f.area[0]), (5, 9, 0, 0));
+    }
+
+    #[test]
+    fn free_84() {
+        let mut n = 0;
+        w29a09_free_field_84(0, |_| n += 1);
+        w29a09_free_field_84(7, |_| n += 1);
+        assert_eq!(n, 1);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave29/agent10.rs
+// ===========================================================================
+// Wave 29 translation batch 10: blz stream-buffer / token helpers.
+
+/// `0x00ac80b0`: splits `text` on the ASCII whitespace set (space, \t, \v,
+/// \r, \f, \n) into tokens; the output vector is cleared first.
+pub fn w29a10_split_whitespace(text: &[u8], out: &mut Vec<Vec<u8>>) {
+    out.clear();
+    let is_ws = |c: u8| matches!(c, b' ' | b'\t' | 0x0b | b'\r' | 0x0c | b'\n');
+    let mut i = 0;
+    while i < text.len() {
+        while i < text.len() && is_ws(text[i]) {
+            i += 1;
+        }
+        if i >= text.len() {
+            break;
+        }
+        let start = i;
+        while i < text.len() && !is_ws(text[i]) {
+            i += 1;
+        }
+        out.push(text[start..i].to_vec());
+    }
+}
+
+/// `0x00ac8590`: formats a token list (0x1c-byte records) into `dst` as
+/// space-joined text and returns the full length needed.  `skip_if_default`
+/// models the (flags & 4 == 0 && default-equal) early return of 0.
+pub fn w29a10_join_tokens(tokens: &[Vec<u8>], dst: &mut [u8], skip_if_default: bool) -> usize {
+    if skip_if_default {
+        return 0;
+    }
+    let mut room = dst.len();
+    let mut pos = 0usize;
+    let mut total = 0usize;
+    for (i, tok) in tokens.iter().enumerate() {
+        if i > 0 {
+            if room != 0 {
+                dst[pos] = b' ';
+                pos += 1;
+                room -= 1;
+            }
+            total += 1;
+        }
+        let n = tok.len().min(room);
+        dst[pos..pos + n].copy_from_slice(&tok[..n]);
+        pos += n;
+        room -= n;
+        total += tok.len();
+    }
+    total
+}
+
+/// `0x00ac8650`: boolean branch of the option formatter.  Returns 0 when the
+/// value equals the default and flag bit 2 is clear; when `kind == 2` writes
+/// `'0'`/`'1'` and returns 1.  `None` means the string-conversion branch.
+pub fn w29a10_format_bool(
+    dst: &mut [u8],
+    flags: u8,
+    value: u8,
+    default: u8,
+    kind: i32,
+) -> Option<u32> {
+    if flags & 4 == 0 && value == default {
+        return Some(0);
+    }
+    if kind != 2 {
+        return None;
+    }
+    if let Some(b) = dst.first_mut() {
+        *b = if value != 0 { b'1' } else { b'0' };
+    }
+    Some(1)
+}
+
+/// Output stream buffer state used by `0x00ac86e0` and `0x00ac88f0`.
+#[derive(Debug, Clone, Default)]
+pub struct W29a10OutBuf {
+    pub has_file: bool,
+    pub buf: Vec<u8>,
+    pub buf_len: usize,
+    pub owns: bool,
+    pub pbase: Option<usize>,
+    pub pptr: usize,
+    pub epptr: usize,
+    pub get_area: [usize; 3],
+}
+
+/// `0x00ac86e0`: overflow.  Lazily sets the put area (one inline byte when
+/// unbuffered, `buf_len - 1` otherwise), stores `ch`, flushes through `write`
+/// when full or `ch == -1`.  Returns `ch` (0 for a successful flush of -1,
+/// -1 on error).
+pub fn w29a10_overflow(
+    s: &mut W29a10OutBuf,
+    mut ch: i32,
+    write: &mut dyn FnMut(&[u8]) -> usize,
+) -> i32 {
+    if !s.has_file {
+        return -1;
+    }
+    if s.pbase.is_none() {
+        let (end, _) = if s.buf_len == 0 {
+            (1, 0)
+        } else {
+            (s.buf_len - 1, 0)
+        };
+        if s.buf.len() < end + 1 {
+            s.buf.resize(end + 1, 0);
+        }
+        s.pbase = Some(0);
+        s.pptr = 0;
+        s.epptr = end;
+        s.get_area = [0; 3];
+    }
+    if ch != -1 {
+        let p = s.pptr;
+        s.buf[p] = ch as u8;
+        s.pptr += 1;
+    }
+    if s.epptr <= s.pptr || ch == -1 {
+        let n = s.pptr - s.pbase.unwrap_or(0);
+        let wrote = write(&s.buf[s.pbase.unwrap_or(0)..s.pbase.unwrap_or(0) + n]);
+        if wrote == n {
+            if ch == -1 {
+                ch = 0;
+            }
+        } else {
+            ch = -1;
+        }
+        s.pptr = s.pbase.unwrap_or(0);
+    }
+    if s.buf_len == 0 {
+        s.pbase = None;
+        s.pptr = 0;
+        s.epptr = 0;
+    }
+    ch
+}
+
+/// `0x00ac88f0`: setbuf.  Calls `sync`; on -1 returns false.  Otherwise
+/// replaces the buffer (inline when size and ptr are both zero) and resets
+/// all six get/put pointers.  `new_buf_len` is the requested size.
+pub fn w29a10_setbuf(
+    s: &mut W29a10OutBuf,
+    new_buf_len: usize,
+    sync: &mut dyn FnMut() -> i32,
+) -> bool {
+    if sync() == -1 {
+        return false;
+    }
+    s.owns = new_buf_len != 0;
+    s.buf = vec![0; new_buf_len];
+    s.buf_len = new_buf_len;
+    s.pbase = None;
+    s.pptr = 0;
+    s.epptr = 0;
+    s.get_area = [0; 3];
+    true
+}
+
+/// `0x00ac9310`: copies up to `min(dst.len(), src_len)` bytes of `src`.
+pub fn w29a10_copy_limited(dst: &mut [u8], src: &[u8], src_len: usize) -> usize {
+    let n = dst.len().min(src_len).min(src.len());
+    dst[..n].copy_from_slice(&src[..n]);
+    n
+}
+
+/// `0x00ac9600`: zero-initialises `count` 24-byte records; returns 0.
+pub fn w29a10_zero_records(records: &mut [[u32; 6]], count: usize) -> u32 {
+    for r in records.iter_mut().take(count) {
+        *r = [0; 6];
+    }
+    0
+}
+
+/// `0x00ac99a0`: strips trailing `/` and `\` from a path.  Returns true when
+/// the result is empty (the caller then appends its default component).
+pub fn w29a10_trim_trailing_slashes(path: &mut Vec<u8>) -> bool {
+    while let Some(&c) = path.last() {
+        if c != b'/' && c != b'\\' {
+            break;
+        }
+        path.pop();
+    }
+    path.is_empty()
+}
+
+#[cfg(test)]
+mod tests_wave29_agent10 {
+    use super::*;
+
+    #[test]
+    fn split_and_join() {
+        let mut v = Vec::new();
+        w29a10_split_whitespace(b"  ab \t cd\n", &mut v);
+        assert_eq!(v, vec![b"ab".to_vec(), b"cd".to_vec()]);
+        let mut d = [0u8; 8];
+        assert_eq!(w29a10_join_tokens(&v, &mut d, false), 5);
+        assert_eq!(&d[..5], b"ab cd");
+        let mut small = [0u8; 3];
+        assert_eq!(w29a10_join_tokens(&v, &mut small, false), 5);
+        assert_eq!(&small, b"ab ");
+        assert_eq!(w29a10_join_tokens(&v, &mut d, true), 0);
+    }
+
+    #[test]
+    fn bool_format() {
+        let mut d = [0u8; 2];
+        assert_eq!(w29a10_format_bool(&mut d, 0, 1, 1, 2), Some(0));
+        assert_eq!(w29a10_format_bool(&mut d, 4, 7, 7, 2), Some(1));
+        assert_eq!(d[0], b'1');
+        assert_eq!(w29a10_format_bool(&mut d, 0, 0, 1, 2), Some(1));
+        assert_eq!(d[0], b'0');
+        assert_eq!(w29a10_format_bool(&mut d, 0, 0, 1, 1), None);
+    }
+
+    #[test]
+    fn overflow_flush() {
+        let mut s = W29a10OutBuf {
+            has_file: true,
+            buf_len: 4,
+            ..Default::default()
+        };
+        let mut out = Vec::new();
+        let mut w = |b: &[u8]| {
+            out.extend_from_slice(b);
+            b.len()
+        };
+        assert_eq!(w29a10_overflow(&mut s, b'a' as i32, &mut w), b'a' as i32);
+        assert_eq!(w29a10_overflow(&mut s, -1, &mut w), 0);
+        let mut n = W29a10OutBuf::default();
+        assert_eq!(w29a10_overflow(&mut n, 1, &mut w), -1);
+        assert_eq!(out, b"a");
+    }
+
+    #[test]
+    fn setbuf_and_misc() {
+        let mut s = W29a10OutBuf::default();
+        assert!(!w29a10_setbuf(&mut s, 4, &mut || -1));
+        assert!(w29a10_setbuf(&mut s, 4, &mut || 0));
+        assert!(s.owns && s.buf.len() == 4);
+        let mut d = [0u8; 3];
+        assert_eq!(w29a10_copy_limited(&mut d, b"hello", 5), 3);
+        assert_eq!(&d, b"hel");
+        let mut r = [[1u32; 6]; 2];
+        assert_eq!(w29a10_zero_records(&mut r, 1), 0);
+        assert_eq!(r[0], [0; 6]);
+        assert_eq!(r[1], [1; 6]);
+        let mut p = b"a/b//\\".to_vec();
+        assert!(!w29a10_trim_trailing_slashes(&mut p));
+        assert_eq!(p, b"a/b");
+        let mut e = b"//".to_vec();
+        assert!(w29a10_trim_trailing_slashes(&mut e));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave29/agent11.rs
+// ===========================================================================
+// Wave 29 agent 11: small container helpers next to the CDN-config code.
+
+/// `0x00acbbe0`: small-string/vector reserve policy.  `flags` is the packed
+/// capacity word (low 31 bits capacity, top bit a heap flag).  When the
+/// capacity is below `wanted`, the new capacity is `max(wanted, cap + cap/2)`
+/// (`(flags >> 1) & 0x3fffffff` is the growth step) and is merged into the low
+/// 31 bits keeping the top bit.  Returns `Some(new_flags)` when a
+/// reallocation is required, `None` otherwise.
+pub fn w29a11_reserve_policy(flags: u32, wanted: u32) -> Option<u32> {
+    let cap = flags & 0x7fff_ffff;
+    if cap >= wanted {
+        return None;
+    }
+    let mut new_cap = ((flags >> 1) & 0x3fff_ffff).wrapping_add(cap);
+    if new_cap < wanted {
+        new_cap = wanted;
+    }
+    Some((((flags ^ new_cap) & 0x7fff_ffff) ^ flags) as u32)
+}
+
+/// `0x00acc7e0`: stores `new` into the slot and returns the previous value
+/// (the original frees it when non-zero; the caller decides).
+pub fn w29a11_replace_ptr(slot: &mut u32, new: u32) -> Option<u32> {
+    let old = std::mem::replace(slot, new);
+    if old != 0 { Some(old) } else { None }
+}
+
+#[cfg(test)]
+mod tests_wave29_agent11 {
+    use super::*;
+
+    #[test]
+    fn reserve_policy() {
+        assert_eq!(w29a11_reserve_policy(0x8000_0010, 8), None);
+        // cap 16, step 0x4000_0008 & 0x3fff_ffff = 8 -> 24 >= 20
+        assert_eq!(w29a11_reserve_policy(0x8000_0010, 20), Some(0x8000_0018));
+        assert_eq!(w29a11_reserve_policy(0x10, 100), Some(100));
+    }
+
+    #[test]
+    fn replace_ptr() {
+        let mut s = 0;
+        assert_eq!(w29a11_replace_ptr(&mut s, 5), None);
+        assert_eq!(w29a11_replace_ptr(&mut s, 7), Some(5));
+        assert_eq!(s, 7);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave29/agent12.rs
+// ===========================================================================
+// Wave 29 agent 12: small runtime helpers.
+
+/// `0x00ace190`: min of two 64-bit values stored as (lo, hi) u32 pairs;
+/// returns `b` only when `b < a` (hi compared first), else `a`.
+pub fn w29a12_min_pair(a: (u32, u32), b: (u32, u32)) -> (u32, u32) {
+    // tuples are (lo, hi)
+    if b.1 <= a.1 && (b.1 < a.1 || b.0 < a.0) {
+        b
+    } else {
+        a
+    }
+}
+
+/// Layout of the object initialised by `0x00ace270` (0x1d bytes used).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct W29a12Obj {
+    pub dw: [u32; 7],
+    pub flag: u8,
+}
+
+/// `0x00ace270`: stores `param` at dword 0, zeroes dwords 2..=6 and the
+/// byte at offset 0x1c (dword 1 is left untouched).
+pub fn w29a12_init_obj(o: &mut W29a12Obj, param: u32) {
+    o.dw[0] = param;
+    for i in 2..7 {
+        o.dw[i] = 0;
+    }
+    o.flag = 0;
+}
+
+/// Two owned buffers plus a trailing dword, as used by `0x00ace320`.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct W29a12Pair {
+    pub a: Vec<u8>,
+    pub b: Vec<u8>,
+    pub extra: u32,
+}
+
+/// `0x00ace320`: move-assign; takes `src.a` and `src.b` (leaving them
+/// empty), frees the previous buffers of `dst`, copies the dword at +8.
+pub fn w29a12_move_assign(dst: &mut W29a12Pair, src: &mut W29a12Pair) {
+    dst.a = std::mem::take(&mut src.a);
+    dst.b = std::mem::take(&mut src.b);
+    dst.extra = src.extra;
+}
+
+#[cfg(test)]
+mod tests_wave29_agent12 {
+    use super::*;
+
+    #[test]
+    fn min_pair() {
+        assert_eq!(w29a12_min_pair((5, 1), (3, 1)), (3, 1));
+        assert_eq!(w29a12_min_pair((5, 1), (5, 1)), (5, 1));
+        assert_eq!(w29a12_min_pair((5, 1), (9, 0)), (9, 0));
+        assert_eq!(w29a12_min_pair((5, 1), (0, 2)), (5, 1));
+    }
+
+    #[test]
+    fn init_obj() {
+        let mut o = W29a12Obj {
+            dw: [9; 7],
+            flag: 7,
+        };
+        w29a12_init_obj(&mut o, 42);
+        assert_eq!(o.dw, [42, 9, 0, 0, 0, 0, 0]);
+        assert_eq!(o.flag, 0);
+    }
+
+    #[test]
+    fn move_assign() {
+        let mut d = W29a12Pair {
+            a: vec![1],
+            b: vec![2],
+            extra: 0,
+        };
+        let mut s = W29a12Pair {
+            a: vec![3],
+            b: vec![4, 5],
+            extra: 6,
+        };
+        w29a12_move_assign(&mut d, &mut s);
+        assert_eq!(
+            d,
+            W29a12Pair {
+                a: vec![3],
+                b: vec![4, 5],
+                extra: 6
+            }
+        );
+        assert!(s.a.is_empty() && s.b.is_empty());
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave29/agent13.rs
+// ===========================================================================
+// Wave 29 translation batch 13: refcount and TACT query-state helpers.
+
+/// `0x00ad13d0`: stores `obj` in the smart-pointer slot and, when non-null
+/// (non-zero), atomically increments the refcount dword at offset 4.
+pub fn w29a13_addref_assign(
+    slot: &mut u32,
+    obj: u32,
+    refcount: Option<&std::sync::atomic::AtomicI32>,
+) {
+    *slot = obj;
+    if obj != 0
+        && let Some(rc) = refcount
+    {
+        rc.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// `0x00ad1550`: releases the smart pointer; decrements the refcount and
+/// returns true when the previous value was 1 (virtual slot 1 must be called).
+pub fn w29a13_release(rc: Option<&std::sync::atomic::AtomicI32>) -> bool {
+    match rc {
+        None => false,
+        Some(rc) => rc.fetch_sub(1, std::sync::atomic::Ordering::SeqCst) == 1,
+    }
+}
+
+/// Action chosen by `0x00ad15a0`.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum W29a13Delete {
+    Nothing,
+    VirtualDelete3,
+    FreeBlock,
+}
+
+/// `0x00ad15a0`: null pointer does nothing; a non-zero dword before the
+/// object means call the virtual deleting destructor with flag 3, otherwise
+/// the raw block at `ptr - 4` is freed.
+pub fn w29a13_delete_choice(ptr: u32, word_before: u32) -> W29a13Delete {
+    if ptr == 0 {
+        W29a13Delete::Nothing
+    } else if word_before != 0 {
+        W29a13Delete::VirtualDelete3
+    } else {
+        W29a13Delete::FreeBlock
+    }
+}
+
+/// `0x00ad1a90`: true when the capacity field (offset 0x40) is smaller than
+/// the requested size, i.e. the grow/throw path is taken.
+pub fn w29a13_needs_grow(capacity: u32, wanted: u32) -> bool {
+    capacity < wanted
+}
+
+/// Query-state fields touched by `0x00ad1ae0` / `0x00ad1b40`.
+#[derive(Debug, Default, PartialEq, Eq, Clone)]
+pub struct W29a13QueryState {
+    pub state: i32,    // +0x08
+    pub buf: u32,      // +0x3c
+    pub handle70: u32, // +0x70
+    pub handle7c: u32, // +0x7c
+    pub field78: u32,  // +0x78
+    pub field84: u32,  // +0x84
+}
+
+/// `0x00ad1ae0`: takes and releases handle70, sets 0x78/0x7c to -1, clears
+/// 0x84, takes buffer 0x3c (freed) and clears the state word.  Returns the
+/// (handle70, buffer) values to release.
+pub fn w29a13_reset_a(s: &mut W29a13QueryState) -> (u32, u32) {
+    let h = std::mem::take(&mut s.handle70);
+    s.field78 = u32::MAX;
+    s.handle7c = u32::MAX;
+    s.field84 = 0;
+    let b = std::mem::take(&mut s.buf);
+    s.state = 0;
+    (h, b)
+}
+
+/// `0x00ad1b40`: takes handle7c and buffer 0x3c for release, clears state.
+pub fn w29a13_reset_b(s: &mut W29a13QueryState) -> (u32, u32) {
+    let h = std::mem::take(&mut s.handle7c);
+    let b = std::mem::take(&mut s.buf);
+    s.state = 0;
+    (h, b)
+}
+
+/// `0x00ad21e0`: initialises a 0x84-byte query record in place: state=1 at
+/// +8, copies the 24-byte keys `a` to +0xc and `b` to +0x24, zeroes the
+/// listed dwords and returns the old +0x7c handle (to release); +0x80 byte=0.
+pub fn w29a13_init_query(rec: &mut [u8], a: &[u8; 24], b: &[u8; 24]) -> u32 {
+    let put = |r: &mut [u8], off: usize, v: u32| r[off..off + 4].copy_from_slice(&v.to_le_bytes());
+    put(rec, 8, 1);
+    rec[0xc..0xc + 24].copy_from_slice(a);
+    rec[0x24..0x24 + 24].copy_from_slice(b);
+    for off in [
+        0x40, 0x44, 0x48, 0x4c, 0x60, 0x64, 0x58, 0x5c, 0x70, 0x74, 0x68, 0x6c, 0x78,
+    ] {
+        put(rec, off, 0);
+    }
+    let old = u32::from_le_bytes(rec[0x7c..0x80].try_into().unwrap());
+    put(rec, 0x7c, 0);
+    rec[0x80] = 0;
+    old
+}
+
+#[cfg(test)]
+mod tests_wave29_agent13 {
+    use super::*;
+    use std::sync::atomic::{AtomicI32, Ordering};
+
+    #[test]
+    fn refcount() {
+        let rc = AtomicI32::new(1);
+        let mut slot = 0;
+        w29a13_addref_assign(&mut slot, 5, Some(&rc));
+        assert_eq!((slot, rc.load(Ordering::SeqCst)), (5, 2));
+        w29a13_addref_assign(&mut slot, 0, Some(&rc));
+        assert_eq!(rc.load(Ordering::SeqCst), 2);
+        assert!(!w29a13_release(Some(&rc)));
+        assert!(w29a13_release(Some(&rc)));
+        assert!(!w29a13_release(None));
+    }
+
+    #[test]
+    fn delete_and_grow() {
+        assert_eq!(w29a13_delete_choice(0, 1), W29a13Delete::Nothing);
+        assert_eq!(w29a13_delete_choice(8, 1), W29a13Delete::VirtualDelete3);
+        assert_eq!(w29a13_delete_choice(8, 0), W29a13Delete::FreeBlock);
+        assert!(w29a13_needs_grow(3, 4));
+        assert!(!w29a13_needs_grow(4, 4));
+    }
+
+    #[test]
+    fn resets() {
+        let mut s = W29a13QueryState {
+            state: 1,
+            buf: 2,
+            handle70: 3,
+            handle7c: 4,
+            field78: 5,
+            field84: 6,
+        };
+        let mut t = s.clone();
+        assert_eq!(w29a13_reset_a(&mut s), (3, 2));
+        assert_eq!(
+            (s.field78, s.handle7c, s.field84, s.state),
+            (u32::MAX, u32::MAX, 0, 0)
+        );
+        assert_eq!(w29a13_reset_b(&mut t), (4, 2));
+        assert_eq!((t.handle7c, t.buf, t.state), (0, 0, 0));
+    }
+
+    #[test]
+    fn init_query() {
+        let mut rec = vec![0xffu8; 0x88];
+        rec[0x7c..0x80].copy_from_slice(&9u32.to_le_bytes());
+        let old = w29a13_init_query(&mut rec, &[1; 24], &[2; 24]);
+        assert_eq!(old, 9);
+        assert_eq!(rec[8], 1);
+        assert_eq!(rec[0xc], 1);
+        assert_eq!(rec[0x24], 2);
+        assert_eq!(rec[0x40], 0);
+        assert_eq!(rec[0x80], 0);
+        assert_eq!(rec[0x84], 0xff);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave29/agent14.rs
+// ===========================================================================
+// Wave 29 translation batch 14 (staging).
+
+/// Cached stream window of the file-backed reader (offsets from patch 1.23.10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct W29a14Window {
+    /// Offset `0x44`: number of valid bytes in the buffer.
+    pub len: u32,
+    /// Offsets `0x68`/`0x6c`: stream position of the first buffered byte.
+    pub pos: u64,
+}
+
+/// `0x00ad8170`: moves the buffered window to stream position `new_pos`.
+/// When the new position lies strictly inside the buffered range the tail is
+/// shifted down with `memmove(shift_from, shift_len)` (offset, count); in all
+/// cases where the position differs the cached position is replaced and the
+/// valid length reset to 0.
+pub fn w29a14_seek_window(
+    w: &mut W29a14Window,
+    new_pos: u64,
+    mut memmove: impl FnMut(usize, usize),
+) {
+    if w.pos == new_pos {
+        return;
+    }
+    let end = w.pos + u64::from(w.len);
+    if w.pos < new_pos && new_pos < end {
+        let delta = (new_pos - w.pos) as usize;
+        memmove(delta, w.len as usize - delta);
+    }
+    w.pos = new_pos;
+    w.len = 0;
+}
+
+/// `0x00ad81f0`: post-processes an I/O result code.  Code 5 becomes 6 unless
+/// flag `0x400` is set; every other code passes through unchanged.
+pub fn w29a14_map_result(code: i32, flags: u32) -> i32 {
+    if code == 5 && flags & 0x400 == 0 {
+        6
+    } else {
+        code
+    }
+}
+
+#[cfg(test)]
+mod tests_wave29_agent14 {
+    use super::*;
+
+    #[test]
+    fn seek_window() {
+        let mut w = W29a14Window { len: 10, pos: 100 };
+        let mut calls = vec![];
+        w29a14_seek_window(&mut w, 100, |a, b| calls.push((a, b)));
+        assert!(calls.is_empty() && w.len == 10);
+        w29a14_seek_window(&mut w, 104, |a, b| calls.push((a, b)));
+        assert_eq!(calls, vec![(4, 6)]);
+        assert_eq!(w, W29a14Window { len: 0, pos: 104 });
+        let mut w = W29a14Window { len: 10, pos: 100 };
+        w29a14_seek_window(&mut w, 110, |_, _| panic!());
+        assert_eq!(w.pos, 110);
+    }
+
+    #[test]
+    fn map_result() {
+        assert_eq!(w29a14_map_result(5, 0), 6);
+        assert_eq!(w29a14_map_result(5, 0x400), 5);
+        assert_eq!(w29a14_map_result(6, 0), 6);
+        assert_eq!(w29a14_map_result(0x16, 0), 0x16);
+        assert_eq!(w29a14_map_result(0, 0), 0);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave29/agent15.rs
+// ===========================================================================
+// Wave 29 agent 15: length-prefixed key ordering and heap helpers.
+
+/// `0x00ada860`: strict "less than" on length-prefixed byte keys
+/// (`key[0]` is the length, bytes follow).  Compares the common prefix
+/// bytewise; on a tie the shorter key is smaller.  `this` is the ECX operand.
+pub fn w29a15_key_less(this: &[u8], other: &[u8]) -> bool {
+    let la = this.first().copied().unwrap_or(0) as usize;
+    let lb = other.first().copied().unwrap_or(0) as usize;
+    let n = la.min(lb);
+    for i in 1..=n {
+        let a = this.get(i).copied().unwrap_or(0);
+        let b = other.get(i).copied().unwrap_or(0);
+        if a != b {
+            return a < b;
+        }
+    }
+    la < lb
+}
+
+/// `0x00ada170`: MSVC `_Adjust_heap` for 0x28-byte elements: sift the hole
+/// at `hole` down to a leaf choosing the larger child under `less`, then sift
+/// `value` back up.  `len` is the heap length.
+pub fn w29a15_adjust_heap<T: Clone>(
+    heap: &mut [T],
+    hole: usize,
+    len: usize,
+    value: T,
+    less: &mut dyn FnMut(&T, &T) -> bool,
+) {
+    let top = hole;
+    let mut hole = hole;
+    let mut child = hole * 2 + 2;
+    while child < len {
+        if less(&heap[child], &heap[child - 1]) {
+            child -= 1;
+        }
+        heap[hole] = heap[child].clone();
+        hole = child;
+        child = hole * 2 + 2;
+    }
+    if child == len {
+        heap[hole] = heap[child - 1].clone();
+        hole = child - 1;
+    }
+    while top < hole {
+        let parent = (hole - 1) >> 1;
+        if !less(&heap[parent], &value) {
+            break;
+        }
+        heap[hole] = heap[parent].clone();
+        hole = parent;
+    }
+    heap[hole] = value;
+}
+
+/// `0x00ada280`: `make_heap` over a slice of 0x28-byte elements; fewer than
+/// two elements is a no-op.
+pub fn w29a15_make_heap<T: Clone>(heap: &mut [T], less: &mut dyn FnMut(&T, &T) -> bool) {
+    let len = heap.len();
+    if len < 2 {
+        return;
+    }
+    let mut hole = (len >> 1) - 1;
+    loop {
+        let value = heap[hole].clone();
+        w29a15_adjust_heap(heap, hole, len, value, less);
+        if hole == 0 {
+            return;
+        }
+        hole -= 1;
+    }
+}
+
+/// `0x00adb110`: zero the two-word output, run the lookup `f` (the
+/// `FUN_00adbfb0` core) and fold result codes 0, 6 and 0xd to success.
+pub fn w29a15_lookup_fold(out: &mut [u32; 2], f: &mut dyn FnMut(&mut [u32; 2]) -> i32) -> i32 {
+    *out = [0, 0];
+    let r = f(out);
+    if r == 0 || r == 0xd || r == 6 { 0 } else { r }
+}
+
+#[cfg(test)]
+mod tests_wave29_agent15 {
+    use super::*;
+
+    #[test]
+    fn key_less() {
+        assert!(w29a15_key_less(&[2, 1, 2], &[2, 1, 3]));
+        assert!(!w29a15_key_less(&[2, 1, 3], &[2, 1, 2]));
+        assert!(!w29a15_key_less(&[2, 1, 2], &[2, 1, 2]));
+        assert!(w29a15_key_less(&[1, 5], &[2, 5, 0]));
+        assert!(!w29a15_key_less(&[2, 5, 0], &[1, 5]));
+    }
+
+    #[test]
+    fn heap() {
+        let mut v = vec![3u32, 9, 1, 7, 5, 8, 2];
+        w29a15_make_heap(&mut v, &mut |a, b| a < b);
+        assert_eq!(v[0], 9);
+        for i in 1..v.len() {
+            assert!(v[(i - 1) / 2] >= v[i]);
+        }
+        let mut one = vec![4u32];
+        w29a15_make_heap(&mut one, &mut |a, b| a < b);
+        assert_eq!(one, vec![4]);
+    }
+
+    #[test]
+    fn adjust() {
+        let mut v = vec![0u32, 9, 8, 3, 4, 1, 2];
+        w29a15_adjust_heap(&mut v, 0, 7, 5, &mut |a, b| a < b);
+        assert_eq!(v[0], 9);
+        for i in 1..v.len() {
+            assert!(v[(i - 1) / 2] >= v[i]);
+        }
+    }
+
+    #[test]
+    fn fold() {
+        let mut o = [9, 9];
+        assert_eq!(w29a15_lookup_fold(&mut o, &mut |_| 6), 0);
+        assert_eq!(o, [0, 0]);
+        assert_eq!(w29a15_lookup_fold(&mut o, &mut |_| 0xd), 0);
+        assert_eq!(w29a15_lookup_fold(&mut o, &mut |_| 5), 5);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave29/agent16.rs
+// ===========================================================================
+// Wave 29 agent 16: TACT encoding-table header and VFS tree helpers.
+
+/// Parsed and validated encoding-table header layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct W29a16EncodingLayout {
+    pub ckey_size: u32,
+    pub ekey_size: u32,
+    pub ckey_page_size: u32,
+    pub ekey_page_size: u32,
+    pub ckey_page_count: u32,
+    pub ekey_page_count: u32,
+    pub espec_size: u32,
+    pub espec_off: u32,
+    pub ckey_index_off: u32,
+    pub ckey_pages_size: u32,
+    pub ckey_pages_off: u32,
+    pub ckey_pages_end: u32,
+    pub ekey_index_size: u32,
+    pub ekey_index_off: u32,
+    pub ekey_pages_size: u32,
+    pub ekey_pages_off: u32,
+    pub ekey_pages_end: u32,
+    pub trailer: i32,
+}
+
+/// `0x00ade020`: validates the 22-byte `EN` encoding-table header (read
+/// status must be 0 by the caller) and derives the section layout.
+/// Returns `None` when magic/version/zero byte or any size is invalid.
+pub fn w29a16_parse_encoding_header(hdr: &[u8], total_size: i32) -> Option<W29a16EncodingLayout> {
+    if hdr.len() < 22 || hdr[0] != b'E' || hdr[1] != b'N' || hdr[2] != 1 || hdr[17] != 0 {
+        return None;
+    }
+    let be16 = |i: usize| u16::from_be_bytes([hdr[i], hdr[i + 1]]) as u32;
+    let be32 = |i: usize| u32::from_be_bytes([hdr[i], hdr[i + 1], hdr[i + 2], hdr[i + 3]]);
+    let ck = hdr[3] as u32;
+    let ek = hdr[4] as u32;
+    let (cp, ep) = (be16(5), be16(7));
+    let (cn, en, espec) = (be32(9), be32(13), be32(18));
+    if ck == 0 || ck > 0x20 || ek == 0 || ek > 0x20 || cp == 0 || ep == 0 {
+        return None;
+    }
+    if cn == 0 || en == 0 || espec == 0 {
+        return None;
+    }
+    let (cpb, epb) = (cp.wrapping_mul(0x400), ep.wrapping_mul(0x400));
+    let espec_off = espec.wrapping_add(0x16);
+    let ckey_index_size = (ck + 0x10).wrapping_mul(cn);
+    let ckey_pages_off = ckey_index_size.wrapping_add(espec_off);
+    let ckey_pages_size = cpb.wrapping_mul(cn);
+    let ckey_pages_end = ckey_pages_size.wrapping_add(ckey_pages_off);
+    let ekey_index_size = (ek + 0x10).wrapping_mul(en);
+    let ekey_pages_off = ekey_index_size.wrapping_add(ckey_pages_end);
+    let ekey_pages_size = epb.wrapping_mul(en);
+    let ekey_pages_end = ekey_pages_size.wrapping_add(ekey_pages_off);
+    Some(W29a16EncodingLayout {
+        ckey_size: ck,
+        ekey_size: ek,
+        ckey_page_size: cpb,
+        ekey_page_size: epb,
+        ckey_page_count: cn,
+        ekey_page_count: en,
+        espec_size: espec,
+        espec_off,
+        ckey_index_off: ckey_index_size,
+        ckey_pages_size,
+        ckey_pages_off,
+        ckey_pages_end,
+        ekey_index_size,
+        ekey_index_off: ckey_pages_end,
+        ekey_pages_size,
+        ekey_pages_off,
+        ekey_pages_end,
+        trailer: total_size.wrapping_sub(ekey_pages_end as i32),
+    })
+}
+
+/// Zeroed result/status record initialised by `0x00adf3c0` (nine dwords
+/// plus a 0xff-byte message buffer at +0x21; status field +0x10 = 0x16).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct W29a16Status {
+    pub words: [u32; 8],
+    pub flag: u8,
+    pub text: [u8; 0xff],
+}
+
+/// `0x00adf3c0`: constructs the default status record.
+pub fn w29a16_status_init() -> W29a16Status {
+    let mut words = [0u32; 8];
+    words[4] = 0x17;
+    W29a16Status {
+        words,
+        flag: 0,
+        text: [0; 0xff],
+    }
+}
+
+/// `0x00ae1240`: walks child trees calling `op`; stops at the first result
+/// that is neither 0 nor 0x16. Returns that result (or 0 if exhausted);
+/// `None` when a child slot is missing (error path of the original).
+pub fn w29a16_first_failing_child<T>(
+    children: &[Option<T>],
+    mut op: impl FnMut(&T) -> i32,
+) -> Option<i32> {
+    for c in children {
+        let r = op(c.as_ref()?);
+        if r != 0x16 && r != 0 {
+            return Some(r);
+        }
+    }
+    Some(0)
+}
+
+#[cfg(test)]
+mod tests_wave29_agent16 {
+    use super::*;
+
+    fn hdr() -> [u8; 22] {
+        let mut h = [0u8; 22];
+        h[0] = b'E';
+        h[1] = b'N';
+        h[2] = 1;
+        h[3] = 16;
+        h[4] = 9;
+        h[6] = 4; // ckey page = 4 KiB
+        h[8] = 4;
+        h[12] = 2;
+        h[16] = 3;
+        h[21] = 5;
+        h
+    }
+
+    #[test]
+    fn header_layout() {
+        let l = w29a16_parse_encoding_header(&hdr(), 100_000).unwrap();
+        assert_eq!(l.espec_off, 5 + 0x16);
+        assert_eq!(l.ckey_pages_off, 27 + 32 * 2);
+        assert_eq!(l.ckey_page_size, 4096);
+        assert_eq!(l.ekey_pages_end, l.ekey_pages_off + 4096 * 3);
+        assert_eq!(l.trailer, 100_000 - l.ekey_pages_end as i32);
+    }
+
+    #[test]
+    fn header_rejects() {
+        let mut h = hdr();
+        h[2] = 2;
+        assert!(w29a16_parse_encoding_header(&h, 0).is_none());
+        let mut h = hdr();
+        h[3] = 0x21;
+        assert!(w29a16_parse_encoding_header(&h, 0).is_none());
+        let mut h = hdr();
+        h[17] = 1;
+        assert!(w29a16_parse_encoding_header(&h, 0).is_none());
+        assert!(w29a16_parse_encoding_header(&hdr()[..10], 0).is_none());
+    }
+
+    #[test]
+    fn status_default() {
+        let s = w29a16_status_init();
+        assert_eq!(s.words[4], 0x17);
+        assert!(s.text.iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn child_walk() {
+        let v = [Some(0), Some(0x16), Some(7), Some(9)];
+        assert_eq!(w29a16_first_failing_child(&v, |x| *x), Some(7));
+        assert_eq!(
+            w29a16_first_failing_child(&[Some(0), Some(0x16)], |x| *x),
+            Some(0)
+        );
+        assert_eq!(w29a16_first_failing_child(&[Some(0), None], |x| *x), None);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave29/agent18.rs
+// ===========================================================================
+// Wave 29 agent 18: tact/CASC directory-handler helpers.
+
+/// `0x00ae8ce0`: clamps a (offset, length) span to a limit.  Returns
+/// `(offset, len)`; the length is zero when `limit <= offset`, otherwise
+/// `min(len, limit - offset)`.
+pub fn w29a18_clamp_span(offset: u64, len: u64, limit: u64) -> (u64, u64) {
+    if limit <= offset {
+        return (offset, 0);
+    }
+    (offset, len.min(limit - offset))
+}
+
+/// Query kind selected by `0x00ae7180`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum W29a18Query {
+    /// Bit 0 handler (callee `ae6520`).
+    Bit0,
+    /// Bit 1 handler (callee `ae7e60`).
+    Bit1,
+    /// Bit 2 handler, QA_READ_DATA (callee `ae73a0`).
+    Bit2,
+    /// Bit 3 handler, QA_READ_MAXSIZE (callee `ae7930`).
+    Bit3,
+    /// No known bit set: the original calls the error helper with code 3.
+    Invalid,
+}
+
+/// `0x00ae7180`: picks the sub-handler from the query flags, testing bits
+/// 0, 1, 2, 3 in that order.
+pub fn w29a18_select_query(flags: u32) -> W29a18Query {
+    if flags & 1 != 0 {
+        W29a18Query::Bit0
+    } else if flags & 2 != 0 {
+        W29a18Query::Bit1
+    } else if flags & 4 != 0 {
+        W29a18Query::Bit2
+    } else if flags & 8 != 0 {
+        W29a18Query::Bit3
+    } else {
+        W29a18Query::Invalid
+    }
+}
+
+/// Result of the path validation in `0x00ae6d30`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum W29a18PathCheck {
+    /// Null path: status code 2 and an empty result.
+    Null,
+    /// Longer than `0x104` bytes (excluding terminator): fatal.
+    TooLong,
+    /// Accepted; carries the length including the terminator.
+    Ok(usize),
+}
+
+/// `0x00ae6d30`: validates a C path; limit is `0x104` bytes of text.
+pub fn w29a18_check_path(path: Option<&[u8]>) -> W29a18PathCheck {
+    let Some(p) = path else {
+        return W29a18PathCheck::Null;
+    };
+    let n = p.iter().position(|&b| b == 0).unwrap_or(p.len());
+    if n > 0x104 {
+        W29a18PathCheck::TooLong
+    } else {
+        W29a18PathCheck::Ok(n + 1)
+    }
+}
+
+/// `0x00ae7b30`: precondition of the segmented-storage write.  The span
+/// `[start, end)` must contain `len` bytes from `off` (`end >= off`,
+/// `end - off >= len`).
+pub fn w29a18_write_in_bounds(off: u64, len: u64, end: u64) -> bool {
+    end >= off && end - off >= len
+}
+
+#[cfg(test)]
+mod tests_wave29_agent18 {
+    use super::*;
+
+    #[test]
+    fn clamp() {
+        assert_eq!(w29a18_clamp_span(10, 100, 10), (10, 0));
+        assert_eq!(w29a18_clamp_span(10, 100, 50), (10, 40));
+        assert_eq!(w29a18_clamp_span(10, 5, 50), (10, 5));
+        assert_eq!(w29a18_clamp_span(1 << 33, 7, 1 << 34), (1 << 33, 7));
+    }
+
+    #[test]
+    fn select() {
+        assert_eq!(w29a18_select_query(1 | 8), W29a18Query::Bit0);
+        assert_eq!(w29a18_select_query(2), W29a18Query::Bit1);
+        assert_eq!(w29a18_select_query(4 | 8), W29a18Query::Bit2);
+        assert_eq!(w29a18_select_query(8), W29a18Query::Bit3);
+        assert_eq!(w29a18_select_query(0x10), W29a18Query::Invalid);
+    }
+
+    #[test]
+    fn path() {
+        assert_eq!(w29a18_check_path(None), W29a18PathCheck::Null);
+        assert_eq!(w29a18_check_path(Some(b"ab\0")), W29a18PathCheck::Ok(3));
+        let long = vec![b'a'; 0x105];
+        assert_eq!(w29a18_check_path(Some(&long)), W29a18PathCheck::TooLong);
+        assert_eq!(
+            w29a18_check_path(Some(&long[..0x104])),
+            W29a18PathCheck::Ok(0x105)
+        );
+    }
+
+    #[test]
+    fn write_bounds() {
+        assert!(w29a18_write_in_bounds(4, 6, 10));
+        assert!(!w29a18_write_in_bounds(4, 7, 10));
+        assert!(!w29a18_write_in_bounds(11, 0, 10));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave29/agent19.rs
+// ===========================================================================
+// Wave 29 agent 19: Crypto++ style decoder block-span helpers.
+
+/// `0x00aea220`: builds the 0x18-byte header record: byte 0 is the low byte of
+/// `len`, bytes 1.. are zeroed and then receive the first `len` key bytes.
+pub fn w29a19_build_header(len: u32, key: &[u8]) -> [u8; 0x18] {
+    let mut out = [0u8; 0x18];
+    out[0] = len as u8;
+    let n = (len as usize).min(key.len()).min(0x17);
+    out[1..1 + n].copy_from_slice(&key[..n]);
+    out
+}
+
+/// `0x00aede00`: size getter by decoder kind (1 and 3 carry a size, else 0).
+pub fn w29a19_kind_size(kind: u32, size_k1: u32, size_k3: u32) -> u32 {
+    match kind {
+        1 => size_k1,
+        3 => size_k3,
+        _ => 0,
+    }
+}
+
+/// `0x00aedea0` (clamp part): clamps `req` to `end - pos`; the flag is true
+/// when the clamped request reaches `end` exactly.
+pub fn w29a19_clamp_request(end: u64, pos: u64, req: u32) -> (u32, bool) {
+    let rem = end.wrapping_sub(pos);
+    let n = if rem >> 32 != 0 || (req as u64) <= rem {
+        req
+    } else {
+        rem as u32
+    };
+    (n, pos.wrapping_add(n as u64) == end)
+}
+
+/// `0x00aedea0` (accounting part): when the inner call succeeded (0), the
+/// input position grows by `consumed` and the output counter by `produced`.
+pub fn w29a19_advance(
+    in_pos: &mut u64,
+    out_pos: &mut u64,
+    result: i32,
+    consumed: u32,
+    produced: u32,
+) {
+    if result == 0 {
+        *in_pos = in_pos.wrapping_add(consumed as u64);
+        *out_pos = out_pos.wrapping_add(produced as u64);
+    }
+}
+
+/// `0x00aea260` (non-frame branch of GetOutputBlockSpan): `off` is the field
+/// at +0x18, `c_end` at +0x50, `e_size` at +0x58, `e_set` at +0x61.
+/// Returns `(start, len)` or an error message.
+pub fn w29a19_output_block_span(
+    off: u32,
+    c_end: u64,
+    e_size: u64,
+    e_set: bool,
+    a: u64,
+    b: u64,
+) -> Result<(u64, u64), &'static str> {
+    if !e_set {
+        return Err("missing E-size");
+    }
+    let sum = a.wrapping_add(b);
+    if sum > c_end {
+        return Err("input span out of bounds in GetOutputBlockSpan()");
+    }
+    if a <= off as u64 && sum >= c_end {
+        Ok((0, e_size))
+    } else {
+        Ok((0, 0))
+    }
+}
+
+/// `0x00aea4f0` (non-frame branch of GetInputBlockSpan): `mode` is the field
+/// at +0x30.  Returns `(start, len)` or an error message.
+pub fn w29a19_input_block_span(
+    off: u32,
+    mode: u32,
+    c_end: u64,
+    e_size: u64,
+    e_set: bool,
+    a: u64,
+    b: u64,
+) -> Result<(u64, u64), &'static str> {
+    if !e_set {
+        return Err("missing E-size in GetInputBlockSpan()");
+    }
+    if a.wrapping_add(b) > e_size {
+        return Err("output span out of bounds in GetInputBlockSpan()");
+    }
+    if mode == 0 {
+        Ok((off as u64 + a, b))
+    } else {
+        Ok((off as u64, c_end.wrapping_sub(off as u64)))
+    }
+}
+
+#[cfg(test)]
+mod tests_wave29_agent19 {
+    use super::*;
+
+    #[test]
+    fn header_and_size() {
+        let h = w29a19_build_header(3, &[1, 2, 3, 4]);
+        assert_eq!(&h[..5], &[3, 1, 2, 3, 0]);
+        assert_eq!(w29a19_kind_size(1, 7, 9), 7);
+        assert_eq!(w29a19_kind_size(3, 7, 9), 9);
+        assert_eq!(w29a19_kind_size(2, 7, 9), 0);
+    }
+
+    #[test]
+    fn clamp_and_advance() {
+        assert_eq!(w29a19_clamp_request(100, 90, 50), (10, true));
+        assert_eq!(w29a19_clamp_request(100, 90, 5), (5, false));
+        let (mut i, mut o) = (1u64, 2u64);
+        w29a19_advance(&mut i, &mut o, 1, 5, 5);
+        assert_eq!((i, o), (1, 2));
+        w29a19_advance(&mut i, &mut o, 0, 5, 6);
+        assert_eq!((i, o), (6, 8));
+    }
+
+    #[test]
+    fn spans() {
+        assert!(w29a19_output_block_span(8, 100, 50, false, 0, 1).is_err());
+        assert!(w29a19_output_block_span(8, 100, 50, true, 0, 101).is_err());
+        assert_eq!(
+            w29a19_output_block_span(8, 100, 50, true, 8, 92),
+            Ok((0, 50))
+        );
+        assert_eq!(
+            w29a19_output_block_span(8, 100, 50, true, 9, 10),
+            Ok((0, 0))
+        );
+        assert_eq!(
+            w29a19_input_block_span(8, 0, 100, 50, true, 4, 6),
+            Ok((12, 6))
+        );
+        assert_eq!(
+            w29a19_input_block_span(8, 1, 100, 50, true, 4, 6),
+            Ok((8, 92))
+        );
+        assert!(w29a19_input_block_span(8, 0, 100, 50, true, 4, 60).is_err());
+        assert!(w29a19_input_block_span(8, 0, 100, 50, false, 4, 6).is_err());
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave29/agent20.rs
+// ===========================================================================
+// Wave 29 translation batch 20: small-buffer sequence helpers and a
+// key/brace-list header scanner.
+
+fn w29a20_is_space(c: u8) -> bool {
+    matches!(c, b' ' | b'\t' | 0x0b | b'\r' | 0x0c | b'\n')
+}
+
+/// Error marker for the paths where the retail code calls a non-returning
+/// allocator/throw helper.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub struct W29a20Throw;
+
+/// `0x00aedfb0`: scans `name : { a , b }` in a NUL-terminated buffer.
+/// Returns `Ok(true)` when only a name is present (count untouched),
+/// `Ok(false)` otherwise; `count` receives the number of top-level items.
+/// The name start index is returned through `name_start`.
+pub fn w29a20_parse_header(
+    buf: &mut [u8],
+    start: usize,
+    name_start: &mut usize,
+    count: &mut u32,
+) -> Result<bool, W29a20Throw> {
+    let at = |b: &[u8], i: usize| b.get(i).copied().unwrap_or(0);
+    let mut p = start;
+    while w29a20_is_space(at(buf, p)) {
+        p += 1;
+    }
+    *name_start = p;
+    let mut end = p;
+    loop {
+        let c = at(buf, end);
+        if c == 0 || c == b':' || w29a20_is_space(c) {
+            break;
+        }
+        end += 1;
+    }
+    let mut q = end;
+    while w29a20_is_space(at(buf, q)) {
+        q += 1;
+    }
+    let c = at(buf, q);
+    if c == 0 {
+        return Ok(true);
+    }
+    if c != b':' {
+        return Ok(false);
+    }
+    buf[end] = 0;
+    q += 1;
+    while w29a20_is_space(at(buf, q)) {
+        q += 1;
+    }
+    if at(buf, q) != b'{' {
+        *count = 1;
+        return Err(W29a20Throw);
+    }
+    q += 1;
+    while w29a20_is_space(at(buf, q)) {
+        q += 1;
+    }
+    let mut depth = 1i32;
+    *count = 1;
+    if at(buf, q) != 0 {
+        loop {
+            let c = at(buf, q);
+            if !w29a20_is_space(c) {
+                if depth == 0 {
+                    return Ok(false);
+                }
+                match c {
+                    b'{' => depth += 1,
+                    b'}' => depth -= 1,
+                    b',' if depth == 1 => *count += 1,
+                    _ => {}
+                }
+            }
+            q += 1;
+            if at(buf, q) == 0 {
+                break;
+            }
+        }
+        // Balanced list: retail allocates `count * 4` bytes here (Ghidra
+        // marks the allocator noreturn; the result is not visible).
+    }
+    Ok(false)
+}
+
+/// Small-buffer pair of sequences: up to 8 dwords inline (`n` <= 8) else
+/// heap; up to 0x40 bytes inline (`m` <= 0x40) else heap.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct W29a20Seq {
+    pub inline_a: [u32; 8],
+    pub heap_a: Option<Vec<u32>>,
+    pub n: u16,
+    pub inline_b: [u32; 16],
+    pub heap_b: Option<Vec<u32>>,
+    pub m: u16,
+}
+
+/// `0x00aeffa0`: releases both heap buffers and zeroes both counts.
+pub fn w29a20_seq_reset(s: &mut W29a20Seq) {
+    s.heap_a = None;
+    s.n = 0;
+    s.heap_b = None;
+    s.m = 0;
+}
+
+/// `0x00aeec40`: move-assign; inline contents are copied when the source
+/// count fits (n < 9, m < 0x41), otherwise the heap buffer is stolen.
+pub fn w29a20_seq_move_assign(dst: &mut W29a20Seq, src: &mut W29a20Seq) {
+    dst.n = src.n;
+    if src.n < 9 {
+        dst.inline_a = src.inline_a;
+        dst.heap_a = None;
+    } else {
+        dst.heap_a = src.heap_a.take();
+    }
+    dst.m = src.m;
+    if src.m < 0x41 {
+        dst.inline_b = src.inline_b;
+        dst.heap_b = None;
+    } else {
+        dst.heap_b = src.heap_b.take();
+    }
+}
+
+/// `0x00aeed10`: copy-assign (deep-copies heap buffers, then counts).
+pub fn w29a20_seq_copy_assign(dst: &mut W29a20Seq, src: &W29a20Seq) {
+    dst.inline_a = src.inline_a;
+    dst.heap_a = src.heap_a.clone();
+    dst.inline_b = src.inline_b;
+    dst.heap_b = src.heap_b.clone();
+    dst.n = src.n;
+    dst.m = src.m;
+}
+
+/// `0x00aeec00`: stores length and flag (offsets 0x80/0x84).
+pub fn w29a20_set_len_flag(rec: &mut (u32, u8), len: u32, flag: u8) {
+    *rec = (len, flag);
+}
+
+/// `0x00aeebc0`: like `0x00aeec00` with the length taken from a C string.
+pub fn w29a20_set_len_flag_cstr(rec: &mut (u32, u8), s: &[u8], flag: u8) {
+    let len = s.iter().position(|&c| c == 0).unwrap_or(s.len());
+    *rec = (len as u32, flag);
+}
+
+#[cfg(test)]
+mod tests_wave29_agent20 {
+    use super::*;
+
+    fn parse(s: &str) -> (Result<bool, W29a20Throw>, u32, String) {
+        let mut b = s.as_bytes().to_vec();
+        b.push(0);
+        let (mut ns, mut c) = (0, 0);
+        let r = w29a20_parse_header(&mut b, 0, &mut ns, &mut c);
+        let end = b[ns..].iter().position(|&x| x == 0).unwrap() + ns;
+        (r, c, String::from_utf8_lossy(&b[ns..end]).into())
+    }
+
+    #[test]
+    fn header() {
+        assert_eq!(parse("  abc  "), (Ok(true), 0, "abc  ".into()));
+        assert_eq!(parse("abc : { 1, {2,3}, 4 }"), (Ok(false), 3, "abc".into()));
+        assert_eq!(parse("abc : x").0, Err(W29a20Throw));
+    }
+
+    #[test]
+    fn seq() {
+        let mut a = W29a20Seq {
+            n: 9,
+            heap_a: Some(vec![1; 9]),
+            m: 3,
+            inline_b: [7; 16],
+            ..Default::default()
+        };
+        let mut b = W29a20Seq::default();
+        w29a20_seq_move_assign(&mut b, &mut a);
+        assert!(a.heap_a.is_none() && b.heap_a.is_some() && b.inline_b[0] == 7);
+        let mut c = W29a20Seq::default();
+        w29a20_seq_copy_assign(&mut c, &b);
+        assert_eq!(c, b);
+        w29a20_seq_reset(&mut c);
+        assert_eq!((c.n, c.m, c.heap_a.is_none()), (0, 0, true));
+    }
+
+    #[test]
+    fn len_flag() {
+        let mut r = (0, 0);
+        w29a20_set_len_flag(&mut r, 5, 1);
+        assert_eq!(r, (5, 1));
+        w29a20_set_len_flag_cstr(&mut r, b"abc\0def", 2);
+        assert_eq!(r, (3, 2));
+    }
+}
