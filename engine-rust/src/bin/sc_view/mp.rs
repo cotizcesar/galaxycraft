@@ -3765,3 +3765,33 @@ mod combo_tests {
         assert_eq!(App::combo_px(Drop::Race(0)), 24.0);
     }
 }
+
+#[cfg(test)]
+mod retail_trigger_tests {
+    use super::{GREED_RESOURCES, SLAUGHTER_MINUTES};
+    use galaxycraft::client::w17a02_trigger_file_for_mode;
+
+    /// Differential test against the retail trigger-file selector
+    /// (`0x006e89f0`): every Greed resource and Slaughter minute the lobby
+    /// offers selects its own shipped trigger file, and the retail table
+    /// accepts no other value.
+    #[test]
+    fn lobby_greed_and_slaughter_options_match_the_retail_trigger_files() {
+        for v in GREED_RESOURCES {
+            let file = w17a02_trigger_file_for_mode(3, v as u16).expect("greed option");
+            assert!(file.contains(&format!("Greed{v}.trg")), "{file}");
+        }
+        for m in SLAUGHTER_MINUTES {
+            let file = w17a02_trigger_file_for_mode(6, m as u16).expect("slaughter option");
+            assert!(file.contains(&format!("Slaughter{m}.trg")), "{file}");
+        }
+        let greed_values = (0..=u16::MAX)
+            .filter(|&v| w17a02_trigger_file_for_mode(3, v).is_some())
+            .count();
+        let slaughter_values = (0..=u16::MAX)
+            .filter(|&v| w17a02_trigger_file_for_mode(6, v).is_some())
+            .count();
+        assert_eq!(greed_values, GREED_RESOURCES.len());
+        assert_eq!(slaughter_values, SLAUGHTER_MINUTES.len());
+    }
+}

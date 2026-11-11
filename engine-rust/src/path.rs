@@ -1498,3 +1498,259 @@ mod tests {
         assert!(!Rect::ranges_overlap(0, 11, 10));
     }
 }
+
+// ===========================================================================
+// Merged from src/wave17/agent03.rs
+// ===========================================================================
+// Wave 17 translation batch 03: dialog hit-testing and small helpers.
+//
+// Widget layout (patch 1.23.10): rect of four `i16` at +4 (x1, y1, x2, y2),
+// `u32` flags at +0x30, `i16` kind at +0x3c.  Opaque callees are closures.
+// Paths that end in a non-returning call are modelled as `None`.
+
+/// `0x00a8fb80`: builds a 4-dword record: copies the first three dwords of
+/// `src` and stores `w` as the fourth.
+pub fn w17a03_make_vec4(src: &[u32; 3], w: u32) -> [u32; 4] {
+    [src[0], src[1], src[2], w]
+}
+
+/// `0x00a8fc10`: converts an RGB byte triple to a float RGBA colour
+/// (each channel / 255.0, alpha = 1.0).
+pub fn w17a03_rgb_bytes_to_float(rgb: &[u8; 3]) -> [f32; 4] {
+    [
+        rgb[0] as f32 / 255.0,
+        rgb[1] as f32 / 255.0,
+        rgb[2] as f32 / 255.0,
+        1.0,
+    ]
+}
+
+/// `0x00754880`: picks a result code.  `a` true -> 6; else if `b` true ->
+/// 0x55 (or 6 when `d`); else if `c` true -> 0x51 (or 6 when `d`); else the
+/// original does not return (`None`).
+pub fn w17a03_select_code(a: bool, b: bool, c: bool, d: impl FnOnce() -> bool) -> Option<u32> {
+    if a {
+        return Some(6);
+    }
+    if b {
+        let m = if d() { 0xffff_ffb1u32 } else { 0 };
+        return Some(m.wrapping_add(0x55));
+    }
+    if c {
+        let m = if d() { 0xffff_ffb5u32 } else { 0 };
+        return Some(m.wrapping_add(0x51));
+    }
+    None
+}
+
+/// `0x0065134c`: `Some(0)` when `kind == 0x23` or (`p1` and `p2`); `Some(1)`
+/// when `p3` and `p4`; otherwise the original does not return (`None`).
+pub fn w17a03_kind_gate(
+    kind: i16,
+    p1: impl FnOnce() -> bool,
+    p2: impl FnOnce() -> bool,
+    p3: impl FnOnce() -> bool,
+    p4: impl FnOnce() -> bool,
+) -> Option<u32> {
+    if kind == 0x23 {
+        return Some(0);
+    }
+    if p1() && p2() {
+        return Some(0);
+    }
+    if p3() && p4() { Some(1) } else { None }
+}
+
+/// `0x00768080`: `None` (non-returning path) when `cond` holds and the byte
+/// at +0xd8 is zero, else `Some(0)`.
+pub fn w17a03_flag_gate(cond: bool, byte_d8: u8) -> Option<u32> {
+    if cond && byte_d8 == 0 { None } else { Some(0) }
+}
+
+/// `0x00782440`: if the widget is active and the mapped point lies in its
+/// rect, returns `Some(f(px - x1, x2 - x1))` (`f` = retail 0x75_c1a0).
+pub fn w17a03_point_offset(
+    rect: &[i16; 4],
+    active: bool,
+    mut map_point: impl FnMut() -> (i16, i16),
+    mut contains: impl FnMut(&[i16; 4], &mut (i16, i16)) -> bool,
+    f: impl FnOnce(i32, i32) -> u32,
+) -> Option<u32> {
+    if !active {
+        return None;
+    }
+    let mut pt = map_point();
+    if !contains(rect, &mut pt) {
+        return None;
+    }
+    let x1 = rect[0] as i32;
+    Some(f(pt.0 as i32 - x1, rect[2] as i32 - x1))
+}
+
+/// `0x0097d0e0`: hover toggle on flag bit 0x40000000.  Leaving clears it;
+/// entering calls `on_enter` then sets it.  Returns the new flags.
+pub fn w17a03_hover_toggle(flags: u32, inside: bool, on_enter: impl FnOnce()) -> u32 {
+    let had = flags & 0x4000_0000 != 0;
+    if !inside {
+        if had {
+            return flags ^ 0x4000_0000;
+        }
+    } else if !had {
+        on_enter();
+        return flags ^ 0x4000_0000;
+    }
+    flags
+}
+
+/// Constants consumed by `w17a03_scroll_hit` (globals 0x011cdd74.. in retail).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct W17a03ScrollMetrics {
+    /// Retail 0x011cddcc (default tail length).
+    pub tail_default: u16,
+    /// Retail 0x011cdd78 / 0x011cdd88 (horizontal pad, tail).
+    pub h_pad: u16,
+    pub h_tail: u16,
+    /// Retail 0x011cdd74 / 0x011cdd8c (vertical pad, tail).
+    pub v_pad: u16,
+    pub v_tail: u16,
+}
+
+/// `0x00982d80`: classifies a point against a scrollbar widget.  Returns 0
+/// outside the rect, 6 when outside the inner rect, 1/2 for the end caps,
+/// 4 before the thumb, 3 on the thumb, 5 after it.  `thumb_len` is retail
+/// 0x98_2610.
+pub fn w17a03_scroll_hit(
+    rect: &[i16; 4],
+    flags: u32,
+    kind: i16,
+    m: &W17a03ScrollMetrics,
+    thumb_len: i16,
+    mut pt: (i16, i16),
+    mut contains: impl FnMut(&[i16; 4], &mut (i16, i16)) -> bool,
+) -> u8 {
+    if !contains(rect, &mut pt) {
+        return 0;
+    }
+    let inner = *rect;
+    if !contains(&inner, &mut pt) {
+        return 6;
+    }
+    let no_flag = flags & 0x400_0000 == 0;
+    let mut tail = m.tail_default;
+    let (extent, pos, origin, pad);
+    if kind == 6 {
+        extent = rect[2].wrapping_sub(rect[0]);
+        pos = pt.0;
+        origin = rect[0];
+        pad = if no_flag {
+            tail = m.h_tail;
+            m.h_pad as u32
+        } else {
+            0
+        };
+    } else {
+        extent = rect[3].wrapping_sub(rect[1]);
+        pos = pt.1;
+        origin = rect[1];
+        pad = if no_flag {
+            tail = m.v_tail;
+            m.v_pad as u32
+        } else {
+            0
+        };
+    }
+    let pad = pad + 2;
+    let pad16 = (pad & 0xffff) as i32;
+    if (pos as i32) <= origin as i32 + pad16 {
+        return 1;
+    }
+    if (extent.wrapping_add(1) as i32 - pad16) + origin as i32 <= pos as i32 {
+        return 2;
+    }
+    let t = origin
+        .wrapping_add(thumb_len)
+        .wrapping_add(pad as u16 as i16);
+    if pos < t {
+        return 4;
+    }
+    (((tail as i16).wrapping_add(t) <= pos) as u8) * 2 + 3
+}
+
+#[cfg(test)]
+mod tests_wave17_agent03 {
+    use super::*;
+
+    #[test]
+    fn vec_and_colour() {
+        assert_eq!(w17a03_make_vec4(&[1, 2, 3], 9), [1, 2, 3, 9]);
+        let c = w17a03_rgb_bytes_to_float(&[255, 0, 51]);
+        assert_eq!(c, [1.0, 0.0, 0.2, 1.0]);
+    }
+
+    #[test]
+    fn select_code() {
+        assert_eq!(w17a03_select_code(true, false, false, || true), Some(6));
+        assert_eq!(w17a03_select_code(false, true, false, || false), Some(0x55));
+        assert_eq!(w17a03_select_code(false, true, false, || true), Some(6));
+        assert_eq!(w17a03_select_code(false, false, true, || false), Some(0x51));
+        assert_eq!(w17a03_select_code(false, false, true, || true), Some(6));
+        assert_eq!(w17a03_select_code(false, false, false, || true), None);
+    }
+
+    #[test]
+    fn gates() {
+        let t = || true;
+        let f = || false;
+        assert_eq!(w17a03_kind_gate(0x23, f, f, f, f), Some(0));
+        assert_eq!(w17a03_kind_gate(1, t, t, f, f), Some(0));
+        assert_eq!(w17a03_kind_gate(1, f, f, t, t), Some(1));
+        assert_eq!(w17a03_kind_gate(1, f, f, t, f), None);
+        assert_eq!(w17a03_flag_gate(true, 0), None);
+        assert_eq!(w17a03_flag_gate(true, 1), Some(0));
+        assert_eq!(w17a03_flag_gate(false, 0), Some(0));
+    }
+
+    #[test]
+    fn offset_and_hover() {
+        let r = [10, 0, 50, 5];
+        let inside = |_: &[i16; 4], _: &mut (i16, i16)| true;
+        assert_eq!(
+            w17a03_point_offset(&r, true, || (20, 1), inside, |a, b| (a * 100 + b) as u32),
+            Some(10 * 100 + 40)
+        );
+        assert_eq!(
+            w17a03_point_offset(&r, false, || (20, 1), inside, |_, _| 0),
+            None
+        );
+        let mut n = 0;
+        assert_eq!(w17a03_hover_toggle(0, true, || n += 1), 0x4000_0000);
+        assert_eq!(n, 1);
+        assert_eq!(
+            w17a03_hover_toggle(0x4000_0001, true, || n += 1),
+            0x4000_0001
+        );
+        assert_eq!(w17a03_hover_toggle(0x4000_0001, false, || {}), 1);
+        assert_eq!(w17a03_hover_toggle(1, false, || {}), 1);
+    }
+
+    #[test]
+    fn scroll() {
+        let r = [0, 0, 100, 10];
+        let m = W17a03ScrollMetrics {
+            tail_default: 8,
+            h_pad: 4,
+            h_tail: 6,
+            v_pad: 0,
+            v_tail: 0,
+        };
+        let c = |_: &[i16; 4], _: &mut (i16, i16)| true;
+        let hit = |x| w17a03_scroll_hit(&r, 0, 6, &m, 10, (x, 5), c);
+        assert_eq!(hit(5), 1);
+        assert_eq!(hit(95), 2);
+        assert_eq!(hit(10), 4); // thumb starts at 0+10+6=16
+        assert_eq!(hit(18), 3);
+        assert_eq!(hit(30), 5);
+        let no = |_: &[i16; 4], _: &mut (i16, i16)| false;
+        assert_eq!(w17a03_scroll_hit(&r, 0, 6, &m, 10, (5, 5), no), 0);
+    }
+}

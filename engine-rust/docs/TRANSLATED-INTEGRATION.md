@@ -113,3 +113,13 @@ Wired / proven against the engine:
 | Address | Helper | Engine side | Test |
 |---|---|---|---|
 | `0x005692b0` + `0x00569120` | `w15a04_direction`, `w16a04_signed_table_search` | `unit_anim::facing_of` (floating-point `atan2`) | `unit_anim::tests::facing_matches_the_retail_direction_routine` — retail table lookup (rebuilt analytically) and the engine agree within one facing unit over ±300 px |
+
+## Wave 17 (2026-11-11, triage queue, tiers 1-2)
+
++93 exact ledger functions (ledger 2957 -> 3050) in `sim.rs`, `client.rs`,
+`ai_recovered.rs`, `runtime.rs`, `path.rs` and `trigger.rs`.  The engine
+counterparts found this wave:
+
+| Address | Helper | Engine side | Test |
+|---|---|---|---|
+| `0x006e89f0` | `w17a02_trigger_file_for_mode` | lobby Greed resources / Slaughter minutes (`bin/sc_view/mp.rs`) | `retail_trigger_tests::lobby_greed_and_slaughter_options_match_the_retail_trigger_files` — each lobby option selects its shipped trigger file and the retail table accepts no other value |

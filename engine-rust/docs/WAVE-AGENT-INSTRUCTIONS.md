@@ -119,6 +119,16 @@ The harness compiles the library plus only your batch.  If a compile error
 points at another `waveW/agent*.rs`, ignore it and retry later; never edit
 that file.
 
+## Quick start (what the orchestrator prompt relies on)
+
+1. Skip fast: bodies that end in a non-returning call, bare call chains,
+   thunks, STL/SEH glue and Battle.net code ("bnet") cost tokens and yield
+   nothing (about 60% of a tier-1 queue).  Spend effort on rows with real
+   logic.  Unresolved callees become closure/`bool` parameters.
+2. After the harness passes, check your file for clippy warnings:
+   `cargo clippy -q --test waveW_agentNN 2>&1 | grep -A5 agentNN | head -20`.
+3. Keep the final report to 12 lines.
+
 ## Final report
 
 Return:

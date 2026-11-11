@@ -4626,3 +4626,277 @@ mod tests_wave14_agent05 {
         assert_eq!(table.slots[2].data, 0x3333);
     }
 }
+
+// ===========================================================================
+// Merged from src/wave17/agent10.rs
+// ===========================================================================
+// Wave 17 agent 10 (queue, target `trigger.rs`).
+
+/// `0x00c9334c`: CRT `rand`.  Advances the per-thread seed (`seed * 0x343fd
+/// + 0x269ec3`, wrapping) and returns bits 16..30.
+pub fn w17a10_crt_rand(seed: &mut u32) -> u32 {
+    *seed = seed.wrapping_mul(0x343fd).wrapping_add(0x269ec3);
+    (*seed >> 16) & 0x7fff
+}
+
+/// `0x00c9336d`: CRT `srand`, stores the seed in the per-thread data.
+pub fn w17a10_crt_srand(seed: &mut u32, value: u32) {
+    *seed = value;
+}
+
+/// `0x00949d90`: converts two 64-bit tick counts (lo, hi pairs) into
+/// units of 1/10000 with a signed 64-bit divide (`_alldiv`).  Each output
+/// is written only when requested.  Returns `(first, second)` where first
+/// comes from the pair stored at `local_c/local_8` and second from
+/// `local_14/local_10`.
+pub fn w17a10_ticks_div_10000(
+    first: (u32, u32),
+    second: (u32, u32),
+    want_first: bool,
+    want_second: bool,
+) -> (Option<i64>, Option<i64>) {
+    let conv = |p: (u32, u32)| (((p.1 as u64) << 32 | p.0 as u64) as i64) / 10000;
+    (
+        want_first.then(|| conv(first)),
+        want_second.then(|| conv(second)),
+    )
+}
+
+/// `0x006adfb0`: row address and "SC" tag flag.  Returns
+/// `(row_address, is_sc)` where `row_address = (base + (index & 0xffff) *
+/// 0xc) * 4 + 0x58_a364` and `is_sc` is true when bytes 0x12/0x13 of the
+/// request are `S`,`C`.
+pub fn w17a10_request_row(base: i32, index: u32, request: &[u8]) -> (i32, bool) {
+    let row = base
+        .wrapping_add(((index & 0xffff) as i32).wrapping_mul(0xc))
+        .wrapping_mul(4)
+        .wrapping_add(0x58_a364);
+    (row, request[0x12] == b'S' && request[0x13] == b'C')
+}
+
+/// `0x006adfb0`: full flow.  `lookup(row)` stands for the opaque
+/// `FUN_006b0350`; on failure `on_fail(row)` runs and 0 is returned,
+/// otherwise the looked-up value.  The returned flag is always cleared
+/// after the call (`*DAT_01165f54 = 0`).
+pub fn w17a10_request_flow(
+    base: i32,
+    index: u32,
+    request: &[u8],
+    mut lookup: impl FnMut(i32, bool) -> Option<u32>,
+    mut on_fail: impl FnMut(i32),
+) -> u32 {
+    let (row, sc) = w17a10_request_row(base, index, request);
+    match lookup(row, sc) {
+        Some(v) => v,
+        None => {
+            on_fail(row);
+            0
+        }
+    }
+}
+
+/// Rectangle `[left, top, right, bottom]` passed to the tile callback.
+pub type W17a10Rect = [i32; 4];
+
+/// `0x00983c00`: scans the tile region returned by the bounds helper.
+/// `bounds` is `[x0, y0, x1, y1]` (tiles), `radial` the helper's flag, and
+/// `(px, py)` the centre in pixels.  `tiles` is the u16 tile map of width
+/// `map_w`, `map_h` rows.  For each tile with `(tile & 0x7ff0) == 0x10`
+/// (and, when `radial`, `dy*dy*256 + dx*dx*100 < 0x9c_4001`) the callback
+/// gets the clamped 0x20-px rectangle; when it returns 0, `fallback` is
+/// consulted (stands for `FUN_00984010` + hook + `FUN_00983600`).
+#[allow(clippy::too_many_arguments)]
+pub fn w17a10_scan_tiles(
+    tiles: &[u16],
+    map_w: i32,
+    map_h: i32,
+    bounds: [i32; 4],
+    radial: bool,
+    px: i32,
+    py: i32,
+    mut cb: impl FnMut(i32, i32, &W17a10Rect) -> i32,
+    mut fallback: impl FnMut(i32, i32),
+) {
+    let [x0, y0, x1, y1] = bounds;
+    let dx0 = (x0 * 0x20 - px) + 0x10;
+    let mut dy = (y0 * 0x20 - py) + 0x10;
+    let mut bottom0 = (y0 + 0xd) * 0x20;
+    let mut y = y0;
+    while y <= y1 {
+        let mut dx = dx0;
+        for x in x0..=x1 {
+            let t = tiles[(map_w * y + x) as usize];
+            if (t & 0x7ff0) == 0x10
+                && (!radial
+                    || dy
+                        .wrapping_mul(dy)
+                        .wrapping_mul(0x100)
+                        .wrapping_add(dx.wrapping_mul(dx).wrapping_mul(100))
+                        < 0x9c_4001)
+            {
+                let mut right = x * 0x20 + 0x290;
+                let mut left = right - 0x500;
+                let mut bottom = bottom0;
+                let mut top = bottom0 - 800;
+                if left < 0 {
+                    left = 0;
+                } else if map_w * 0x20 <= right {
+                    right = map_w * 0x20 - 1;
+                }
+                if top < 0 {
+                    top = 0;
+                } else if map_h * 0x20 <= bottom0 {
+                    bottom = map_h * 0x20 - 1;
+                }
+                if cb(x, y, &[left, top, right, bottom]) == 0 {
+                    fallback(x, y);
+                }
+            }
+            dx += 0x20;
+        }
+        y += 1;
+        bottom0 += 0x20;
+        dy += 0x20;
+    }
+}
+
+/// `0x00984140`: runs the first pass (`FUN_00984010`), then the optional
+/// hook; when the hook is absent or returns 0 the second pass
+/// (`FUN_00983600`) runs.  Always returns 1.
+pub fn w17a10_tile_pass(
+    mut first_pass: impl FnMut(),
+    hook: Option<&mut dyn FnMut() -> i32>,
+    mut second_pass: impl FnMut(),
+) -> u32 {
+    first_pass();
+    if let Some(h) = hook
+        && h() != 0
+    {
+        return 1;
+    }
+    second_pass();
+    1
+}
+
+#[cfg(test)]
+mod tests_wave17_agent10 {
+    use super::*;
+
+    #[test]
+    fn rand_srand() {
+        let mut s = 0;
+        w17a10_crt_srand(&mut s, 1);
+        assert_eq!(w17a10_crt_rand(&mut s), 41);
+        assert_eq!(s, 0x343fd + 0x269ec3);
+        w17a10_crt_srand(&mut s, 0xffff_ffff);
+        assert!(w17a10_crt_rand(&mut s) <= 0x7fff);
+    }
+
+    #[test]
+    fn ticks() {
+        let r = w17a10_ticks_div_10000((20000, 0), (5, 0), true, false);
+        assert_eq!(r, (Some(2), None));
+        let r = w17a10_ticks_div_10000((0, 1), (0xffff_ffff, 0xffff_ffff), true, true);
+        assert_eq!(r.0, Some((1i64 << 32) / 10000));
+        assert_eq!(r.1, Some(0));
+    }
+
+    #[test]
+    fn request() {
+        let mut req = [0u8; 0x20];
+        req[0x12] = b'S';
+        req[0x13] = b'C';
+        let (row, sc) = w17a10_request_row(1, 0x1_0002, &req);
+        assert_eq!(row, (1 + 2 * 12) * 4 + 0x58_a364);
+        assert!(sc);
+        assert!(!w17a10_request_row(0, 0, &[0u8; 0x20]).1);
+        let mut failed = None;
+        let v = w17a10_request_flow(0, 0, &req, |_, _| None, |r| failed = Some(r));
+        assert_eq!((v, failed), (0, Some(0x58_a364)));
+        assert_eq!(w17a10_request_flow(0, 0, &req, |_, _| Some(7), |_| {}), 7);
+    }
+
+    #[test]
+    fn scan() {
+        let mut tiles = vec![0u16; 16 * 16];
+        tiles[16 * 2 + 3] = 0x10;
+        tiles[16 * 2 + 4] = 0x11; // masked 0x10 as well
+        tiles[16 * 2 + 5] = 0x20;
+        let mut seen = Vec::new();
+        let mut fb = Vec::new();
+        w17a10_scan_tiles(
+            &tiles,
+            16,
+            16,
+            [2, 1, 6, 3],
+            false,
+            0,
+            0,
+            |x, y, r| {
+                seen.push((x, y, *r));
+                (x == 4) as i32
+            },
+            |x, y| fb.push((x, y)),
+        );
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[0], (3, 2, [0, 0, 3 * 32 + 0x290, 15 * 32]));
+        assert_eq!(fb, vec![(3, 2)]);
+        // radial far away: nothing.
+        let mut n = 0;
+        w17a10_scan_tiles(
+            &tiles,
+            16,
+            16,
+            [2, 1, 6, 3],
+            true,
+            -10000,
+            -10000,
+            |_, _, _| {
+                n += 1;
+                1
+            },
+            |_, _| {},
+        );
+        assert_eq!(n, 0);
+        // radial near tile (3,2): centre at its middle.
+        w17a10_scan_tiles(
+            &tiles,
+            16,
+            16,
+            [2, 1, 6, 3],
+            true,
+            3 * 32 + 16,
+            2 * 32 + 16,
+            |_, _, _| {
+                n += 1;
+                1
+            },
+            |_, _| {},
+        );
+        assert_eq!(n, 2);
+    }
+
+    #[test]
+    fn pass() {
+        let log = std::cell::RefCell::new(Vec::new());
+        let mut h = || 1;
+        assert_eq!(
+            w17a10_tile_pass(
+                || log.borrow_mut().push(1),
+                Some(&mut h),
+                || log.borrow_mut().push(2)
+            ),
+            1
+        );
+        assert_eq!(*log.borrow(), vec![1]);
+        assert_eq!(
+            w17a10_tile_pass(
+                || log.borrow_mut().push(1),
+                None,
+                || log.borrow_mut().push(2)
+            ),
+            1
+        );
+        assert_eq!(*log.borrow(), vec![1, 1, 2]);
+    }
+}
