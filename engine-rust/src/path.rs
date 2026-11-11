@@ -3487,3 +3487,505 @@ mod tests_wave19_agent05 {
         assert_eq!(s[1] >> 16, 0x8100);
     }
 }
+
+// ===========================================================================
+// Merged from src/wave20/agent02.rs
+// ===========================================================================
+// Wave 20 translation batch 02: dialog control flag helpers and small UI math.
+
+/// `0x009645e0`: control flag byte at `+0x34`, bit 0.
+pub fn w20a02_ctrl_byte34_bit0(flags34: u32) -> u32 {
+    flags34 & 1
+}
+
+/// `0x009645f0`: control flags at `+0x30`, bit 10.
+pub fn w20a02_ctrl_flag30_bit10(flags30: u32) -> u32 {
+    (flags30 >> 10) & 1
+}
+
+/// `0x00964630`: control flags at `+0x34`, bit 2.
+pub fn w20a02_ctrl_flag34_bit2(flags34: u32) -> u32 {
+    (flags34 >> 2) & 1
+}
+
+/// `0x00964650`: control flags at `+0x30`, bit 13.
+pub fn w20a02_ctrl_flag30_bit13(flags30: u32) -> u32 {
+    (flags30 >> 13) & 1
+}
+
+/// `0x00964c90`: recompute bit 0x400 of the control flags at `+0x30`.
+/// Set when `flags34` bit 0 is clear, `flags30` bit 1 is set, and either the
+/// control is its parent's focus (`is_parent_focus`) or it is type 1 with no
+/// parent focus and the parent lacks bit 29.
+pub fn w20a02_update_focus_flag(
+    flags30: u32,
+    flags34: u32,
+    is_parent_focus: bool,
+    ctrl_type: u16,
+    parent_focus_null: bool,
+    parent_flags30: u32,
+) -> u32 {
+    let set = (flags34 & 1) == 0
+        && (flags30 >> 1) & 1 != 0
+        && (is_parent_focus
+            || (ctrl_type == 1 && parent_focus_null && parent_flags30 & 536_870_912u32 == 0));
+    if set {
+        flags30 | 0x400
+    } else {
+        flags30 & !0x400u32
+    }
+}
+
+/// `0x0097a2e0`: caches a computed byte at `+0x68`; returns `Some(new)` when
+/// it changed (caller then invokes the change callback), else `None`.
+pub fn w20a02_update_cached_state(cached: &mut u8, computed: u8) -> Option<u8> {
+    if *cached != computed {
+        *cached = computed;
+        Some(computed)
+    } else {
+        None
+    }
+}
+
+/// `0x00976310`: selects one of four string/graphic ids by the first matching
+/// predicate (checked in order 0x96_4680, 0x96_4610, 0x96_4540, else the last).
+pub fn w20a02_select_by_state(preds: [bool; 3], ids: [u32; 4]) -> u32 {
+    if preds[0] {
+        ids[0]
+    } else if preds[1] {
+        ids[1]
+    } else if preds[2] {
+        ids[2]
+    } else {
+        ids[3]
+    }
+}
+
+/// `0x006e47a0` (tail): final magnitude. `req` is the integer parameter/100,
+/// `base` the callee value, `floor` the byte at `+0x5e`/100.  Returns `Some`
+/// when above 0.1 (value is then divided by 5 when `slow`).
+pub fn w20a02_effect_magnitude(req: i32, base: f32, floor_byte: u8, slow: bool) -> Option<f32> {
+    let p = req as f32 / 100.0;
+    let floor = f32::from(floor_byte) / 100.0;
+    let m = base.max(floor);
+    let mut v = if p <= m { m } else { p };
+    if slow {
+        v /= 5.0;
+    }
+    if 0.1 < v { Some(v) } else { None }
+}
+
+/// `0x006f74e0` (arithmetic): returns `(full_width, fill_width)` of a bar.
+/// `left`/`right` are the i16 rect edges, `cur`/`max_unit` the first quotient
+/// operands (`a = cur / max_unit`), `total` the divisor `local_28`.
+pub fn w20a02_bar_widths(left: i16, right: i16, cur: i32, max_unit: i32, total: u32) -> (u32, u32) {
+    let w = (i32::from(right) - i32::from(left) + 1) as u32;
+    let a = cur.checked_div(max_unit).unwrap_or(0);
+    let mut fill = match w.wrapping_mul(a as u32).checked_div(total) {
+        Some(v) if v > w => return (w, w),
+        Some(v) => v,
+        None => 0,
+    };
+    if a != 0 && fill == 0 {
+        fill = 1;
+    }
+    (w, fill)
+}
+
+#[cfg(test)]
+mod tests_wave20_agent02 {
+    use super::*;
+
+    #[test]
+    fn flag_getters() {
+        assert_eq!(w20a02_ctrl_byte34_bit0(3), 1);
+        assert_eq!(w20a02_ctrl_flag30_bit10(0x400), 1);
+        assert_eq!(w20a02_ctrl_flag30_bit10(0x800), 0);
+        assert_eq!(w20a02_ctrl_flag34_bit2(4), 1);
+        assert_eq!(w20a02_ctrl_flag30_bit13(0x2000), 1);
+    }
+
+    #[test]
+    fn focus_flag() {
+        assert_eq!(w20a02_update_focus_flag(2, 0, true, 0, false, 0), 0x402);
+        assert_eq!(w20a02_update_focus_flag(0x402, 1, true, 0, false, 0), 2);
+        assert_eq!(w20a02_update_focus_flag(2, 0, false, 1, true, 0), 0x402);
+        assert_eq!(
+            w20a02_update_focus_flag(2, 0, false, 1, true, 536_870_912u32),
+            2
+        );
+        assert_eq!(w20a02_update_focus_flag(0x400, 0, false, 0, false, 0), 0);
+    }
+
+    #[test]
+    fn cached_and_select() {
+        let mut c = 1u8;
+        assert_eq!(w20a02_update_cached_state(&mut c, 1), None);
+        assert_eq!(w20a02_update_cached_state(&mut c, 2), Some(2));
+        assert_eq!(c, 2);
+        let ids = [10, 20, 30, 40];
+        assert_eq!(w20a02_select_by_state([false, true, true], ids), 20);
+        assert_eq!(w20a02_select_by_state([false; 3], ids), 40);
+        assert_eq!(w20a02_select_by_state([true; 3], ids), 10);
+    }
+
+    #[test]
+    fn magnitude() {
+        assert_eq!(w20a02_effect_magnitude(50, 0.2, 10, false), Some(0.5));
+        assert_eq!(w20a02_effect_magnitude(0, 0.3, 50, false), Some(0.5));
+        assert_eq!(w20a02_effect_magnitude(100, 0.2, 10, true), Some(0.2));
+        assert_eq!(w20a02_effect_magnitude(5, 0.05, 0, false), None);
+    }
+
+    #[test]
+    fn bar() {
+        assert_eq!(w20a02_bar_widths(0, 9, 5, 1, 10), (10, 5));
+        assert_eq!(w20a02_bar_widths(0, 9, 1, 1, 100), (10, 1));
+        assert_eq!(w20a02_bar_widths(0, 9, 20, 1, 10), (10, 10));
+        assert_eq!(w20a02_bar_widths(0, 9, 3, 1, 0), (10, 1));
+        assert_eq!(w20a02_bar_widths(0, 9, 0, 1, 0), (10, 0));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave20/agent03.rs
+// ===========================================================================
+// Wave 20 translation batch 03: bilinear sub-pel block predictors and misc.
+//
+// The nine predictors share one two-pass kernel; the weight table at
+// rdata VA 00d90260 is eight `(128-16i, 16i)` pairs (read from the image).
+
+/// Bilinear weight pairs (patch 1.23.10 rdata table, 8 entries).
+pub const W20A03_BILERP_WEIGHTS: [(u32, u32); 8] = [
+    (128, 0),
+    (112, 16),
+    (96, 32),
+    (80, 48),
+    (64, 64),
+    (48, 80),
+    (32, 96),
+    (16, 112),
+];
+
+/// Shared kernel of the predictors: horizontal pass over `h + 1` rows of
+/// `w + 1` source pixels (`(a*w0 + b*w1 + 0x40) >> 7` into u16), then a
+/// vertical pass blending adjacent rows with the second weight pair.
+/// Panics if `fx`/`fy` >= 8 or `src` is too short.
+pub fn w20a03_bilerp(
+    src: &[u8],
+    stride: usize,
+    fx: usize,
+    fy: usize,
+    w: usize,
+    h: usize,
+) -> Vec<u8> {
+    let (h0, h1) = W20A03_BILERP_WEIGHTS[fx];
+    let mut tmp = vec![0u32; w * (h + 1)];
+    for r in 0..=h {
+        for c in 0..w {
+            let a = src[r * stride + c] as u32;
+            let b = src[r * stride + c + 1] as u32;
+            tmp[r * w + c] = (a * h0 + b * h1 + 0x40) >> 7;
+        }
+    }
+    let (v0, v1) = W20A03_BILERP_WEIGHTS[fy];
+    let mut out = vec![0u8; w * h];
+    for r in 0..h {
+        for c in 0..w {
+            out[r * w + c] = ((tmp[r * w + c] * v0 + tmp[(r + 1) * w + c] * v1 + 0x40) >> 7) as u8;
+        }
+    }
+    out
+}
+
+/// `0x00a34130`: bilinear predictor for a 16x16 block; the result is handed to
+/// `sink(block, stride = 16)` (the retail tail call, callee unresolved).
+pub fn w20a03_bilerp_16x16(
+    src: &[u8],
+    stride: usize,
+    fx: usize,
+    fy: usize,
+    mut sink: impl FnMut(&[u8], usize),
+) {
+    let out = w20a03_bilerp(src, stride, fx, fy, 16, 16);
+    sink(&out, 16);
+}
+
+/// `0x00a34350`: bilinear predictor for a 16x32 block; the result is handed to
+/// `sink(block, stride = 16)` (the retail tail call, callee unresolved).
+pub fn w20a03_bilerp_16x32(
+    src: &[u8],
+    stride: usize,
+    fx: usize,
+    fy: usize,
+    mut sink: impl FnMut(&[u8], usize),
+) {
+    let out = w20a03_bilerp(src, stride, fx, fy, 16, 32);
+    sink(&out, 16);
+}
+
+/// `0x00a34570`: bilinear predictor for a 16x8 block; the result is handed to
+/// `sink(block, stride = 16)` (the retail tail call, callee unresolved).
+pub fn w20a03_bilerp_16x8(
+    src: &[u8],
+    stride: usize,
+    fx: usize,
+    fy: usize,
+    mut sink: impl FnMut(&[u8], usize),
+) {
+    let out = w20a03_bilerp(src, stride, fx, fy, 16, 8);
+    sink(&out, 16);
+}
+
+/// `0x00a34790`: bilinear predictor for a 32x16 block; the result is handed to
+/// `sink(block, stride = 32)` (the retail tail call, callee unresolved).
+pub fn w20a03_bilerp_32x16(
+    src: &[u8],
+    stride: usize,
+    fx: usize,
+    fy: usize,
+    mut sink: impl FnMut(&[u8], usize),
+) {
+    let out = w20a03_bilerp(src, stride, fx, fy, 32, 16);
+    sink(&out, 32);
+}
+
+/// `0x00a349b0`: bilinear predictor for a 32x32 block; the result is handed to
+/// `sink(block, stride = 32)` (the retail tail call, callee unresolved).
+pub fn w20a03_bilerp_32x32(
+    src: &[u8],
+    stride: usize,
+    fx: usize,
+    fy: usize,
+    mut sink: impl FnMut(&[u8], usize),
+) {
+    let out = w20a03_bilerp(src, stride, fx, fy, 32, 32);
+    sink(&out, 32);
+}
+
+/// `0x00a34bd0`: bilinear predictor for a 32x64 block; the result is handed to
+/// `sink(block, stride = 32)` (the retail tail call, callee unresolved).
+pub fn w20a03_bilerp_32x64(
+    src: &[u8],
+    stride: usize,
+    fx: usize,
+    fy: usize,
+    mut sink: impl FnMut(&[u8], usize),
+) {
+    let out = w20a03_bilerp(src, stride, fx, fy, 32, 64);
+    sink(&out, 32);
+}
+
+/// `0x00a35110`: bilinear predictor for a 64x32 block; the result is handed to
+/// `sink(block, stride = 64)` (the retail tail call, callee unresolved).
+pub fn w20a03_bilerp_64x32(
+    src: &[u8],
+    stride: usize,
+    fx: usize,
+    fy: usize,
+    mut sink: impl FnMut(&[u8], usize),
+) {
+    let out = w20a03_bilerp(src, stride, fx, fy, 64, 32);
+    sink(&out, 64);
+}
+
+/// `0x00a34df0`: bilinear predictor for a 4x4 block; the result is handed to
+/// `sink(block, stride = 4)` (the retail tail call, callee unresolved).
+pub fn w20a03_bilerp_4x4(
+    src: &[u8],
+    stride: usize,
+    fx: usize,
+    fy: usize,
+    mut sink: impl FnMut(&[u8], usize),
+) {
+    let out = w20a03_bilerp(src, stride, fx, fy, 4, 4);
+    sink(&out, 4);
+}
+
+/// `0x00a35820`: bilinear predictor for a 8x4 block; the result is handed to
+/// `sink(block, stride = 8)` (the retail tail call, callee unresolved).
+pub fn w20a03_bilerp_8x4(
+    src: &[u8],
+    stride: usize,
+    fx: usize,
+    fy: usize,
+    mut sink: impl FnMut(&[u8], usize),
+) {
+    let out = w20a03_bilerp(src, stride, fx, fy, 8, 4);
+    sink(&out, 8);
+}
+
+/// `0x0097ac30`: when the field at +0x18 of the object is non-zero, sets the
+/// global at DAT 011cb5e4 to 0x91 and calls the (unresolved) dispatcher with
+/// three zero args; returns the new global value, or `None` when untouched.
+pub fn w20a03_set_state_91(field_18: u32, mut dispatch: impl FnMut(u32, [u32; 3])) -> Option<u32> {
+    if field_18 == 0 {
+        return None;
+    }
+    dispatch(0x91, [0, 0, 0]);
+    Some(0x91)
+}
+
+/// `0x0097b970`: forwards five args to the 11-arg worker: slot 4 is the
+/// constant 0x800, slots 6..10 the global quad at 00f3ca88, last slot 0.
+pub fn w20a03_forward_args(p: [u32; 5], global_quad: [u32; 4]) -> [u32; 11] {
+    [
+        p[0],
+        p[1],
+        p[2],
+        p[3],
+        0x800,
+        p[4],
+        global_quad[0],
+        global_quad[1],
+        global_quad[2],
+        global_quad[3],
+        0,
+    ]
+}
+
+/// `0x00b3ada0`: status code for a connection-like object: 6 when the
+/// inner call fails, else 8 for mode byte (+0x90) 3, 7 for 4, otherwise 0.
+pub fn w20a03_mode_status(inner_ok: bool, mode: u8) -> u8 {
+    if !inner_ok {
+        return 6;
+    }
+    match mode {
+        3 => 8,
+        4 => 7,
+        _ => 0,
+    }
+}
+
+/// `0x00c87c10`: CRT `_allrem`, signed 64-bit remainder (sign follows the
+/// dividend), operands passed as (lo, hi) 32-bit halves.  Divisor 0 traps.
+pub fn w20a03_allrem(lo1: u32, hi1: u32, lo2: u32, hi2: u32) -> i64 {
+    let a = (((hi1 as u64) << 32) | lo1 as u64) as i64;
+    let b = (((hi2 as u64) << 32) | lo2 as u64) as i64;
+    a.wrapping_rem(b)
+}
+
+/// `0x00c9c600`: leap days elapsed before `year`: `(y-1)/4 - 17 +
+/// ((y+299)/400 - (y-1)/100)` with C truncating division.
+pub fn w20a03_leap_days(year: i32) -> i32 {
+    let y1 = year - 1;
+    y1 / 4 - 0x11 + ((year + 299) / 400 - y1 / 100)
+}
+
+#[cfg(test)]
+mod tests_wave20_agent03 {
+    use super::*;
+
+    fn img(n: usize) -> Vec<u8> {
+        (0..n).map(|i| (i * 7 % 251) as u8).collect()
+    }
+
+    #[test]
+    fn weights_sum_128() {
+        assert!(W20A03_BILERP_WEIGHTS.iter().all(|w| w.0 + w.1 == 128));
+    }
+
+    #[test]
+    fn zero_fraction_copies() {
+        let s = img(100 * 100);
+        let o = w20a03_bilerp(&s, 100, 0, 0, 16, 16);
+        for r in 0..16 {
+            assert_eq!(&o[r * 16..r * 16 + 16], &s[r * 100..r * 100 + 16]);
+        }
+    }
+
+    #[test]
+    fn half_fraction_horizontal() {
+        let mut s = vec![0u8; 20 * 5];
+        for r in 0..5 {
+            for c in 0..20 {
+                s[r * 20 + c] = (c * 10) as u8;
+            }
+        }
+        let o = w20a03_bilerp(&s, 20, 4, 0, 4, 4);
+        assert_eq!(o[0], 5);
+        assert_eq!(o[1], 15);
+    }
+
+    #[test]
+    fn vertical_rounding() {
+        let mut s = vec![0u8; 8 * 5];
+        for r in 0..5 {
+            for c in 0..8 {
+                s[r * 8 + c] = if r == 1 { 1 } else { 0 };
+            }
+        }
+        // fy=4: (0*64 + 1*64 + 64) >> 7 = 1 on row 0
+        let o = w20a03_bilerp(&s, 8, 0, 4, 4, 4);
+        assert_eq!(o[0], 1);
+    }
+
+    #[test]
+    fn wrappers_shape() {
+        let s = img(200 * 100);
+        let cases: [(&str, usize, usize); 9] = [
+            ("16x16", 16, 16),
+            ("16x32", 16, 32),
+            ("16x8", 16, 8),
+            ("32x16", 32, 16),
+            ("32x32", 32, 32),
+            ("32x64", 32, 64),
+            ("64x32", 64, 32),
+            ("4x4", 4, 4),
+            ("8x4", 8, 4),
+        ];
+        for (name, w, h) in cases {
+            let mut got = (0usize, 0usize);
+            let mut f = |b: &[u8], st: usize| got = (b.len(), st);
+            match name {
+                "16x16" => w20a03_bilerp_16x16(&s, 200, 3, 5, &mut f),
+                "16x32" => w20a03_bilerp_16x32(&s, 200, 3, 5, &mut f),
+                "16x8" => w20a03_bilerp_16x8(&s, 200, 3, 5, &mut f),
+                "32x16" => w20a03_bilerp_32x16(&s, 200, 3, 5, &mut f),
+                "32x32" => w20a03_bilerp_32x32(&s, 200, 3, 5, &mut f),
+                "32x64" => w20a03_bilerp_32x64(&s, 200, 3, 5, &mut f),
+                "64x32" => w20a03_bilerp_64x32(&s, 200, 3, 5, &mut f),
+                "4x4" => w20a03_bilerp_4x4(&s, 200, 3, 5, &mut f),
+                _ => w20a03_bilerp_8x4(&s, 200, 3, 5, &mut f),
+            }
+            assert_eq!(got, (w * h, w), "{name}");
+            let want = w20a03_bilerp(&s, 200, 3, 5, w, h);
+            let mut same = false;
+            let mut f2 = |b: &[u8], _st: usize| same = b == want.as_slice();
+            match name {
+                "4x4" => w20a03_bilerp_4x4(&s, 200, 3, 5, &mut f2),
+                "64x32" => w20a03_bilerp_64x32(&s, 200, 3, 5, &mut f2),
+                _ => same = true,
+            }
+            assert!(same);
+        }
+    }
+
+    #[test]
+    fn small_helpers() {
+        let mut seen = None;
+        assert_eq!(w20a03_set_state_91(0, |a, b| seen = Some((a, b))), None);
+        assert!(seen.is_none());
+        assert_eq!(
+            w20a03_set_state_91(1, |a, b| seen = Some((a, b))),
+            Some(0x91)
+        );
+        assert_eq!(seen, Some((0x91, [0, 0, 0])));
+        let a = w20a03_forward_args([1, 2, 3, 4, 5], [6, 7, 8, 9]);
+        assert_eq!(a, [1, 2, 3, 4, 0x800, 5, 6, 7, 8, 9, 0]);
+        assert_eq!(w20a03_mode_status(false, 3), 6);
+        assert_eq!(w20a03_mode_status(true, 3), 8);
+        assert_eq!(w20a03_mode_status(true, 4), 7);
+        assert_eq!(w20a03_mode_status(true, 0), 0);
+    }
+
+    #[test]
+    fn allrem_and_leap() {
+        assert_eq!(w20a03_allrem(7, 0, 3, 0), 1);
+        assert_eq!(w20a03_allrem((-7i64) as u32, 0xffff_ffff, 3, 0), -1);
+        assert_eq!(w20a03_allrem(7, 0, (-3i64) as u32, 0xffff_ffff), 1);
+        assert_eq!(w20a03_allrem(0, 1, 3, 0), 1);
+        assert_eq!(w20a03_leap_days(1970), 461);
+        assert_eq!(w20a03_leap_days(2000), 1999 / 4 - 17 + (2299 / 400 - 19));
+    }
+}

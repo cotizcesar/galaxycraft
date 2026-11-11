@@ -139,3 +139,11 @@ UI list boxes, CRT time helpers, megatile lookups).  No new rules-core
 counterpart; the helpers stay auditable reference code.  Two helpers that
 mapped network provider ids (Battle.net) were removed: that code is out of
 scope.
+
+## Wave 20 (2026-11-11, triage queue, tier 2)
+
++92 exact ledger functions (ledger 3216 -> 3308) in `client.rs`, `path.rs`
+and `runtime.rs`: fmt-style padded writers, motion-estimation SAD and
+sub-pel predictors, UI control focus helpers, arena allocator and CRT time
+helpers.  No rules-core counterpart; the helpers stay auditable reference
+code.
