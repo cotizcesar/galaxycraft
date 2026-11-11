@@ -20,7 +20,8 @@ windows would burn hundreds of waves on code the Rust engine never needs.
 `scripts/triage_corpus.py` classifies all `decompiled_uncited` rows once:
 
 - **skip forever** (≈ 29k rows): `unwind`, `fragment`, `library`,
-  `obfuscated`, `trivial`, `hub`.
+  `obfuscated`, `trivial`, `hub`, and `bnet` (Battle.net / online services:
+  a product decision, marked only, never implemented).
 - **clean** rows get a tier from the call graph of the pseudocode
   (`FUN_xxxxxxxx` references) relative to addresses already cited in
   gameplay modules (`sim`, `combat`, `orders`, `iscript`, `aiscript`,
@@ -69,8 +70,15 @@ python3 scripts/decomp_ledger.py \
   --decomp ~/.cache/galaxycraft/decomp_full --source-root engine-rust \
   --tsv engine-rust/docs/decomp-ledger.tsv \
   --json ~/.cache/galaxycraft/decomp_ledger.json
+python3 scripts/record_skips.py --wave W      # keep skipped rows out of the queue
 git status --short          # no src/waveW/, no tests/waveW_*
 ```
+
+`merge_wave.py` drops inner attributes (`#![allow(...)]`) from staging files.
+If clippy then fails (`too_many_arguments`, `collapsible_if`), add item-level
+`#[allow(...)]` on the flagged functions in the merged module.  Translators
+must also cite no address outside their list, even in tests or data tables:
+write such constants as `0x5b_b5e0` (underscore) so the ledger ignores them.
 
 Append one line to `engine-rust/docs/WAVES.md` and commit:
 

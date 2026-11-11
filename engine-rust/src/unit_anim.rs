@@ -730,4 +730,34 @@ mod tests {
         assert_eq!(facing_of(0, 10), 128, "down");
         assert_eq!(facing_of(-10, 0), 192, "left");
     }
+
+    /// Differential test against the retail direction routine
+    /// (`0x005692b0` with the arctangent search `0x00569120`): the engine's
+    /// floating-point `facing_of` must agree with the retail table lookup to
+    /// within one facing unit.  The retail table (64 ascending `tan * 256`
+    /// bounds) is rebuilt analytically, so no retail data is needed.
+    #[test]
+    fn facing_matches_the_retail_direction_routine() {
+        use crate::sim::{w15a04_direction, w16a04_signed_table_search};
+        let table: Vec<u32> = (0..0x40)
+            .map(|k| ((k as f64 * std::f64::consts::PI / 128.0).tan() * 256.0).round() as u32)
+            .collect();
+        let mut worst = 0;
+        for dy in (-300..=300).step_by(7) {
+            for dx in (-300..=300).step_by(7) {
+                if dx == 0 && dy == 0 {
+                    continue;
+                }
+                let retail =
+                    w15a04_direction(0, 0, dx, dy, |v| w16a04_signed_table_search(v, &table));
+                let retail = retail.rem_euclid(256);
+                let mine = facing_of(dx, dy) as i32;
+                let diff = (retail - mine).rem_euclid(256);
+                let diff = diff.min(256 - diff);
+                worst = worst.max(diff);
+                assert!(diff <= 1, "({dx},{dy}): retail {retail} engine {mine}");
+            }
+        }
+        assert!(worst <= 1);
+    }
 }

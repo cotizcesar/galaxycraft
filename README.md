@@ -168,6 +168,7 @@ results are wired into the engine.
 | translated and cited in Rust | 2,801 |
 | worth translating next (gameplay tiers 1–3) | ~7,900 |
 | not worth translating (unwind funclets, anti-tamper, libraries, thunks) | ~29,000 |
+| Battle.net / online services (marked, deliberately not implemented) | 465 |
 | not decompilable with the current toolchain | 622 |
 
 Work goes in waves of ten parallel agents fed from a call-graph priority
