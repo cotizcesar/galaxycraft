@@ -187,3 +187,10 @@ skipped.
 Mersenne-Twister seeding, CRC32 (table passed in), deque slot math, scalar
 deleting-destructor wrappers.  No rules-core counterpart.  Battle.net rows
 (spi_lan, matchmaking, cloud/webui) were skipped.
+
+## Wave 26 (2026-11-11, triage queue, tiers 2-3, 20 agents)
+
++95 exact ledger functions (ledger 4187 -> 4282) in `runtime.rs`: MD5, SHA-1
+and RC4 primitives (tested against the standard vectors), 32-bit-word bignum
+helpers, a PCX RLE decoder, a code bit-packer, stream seek and a command
+dispatcher over a hooks trait.  No rules-core counterpart.

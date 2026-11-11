@@ -56923,3 +56923,2871 @@ mod tests_wave25_agent59 {
         assert!(!w25a59_dtor_frees_0x008f76d0(2));
     }
 }
+
+// ===========================================================================
+// Merged from src/wave26/agent01.rs
+// ===========================================================================
+// Wave 26 translation batch 01: exception-unwind funclets reduced to their
+// recoverable state updates.
+
+/// `0x0091b4a0`: drain step of two counted ranges.  Each `(cursor, count)`
+/// pair is advanced until `count` reaches zero (cursor += count).  The real
+/// routine then tail-calls the noreturn unwinder; that part is not modelled.
+pub fn w26a01_drain_ranges(a: (i32, i32), b: (i32, i32)) -> ((i32, i32), (i32, i32)) {
+    fn drain(r: (i32, i32)) -> (i32, i32) {
+        (r.0.wrapping_add(r.1), 0)
+    }
+    (drain(a), drain(b))
+}
+
+/// `0x00924e00`: releases a shared reference.  Decrements the strong count
+/// and returns `(new_count, destroy_object, release_second_ref)` where the
+/// object is destroyed when the count reaches zero and the secondary
+/// pointer is released when non-zero.  The slot is then cleared by the caller.
+pub fn w26a01_release_shared(count: i32, secondary: u32) -> (i32, bool, bool) {
+    let c = count.wrapping_sub(1);
+    (c, c == 0, secondary != 0)
+}
+
+/// `0x00900050`: resets an intrusive circular list head at `head_addr`:
+/// `next = head`, `prev` unchanged, count = 0.  Returns `(next, count,
+/// old_prev_was_foreign)`; foreign means old prev != head (nodes pending
+/// free).
+pub fn w26a01_reset_list_head(head_addr: u32, old_prev: u32) -> (u32, u32, bool) {
+    (head_addr, 0, old_prev != head_addr)
+}
+
+#[cfg(test)]
+mod tests_wave26_agent01 {
+    use super::*;
+
+    #[test]
+    fn drain() {
+        assert_eq!(w26a01_drain_ranges((10, 3), (0, 0)), ((13, 0), (0, 0)));
+    }
+
+    #[test]
+    fn release() {
+        assert_eq!(w26a01_release_shared(1, 5), (0, true, true));
+        assert_eq!(w26a01_release_shared(2, 0), (1, false, false));
+    }
+
+    #[test]
+    fn list_reset() {
+        assert_eq!(w26a01_reset_list_head(100, 100), (100, 0, false));
+        assert_eq!(w26a01_reset_list_head(100, 7), (100, 0, true));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave26/agent03.rs
+// ===========================================================================
+// Wave 26 translation batch 03: runtime function-object slots and error mapping.
+
+/// Outcome of `w26a03_classify_error`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct W26a03ErrorAction {
+    /// The `FUN_0070a410(1)` call is made (code 7).
+    pub call_reset: bool,
+    /// The held resource (`iStack_5b8`) is released when non-null.
+    pub release_resource: bool,
+    /// Message id passed to `FUN_006f9720`, if any.
+    pub message: Option<u32>,
+}
+
+/// `0x00907820`: maps the result code of the dialog/loop call to the action
+/// taken: 7 resets, -1 and 0xffe0 do nothing, -3/3/6/0x3ea release the
+/// resource and show message 2, 0x3e9 shows 0xe, anything else shows 0xc.
+pub fn w26a03_classify_error(code: i32) -> W26a03ErrorAction {
+    let (call_reset, release_resource, message) = match code {
+        7 => (true, false, None),
+        -1 | 0xffe0 => (false, false, None),
+        -3 | 3 | 6 | 0x3ea => (false, true, Some(2)),
+        0x3e9 => (false, false, Some(0xe)),
+        _ => (false, false, Some(0xc)),
+    };
+    W26a03ErrorAction {
+        call_reset,
+        release_resource,
+        message,
+    }
+}
+
+/// `0x0090ca70`: when `mode == 2` and the callee succeeded, stores the
+/// decoded u16 at offset `0x70` of the target record and returns 1.
+pub fn w26a03_store_u16_at_70(record: &mut [u8], mode: i32, decoded: Option<u16>) -> u32 {
+    if mode == 2
+        && let Some(v) = decoded
+        && record.len() >= 0x72
+    {
+        record[0x70..0x72].copy_from_slice(&v.to_le_bytes());
+        return 1;
+    }
+    0
+}
+
+/// Shared body of the function-object slot reset: the slot word has bit 0 =
+/// "heap-owned"; the target pointer is the word with bit 0 cleared (inline
+/// otherwise).  Returns `(new_word, needs_free)`.
+fn w26a03_reset_slot(word: u32, mut call_target: impl FnMut(u32)) -> (u32, bool) {
+    let owned = word & 1 != 0;
+    let target = if owned { word & !1 } else { word };
+    if target != 0 {
+        call_target(target);
+        if owned {
+            return (word, true);
+        }
+        return (1, false);
+    }
+    (word, false)
+}
+
+/// `0x0090b600`: resets the function-object slot at object offset `0x318`
+/// (call the target's first vtable entry with 0, then slot = 1 when inline).
+pub fn w26a03_reset_slot_318(word: u32, call_target: impl FnMut(u32)) -> (u32, bool) {
+    w26a03_reset_slot(word, call_target)
+}
+
+/// `0x0090bbf0`: same reset for the slot at object offset `0x310`.
+pub fn w26a03_reset_slot_310(word: u32, call_target: impl FnMut(u32)) -> (u32, bool) {
+    w26a03_reset_slot(word, call_target)
+}
+
+#[cfg(test)]
+mod tests_wave26_agent03 {
+    use super::*;
+
+    #[test]
+    fn error_map() {
+        assert!(w26a03_classify_error(7).call_reset);
+        assert_eq!(w26a03_classify_error(-1).message, None);
+        assert_eq!(w26a03_classify_error(0xffe0).message, None);
+        for c in [-3, 3, 6, 0x3ea] {
+            let a = w26a03_classify_error(c);
+            assert!(a.release_resource);
+            assert_eq!(a.message, Some(2));
+        }
+        assert_eq!(w26a03_classify_error(0x3e9).message, Some(0xe));
+        assert_eq!(w26a03_classify_error(8).message, Some(0xc));
+        assert_eq!(w26a03_classify_error(0).message, Some(0xc));
+    }
+
+    #[test]
+    fn store_u16() {
+        let mut r = [0u8; 0x80];
+        assert_eq!(w26a03_store_u16_at_70(&mut r, 2, Some(0x1234)), 1);
+        assert_eq!(&r[0x70..0x72], &[0x34, 0x12]);
+        assert_eq!(w26a03_store_u16_at_70(&mut r, 1, Some(1)), 0);
+        assert_eq!(w26a03_store_u16_at_70(&mut r, 2, None), 0);
+    }
+
+    #[test]
+    fn slots() {
+        let mut calls = vec![];
+        assert_eq!(w26a03_reset_slot_318(0x1000, |t| calls.push(t)), (1, false));
+        assert_eq!(calls, vec![0x1000]);
+        assert_eq!(
+            w26a03_reset_slot_310(0x2001, |t| calls.push(t)),
+            (0x2001, true)
+        );
+        assert_eq!(calls, vec![0x1000, 0x2000]);
+        assert_eq!(w26a03_reset_slot_310(0, |_| panic!()), (0, false));
+        assert_eq!(w26a03_reset_slot_318(1, |_| panic!()), (1, false));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave26/agent04.rs
+// ===========================================================================
+// Wave 26 translation batch 04.
+//
+// Small container helpers (growth policy of an 8-byte-element vector and
+// of a `u16` vector) plus two tiny record helpers.  Re-allocation paths
+// are non-returning in the pseudocode, so they are reported as `Err`.
+
+/// `0x0090cb90`: when `mode == 2` and `read_value` yields a value, stores
+/// `value & 7` into the u16 at offset `0x30` of `record`; returns whether
+/// the store happened.
+pub fn w26a04_store_masked_u16(
+    record: &mut [u8],
+    mode: i32,
+    read_value: impl FnOnce() -> Option<u32>,
+) -> bool {
+    if mode != 2 {
+        return false;
+    }
+    match read_value() {
+        Some(v) => {
+            record[0x30..0x32].copy_from_slice(&((v & 7) as u16).to_le_bytes());
+            true
+        }
+        None => false,
+    }
+}
+
+/// Vector of 8-byte elements with the retail capacity word (low 31 bits).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct W26a04Vec8 {
+    pub items: Vec<[u32; 2]>,
+    pub cap: u32,
+}
+
+/// Source record layout read by `0x0090cf90`: dword at `+4`, u16 at `+8`,
+/// u8 at `+0x10`.
+pub fn w26a04_vec8_element(src: &[u8]) -> [u32; 2] {
+    let a = u32::from_le_bytes(src[4..8].try_into().unwrap());
+    let w = u16::from_le_bytes(src[8..10].try_into().unwrap()) as u32;
+    [a, ((src[0x10] as u32) << 16) | w]
+}
+
+/// `0x0090cf90`: push-back of the element built from `src`.  When
+/// `len == cap` the retail code grows the capacity by `max(1, cap / 2)`
+/// and reallocates (non-returning here): `Err(new_cap)`.
+pub fn w26a04_vec8_push(v: &mut W26a04Vec8, src: &[u8]) -> Result<(), u32> {
+    let cap = v.cap & 0x7fff_ffff;
+    if v.items.len() as u32 == cap && cap < cap.wrapping_add(1) {
+        let half = (v.cap >> 1) & 0x3fff_ffff;
+        let add = if cap < cap + half { half } else { 1 };
+        return Err(cap + add);
+    }
+    v.items.push(w26a04_vec8_element(src));
+    Ok(())
+}
+
+/// `0x0090d940`: resize of a `u16` vector to `n` elements.  Shrinking
+/// truncates; growing within capacity zero-fills; otherwise returns
+/// `Err(new_cap)` with `new_cap = max(n, cap + (cap >> 1))`.
+pub fn w26a04_u16vec_resize(items: &mut Vec<u16>, cap_word: u32, n: u32) -> Result<(), u32> {
+    let len = items.len() as u32;
+    if n < len {
+        items.truncate(n as usize);
+    } else if len < n {
+        let cap = cap_word & 0x7fff_ffff;
+        if cap < n {
+            let grown = ((cap_word >> 1) & 0x3fff_ffff) + cap;
+            return Err(grown.max(n));
+        }
+        items.resize(n as usize, 0);
+    }
+    Ok(())
+}
+
+/// `0x0090e2e0`: stores `value` into `*dst` when `a == b`; otherwise the
+/// retail code calls a non-returning error routine (`Err`).
+pub fn w26a04_store_if_equal(dst: &mut u32, value: u32, a: i32, b: i32) -> Result<(), ()> {
+    if a != b {
+        return Err(());
+    }
+    *dst = value;
+    Ok(())
+}
+
+/// Header copied by `0x0090ec10` (dwords 0, 2, 3, 4..=7 of the source).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct W26a04Header {
+    pub d0: u32,
+    pub d2: u32,
+    pub d3: u32,
+    pub d4: u32,
+    pub d5: u32,
+    pub d6: u32,
+    pub d7: u32,
+}
+
+/// `0x0090ec10`: copies the header dwords from `src` (dword indices 0, 2,
+/// 3, 4, 5, 6, 7) and returns them with the length of the trailing string
+/// (dword 9) that the retail code then copies into an SSO string.
+pub fn w26a04_copy_header(src: &[u32]) -> (W26a04Header, u32) {
+    (
+        W26a04Header {
+            d0: src[0],
+            d2: src[2],
+            d3: src[3],
+            d4: src[4],
+            d5: src[5],
+            d6: src[6],
+            d7: src[7],
+        },
+        src[9],
+    )
+}
+
+#[cfg(test)]
+mod tests_wave26_agent04 {
+    use super::*;
+
+    #[test]
+    fn masked_store() {
+        let mut r = [0u8; 0x40];
+        assert!(!w26a04_store_masked_u16(&mut r, 1, || Some(5)));
+        assert!(!w26a04_store_masked_u16(&mut r, 2, || None));
+        assert!(w26a04_store_masked_u16(&mut r, 2, || Some(0x1d)));
+        assert_eq!(r[0x30], 5);
+    }
+
+    #[test]
+    fn vec8_push_and_grow() {
+        let mut src = [0u8; 0x11];
+        src[4..8].copy_from_slice(&7u32.to_le_bytes());
+        src[8..10].copy_from_slice(&0x1234u16.to_le_bytes());
+        src[0x10] = 3;
+        assert_eq!(w26a04_vec8_element(&src), [7, 0x31234]);
+        let mut v = W26a04Vec8 {
+            items: vec![],
+            cap: 0,
+        };
+        assert_eq!(w26a04_vec8_push(&mut v, &src), Err(1));
+        v.cap = 2;
+        assert_eq!(w26a04_vec8_push(&mut v, &src), Ok(()));
+        assert_eq!(w26a04_vec8_push(&mut v, &src), Ok(()));
+        assert_eq!(w26a04_vec8_push(&mut v, &src), Err(3));
+    }
+
+    #[test]
+    fn u16_resize() {
+        let mut v = vec![1u16, 2, 3];
+        assert_eq!(w26a04_u16vec_resize(&mut v, 4, 2), Ok(()));
+        assert_eq!(v, [1, 2]);
+        assert_eq!(w26a04_u16vec_resize(&mut v, 4, 4), Ok(()));
+        assert_eq!(v, [1, 2, 0, 0]);
+        assert_eq!(w26a04_u16vec_resize(&mut v, 4, 9), Err(9));
+        assert_eq!(w26a04_u16vec_resize(&mut v, 4, 5), Err(6));
+    }
+
+    #[test]
+    fn store_and_header() {
+        let mut d = 0;
+        assert_eq!(w26a04_store_if_equal(&mut d, 5, 1, 2), Err(()));
+        assert_eq!(w26a04_store_if_equal(&mut d, 5, 2, 2), Ok(()));
+        assert_eq!(d, 5);
+        let s: Vec<u32> = (0..10).collect();
+        let (h, n) = w26a04_copy_header(&s);
+        assert_eq!((h.d0, h.d2, h.d7, n), (0, 2, 7, 9));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave26/agent05.rs
+// ===========================================================================
+// Wave 26 agent 05: runtime.rs queue (mostly SEH/noreturn glue).
+
+/// `0x00916170`: linear search over a circular list of nodes, returning the
+/// index of the first node whose field at offset `0x24` equals `key`, or
+/// `None` when the sentinel (end) is reached.
+pub fn w26a05_find_node_by_key(keys: &[u32], key: u32) -> Option<usize> {
+    keys.iter().position(|&k| k == key)
+}
+
+/// One row of the six-entry table built by `0x00914520`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct W26a05Pair {
+    pub id: u16,
+    pub value: u32,
+}
+
+/// `0x00914520`: builds the constant six-row `(u16, u32)` table that is
+/// passed (count 6, mode 2, flag 0) to the table consumer.
+pub fn w26a05_build_table() -> [W26a05Pair; 6] {
+    let p = |id, value| W26a05Pair { id, value };
+    [p(1, 0), p(2, 2), p(3, 3), p(4, 2), p(0x13, 0), p(0x2a, 0)]
+}
+
+#[cfg(test)]
+mod tests_wave26_agent05 {
+    use super::*;
+
+    #[test]
+    fn find_node() {
+        assert_eq!(w26a05_find_node_by_key(&[5, 7, 7], 7), Some(1));
+        assert_eq!(w26a05_find_node_by_key(&[5], 9), None);
+        assert_eq!(w26a05_find_node_by_key(&[], 0), None);
+    }
+
+    #[test]
+    fn table() {
+        let t = w26a05_build_table();
+        assert_eq!(t[0], W26a05Pair { id: 1, value: 0 });
+        assert_eq!(t[3].value, 2);
+        assert_eq!(t[5].id, 0x2a);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave26/agent06.rs
+// ===========================================================================
+// Wave 26 translation batch 06: glue screen helpers.
+
+/// `0x00916fc0`: forwards to the inner routine dropping the first argument.
+pub fn w26a06_forward_drop_first<R>(
+    _p1: u32,
+    p2: u32,
+    p3: u32,
+    p4: u32,
+    p5: u32,
+    inner: impl FnOnce(u32, u32, u32, u32) -> R,
+) -> R {
+    inner(p2, p3, p4, p5)
+}
+
+/// `0x009196f0`: maps a dialog result code to the follow-up code passed to
+/// the notifier; `None` means the notifier is skipped (code -1).
+pub fn w26a06_result_to_code(result: i32) -> Option<u32> {
+    match result {
+        -1 => None,
+        12 => Some(15),
+        -3 | 13 => Some(2),
+        0x3e9 => Some(14),
+        _ => Some(12),
+    }
+}
+
+/// `0x00918110`: dispatches vtable slot 0xcc (no flag) or 0xc8 (flag set).
+pub fn w26a06_dispatch_by_flag<R>(
+    flag: bool,
+    slot_cc: impl FnOnce() -> R,
+    slot_c8: impl FnOnce() -> R,
+) -> R {
+    if flag { slot_c8() } else { slot_cc() }
+}
+
+/// `0x00918360`: resets the screen's string state: u16 at `0x1f4` and u8 at
+/// `0x1f6` cleared, 0x50 bytes at `0x1a4` zeroed.
+pub fn w26a06_reset_screen_fields(obj: &mut [u8]) {
+    obj[0x1f4..0x1f6].fill(0);
+    obj[0x1f6] = 0;
+    obj[0x1a4..0x1a4 + 0x50].fill(0);
+}
+
+/// `0x00918580`: if the u16 at `0x1f4` is nonzero, runs `release` and clears
+/// the field and the 0x50-byte buffer at `0x1a4`.  Returns whether it did.
+pub fn w26a06_release_buffer(obj: &mut [u8], release: impl FnOnce()) -> bool {
+    if obj[0x1f4] == 0 && obj[0x1f5] == 0 {
+        return false;
+    }
+    release();
+    obj[0x1f4..0x1f6].fill(0);
+    obj[0x1a4..0x1a4 + 0x50].fill(0);
+    true
+}
+
+#[cfg(test)]
+mod tests_wave26_agent06 {
+    use super::*;
+
+    #[test]
+    fn forward_and_dispatch() {
+        assert_eq!(
+            w26a06_forward_drop_first(9, 1, 2, 3, 4, |a, b, c, d| a + b + c + d),
+            10
+        );
+        assert_eq!(w26a06_dispatch_by_flag(true, || 1, || 2), 2);
+        assert_eq!(w26a06_dispatch_by_flag(false, || 1, || 2), 1);
+    }
+
+    #[test]
+    fn result_codes() {
+        assert_eq!(w26a06_result_to_code(-1), None);
+        assert_eq!(w26a06_result_to_code(12), Some(15));
+        assert_eq!(w26a06_result_to_code(-3), Some(2));
+        assert_eq!(w26a06_result_to_code(13), Some(2));
+        assert_eq!(w26a06_result_to_code(0x3e9), Some(14));
+        assert_eq!(w26a06_result_to_code(5), Some(12));
+    }
+
+    #[test]
+    fn reset_and_release() {
+        let mut o = vec![0xffu8; 0x200];
+        w26a06_reset_screen_fields(&mut o);
+        assert_eq!(o[0x1f4], 0);
+        assert_eq!(o[0x1f6], 0);
+        assert_eq!(o[0x1a4 + 0x4f], 0);
+        assert_eq!(o[0x1a3], 0xff);
+        let mut called = false;
+        assert!(!w26a06_release_buffer(&mut o, || called = true));
+        assert!(!called);
+        o[0x1f5] = 1;
+        o[0x1a4] = 7;
+        assert!(w26a06_release_buffer(&mut o, || called = true));
+        assert!(called && o[0x1f5] == 0 && o[0x1a4] == 0);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave26/agent07.rs
+// ===========================================================================
+/// Callbacks for the unresolved callees of the dispatcher.
+pub trait W26a07Hooks {
+    /// FUN_0087b640 predicate.
+    fn mode_flag(&mut self) -> bool;
+    /// FUN_0091d620 (param 0xc, flag clear).
+    fn fallback_confirm(&mut self) -> u32;
+    /// FUN_00914220 (generic command).
+    fn fallback_command(&mut self, cmd: i32) -> u32;
+    /// Virtual slot 0x100 on the object.
+    fn query_value(&mut self) -> u32;
+    /// FUN_00911980 test on the queried value.
+    fn value_valid(&mut self, v: u32) -> bool;
+    /// FUN_00606c80 / FUN_00606ca0 predicates.
+    fn busy_a(&mut self) -> bool;
+    fn busy_b(&mut self) -> bool;
+    /// FUN_0091d0a0 with a context word, followed by FUN_0091d760.
+    fn commit(&mut self, ctx_word: u32);
+    /// FUN_009140a0.
+    fn busy_result(&mut self) -> u32;
+}
+
+/// `0x00919a60`: command dispatcher.  `done_flag` is the byte at +0x1335,
+/// `word_4ac` / `word_86` are dword indices 0x4ac and 0x86 of the object.
+pub fn w26a07_dispatch<H: W26a07Hooks>(
+    h: &mut H,
+    cmd: i32,
+    done_flag: bool,
+    word_4ac: u32,
+    word_86: u32,
+) -> u32 {
+    if !h.mode_flag() {
+        if cmd == 0xc {
+            return h.fallback_confirm();
+        }
+        return h.fallback_command(cmd);
+    }
+    if cmd == 0xc {
+        if done_flag {
+            return 1;
+        }
+        let v = h.query_value();
+        if !h.value_valid(v) {
+            return 0;
+        }
+        if !h.busy_a() && !h.busy_b() {
+            h.commit(word_4ac);
+            return 1;
+        }
+        return h.busy_result();
+    }
+    if cmd == 0xd {
+        if !done_flag {
+            h.commit(word_86);
+        }
+        return 1;
+    }
+    0
+}
+
+#[cfg(test)]
+mod tests_wave26_agent07 {
+    use super::*;
+    #[derive(Default)]
+    struct T {
+        mode: bool,
+        valid: bool,
+        busy: bool,
+        commits: Vec<u32>,
+    }
+    impl W26a07Hooks for T {
+        fn mode_flag(&mut self) -> bool {
+            self.mode
+        }
+        fn fallback_confirm(&mut self) -> u32 {
+            70
+        }
+        fn fallback_command(&mut self, c: i32) -> u32 {
+            c as u32 + 100
+        }
+        fn query_value(&mut self) -> u32 {
+            5
+        }
+        fn value_valid(&mut self, _v: u32) -> bool {
+            self.valid
+        }
+        fn busy_a(&mut self) -> bool {
+            self.busy
+        }
+        fn busy_b(&mut self) -> bool {
+            false
+        }
+        fn commit(&mut self, w: u32) {
+            self.commits.push(w);
+        }
+        fn busy_result(&mut self) -> u32 {
+            9
+        }
+    }
+    #[test]
+    fn dispatch_paths() {
+        let mut t = T::default();
+        assert_eq!(w26a07_dispatch(&mut t, 0xc, false, 1, 2), 70);
+        assert_eq!(w26a07_dispatch(&mut t, 3, false, 1, 2), 103);
+        t.mode = true;
+        assert_eq!(w26a07_dispatch(&mut t, 0xc, true, 1, 2), 1);
+        assert_eq!(w26a07_dispatch(&mut t, 0xc, false, 1, 2), 0);
+        t.valid = true;
+        assert_eq!(w26a07_dispatch(&mut t, 0xc, false, 1, 2), 1);
+        t.busy = true;
+        assert_eq!(w26a07_dispatch(&mut t, 0xc, false, 1, 2), 9);
+        assert_eq!(w26a07_dispatch(&mut t, 0xd, false, 1, 2), 1);
+        assert_eq!(w26a07_dispatch(&mut t, 0xd, true, 1, 2), 1);
+        assert_eq!(w26a07_dispatch(&mut t, 7, false, 1, 2), 0);
+        assert_eq!(t.commits, vec![1, 2]);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave26/agent08.rs
+// ===========================================================================
+// Wave 26 translation batch 08.
+
+/// `0x0091f090`: resets a circular list header `[next, prev, count]` so both
+/// links point at the header itself and the count is zero.  Returns the old
+/// `prev` link had differed from the header (the original then frees the
+/// nodes), i.e. `true` when there were nodes to release.
+pub fn w26a08_list_header_reset(hdr: &mut [u32; 3], self_addr: u32) -> bool {
+    let old = hdr[1];
+    hdr[1] = self_addr;
+    hdr[0] = self_addr;
+    hdr[2] = 0;
+    old != self_addr
+}
+
+/// `0x00920840`: the five `(id: u16, value: u32)` pairs passed to the
+/// option-table installer (count 5).
+pub fn w26a08_option_pairs() -> [(u16, u32); 5] {
+    [(1, 0), (2, 2), (3, 3), (4, 2), (5, 0)]
+}
+
+/// Deque header used by `0x00921ec0`: block map length, start offset, size.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct W26a08Deque {
+    pub map_size: u32,
+    pub off: u32,
+    pub size: u32,
+}
+
+/// `0x00921ec0`: deque push_back slot lookup (8 elements per block, element
+/// stride `0x88`).  Returns `(block_index, byte_offset_in_block)` and bumps
+/// `size`; `None` when the map must grow first (or the block is missing,
+/// as `block_present` reports).
+pub fn w26a08_deque_push_slot(
+    d: &mut W26a08Deque,
+    block_present: impl Fn(u32) -> bool,
+) -> Option<(u32, u32)> {
+    if (d.off.wrapping_add(d.size) & 7) == 0 && d.map_size <= (d.size.wrapping_add(8) >> 3) {
+        return None;
+    }
+    let pos = d.off.wrapping_add(d.size);
+    d.size = d.size.wrapping_add(1);
+    let blk = d.map_size.wrapping_sub(1) & (pos >> 3);
+    if !block_present(blk) {
+        return None;
+    }
+    Some((blk, (pos & 7) * 0x88))
+}
+
+/// `0x00923dd0`: `std::bad_alloc` constructor; returns the stored message.
+pub fn w26a08_bad_alloc_message() -> &'static str {
+    "bad allocation"
+}
+
+#[cfg(test)]
+mod tests_wave26_agent08 {
+    use super::*;
+
+    #[test]
+    fn list_reset() {
+        let mut h = [1, 2, 3];
+        assert!(w26a08_list_header_reset(&mut h, 9));
+        assert_eq!(h, [9, 9, 0]);
+        assert!(!w26a08_list_header_reset(&mut h, 9));
+    }
+
+    #[test]
+    fn pairs_and_msg() {
+        assert_eq!(w26a08_option_pairs()[3], (4, 2));
+        assert_eq!(w26a08_bad_alloc_message(), "bad allocation");
+    }
+
+    #[test]
+    fn deque_slot() {
+        let mut d = W26a08Deque {
+            map_size: 4,
+            off: 0,
+            size: 3,
+        };
+        assert_eq!(
+            w26a08_deque_push_slot(&mut d, |_| true),
+            Some((0, 3 * 0x88))
+        );
+        assert_eq!(d.size, 4);
+        let mut d = W26a08Deque {
+            map_size: 1,
+            off: 0,
+            size: 8,
+        };
+        assert_eq!(w26a08_deque_push_slot(&mut d, |_| true), None);
+        let mut d = W26a08Deque {
+            map_size: 4,
+            off: 0,
+            size: 3,
+        };
+        assert_eq!(w26a08_deque_push_slot(&mut d, |_| false), None);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave26/agent09.rs
+// ===========================================================================
+// Wave 26 agent 09: Storm-style crypt table, block decrypt and cached read helpers.
+
+/// `0x00924440`: builds the 0x500-entry crypt table (five rows of 256
+/// words) with the LCG `x * 0x7d + 3 mod 0x2aaaab`, seed `0x100001`.
+pub fn w26a09_build_crypt_table() -> [u32; 0x500] {
+    let step = |x: u32| x.wrapping_mul(0x7d).wrapping_add(3) % 0x2aaaab;
+    let mut t = [0u32; 0x500];
+    let mut s: u32 = 0x100001;
+    for i in 0..0x100 {
+        for row in 0..5 {
+            let a = step(s);
+            let b = step(a);
+            t[row * 0x100 + i] = (a << 16) | (b & 0xffff);
+            s = b;
+        }
+    }
+    t
+}
+
+/// `0x009258b0`: decrypts `len_bytes / 4` words in place with `key`,
+/// using row 4 of the crypt table.
+pub fn w26a09_decrypt_block(table: &[u32; 0x500], data: &mut [u32], len_bytes: u32, key: u32) {
+    let mut acc: u32 = 0xeeeeeeeeu32; // -0x11111112
+    let mut k = key;
+    for w in data.iter_mut().take((len_bytes >> 2) as usize) {
+        acc = acc.wrapping_add(table[0x400 + (k & 0xff) as usize]);
+        *w ^= acc.wrapping_add(k);
+        acc = acc.wrapping_mul(0x21).wrapping_add(*w).wrapping_add(3);
+        k = (k >> 11) | (!k).wrapping_mul(0x200000).wrapping_add(0x11111111);
+    }
+}
+
+/// `0x00923fa0`: allocation retry loop.  `alloc` returns nonzero on
+/// success; on failure `new_handler` is asked to run a handler (returns
+/// false when none is installed, ending the loop with 0).
+pub fn w26a09_alloc_retry(
+    mut alloc: impl FnMut() -> u32,
+    mut new_handler: impl FnMut() -> bool,
+) -> u32 {
+    loop {
+        let r = alloc();
+        if r != 0 {
+            return r;
+        }
+        if !new_handler() {
+            return 0;
+        }
+    }
+}
+
+/// `0x00924020`: bounded-format result fixup.  `formatted_len` is the raw
+/// length from the formatter (negative becomes `u32::MAX`).  With a
+/// finite `size`, an overflowing result truncates to `size - 1` and
+/// NUL-terminates `buf`.  `size == 0` returns 0; `0x7fffffff` is unbounded.
+pub fn w26a09_bounded_format_result(buf: &mut [u8], size: u32, formatted_len: i32) -> u32 {
+    if size == 0 {
+        return 0;
+    }
+    let mut n = if formatted_len < 0 {
+        u32::MAX
+    } else {
+        formatted_len as u32
+    };
+    if size != 0x7fffffff && size <= n {
+        n = size - 1;
+        if let Some(b) = buf.get_mut(n as usize) {
+            *b = 0;
+        }
+    }
+    n
+}
+
+/// Cached sequential-read state of a file object (offsets from `0x00926ad0`).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct W26a09ReadCache {
+    /// +0x208 offset of the cached read.
+    pub cached_off: u32,
+    /// +0x20c result of the cached read.
+    pub cached_val: u32,
+    /// +0x12c file size.
+    pub size: u32,
+    /// +0x130 flags.
+    pub flags: u32,
+}
+
+/// `0x00926ad0`: returns the cached result if `off` matches, otherwise
+/// clamps the chunk (`chunk` = parent+0x268) to the file size unless
+/// flags & 0xff00 is set, performs the read and caches it.
+pub fn w26a09_cached_read(
+    c: &mut W26a09ReadCache,
+    off: u32,
+    chunk: u32,
+    mut read: impl FnMut(u32, u32) -> u32,
+) -> u32 {
+    if c.cached_off == off {
+        return c.cached_val;
+    }
+    let mut len = chunk;
+    if c.size < len.wrapping_add(off) && (c.flags & 0xff00) == 0 {
+        len = c.size.wrapping_sub(off);
+    }
+    c.cached_off = off;
+    c.cached_val = read(off, len);
+    c.cached_val
+}
+
+/// `0x00927a90`: reads `count` bytes at 64-bit offset `(lo, hi)` through
+/// `read` (returns bytes read, or `None` on failure).  Returns
+/// `(ok, bytes_read, end_offset)`; `None` when the reader failed.
+pub fn w26a09_read_checked(
+    lo: u32,
+    hi: u32,
+    count: u32,
+    mut read: impl FnMut(u32, u32, u32) -> Option<u32>,
+) -> Option<(bool, u32, u64)> {
+    let got = read(lo, hi, count)?;
+    let end = (((hi as u64) << 32) | lo as u64).wrapping_add(got as u64);
+    Some((got == count, got, end))
+}
+
+#[cfg(test)]
+mod tests_wave26_agent09 {
+    use super::*;
+
+    #[test]
+    fn crypt_table_known_values() {
+        let t = w26a09_build_crypt_table();
+        let step = |x: u32| x.wrapping_mul(0x7d).wrapping_add(3) % 0x2aaaab;
+        let a = step(0x100001);
+        let b = step(a);
+        assert_eq!(t[0], (a << 16) | (b & 0xffff));
+        assert_eq!(t[0], 0x55c636e2);
+        assert_eq!(t[0x100], 1996014001);
+        let c = step(b);
+        let d = step(c);
+        assert_eq!(t[0x100], (c << 16) | (d & 0xffff));
+        assert_eq!(t.len(), 0x500);
+    }
+
+    #[test]
+    fn decrypt_changes_and_is_len_bounded() {
+        let t = w26a09_build_crypt_table();
+        let mut d = [0u32; 4];
+        w26a09_decrypt_block(&t, &mut d, 8, 0x1234);
+        assert_ne!(d[0], 0);
+        assert_ne!(d[1], 0);
+        assert_eq!(d[2], 0);
+        let mut e = [0u32; 2];
+        w26a09_decrypt_block(&t, &mut e, 8, 0x1234);
+        assert_eq!(e, [d[0], d[1]]);
+    }
+
+    #[test]
+    fn retry_loop() {
+        let mut n = 0;
+        assert_eq!(
+            w26a09_alloc_retry(
+                || {
+                    n += 1;
+                    if n == 3 { 9 } else { 0 }
+                },
+                || true
+            ),
+            9
+        );
+        assert_eq!(w26a09_alloc_retry(|| 0, || false), 0);
+    }
+
+    #[test]
+    fn bounded_format() {
+        let mut b = [b'x'; 8];
+        assert_eq!(w26a09_bounded_format_result(&mut b, 0, 3), 0);
+        assert_eq!(w26a09_bounded_format_result(&mut b, 4, 10), 3);
+        assert_eq!(b[3], 0);
+        assert_eq!(w26a09_bounded_format_result(&mut b, 0x7fffffff, 10), 10);
+        assert_eq!(w26a09_bounded_format_result(&mut b, 4, -1), 3);
+    }
+
+    #[test]
+    fn cached_read() {
+        let mut c = W26a09ReadCache {
+            cached_off: 0,
+            cached_val: 5,
+            size: 100,
+            flags: 0,
+        };
+        let mut calls = 0;
+        assert_eq!(w26a09_cached_read(&mut c, 0, 64, |_, _| 1), 5);
+        let r = w26a09_cached_read(&mut c, 90, 64, |o, l| {
+            calls += 1;
+            assert_eq!((o, l), (90, 10));
+            l
+        });
+        assert_eq!((r, calls), (10, 1));
+        assert_eq!(w26a09_cached_read(&mut c, 90, 64, |_, _| 0), 10);
+        c.flags = 0x100;
+        w26a09_cached_read(&mut c, 95, 64, |_, l| {
+            assert_eq!(l, 64);
+            0
+        });
+    }
+
+    #[test]
+    fn read_checked() {
+        assert_eq!(
+            w26a09_read_checked(0xffff_fff0, 0, 0x20, |_, _, c| Some(c)),
+            Some((true, 0x20, 0x1_0000_0010))
+        );
+        assert_eq!(
+            w26a09_read_checked(0, 0, 8, |_, _, _| Some(4)),
+            Some((false, 4, 4))
+        );
+        assert_eq!(w26a09_read_checked(0, 0, 8, |_, _, _| None), None);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave26/agent10.rs
+// ===========================================================================
+// Wave 26 agent 10: small string/array helpers from the 0x0092xxxx block.
+
+/// `0x0092d2e0`: builds the CRLF-normalised log line.  Starts with "\r\n",
+/// inserts `\r` before every `\n` not already preceded by `\r`, and appends
+/// "\r\n" unless the text already ends in `\n`.
+pub fn w26a10_crlf_line(text: &[u8]) -> Vec<u8> {
+    let mut out = vec![b'\r', b'\n'];
+    let mut prev = 0u8;
+    let mut last = 0u8;
+    for &c in text {
+        if c == b'\n' && prev != b'\r' {
+            out.push(b'\r');
+        }
+        out.push(c);
+        prev = c;
+        last = c;
+    }
+    if text.is_empty() || last != b'\n' {
+        out.extend_from_slice(b"\r\n");
+    }
+    out
+}
+
+/// `0x0092d4d0`: debug-memory label.  Only produced when the cached
+/// "Internal/Debug Memory" flag is set; `"%s (%s)"` when `extra` is
+/// non-empty, otherwise just `name`; truncated to 255 bytes (buffer 0x100).
+pub fn w26a10_debug_memory_label(flag: bool, name: &str, extra: Option<&str>) -> Option<String> {
+    if !flag {
+        return None;
+    }
+    let mut s = match extra {
+        Some(e) if !e.is_empty() => format!("{name} ({e})"),
+        _ => name.to_string(),
+    };
+    s.truncate(255);
+    Some(s)
+}
+
+/// `0x0092c340`: string-table id chosen by `kind_zero` (param_1 == 0) and
+/// the result of the probe `FUN_0094a880` (`probe_nonzero`):
+/// probe 0 -> 9 / 10, probe nonzero -> 12 / 13.
+pub fn w26a10_message_id(kind_zero: bool, probe_nonzero: bool) -> u32 {
+    match (probe_nonzero, kind_zero) {
+        (false, true) => 9,
+        (false, false) => 10,
+        (true, true) => 12,
+        (true, false) => 13,
+    }
+}
+
+/// `0x0092d720`: index of element `base + idx` in a growable u32 array,
+/// zero-extending the array to `base + idx + 1` entries when the index is
+/// at or beyond the current length.
+pub fn w26a10_array_slot(v: &mut Vec<u32>, base: usize, idx: usize) -> usize {
+    let u = base + idx;
+    if v.len() <= u {
+        v.resize(u + 1, 0);
+    }
+    u
+}
+
+#[cfg(test)]
+mod tests_wave26_agent10 {
+    use super::*;
+
+    #[test]
+    fn crlf() {
+        assert_eq!(w26a10_crlf_line(b"a\nb"), b"\r\na\r\nb\r\n");
+        assert_eq!(w26a10_crlf_line(b"a\r\n"), b"\r\na\r\n");
+        assert_eq!(w26a10_crlf_line(b""), b"\r\n\r\n");
+        assert_eq!(w26a10_crlf_line(b"x\n"), b"\r\nx\r\n");
+    }
+
+    #[test]
+    fn label() {
+        assert_eq!(w26a10_debug_memory_label(false, "a", None), None);
+        assert_eq!(
+            w26a10_debug_memory_label(true, "a", Some("b")).unwrap(),
+            "a (b)"
+        );
+        assert_eq!(w26a10_debug_memory_label(true, "a", Some("")).unwrap(), "a");
+        assert_eq!(
+            w26a10_debug_memory_label(true, &"z".repeat(300), None)
+                .unwrap()
+                .len(),
+            255
+        );
+    }
+
+    #[test]
+    fn ids() {
+        assert_eq!(w26a10_message_id(true, false), 9);
+        assert_eq!(w26a10_message_id(false, false), 10);
+        assert_eq!(w26a10_message_id(true, true), 12);
+        assert_eq!(w26a10_message_id(false, true), 13);
+    }
+
+    #[test]
+    fn slot() {
+        let mut v = vec![1, 2];
+        assert_eq!(w26a10_array_slot(&mut v, 1, 0), 1);
+        assert_eq!(v.len(), 2);
+        assert_eq!(w26a10_array_slot(&mut v, 1, 3), 4);
+        assert_eq!(v, vec![1, 2, 0, 0, 0]);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave26/agent11.rs
+// ===========================================================================
+// Wave 26 agent 11: little-endian 32-bit-word big-integer vector helpers
+// (record `{len, ptr, cap, offset}`, stride 0x10) from the runtime image.
+
+/// Writes `val` at word `idx`, growing with zero fill (the checked-write
+/// idiom that precedes every store in the retail bodies).
+pub fn w26a11_set_word(out: &mut Vec<u32>, idx: usize, val: u32) {
+    if out.len() <= idx {
+        out.resize(idx + 1, 0);
+    }
+    out[idx] = val;
+}
+
+fn w26a11_get(v: &[u32], i: usize) -> u32 {
+    v.get(i).copied().unwrap_or(0)
+}
+
+/// `0x0092e6f0`: sets the vector to the single word `1`.
+pub fn w26a11_set_one() -> Vec<u32> {
+    vec![1]
+}
+
+/// `0x0092e210`: multiplies `src` by the 64-bit scalar `lo + (hi << 32)`
+/// (`param_3`, `param_4`), emitting words until the carry is exhausted.
+pub fn w26a11_mul_scalar(src: &[u32], lo: u32, hi: u32) -> Vec<u32> {
+    let mut out = Vec::new();
+    let mut carry: u32 = 0;
+    let mut i = 0usize;
+    loop {
+        if carry == 0 && i >= src.len() {
+            return out;
+        }
+        let w = w26a11_get(src, i);
+        let v = (lo as u64)
+            .wrapping_mul(w as u64)
+            .wrapping_add(((hi.wrapping_mul(w)) as u64) << 32 | carry as u64);
+        carry = (v >> 32) as u32;
+        w26a11_set_word(&mut out, i, v as u32);
+        i += 1;
+    }
+}
+
+/// `0x0092e770`: shift left by `bits`; result has `len + 1 + bits / 32` words.
+pub fn w26a11_shl(src: &[u32], bits: u32) -> Vec<u32> {
+    let ws = (bits >> 5) as usize;
+    let s = bits & 0x1f;
+    let total = src.len() + 1 + ws;
+    let mut out = vec![0u32; total];
+    for i in (0..total).rev() {
+        let mut v = 0u32;
+        if i >= ws {
+            v = w26a11_get(src, i - ws) << s;
+            if i > ws && s != 0 {
+                v = v.wrapping_add(w26a11_get(src, i - ws - 1) >> (32 - s));
+            }
+        }
+        out[i] = v;
+    }
+    out
+}
+
+/// `0x0092ec00`: word-wise `a - b` with a signed running borrow; result has
+/// `max(len a, len b)` words.
+pub fn w26a11_sub(a: &[u32], b: &[u32]) -> Vec<u32> {
+    let n = a.len().max(b.len());
+    let mut out = Vec::with_capacity(n);
+    let mut lo: u32 = 0;
+    let mut hi: u32 = 0;
+    for i in 0..n {
+        let x = w26a11_get(a, i);
+        let y = w26a11_get(b, i);
+        let d = x.wrapping_sub(y);
+        let t = lo.wrapping_add(d);
+        let new_lo = hi
+            .wrapping_sub((x < y) as u32)
+            .wrapping_add(lo.checked_add(d).is_none() as u32);
+        out.push(t);
+        lo = new_lo;
+        hi = if lo > 0x7fff_ffff { 0xffff_ffff } else { 0 };
+    }
+    out
+}
+
+/// `0x0092dfe0`: schoolbook product `a * b`; `a.len() + b.len()` words when
+/// both are non-empty.
+pub fn w26a11_mul(a: &[u32], b: &[u32]) -> Vec<u32> {
+    let mut out = Vec::new();
+    for (i, &av) in a.iter().enumerate() {
+        let mut carry: u32 = 0;
+        let mut j = 0usize;
+        for (jj, &bv) in b.iter().enumerate() {
+            let prod = bv as u64 * av as u64;
+            let o = w26a11_get(&out, i + jj);
+            let lo_sum = (prod as u32).wrapping_add(o);
+            let c1 = (prod as u32).checked_add(o).is_none() as u32;
+            let nv = carry.wrapping_add(lo_sum);
+            let c2 = carry.checked_add(lo_sum).is_none() as u32;
+            w26a11_set_word(&mut out, i + jj, nv);
+            carry = ((prod >> 32) as u32).wrapping_add(c1).wrapping_add(c2);
+            j = jj + 1;
+        }
+        w26a11_set_word(&mut out, i + j, carry);
+    }
+    out
+}
+
+/// `0x0092e9a0`: square of `a` (cross terms doubled), `2 * len` words.
+pub fn w26a11_square(a: &[u32]) -> Vec<u32> {
+    let mut out = Vec::new();
+    for i in 0..a.len() {
+        let mut carry: u64 = 0;
+        for j in 0..=i {
+            let prod = a[j] as u64 * a[i] as u64;
+            let o = w26a11_get(&out, i + j) as u64;
+            let sum = prod + o;
+            let add = if j < i {
+                prod.wrapping_add(carry)
+            } else {
+                carry
+            };
+            let total = sum.wrapping_add(add);
+            let ov = (total < sum) as u64;
+            carry = (total >> 32) | (ov << 32);
+            w26a11_set_word(&mut out, i + j, total as u32);
+        }
+        w26a11_set_word(&mut out, 2 * i + 1, carry as u32);
+    }
+    out
+}
+
+/// `0x0092e620`: capacity growth for a word vector.  `add` extra words are
+/// requested over `len`; `grow` selects the policy hook (`policy()` gives
+/// the retail suggested size, never below the request).  Returns the new
+/// capacity, or `None` if no reallocation is needed.
+pub fn w26a11_reserve_words(
+    len: u32,
+    cap: u32,
+    add: u32,
+    grow: bool,
+    policy: impl Fn() -> u32,
+) -> Option<u32> {
+    let need = add.wrapping_add(len);
+    if cap >= need {
+        return None;
+    }
+    let mut n = need;
+    if grow {
+        n = policy();
+        if n < need {
+            n = need;
+        }
+    }
+    if n == len { None } else { Some(n) }
+}
+
+/// `0x0092e560`: the byte-vector twin of the growth rule above (same policy,
+/// element size 1 instead of 4).
+pub fn w26a11_reserve_bytes(
+    len: u32,
+    cap: u32,
+    add: u32,
+    grow: bool,
+    policy: impl Fn() -> u32,
+) -> Option<u32> {
+    w26a11_reserve_words(len, cap, add, grow, policy)
+}
+
+#[cfg(test)]
+mod tests_wave26_agent11 {
+    use super::*;
+
+    #[test]
+    fn one_and_scalar() {
+        assert_eq!(w26a11_set_one(), vec![1]);
+        assert_eq!(
+            w26a11_mul_scalar(&[0xffff_ffff], 2, 0),
+            vec![0xffff_fffe, 1]
+        );
+        assert_eq!(w26a11_mul_scalar(&[], 5, 0), Vec::<u32>::new());
+        assert_eq!(w26a11_mul_scalar(&[3], 0, 1), vec![0, 3]);
+    }
+
+    #[test]
+    fn shift() {
+        assert_eq!(w26a11_shl(&[1], 4), vec![16, 0]);
+        assert_eq!(w26a11_shl(&[0x8000_0000], 1), vec![0, 1]);
+        assert_eq!(w26a11_shl(&[1], 32), vec![0, 1, 0]);
+    }
+
+    #[test]
+    fn subtract() {
+        assert_eq!(w26a11_sub(&[5], &[3]), vec![2]);
+        assert_eq!(w26a11_sub(&[0, 1], &[1]), vec![0xffff_ffff, 0]);
+        assert_eq!(w26a11_sub(&[1], &[2]), vec![0xffff_ffff]);
+    }
+
+    #[test]
+    fn multiply_and_square() {
+        assert_eq!(
+            w26a11_mul(&[0xffff_ffff], &[0xffff_ffff]),
+            vec![1, 0xffff_fffe]
+        );
+        assert_eq!(w26a11_mul(&[2, 1], &[3]), vec![6, 3, 0]);
+        assert_eq!(w26a11_square(&[0xffff_ffff]), vec![1, 0xffff_fffe]);
+        let a = [0x1234_5678, 0x9abc_def0];
+        assert_eq!(w26a11_square(&a), w26a11_mul(&a, &a));
+        assert!(w26a11_mul(&[], &[1]).is_empty());
+    }
+
+    #[test]
+    fn reserve() {
+        assert_eq!(w26a11_reserve_words(2, 8, 3, false, || 0), None);
+        assert_eq!(w26a11_reserve_words(2, 4, 3, false, || 0), Some(5));
+        assert_eq!(w26a11_reserve_words(2, 4, 3, true, || 16), Some(16));
+        assert_eq!(w26a11_reserve_words(2, 4, 3, true, || 1), Some(5));
+        assert_eq!(w26a11_reserve_bytes(2, 4, 3, false, || 0), Some(5));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave26/agent12.rs
+// ===========================================================================
+// Wave 26 agent 12: compression / image-buffer helpers.
+
+/// `0x00931cf0`: number of bytes copied out of a cursor buffer; the
+/// remaining span `end - pos` clamped to `wanted`.
+pub fn w26a12_clamped_copy_len(pos: u32, end: u32, wanted: u32) -> u32 {
+    let avail = end.wrapping_sub(pos);
+    if wanted < avail { wanted } else { avail }
+}
+
+/// `0x00931f00`: zlib-style arena allocator.  Rounds `count * size` up to a
+/// multiple of 4; returns the new cursor offset when it fits in the
+/// remaining space, `None` when it does not.  `cursor`, `base`, `capacity`
+/// mirror the stream fields 0, 1, 2 (remaining = capacity + base - cursor).
+pub fn w26a12_arena_alloc(
+    cursor: u32,
+    base: u32,
+    capacity: u32,
+    count: u32,
+    size: u32,
+) -> Option<u32> {
+    let mut n = count.wrapping_mul(size);
+    if n & 3 != 0 {
+        n += 4 - (n & 3);
+    }
+    let remaining = capacity.wrapping_add(base).wrapping_sub(cursor);
+    if n < remaining {
+        Some(cursor.wrapping_add(n))
+    } else {
+        None
+    }
+}
+
+/// `0x00933340`: image-header row check.  `hdr` is the header bytes
+/// (u16 at +3 = palette entries, u16 at +5 = width, byte +7 = bits per
+/// pixel).  Returns `Some(palette_entries * 4)` zero-fill length when
+/// `width * ((bpp + 7) / 8) == data_len`, else `None`.
+pub fn w26a12_row_check_zero_len(hdr: &[u8], data_len: u32) -> Option<u32> {
+    if hdr.len() < 8 {
+        return None;
+    }
+    let pal = u32::from(u16::from_le_bytes([hdr[3], hdr[4]]));
+    let width = u32::from(u16::from_le_bytes([hdr[5], hdr[6]]));
+    let bytes_pp = (u32::from(hdr[7]) + 7) >> 3;
+    if (width * bytes_pp).wrapping_sub(data_len) != 0 {
+        return None;
+    }
+    Some(pal * 4)
+}
+
+/// `0x00933f50`: copy one row from the bottom of a bitmap.  Any zero
+/// argument fails with error 0x57.  Returns `Ok((src_offset, len))` where
+/// `src_offset = (row - 1) * stride` and `len = min(dst_len, src_len)`.
+pub fn w26a12_bottom_row_copy(
+    dst_len: u32,
+    src_len: u32,
+    stride: u32,
+    row: u32,
+) -> Result<(u32, u32), u32> {
+    if dst_len == 0 || src_len == 0 || stride == 0 || row == 0 {
+        return Err(0x57);
+    }
+    Ok((
+        row.wrapping_sub(1).wrapping_mul(stride),
+        dst_len.min(src_len),
+    ))
+}
+
+#[cfg(test)]
+mod tests_wave26_agent12 {
+    use super::*;
+
+    #[test]
+    fn copy_len() {
+        assert_eq!(w26a12_clamped_copy_len(4, 10, 100), 6);
+        assert_eq!(w26a12_clamped_copy_len(4, 10, 3), 3);
+    }
+
+    #[test]
+    fn alloc() {
+        assert_eq!(w26a12_arena_alloc(0, 0, 100, 3, 3), Some(12));
+        assert_eq!(w26a12_arena_alloc(0, 0, 8, 2, 4), None);
+    }
+
+    #[test]
+    fn row_check() {
+        let h = [0, 0, 0, 2, 0, 5, 0, 24];
+        assert_eq!(w26a12_row_check_zero_len(&h, 15), Some(8));
+        assert_eq!(w26a12_row_check_zero_len(&h, 14), None);
+    }
+
+    #[test]
+    fn bottom_row() {
+        assert_eq!(w26a12_bottom_row_copy(8, 4, 16, 3), Ok((32, 4)));
+        assert_eq!(w26a12_bottom_row_copy(8, 4, 16, 0), Err(0x57));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave26/agent13.rs
+// ===========================================================================
+// Wave 26 agent 13: bit packer, PCX RLE decoder, image-option setter and
+// registry-wrapper argument validation.
+
+/// Win32 `ERROR_INVALID_PARAMETER`, set by the validators below.
+pub const W26A13_ERROR_INVALID_PARAMETER: u32 = 0x57;
+
+/// Bit-packer state for `0x00933fd0` (GIF-style variable-width codes).
+/// Field order mirrors the int array of the retail struct.
+#[derive(Debug, Clone)]
+pub struct W26a13BitPacker {
+    /// `[0]` current code width in bits.
+    pub code_bits: i32,
+    /// `[1]` current maximum code.
+    pub max_code: i32,
+    /// `[3]` bit accumulator.
+    pub accum: i32,
+    /// `[4]` bits held in the accumulator.
+    pub accum_bits: i32,
+    /// `[9]` next-free-code limit.
+    pub limit: i32,
+    /// `[0xc]` bytes queued in the block.
+    pub block_len: i32,
+    /// Block buffer: byte 0 is the length byte, data follows.
+    pub block: [u8; 0x100],
+}
+
+/// `0x00933fd0`: appends `code` at the current bit width, spills whole bytes
+/// into the block (a full block of 0xff bytes is passed to `flush` with its
+/// length byte and the queue is restarted), then widens the code (width 12
+/// sets max code 0x1000).
+pub fn w26a13_pack_code(st: &mut W26a13BitPacker, code: i32, mut flush: impl FnMut(&[u8])) {
+    let total = st.code_bits + st.accum_bits;
+    let mut cur = ((code as u32) << ((st.accum_bits as u32) & 0x1f)) as i32 | st.accum;
+    st.accum = cur;
+    st.accum_bits = total;
+    while st.accum_bits > 7 {
+        st.block_len += 1;
+        st.block[st.block_len as usize] = cur as u8;
+        if st.block_len > 0xfe {
+            st.block_len += 1;
+            st.block[0] = (st.block_len - 1) as u8;
+            flush(&st.block[..st.block_len as usize]);
+            st.block_len = 0;
+        }
+        st.accum >>= 8;
+        st.accum_bits -= 8;
+        cur = st.accum & 0xff;
+    }
+    if st.max_code < st.limit {
+        st.code_bits += 1;
+        if st.code_bits == 0xc {
+            st.max_code = 0x1000;
+            return;
+        }
+        st.max_code = (1 << st.code_bits) - 1;
+    }
+}
+
+/// `0x00934080`: PCX run-length decode into an interleaved image.
+/// `width` is bytes per scanline plane to keep, `stride` the encoded bytes
+/// per plane line, `planes` the plane count.  Bytes below 0xc0 are literals;
+/// otherwise the low six bits are a run length of the next byte.  Planes are
+/// written to `dst[row + x*planes + plane]` (plane counted downward, so the
+/// first encoded plane lands in the highest slot).  Decoding stops when
+/// either buffer is exhausted.  The loop-top end test is applied to the
+/// destination position.
+pub fn w26a13_pcx_rle_decode(dst: &mut [u8], src: &[u8], width: u32, stride: u32, planes: u32) {
+    if planes == 0 || stride == 0 {
+        return;
+    }
+    let dst_end = dst.len() as i64;
+    let row_adv = width as i64 * planes as i64;
+    let planes_i = planes as i64;
+    let mut base: i64 = 0;
+    let mut x: u32 = 0;
+    let mut plane: i64 = planes_i - 1;
+    let mut sp = 0usize;
+    let put = |dst: &mut [u8], idx: i64, v: u8| {
+        if idx >= 0 && idx < dst_end {
+            dst[idx as usize] = v;
+        }
+    };
+    loop {
+        if base + x as i64 >= dst_end || sp >= src.len() {
+            return;
+        }
+        let b = src[sp];
+        sp += 1;
+        if b < 0xc0 {
+            if x < width {
+                let idx = base + x as i64 * planes_i + plane;
+                if idx < dst_end {
+                    put(dst, idx, b);
+                }
+            }
+            x += 1;
+            if x >= stride {
+                x -= stride;
+                plane -= 1;
+                if plane < 0 {
+                    base += row_adv;
+                    plane = planes_i - 1;
+                }
+            }
+        } else {
+            let val = src.get(sp).copied().unwrap_or(0);
+            sp += 1;
+            let mut left = ((b & 0x3f) as u32).min((dst_end - base).max(0) as u32);
+            loop {
+                if width <= x {
+                    let n = left.min(stride - x);
+                    x += n;
+                    if x >= stride {
+                        x -= stride;
+                        plane -= 1;
+                        if plane < 0 {
+                            base += row_adv;
+                            plane = planes_i - 1;
+                        }
+                    }
+                    left -= n;
+                    if left == 0 {
+                        break;
+                    }
+                }
+                let n = left.min(width - x);
+                let mut i = plane + x as i64 * planes_i;
+                let lim = (n as i64 * planes_i).min(dst_end - base);
+                let end = i + lim;
+                while i < end {
+                    put(dst, base + i, val);
+                    i += planes_i;
+                }
+                x += n;
+                if x >= stride {
+                    x -= stride;
+                    plane -= 1;
+                    if plane < 0 {
+                        base += row_adv;
+                        plane = planes_i - 1;
+                    }
+                }
+                left -= n;
+                if left == 0 {
+                    break;
+                }
+            }
+        }
+    }
+}
+
+/// Image-option globals written by `0x00934f20`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct W26a13ImageOptions {
+    pub opt1: u32,
+    /// Option 2 (must be a power of two).
+    pub opt2: u32,
+    pub opt3: u32,
+    pub opt4: u32,
+    pub opt5: u32,
+    pub opt6: [u32; 2],
+    pub opt7: u32,
+    /// Boolean options 9, 10, 0xc, 0xd, 0xe, 0xf.
+    pub flag9: u32,
+    pub flag10: u32,
+    pub flag12: u32,
+    pub flag13: u32,
+    pub flag14: u32,
+    pub flag15: u32,
+}
+
+/// `0x00934f20`: sets image option `id` from `data` (`size` bytes).  Sets
+/// `last_error` to 0x57 first and to 0 on success; returns true on success.
+pub fn w26a13_set_image_option(
+    o: &mut W26a13ImageOptions,
+    id: u32,
+    data: Option<&[u32]>,
+    size: u32,
+    last_error: &mut u32,
+) -> bool {
+    *last_error = W26A13_ERROR_INVALID_PARAMETER;
+    let Some(d) = data else { return false };
+    let ok = match id {
+        1 if size == 4 => {
+            o.opt1 = d[0];
+            true
+        }
+        2 if size == 4
+            && d[0] != 0
+            && (d[0].wrapping_sub(1) ^ d[0]) == d[0].wrapping_mul(2).wrapping_sub(1) =>
+        {
+            o.opt2 = d[0];
+            true
+        }
+        3 if size == 4 => {
+            o.opt3 = d[0];
+            true
+        }
+        4 if size == 4 => {
+            o.opt4 = d[0];
+            true
+        }
+        5 if size == 4 => {
+            o.opt5 = d[0];
+            true
+        }
+        6 if size == 8 && d.len() >= 2 => {
+            o.opt6 = [d[0], d[1]];
+            true
+        }
+        7 if size == 4 => {
+            o.opt7 = d[0];
+            true
+        }
+        9 if size == 4 => {
+            o.flag9 = (d[0] != 0) as u32;
+            true
+        }
+        10 if size == 4 => {
+            o.flag10 = (d[0] != 0) as u32;
+            true
+        }
+        0xc if size == 4 => {
+            o.flag12 = (d[0] != 0) as u32;
+            true
+        }
+        0xd if size == 4 => {
+            o.flag13 = (d[0] != 0) as u32;
+            true
+        }
+        0xe if size == 4 => {
+            o.flag14 = (d[0] != 0) as u32;
+            true
+        }
+        0xf if size == 4 => {
+            o.flag15 = (d[0] != 0) as u32;
+            true
+        }
+        _ => false,
+    };
+    if ok {
+        *last_error = 0;
+    }
+    ok
+}
+
+/// Shared validation of the registry wrappers: key name non-empty and the
+/// value name present.
+fn w26a13_valid_names(key: &str, value_present: bool, last_error: &mut u32) -> bool {
+    if key.is_empty() || !value_present {
+        *last_error = W26A13_ERROR_INVALID_PARAMETER;
+        return false;
+    }
+    true
+}
+
+/// `0x00935ec0`: validates the names, then forwards to the registry reader
+/// with `out_len` (or a local when absent).  Failure sets error 0x57.
+pub fn w26a13_reg_read_wrapper(
+    key: &str,
+    value_present: bool,
+    out_len: Option<&mut u32>,
+    last_error: &mut u32,
+    read: impl FnOnce(&mut u32) -> bool,
+) -> bool {
+    if !w26a13_valid_names(key, value_present, last_error) {
+        return false;
+    }
+    let mut local = 0u32;
+    read(out_len.unwrap_or(&mut local))
+}
+
+/// `0x009362c0`: validated registry write of value type 3 (binary).
+pub fn w26a13_reg_write_type3(
+    key: &str,
+    value_present: bool,
+    last_error: &mut u32,
+    write: impl FnOnce(u32) -> bool,
+) -> bool {
+    w26a13_valid_names(key, value_present, last_error) && write(3)
+}
+
+/// `0x00936590`: validated registry write of value type 0xb (QWORD), 8 bytes.
+pub fn w26a13_reg_write_qword(
+    key: &str,
+    value_present: bool,
+    last_error: &mut u32,
+    write: impl FnOnce(u32, u32) -> bool,
+) -> bool {
+    w26a13_valid_names(key, value_present, last_error) && write(0xb, 8)
+}
+
+/// `0x009365d0`: validated registry write of value type 4 (DWORD), 4 bytes.
+pub fn w26a13_reg_write_dword(
+    key: &str,
+    value_present: bool,
+    last_error: &mut u32,
+    write: impl FnOnce(u32, u32) -> bool,
+) -> bool {
+    w26a13_valid_names(key, value_present, last_error) && write(4, 4)
+}
+
+#[cfg(test)]
+mod tests_wave26_agent13 {
+    use super::*;
+
+    fn packer(bits: i32) -> W26a13BitPacker {
+        W26a13BitPacker {
+            code_bits: bits,
+            max_code: (1 << bits) - 1,
+            accum: 0,
+            accum_bits: 0,
+            limit: 0,
+            block_len: 0,
+            block: [0; 0x100],
+        }
+    }
+
+    #[test]
+    fn pack_code_bytes_and_widen() {
+        let mut p = packer(9);
+        p.limit = 1000;
+        p.max_code = 5;
+        w26a13_pack_code(&mut p, 0x1ff, |_| panic!());
+        assert_eq!(p.block_len, 1);
+        assert_eq!(p.block[1], 0xff);
+        assert_eq!(p.accum_bits, 1);
+        assert_eq!(p.code_bits, 10);
+        assert_eq!(p.max_code, 1023);
+        let mut q = packer(11);
+        q.limit = 5000;
+        q.max_code = 0;
+        w26a13_pack_code(&mut q, 0, |_| {});
+        assert_eq!(q.code_bits, 12);
+        assert_eq!(q.max_code, 0x1000);
+    }
+
+    #[test]
+    fn pack_code_flushes_full_block() {
+        let mut p = packer(8);
+        p.block_len = 0xfe;
+        let mut got = 0;
+        w26a13_pack_code(&mut p, 0x41, |b| {
+            got = b.len();
+            assert_eq!(b[0], 0xff);
+        });
+        assert_eq!(got, 0x100);
+        assert_eq!(p.block_len, 0);
+    }
+
+    #[test]
+    fn pcx_literal_and_run_single_plane() {
+        let mut d = [0u8; 4];
+        w26a13_pcx_rle_decode(&mut d, &[0x01, 0xc2, 0x07, 0x09], 4, 4, 1);
+        assert_eq!(d, [1, 7, 7, 9]);
+    }
+
+    #[test]
+    fn pcx_three_planes() {
+        // 2 pixels, 3 planes, stride 2: planes arrive in order 2,1,0.
+        let mut d = [0u8; 6];
+        let src = [1, 2, 3, 4, 5, 6];
+        w26a13_pcx_rle_decode(&mut d, &src, 2, 2, 3);
+        assert_eq!(d, [5, 3, 1, 6, 4, 2]);
+    }
+
+    #[test]
+    fn pcx_stops_on_short_input() {
+        let mut d = [9u8; 4];
+        w26a13_pcx_rle_decode(&mut d, &[], 4, 4, 1);
+        assert_eq!(d, [9; 4]);
+    }
+
+    #[test]
+    fn image_options() {
+        let mut o = W26a13ImageOptions::default();
+        let mut e = 0;
+        assert!(w26a13_set_image_option(&mut o, 1, Some(&[7]), 4, &mut e));
+        assert_eq!((o.opt1, e), (7, 0));
+        assert!(!w26a13_set_image_option(&mut o, 2, Some(&[6]), 4, &mut e));
+        assert_eq!(e, 0x57);
+        assert!(w26a13_set_image_option(&mut o, 2, Some(&[8]), 4, &mut e));
+        assert_eq!(o.opt2, 8);
+        assert!(w26a13_set_image_option(&mut o, 6, Some(&[1, 2]), 8, &mut e));
+        assert_eq!(o.opt6, [1, 2]);
+        assert!(w26a13_set_image_option(&mut o, 0xf, Some(&[99]), 4, &mut e));
+        assert_eq!(o.flag15, 1);
+        assert!(!w26a13_set_image_option(&mut o, 3, Some(&[1]), 8, &mut e));
+        assert!(!w26a13_set_image_option(&mut o, 8, Some(&[1]), 4, &mut e));
+        assert!(!w26a13_set_image_option(&mut o, 1, None, 4, &mut e));
+    }
+
+    #[test]
+    fn registry_wrappers() {
+        let mut e = 0;
+        assert!(!w26a13_reg_read_wrapper("", true, None, &mut e, |_| true));
+        assert_eq!(e, 0x57);
+        let mut n = 5u32;
+        assert!(w26a13_reg_read_wrapper(
+            "k",
+            true,
+            Some(&mut n),
+            &mut e,
+            |l| {
+                *l = 9;
+                true
+            }
+        ));
+        assert_eq!(n, 9);
+        assert!(w26a13_reg_write_type3("k", true, &mut e, |t| t == 3));
+        assert!(w26a13_reg_write_qword("k", true, &mut e, |t, s| (t, s) == (0xb, 8)));
+        assert!(w26a13_reg_write_dword("k", true, &mut e, |t, s| (t, s) == (4, 4)));
+        assert!(!w26a13_reg_write_dword("k", false, &mut e, |_, _| true));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave26/agent14.rs
+// ===========================================================================
+// Wave 26 agent 14: IO unit helpers (resize, MRU cache slots, cursor unit).
+
+/// `0x00937540`: resizes a `u16` vector to `new_len`; shrinking drops the tail,
+/// growing appends copies of `fill`.
+pub fn w26a14_resize_u16(v: &mut Vec<u16>, new_len: usize, fill: u16) {
+    if new_len < v.len() {
+        v.truncate(new_len);
+    } else if v.len() < new_len {
+        v.resize(new_len, fill);
+    }
+}
+
+/// 16-byte cache slot: key (two words), dirty flags byte at +8, buffer at +0xc.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct W26a14Slot {
+    pub key_lo: i32,
+    pub key_hi: i32,
+    pub flags: u8,
+    pub buf: u32,
+}
+
+/// `0x00938eb0`: invalidates slot `idx` (keys -1, flags 0) and shifts every
+/// later slot down by one (stride 0x10).  The last slot is only invalidated.
+pub fn w26a14_slot_invalidate(slots: &mut [W26a14Slot], idx: usize) {
+    slots[idx].key_lo = -1;
+    slots[idx].key_hi = -1;
+    slots[idx].flags = 0;
+    if idx + 1 != slots.len() {
+        slots[idx..].rotate_left(1);
+    }
+}
+
+/// `0x00938de0`: looks up slot (`lo`,`hi`); on a miss the last slot is flushed
+/// via `flush`, re-keyed and refilled through `fetch`.  The slot is moved to the
+/// front, `flags |= or_flags`, and its buffer returned.  Layout of the front
+/// move is inferred (noreturn memmove in the body).
+pub fn w26a14_slot_get(
+    slots: &mut [W26a14Slot],
+    lo: i32,
+    hi: i32,
+    or_flags: u8,
+    mut flush: impl FnMut(usize),
+    mut fetch: impl FnMut(i32, i32) -> u32,
+) -> u32 {
+    let idx = match slots.iter().position(|s| s.key_lo == lo && s.key_hi == hi) {
+        Some(i) => i,
+        None => {
+            let i = slots.len() - 1;
+            flush(i);
+            slots[i].key_lo = lo;
+            slots[i].key_hi = hi;
+            slots[i].buf = fetch(lo, hi);
+            i
+        }
+    };
+    if idx != 0 {
+        slots[..=idx].rotate_right(1);
+    }
+    slots[0].flags |= or_flags;
+    slots[0].buf
+}
+
+/// `0x009397d0`: builds an IOCursorUnit (0x18 bytes); `None` if `provider` is 0
+/// (the original raises an error).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct W26a14Cursor {
+    pub provider: u32,
+    pub refcount: u32,
+    pub pos_lo: u32,
+    pub pos_hi: u32,
+}
+
+pub fn w26a14_cursor_new(provider: u32) -> Option<W26a14Cursor> {
+    if provider == 0 {
+        return None;
+    }
+    Some(W26a14Cursor {
+        provider,
+        refcount: 1,
+        pos_lo: 0,
+        pos_hi: 0,
+    })
+}
+
+/// `0x00939820`: calls `read` with the 64-bit position; on success advances
+/// the position (with carry) by the returned count and returns it, else 0.
+pub fn w26a14_cursor_advance(
+    c: &mut W26a14Cursor,
+    mut read: impl FnMut(u32, u32) -> Option<u32>,
+) -> u32 {
+    match read(c.pos_lo, c.pos_hi) {
+        None => 0,
+        Some(n) => {
+            let p = ((c.pos_hi as u64) << 32 | c.pos_lo as u64).wrapping_add(n as u64);
+            c.pos_lo = p as u32;
+            c.pos_hi = (p >> 32) as u32;
+            n
+        }
+    }
+}
+
+/// `0x009396e0`: copies `n` bytes of `src` into the 0x114-limited buffer;
+/// `None` if `n` exceeds `capacity`.
+pub fn w26a14_copy_checked(dst: &mut [u8], capacity: usize, src: &[u8], n: usize) -> Option<()> {
+    if capacity < n {
+        return None;
+    }
+    dst[..n].copy_from_slice(&src[..n]);
+    Some(())
+}
+
+#[cfg(test)]
+mod tests_wave26_agent14 {
+    use super::*;
+
+    fn s(a: i32) -> W26a14Slot {
+        W26a14Slot {
+            key_lo: a,
+            key_hi: 0,
+            flags: 0,
+            buf: a as u32 * 10,
+        }
+    }
+
+    #[test]
+    fn resize() {
+        let mut v = vec![1, 2, 3];
+        w26a14_resize_u16(&mut v, 5, 9);
+        assert_eq!(v, [1, 2, 3, 9, 9]);
+        w26a14_resize_u16(&mut v, 1, 0);
+        assert_eq!(v, [1]);
+    }
+
+    #[test]
+    fn invalidate() {
+        let mut v = [s(1), s(2), s(3)];
+        w26a14_slot_invalidate(&mut v, 0);
+        assert_eq!(v[0].key_lo, 2);
+        assert_eq!(v[2].key_lo, -1);
+        w26a14_slot_invalidate(&mut v, 2);
+        assert_eq!(v[2].key_hi, -1);
+    }
+
+    #[test]
+    fn get() {
+        let mut v = [s(1), s(2), s(3)];
+        assert_eq!(w26a14_slot_get(&mut v, 3, 0, 4, |_| {}, |_, _| 0), 30);
+        assert_eq!(v[0].key_lo, 3);
+        assert_eq!(v[0].flags, 4);
+        let mut fl = 0;
+        let r = w26a14_slot_get(&mut v, 7, 0, 1, |i| fl = i + 1, |_, _| 70);
+        assert_eq!((r, fl, v[0].key_lo), (70, 3, 7));
+    }
+
+    #[test]
+    fn cursor() {
+        assert!(w26a14_cursor_new(0).is_none());
+        let mut c = w26a14_cursor_new(5).unwrap();
+        c.pos_lo = u32::MAX;
+        assert_eq!(w26a14_cursor_advance(&mut c, |_, _| Some(2)), 2);
+        assert_eq!((c.pos_lo, c.pos_hi), (1, 1));
+        assert_eq!(w26a14_cursor_advance(&mut c, |_, _| None), 0);
+    }
+
+    #[test]
+    fn copy() {
+        let mut d = [0u8; 4];
+        assert!(w26a14_copy_checked(&mut d, 2, &[1, 2, 3], 3).is_none());
+        assert!(w26a14_copy_checked(&mut d, 3, &[1, 2, 3], 3).is_some());
+        assert_eq!(d, [1, 2, 3, 0]);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave26/agent15.rs
+// ===========================================================================
+// Wave 26 agent 15: stream seek helper, MD5 context routines, bounded copy.
+
+/// `0x00939860`: file-unit seek.  `origin` 0 = set, 1 = add to the current
+/// 64-bit position (offset +0x10/+0x14), 2 = end-relative using the length
+/// returned by the caller-supplied `size` probe.  Unknown origins (or a
+/// failed probe) leave the position unchanged.  Returns the position.
+pub fn w26a15_seek(
+    pos: &mut u64,
+    offset: u64,
+    origin: u32,
+    size: impl FnOnce() -> Option<u64>,
+) -> u64 {
+    match origin {
+        0 => *pos = offset,
+        1 => *pos = pos.wrapping_add(offset),
+        2 => {
+            if let Some(len) = size() {
+                *pos = len.wrapping_add(offset);
+            }
+        }
+        _ => {}
+    }
+    *pos
+}
+
+/// MD5 context as laid out by the retail routines: state words at +0x00,
+/// 64-bit bit count at +0x10/+0x14, 64-byte buffer at +0x18.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct W26a15Md5 {
+    pub state: [u32; 4],
+    pub count: [u32; 2],
+    pub buffer: [u8; 64],
+}
+
+impl Default for W26a15Md5 {
+    fn default() -> Self {
+        Self {
+            state: [0x6745_2301, 0xefcd_ab89, 0x98ba_dcfe, 0x1032_5476],
+            count: [0; 2],
+            buffer: [0; 64],
+        }
+    }
+}
+
+const W26A15_K: [u32; 64] = [
+    0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee, 0xf57c0faf, 0x4787c62a, 0xa8304613, 0xfd469501,
+    0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be, 0x6b901122, 0xfd987193, 0xa679438e, 0x49b40821,
+    0xf61e2562, 0xc040b340, 0x265e5a51, 0xe9b6c7aa, 0xd62f105d, 0x02441453, 0xd8a1e681, 0xe7d3fbc8,
+    0x21e1cde6, 0xc33707d6, 0xf4d50d87, 0x455a14ed, 0xa9e3e905, 0xfcefa3f8, 0x676f02d9, 0x8d2a4c8a,
+    0xfffa3942, 0x8771f681, 0x6d9d6122, 0xfde5380c, 0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70,
+    0x289b7ec6, 0xeaa127fa, 0xd4ef3085, 0x04881d05, 0xd9d4d039, 0xe6db99e5, 0x1fa27cf8, 0xc4ac5665,
+    0xf4292244, 0x432aff97, 0xab9423a7, 0xfc93a039, 0x655b59c3, 0x8f0ccc92, 0xffeff47d, 0x85845dd1,
+    0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1, 0xf7537e82, 0xbd3af235, 0x2ad7d2bb, 0xeb86d391,
+];
+const W26A15_S: [u32; 16] = [7, 12, 17, 22, 5, 9, 14, 20, 4, 11, 16, 23, 6, 10, 15, 21];
+
+/// `0x0093a250`: MD5 block transform over a 64-byte little-endian block,
+/// adding the result into `state`.
+pub fn w26a15_md5_transform(state: &mut [u32; 4], block: &[u8; 64]) {
+    let mut m = [0u32; 16];
+    for (i, w) in m.iter_mut().enumerate() {
+        *w = u32::from_le_bytes([
+            block[i * 4],
+            block[i * 4 + 1],
+            block[i * 4 + 2],
+            block[i * 4 + 3],
+        ]);
+    }
+    let [mut a, mut b, mut c, mut d] = *state;
+    for i in 0..64 {
+        let (f, g) = match i / 16 {
+            0 => ((b & c) | (!b & d), i),
+            1 => ((b & d) | (c & !d), (5 * i + 1) % 16),
+            2 => (b ^ c ^ d, (3 * i + 5) % 16),
+            _ => (c ^ (b | !d), (7 * i) % 16),
+        };
+        let t = a
+            .wrapping_add(f)
+            .wrapping_add(W26A15_K[i])
+            .wrapping_add(m[g]);
+        a = d;
+        d = c;
+        c = b;
+        b = b.wrapping_add(t.rotate_left(W26A15_S[(i / 16) * 4 + i % 4]));
+    }
+    state[0] = state[0].wrapping_add(a);
+    state[1] = state[1].wrapping_add(b);
+    state[2] = state[2].wrapping_add(c);
+    state[3] = state[3].wrapping_add(d);
+}
+
+/// `0x0093aa80`: MD5 update.  Bumps the 64-bit bit count, fills the buffer
+/// and runs the block transform on every completed 64-byte block.
+pub fn w26a15_md5_update(ctx: &mut W26a15Md5, data: &[u8]) {
+    let len = data.len() as u32;
+    let mut idx = ((ctx.count[0] >> 3) & 0x3f) as usize;
+    let (lo, carry) = ctx.count[0].overflowing_add(len << 3);
+    ctx.count[0] = lo;
+    ctx.count[1] = ctx.count[1]
+        .wrapping_add(carry as u32)
+        .wrapping_add(len >> 29);
+    for &byte in data {
+        ctx.buffer[idx] = byte;
+        idx += 1;
+        if idx == 64 {
+            let block = ctx.buffer;
+            w26a15_md5_transform(&mut ctx.state, &block);
+            idx = 0;
+        }
+    }
+}
+
+/// `0x0093a960`: MD5 finalise.  Saves the bit count, pads to 56 mod 64 with
+/// `0x80, 0...`, appends the count, writes the 16-byte digest and wipes the
+/// 0x58-byte context.
+pub fn w26a15_md5_final(ctx: &mut W26a15Md5) -> [u8; 16] {
+    let mut bits = [0u8; 8];
+    bits[..4].copy_from_slice(&ctx.count[0].to_le_bytes());
+    bits[4..].copy_from_slice(&ctx.count[1].to_le_bytes());
+    let idx = ((ctx.count[0] >> 3) & 0x3f) as usize;
+    let pad_len = if idx < 56 { 56 - idx } else { 120 - idx };
+    let mut pad = [0u8; 64];
+    pad[0] = 0x80;
+    w26a15_md5_update(ctx, &pad[..pad_len]);
+    w26a15_md5_update(ctx, &bits);
+    let mut out = [0u8; 16];
+    for (i, w) in ctx.state.iter().enumerate() {
+        out[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
+    }
+    *ctx = W26a15Md5 {
+        state: [0; 4],
+        count: [0; 2],
+        buffer: [0; 64],
+    };
+    out
+}
+
+/// `0x0093ab70`: copies the NUL-terminated `src` into `dst`, at most 0x3f
+/// bytes (the terminator is not copied).  Returns the byte count copied.
+pub fn w26a15_copy_clamped(dst: &mut [u8], src: &[u8]) -> usize {
+    let len = src.iter().position(|&b| b == 0).unwrap_or(src.len());
+    let n = len.min(0x3f).min(dst.len());
+    dst[..n].copy_from_slice(&src[..n]);
+    n
+}
+
+#[cfg(test)]
+mod tests_wave26_agent15 {
+    use super::*;
+
+    fn hex(d: [u8; 16]) -> String {
+        d.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    #[test]
+    fn seek_modes() {
+        let mut p = 10u64;
+        assert_eq!(w26a15_seek(&mut p, 5, 0, || None), 5);
+        assert_eq!(w26a15_seek(&mut p, 0xffff_ffff, 1, || None), 0x1_0000_0004);
+        assert_eq!(w26a15_seek(&mut p, 3, 2, || Some(100)), 103);
+        assert_eq!(w26a15_seek(&mut p, 3, 2, || None), 103);
+        assert_eq!(w26a15_seek(&mut p, 9, 7, || Some(1)), 103);
+    }
+
+    #[test]
+    fn md5_vectors() {
+        let mut c = W26a15Md5::default();
+        assert_eq!(
+            hex(w26a15_md5_final(&mut c)),
+            "d41d8cd98f00b204e9800998ecf8427e"
+        );
+        let mut c = W26a15Md5::default();
+        w26a15_md5_update(&mut c, b"abc");
+        assert_eq!(
+            hex(w26a15_md5_final(&mut c)),
+            "900150983cd24fb0d6963f7d28e17f72"
+        );
+        assert_eq!(c.state, [0; 4]);
+        let mut c = W26a15Md5::default();
+        let msg =
+            b"12345678901234567890123456789012345678901234567890123456789012345678901234567890";
+        w26a15_md5_update(&mut c, &msg[..33]);
+        w26a15_md5_update(&mut c, &msg[33..]);
+        assert_eq!(
+            hex(w26a15_md5_final(&mut c)),
+            "57edf4a22be3c955ac49da2e2107b67a"
+        );
+    }
+
+    #[test]
+    fn transform_count() {
+        let mut c = W26a15Md5::default();
+        w26a15_md5_update(&mut c, &[0u8; 64]);
+        assert_eq!(c.count, [512, 0]);
+        let mut s = W26a15Md5::default().state;
+        w26a15_md5_transform(&mut s, &[0; 64]);
+        assert_eq!(s, c.state);
+    }
+
+    #[test]
+    fn clamped_copy() {
+        let mut d = [0xffu8; 100];
+        assert_eq!(w26a15_copy_clamped(&mut d, b"hi\0xx"), 2);
+        assert_eq!(&d[..3], b"hi\xff");
+        let long = [b'a'; 80];
+        assert_eq!(w26a15_copy_clamped(&mut d, &long), 0x3f);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave26/agent16.rs
+// ===========================================================================
+// Wave 26 agent 16: SHA-1 block/finalize, RC4 key schedule, path helpers.
+
+/// `0x0093dc60`: SHA-1 compression of one 64-byte block (big-endian words)
+/// into `state` (5 words).  Message schedule rotates by 1; the retail code
+/// also wipes its stack copy, which is not observable here.
+pub fn w26a16_sha1_block(state: &mut [u32; 5], block: &[u8; 64]) {
+    let mut w = [0u32; 80];
+    for i in 0..16 {
+        w[i] = u32::from_be_bytes([
+            block[i * 4],
+            block[i * 4 + 1],
+            block[i * 4 + 2],
+            block[i * 4 + 3],
+        ]);
+    }
+    for i in 16..80 {
+        w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
+    }
+    let [mut a, mut b, mut c, mut d, mut e] = *state;
+    for (i, wi) in w.iter().enumerate() {
+        let (f, k) = match i / 20 {
+            0 => ((!b & d) | (c & b), 0x5a82_7999u32),
+            1 => (d ^ c ^ b, 0x6ed9_eba1),
+            2 => (((d | b) & c) | (d & b), 0x8f1b_bcdc),
+            _ => (d ^ c ^ b, 0xca62_c1d6),
+        };
+        let t = e
+            .wrapping_add(a.rotate_left(5))
+            .wrapping_add(f)
+            .wrapping_add(k)
+            .wrapping_add(*wi);
+        e = d;
+        d = c;
+        c = b.rotate_left(30);
+        b = a;
+        a = t;
+    }
+    state[0] = state[0].wrapping_add(a);
+    state[1] = state[1].wrapping_add(b);
+    state[2] = state[2].wrapping_add(c);
+    state[3] = state[3].wrapping_add(d);
+    state[4] = state[4].wrapping_add(e);
+}
+
+/// `0x0093db50`: SHA-1 finalize.  `ctx` is `[count_lo, count_hi, h0..h4]`
+/// (count_lo is the word used for the pad length).  `pad` is the retail
+/// padding table (0x80 then zeros); `update` is the block-update routine.
+/// Pads `((-(lo >> 3) - 9) & 0x3f) + 1` bytes, appends the 8 count bytes
+/// (hi word big-endian first, then lo) and writes the digest big-endian.
+pub fn w26a16_sha1_final(ctx: &[u32; 7], pad: &[u8], mut update: impl FnMut(&[u8])) -> [u8; 20] {
+    let lo = ctx[0];
+    let hi = ctx[1];
+    let mut count = [0u8; 8];
+    count[..4].copy_from_slice(&hi.to_be_bytes());
+    count[4..].copy_from_slice(&lo.to_be_bytes());
+    let n = ((0u32.wrapping_sub(lo >> 3).wrapping_sub(9)) & 0x3f) as usize + 1;
+    update(&pad[..n.min(pad.len())]);
+    update(&count);
+    let mut out = [0u8; 20];
+    for i in 0..5 {
+        out[i * 4..i * 4 + 4].copy_from_slice(&ctx[2 + i].to_be_bytes());
+    }
+    out
+}
+
+/// `0x0093e2b0`: RC4 key schedule.  Returns `None` (retail raises error
+/// 0x57) for an empty key; otherwise `s[0..256]` permuted, `s[256]` and
+/// `s[257]` zero.
+pub fn w26a16_rc4_init(key: &[u8]) -> Option<[u8; 258]> {
+    if key.is_empty() {
+        return None;
+    }
+    let mut s = [0u8; 258];
+    for (i, v) in s.iter_mut().take(256).enumerate() {
+        *v = i as u8;
+    }
+    let mut j: u8 = 0;
+    for i in 0..256 {
+        let t = s[i];
+        j = j.wrapping_add(key[i % key.len()]).wrapping_add(t);
+        s[i] = s[j as usize];
+        s[j as usize] = t;
+    }
+    Some(s)
+}
+
+/// `0x0093f200`: offset of the file-name part (after the last `/` or `\`).
+pub fn w26a16_basename_offset(path: &[u8]) -> usize {
+    let mut off = 0;
+    for (i, &c) in path.iter().enumerate() {
+        if c == 0 {
+            break;
+        }
+        if c == b'/' || c == b'\\' {
+            off = i + 1;
+        }
+    }
+    off
+}
+
+/// `0x0093f260`: copies the file-name part of `path` into `dst`, at most
+/// `dst.len() - 1` bytes (copy only; the terminator is not written by the
+/// retail routine).  Returns the number of bytes copied.
+pub fn w26a16_copy_basename(path: &[u8], dst: &mut [u8]) -> usize {
+    if dst.is_empty() {
+        return 0;
+    }
+    let off = w26a16_basename_offset(path);
+    let rest = &path[off..];
+    let len = rest.iter().position(|&c| c == 0).unwrap_or(rest.len());
+    let n = len.min(dst.len() - 1);
+    dst[..n].copy_from_slice(&rest[..n]);
+    n
+}
+
+/// `0x0093f360`: true when the callee result is zero.
+pub fn w26a16_is_zero_result(callee_result: i32) -> bool {
+    callee_result == 0
+}
+
+/// `0x0093f420`: validates two handles; if either is null it raises error
+/// 0x57 (returned as `Err`), else calls the OS routine.
+pub fn w26a16_two_handle_call(
+    a: usize,
+    b: usize,
+    mut call: impl FnMut(usize, usize),
+) -> Result<(), u32> {
+    if a != 0 && b != 0 {
+        call(a, b);
+        Ok(())
+    } else {
+        Err(0x57)
+    }
+}
+
+#[cfg(test)]
+mod tests_wave26_agent16 {
+    use super::*;
+
+    fn sha1(msg: &[u8]) -> [u8; 20] {
+        let mut st = [
+            0x6745_2301u32,
+            0xefcd_ab89,
+            0x98ba_dcfe,
+            0x1032_5476,
+            0xc3d2_e1f0,
+        ];
+        let mut data = msg.to_vec();
+        data.push(0x80);
+        while data.len() % 64 != 56 {
+            data.push(0);
+        }
+        data.extend_from_slice(&((msg.len() as u64) * 8).to_be_bytes());
+        for ch in data.chunks(64) {
+            let mut b = [0u8; 64];
+            b.copy_from_slice(ch);
+            w26a16_sha1_block(&mut st, &b);
+        }
+        let mut out = [0u8; 20];
+        for i in 0..5 {
+            out[i * 4..i * 4 + 4].copy_from_slice(&st[i].to_be_bytes());
+        }
+        out
+    }
+
+    #[test]
+    fn sha1_abc() {
+        let d = sha1(b"abc");
+        let hex: String = d.iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(hex, "a9993e364706816aba3e25717850c26c9cd0d89d");
+    }
+
+    #[test]
+    fn sha1_final_layout() {
+        let ctx = [24u32, 0, 1, 2, 3, 4, 5];
+        let mut pad = [0u8; 64];
+        pad[0] = 0x80;
+        let mut chunks: Vec<Vec<u8>> = Vec::new();
+        let out = w26a16_sha1_final(&ctx, &pad, |c| chunks.push(c.to_vec()));
+        assert_eq!(
+            chunks[0].len(),
+            ((0u32.wrapping_sub(3).wrapping_sub(9)) & 0x3f) as usize + 1
+        );
+        assert_eq!(chunks[1], vec![0, 0, 0, 0, 0, 0, 0, 24]);
+        assert_eq!(&out[..4], &[0, 0, 0, 1]);
+        assert_eq!(&out[16..], &[0, 0, 0, 5]);
+    }
+
+    #[test]
+    fn rc4_ksa() {
+        assert!(w26a16_rc4_init(&[]).is_none());
+        let s = w26a16_rc4_init(b"Key").unwrap();
+        // keystream check: RC4("Key", "Plaintext") = BBF316E8D940AF0AD3
+        let mut st = s;
+        let (mut x, mut y) = (0usize, 0usize);
+        let mut out = Vec::new();
+        for &p in b"Plaintext" {
+            x = (x + 1) & 255;
+            y = (y + st[x] as usize) & 255;
+            st.swap(x, y);
+            let k = st[(st[x] as usize + st[y] as usize) & 255];
+            out.push(p ^ k);
+        }
+        assert_eq!(
+            out,
+            vec![0xbb, 0xf3, 0x16, 0xe8, 0xd9, 0x40, 0xaf, 0x0a, 0xd3]
+        );
+        assert_eq!(s[256], 0);
+        let mut sorted: Vec<u8> = s[..256].to_vec();
+        sorted.sort();
+        assert!(sorted.iter().enumerate().all(|(i, &v)| v as usize == i));
+    }
+
+    #[test]
+    fn paths() {
+        assert_eq!(w26a16_basename_offset(b"a\\b/c.txt\0"), 4);
+        assert_eq!(w26a16_basename_offset(b"plain"), 0);
+        let mut d = [0u8; 4];
+        assert_eq!(w26a16_copy_basename(b"x/hello\0", &mut d), 3);
+        assert_eq!(&d[..3], b"hel");
+        assert_eq!(w26a16_copy_basename(b"x", &mut []), 0);
+    }
+
+    #[test]
+    fn small() {
+        assert!(w26a16_is_zero_result(0));
+        assert!(!w26a16_is_zero_result(1));
+        let mut n = 0;
+        assert_eq!(w26a16_two_handle_call(0, 1, |_, _| n += 1), Err(0x57));
+        assert_eq!(w26a16_two_handle_call(1, 2, |_, _| n += 1), Ok(()));
+        assert_eq!(n, 1);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave26/agent17.rs
+// ===========================================================================
+// Wave 26 batch 17: Win32 glue helpers (pure reference forms).
+
+/// `0x0093f750`: converts a raw millisecond-tick counter into seconds.  The
+/// counter is a signed 32-bit value; when negative, `bias[1]` is added (the
+/// unsigned wrap correction), otherwise `bias[0]`.  The sum is rounded to
+/// `f32` and scaled by `0.001`.  `bias` is the two-double table at the
+/// opaque global (layout not visible; caller supplies it).
+pub fn w26a17_ticks_to_seconds(ticks: i32, bias: [f64; 2]) -> f32 {
+    let idx = (-(ticks >> 31)) as usize;
+    (((ticks as f64) + bias[idx]) as f32 as f64 * 0.001) as f32
+}
+
+/// `0x0093f870`: validates a pair of arguments; both must be non-zero.
+/// Returns `Err(0x57)` (ERROR_INVALID_PARAMETER) otherwise, `Ok(())` when
+/// the wrapped call should be forwarded.
+pub fn w26a17_check_two_args(a: usize, b: usize) -> Result<(), u32> {
+    if a != 0 && b != 0 { Ok(()) } else { Err(0x57) }
+}
+
+/// `0x00940720`: forwards `(p1, p2, p3, p4, 0)` to the wrapped call when
+/// both `p2` and `p4` are non-zero; otherwise sets error 0x57 and yields
+/// 0.  `forward` models the imported call.
+pub fn w26a17_forward_checked(
+    p1: u32,
+    p2: u32,
+    p3: u32,
+    p4: u32,
+    mut forward: impl FnMut(u32, u32, u32, u32, u32) -> u32,
+    mut set_error: impl FnMut(u32),
+) -> u32 {
+    if p2 != 0 && p4 != 0 {
+        forward(p1, p2, p3, p4, 0)
+    } else {
+        set_error(0x57);
+        0
+    }
+}
+
+/// `0x00942320`: converts a `RECT {left, top, right, bottom}` into
+/// `[x, y, width, height]`, i.e. `[left, top, right-left, bottom-top]`.
+pub fn w26a17_rect_to_xywh(rect: [i32; 4]) -> [i32; 4] {
+    [
+        rect[0],
+        rect[1],
+        rect[2].wrapping_sub(rect[0]),
+        rect[3].wrapping_sub(rect[1]),
+    ]
+}
+
+#[cfg(test)]
+mod tests_wave26_agent17 {
+    use super::*;
+
+    #[test]
+    fn ticks() {
+        let b = [0.0, 4294967296.0];
+        assert!((w26a17_ticks_to_seconds(1500, b) - 1.5).abs() < 1e-6);
+        assert!((w26a17_ticks_to_seconds(-1, b) - 4_294_967.3).abs() < 1.0);
+    }
+
+    #[test]
+    fn checks() {
+        assert_eq!(w26a17_check_two_args(1, 0), Err(0x57));
+        assert_eq!(w26a17_check_two_args(1, 2), Ok(()));
+    }
+
+    #[test]
+    fn forward() {
+        let mut err = 0;
+        assert_eq!(
+            w26a17_forward_checked(1, 0, 3, 4, |_, _, _, _, _| 9, |e| err = e),
+            0
+        );
+        assert_eq!(err, 0x57);
+        assert_eq!(
+            w26a17_forward_checked(1, 2, 3, 4, |a, _, _, _, e| a + e + 7, |_| {}),
+            8
+        );
+    }
+
+    #[test]
+    fn rect() {
+        assert_eq!(w26a17_rect_to_xywh([1, 2, 11, 7]), [1, 2, 10, 5]);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave26/agent18.rs
+// ===========================================================================
+/// `0x00943c50`: converts an integer rectangle `[left, top, right, bottom]`
+/// into the float rectangle `[x, y, width, height]`.
+pub fn w26a18_rect_to_xywh(r: [i32; 4]) -> [f32; 4] {
+    [
+        r[0] as f32,
+        r[1] as f32,
+        r[2] as f32 - r[0] as f32,
+        r[3] as f32 - r[1] as f32,
+    ]
+}
+
+/// `0x00946fc0`: builds the float rectangle `[x, y, w, h]` from an integer
+/// origin and size (`w = (x + w) - x` computed in float).
+pub fn w26a18_origin_size_to_xywh(x: i32, y: i32, w: i32, h: i32) -> [f32; 4] {
+    [
+        x as f32,
+        y as f32,
+        w.wrapping_add(x) as f32 - x as f32,
+        h.wrapping_add(y) as f32 - y as f32,
+    ]
+}
+
+/// `0x009442d0`: pixel-copy core of the image-to-bitmap helper.  Reads a
+/// bottom-up source image (`width`, `height`, `bpp` = bytes per pixel, at
+/// least 4) and writes rows top-down, swapping bytes 0 and 2 of each
+/// pixel (BGRA <-> RGBA).  Returns `None` when buffers are too small.
+pub fn w26a18_flip_swap_rb(src: &[u8], width: usize, height: usize, bpp: usize) -> Option<Vec<u8>> {
+    if bpp < 4 || src.len() < width.checked_mul(height)?.checked_mul(bpp)? {
+        return None;
+    }
+    let mut out = Vec::with_capacity(width * height * 4);
+    for y in 0..height {
+        let row = (height - y - 1) * bpp * width;
+        for x in 0..width {
+            let p = row + x * bpp;
+            out.extend_from_slice(&[src[p + 2], src[p + 1], src[p], src[p + 3]]);
+        }
+    }
+    Some(out)
+}
+
+#[cfg(test)]
+mod tests_wave26_agent18 {
+    use super::*;
+
+    #[test]
+    fn rects() {
+        assert_eq!(w26a18_rect_to_xywh([1, 2, 11, 7]), [1.0, 2.0, 10.0, 5.0]);
+        assert_eq!(w26a18_origin_size_to_xywh(3, 4, 5, 6), [3.0, 4.0, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn flip_swap() {
+        let src = [1, 2, 3, 4, 5, 6, 7, 8];
+        let out = w26a18_flip_swap_rb(&src, 1, 2, 4).unwrap();
+        assert_eq!(out, vec![7, 6, 5, 8, 3, 2, 1, 4]);
+        assert!(w26a18_flip_swap_rb(&src, 2, 2, 4).is_none());
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave26/agent19.rs
+// ===========================================================================
+// Wave 26 agent 19: small container / vector helpers.
+
+/// `0x00947040`: writes an integer pair into a float pair (x, y).
+pub fn w26a19_int_pair_to_float(out: &mut [f32; 2], x: i32, y: i32) {
+    out[0] = x as f32 - 0.0;
+    out[1] = y as f32 - 0.0;
+}
+
+/// `0x009470c0`: same conversion as the sibling at 0x00947040 (second copy).
+pub fn w26a19_int_pair_to_float_b(out: &mut [f32; 2], x: i32, y: i32) {
+    out[0] = x as f32 - 0.0;
+    out[1] = y as f32 - 0.0;
+}
+
+/// `0x00947320`: capacity growth.  `field` is the dword at +8 (low 31 bits
+/// capacity, top bit a flag).  Returns the updated field when growth to
+/// `wanted` is required (new cap = max(wanted, cap + cap/2)), else `None`.
+pub fn w26a19_grow_capacity_field(field: u32, wanted: u32) -> Option<u32> {
+    if (field & 0x7fff_ffff) >= wanted {
+        return None;
+    }
+    let mut new_cap = ((field >> 1) & 0x3fff_ffff).wrapping_add(field & 0x7fff_ffff);
+    if new_cap < wanted {
+        new_cap = wanted;
+    }
+    Some(((field ^ new_cap) & 0x7fff_ffff) ^ field)
+}
+
+/// `0x009473d0`: resizes a vector of 20-byte (five dword) records; shrinking
+/// truncates, growing appends zeroed records.
+pub fn w26a19_resize_records(v: &mut Vec<[u32; 5]>, new_len: usize) {
+    if new_len < v.len() {
+        v.truncate(new_len);
+    } else if new_len > v.len() {
+        v.resize(new_len, [0; 5]);
+    }
+}
+
+/// Five-dword vector header: begin, end, then three allocator fields.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct W26a19Header(pub [u32; 5]);
+
+/// `0x0094a9b0`: move-assign; destination is reset, then takes all five
+/// dwords of `src`, which is zeroed.
+pub fn w26a19_move_header(dst: &mut W26a19Header, src: &mut W26a19Header) {
+    dst.0 = src.0;
+    src.0 = [0; 5];
+}
+
+/// `0x0094aa40`: initialises the header: fields 2..4 from args, 0 and 1 zero.
+pub fn w26a19_init_header(h: &mut W26a19Header, a: u32, b: u32, c: u32) {
+    h.0 = [0, 0, a, b, c];
+}
+
+/// `0x0094aa70`: clear; frees the buffer (caller-supplied) if non-null and
+/// zeroes the first two fields.
+pub fn w26a19_clear_header(h: &mut W26a19Header, free: impl FnOnce(u32)) {
+    if h.0[0] != 0 {
+        free(h.0[0]);
+    }
+    h.0[1] = 0;
+    h.0[0] = 0;
+}
+
+#[cfg(test)]
+mod tests_wave26_agent19 {
+    use super::*;
+
+    #[test]
+    fn pair_convert() {
+        let mut o = [0.0; 2];
+        w26a19_int_pair_to_float(&mut o, -3, 7);
+        assert_eq!(o, [-3.0, 7.0]);
+        w26a19_int_pair_to_float_b(&mut o, 1, 2);
+        assert_eq!(o, [1.0, 2.0]);
+    }
+
+    #[test]
+    fn grow_field() {
+        assert_eq!(w26a19_grow_capacity_field(10, 5), None);
+        assert_eq!(w26a19_grow_capacity_field(10, 11), Some(15));
+        assert_eq!(w26a19_grow_capacity_field(10, 100), Some(100));
+        assert_eq!(
+            w26a19_grow_capacity_field(0x8000_0010, 100),
+            Some(0x8000_0064)
+        );
+    }
+
+    #[test]
+    fn resize() {
+        let mut v = vec![[1; 5]];
+        w26a19_resize_records(&mut v, 3);
+        assert_eq!(v, vec![[1; 5], [0; 5], [0; 5]]);
+        w26a19_resize_records(&mut v, 1);
+        assert_eq!(v.len(), 1);
+    }
+
+    #[test]
+    fn header_ops() {
+        let mut a = W26a19Header([9, 8, 7, 6, 5]);
+        let mut b = W26a19Header::default();
+        w26a19_move_header(&mut b, &mut a);
+        assert_eq!(b.0, [9, 8, 7, 6, 5]);
+        assert_eq!(a.0, [0; 5]);
+        w26a19_init_header(&mut a, 1, 2, 3);
+        assert_eq!(a.0, [0, 0, 1, 2, 3]);
+        let mut freed = 0;
+        w26a19_clear_header(&mut b, |p| freed = p);
+        assert_eq!(freed, 9);
+        assert_eq!(b.0[..2], [0, 0]);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave26/agent20.rs
+// ===========================================================================
+// Wave 26 agent 20: allocator / container / MD5-counter helpers (runtime.rs).
+
+/// `0x0094aaa0`: lazy allocation of a 3-dimensional table.  `this` is
+/// `[data, count, a, b, c]` (u32 words); when `data == 0` the element count
+/// `c * b * a` is stored at word 1 and the allocator result at word 0.
+pub fn w26a20_lazy_alloc(this: &mut [u32; 5], alloc: impl FnOnce(u32) -> u32) {
+    if this[0] == 0 {
+        let n = this[4].wrapping_mul(this[3]).wrapping_mul(this[2]);
+        this[1] = n;
+        this[0] = alloc(n);
+    }
+}
+
+/// `0x0094ac70`: initialiser of a hash-table node (`TSHashTable<HotkeyData>`,
+/// 0x2c bytes, 11 words).  `base` is the address of the node, used for the
+/// self-referencing link at word 3.  Returns the words.
+pub fn w26a20_hash_table_init(base: u32) -> [u32; 11] {
+    let link = base.wrapping_add(12);
+    let mut w = [0u32; 11];
+    w[0] = 1;
+    w[2] = 0xc;
+    w[3] = link;
+    w[4] = link | 1;
+    w[9] = 0xffff_ffff;
+    w[10] = 0x2000;
+    w
+}
+
+/// `0x0094b850`: atomic reference-count release.  Returns `(previous,
+/// destroy)`; `destroy` is true when the count reached zero.
+pub fn w26a20_release(count: &std::sync::atomic::AtomicI32) -> (i32, bool) {
+    let prev = count.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    (prev, prev - 1 == 0)
+}
+
+/// `0x0094bce0`: allocation request normalisation: a zero size becomes 1;
+/// the allocator slot 1 is called with alignment 8.  Returns `(size, align)`.
+pub fn w26a20_alloc_request(size: u32) -> (u32, u32) {
+    (if size != 0 { size } else { 1 }, 8)
+}
+
+/// `0x0094bd20`: free guard: the allocator free slot is only invoked for a
+/// non-null pointer.
+pub fn w26a20_free_guard(ptr: u32, free: impl FnOnce(u32)) {
+    if ptr != 0 {
+        free(ptr);
+    }
+}
+
+/// `0x0094bd60`: zeroes a 14-word (0x38 byte) record.
+pub fn w26a20_zero_record(rec: &mut [u32; 14]) {
+    *rec = [0; 14];
+}
+
+/// `0x0094bf40`: scans the four 18-byte records at offset 0x36 of `block`
+/// for one whose bytes 0..=2 are zero, byte 3 is 0xfc and byte 4 is zero;
+/// the text starts at record+5 and ends at `\n` or the record end.  With
+/// `cap == 0` returns the text length + 1 as `Err`-free `Some(Length(n))`;
+/// otherwise the bytes to copy (at most `cap - 1`).
+pub fn w26a20_find_text(block: &[u8], cap: usize) -> Option<Result<usize, Vec<u8>>> {
+    let mut rec = 0x36usize;
+    while rec != 0x7e {
+        if block.len() < rec + 18 {
+            return None;
+        }
+        let r = &block[rec..rec + 18];
+        if r[0] == 0 && r[1] == 0 && r[2] == 0 && r[3] == 0xfc && r[4] == 0 {
+            let text = &r[5..];
+            let end = text.iter().position(|&c| c == b'\n').unwrap_or(text.len());
+            if cap == 0 {
+                return Some(Ok(end + 1));
+            }
+            return Some(Err(text[..end.min(cap - 1)].to_vec()));
+        }
+        rec += 18;
+    }
+    None
+}
+
+/// `0x0094c0f0`: realloc through an allocator vtable.  `try_in_place(ptr,
+/// size)` is slot +0xc, `alloc(size, align)` slot +4, `old_size(ptr)` slot
+/// +0x14.  Returns the new pointer and the number of bytes to copy.
+pub fn w26a20_realloc(
+    ptr: u32,
+    size: u32,
+    align: u32,
+    try_in_place: impl FnOnce(u32, u32) -> bool,
+    alloc: impl FnOnce(u32, u32) -> u32,
+    old_size: impl FnOnce(u32) -> u32,
+) -> (u32, u32) {
+    if ptr & align.wrapping_sub(1) == 0 && try_in_place(ptr, size) {
+        return (ptr, 0);
+    }
+    let new = alloc(size, align);
+    if new == 0 {
+        return (0, 0);
+    }
+    (new, old_size(ptr).min(size))
+}
+
+/// `0x0094e5d0`: MD5 single-byte update bookkeeping.  `ctx` words: bit count
+/// low at 0x14, high at 0x18, buffer at 0x1c (0x40 bytes).  Returns the
+/// buffer index and the number of bytes copied from the source.
+pub fn w26a20_md5_update_one(ctx: &mut [u8; 0x5c]) -> (usize, usize) {
+    w26a20_md5_count(ctx, 1)
+}
+
+/// `0x0094f9d0`: MD5 update bookkeeping for `len` bytes.  Returns the buffer
+/// index and the first copy length (`0x40 - idx` when the block fills,
+/// otherwise `len`).
+pub fn w26a20_md5_update(ctx: &mut [u8; 0x5c], len: u32) -> (usize, usize) {
+    w26a20_md5_count(ctx, len)
+}
+
+fn w26a20_md5_count(ctx: &mut [u8; 0x5c], len: u32) -> (usize, usize) {
+    let lo = u32::from_le_bytes(ctx[0x14..0x18].try_into().unwrap());
+    let hi = u32::from_le_bytes(ctx[0x18..0x1c].try_into().unwrap());
+    let idx = (lo >> 3) & 0x3f;
+    let new_lo = lo.wrapping_add(len.wrapping_mul(8));
+    let carry = u32::from(new_lo < len.wrapping_mul(8));
+    let new_hi = (len >> 29).wrapping_add(hi.wrapping_add(carry));
+    ctx[0x14..0x18].copy_from_slice(&new_lo.to_le_bytes());
+    ctx[0x18..0x1c].copy_from_slice(&new_hi.to_le_bytes());
+    let n = if idx + len > 0x3f { 0x40 - idx } else { len };
+    (idx as usize, n as usize)
+}
+
+#[cfg(test)]
+mod tests_wave26_agent20 {
+    use super::*;
+
+    #[test]
+    fn alloc_helpers() {
+        let mut t = [0, 0, 2, 3, 4];
+        w26a20_lazy_alloc(&mut t, |n| n + 100);
+        assert_eq!((t[0], t[1]), (124, 24));
+        w26a20_lazy_alloc(&mut t, |_| 1);
+        assert_eq!(t[0], 124);
+        assert_eq!(w26a20_alloc_request(0), (1, 8));
+        assert_eq!(w26a20_alloc_request(5), (5, 8));
+        let mut called = false;
+        w26a20_free_guard(0, |_| called = true);
+        assert!(!called);
+        w26a20_free_guard(3, |_| called = true);
+        assert!(called);
+        let mut r = [7u32; 14];
+        w26a20_zero_record(&mut r);
+        assert_eq!(r, [0; 14]);
+    }
+
+    #[test]
+    fn table_and_refcount() {
+        let w = w26a20_hash_table_init(0x1000);
+        assert_eq!((w[3], w[4], w[2], w[10]), (0x100c, 0x100d, 0xc, 0x2000));
+        let c = std::sync::atomic::AtomicI32::new(2);
+        assert_eq!(w26a20_release(&c), (2, false));
+        assert_eq!(w26a20_release(&c), (1, true));
+    }
+
+    #[test]
+    fn find_text_and_realloc() {
+        let mut b = vec![0u8; 0x90];
+        let rec = 0x36 + 18;
+        b[rec + 3] = 0xfc;
+        b[rec + 5..rec + 8].copy_from_slice(b"ab\n");
+        assert_eq!(w26a20_find_text(&b, 0), Some(Ok(3)));
+        assert_eq!(w26a20_find_text(&b, 2), Some(Err(b"a".to_vec())));
+        assert_eq!(w26a20_find_text(&[0u8; 0x90], 0), None);
+        assert_eq!(
+            w26a20_realloc(16, 8, 8, |_, _| true, |_, _| 0, |_| 0),
+            (16, 0)
+        );
+        assert_eq!(
+            w26a20_realloc(17, 8, 8, |_, _| true, |_, _| 64, |_| 4),
+            (64, 4)
+        );
+        assert_eq!(
+            w26a20_realloc(17, 8, 8, |_, _| true, |_, _| 0, |_| 4),
+            (0, 0)
+        );
+    }
+
+    #[test]
+    fn md5_counts() {
+        let mut c = [0u8; 0x5c];
+        assert_eq!(w26a20_md5_update(&mut c, 10), (0, 10));
+        assert_eq!(w26a20_md5_update(&mut c, 60), (10, 54));
+        assert_eq!(u32::from_le_bytes(c[0x14..0x18].try_into().unwrap()), 560);
+        c[0x14..0x18].copy_from_slice(&0xffff_fff8u32.to_le_bytes());
+        w26a20_md5_update_one(&mut c);
+        assert_eq!(u32::from_le_bytes(c[0x18..0x1c].try_into().unwrap()), 1);
+    }
+}
