@@ -79,3 +79,23 @@ cargo test --bin sc_view:              87 passed
 cargo clippy --all-targets -- -D warnings: clean
 cargo fmt --check:                    clean
 ```
+
+## Wave 13 (2026-11-10)
+
+Ten parallel agents covered `0x0065c000`–`0x0066ffff`.  The 174 exact
+ledger additions were merged into natural modules rather than one staging
+file:
+
+| window content | module |
+|---|---|
+| tile pages, DXT1/palette pages, tile-set cache | `src/render.rs` |
+| byte/word/record vectors, `TimedScope`, JSON parser, callable/hash helpers | `src/runtime.rs` |
+| command dispatch, AI-script opcodes, region queries | `src/ai_recovered.rs` |
+| order/shared-amount accounting, target predicates | `src/sim.rs` |
+| trigger accumulate-condition selectors and counter tables | `src/trigger.rs` |
+| fade state, variant maps, callable/string settings glue, mission-end UI | `src/client.rs` |
+
+All `src/wave13/agentNN.rs` staging files and the isolated harnesses were
+deleted after the merge.  The two endpoint getters `0x0066f800` and
+`0x0066fd00` landed in a follow-up commit.  Ledger: 2444 → 2620; lib tests:
+2613; clippy and fmt clean.
