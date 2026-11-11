@@ -7062,26 +7062,26 @@ address	name	size	thunk	body	evidence_count	evidence	status
 0x0066f490	FUN_0066f490	239	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07060_0066f490_FUN_0066f490.c	0		decompiled_uncited
 0x0066f7c4	FUN_0066f7c4	21	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07061_0066f7c4_FUN_0066f7c4.c	0		decompiled_uncited
 0x0066f7d9	FUN_0066f7d9	33	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07062_0066f7d9_FUN_0066f7d9.c	0		decompiled_uncited
-0x0066f800	FUN_0066f800	181	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07063_0066f800_FUN_0066f800.c	1	engine-rust/src/runtime.rs	translated
+0x0066f800	FUN_0066f800	181	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07063_0066f800_FUN_0066f800.c	2	engine-rust/docs/TRANSLATED-INTEGRATION.md;engine-rust/src/runtime.rs	translated
 0x0066f8c0	FUN_0066f8c0	60	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07064_0066f8c0_FUN_0066f8c0.c	0		decompiled_uncited
 0x0066f901	FUN_0066f901	5	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07065_0066f901_FUN_0066f901.c	0		decompiled_uncited
 0x0066fc78	FUN_0066fc78	25	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07066_0066fc78_FUN_0066fc78.c	0		decompiled_uncited
-0x0066fd00	FUN_0066fd00	228	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07067_0066fd00_FUN_0066fd00.c	1	engine-rust/src/runtime.rs	translated
+0x0066fd00	FUN_0066fd00	228	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07067_0066fd00_FUN_0066fd00.c	2	engine-rust/docs/TRANSLATED-INTEGRATION.md;engine-rust/src/runtime.rs	translated
 0x0066fe20	FUN_0066fe20	15	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07068_0066fe20_FUN_0066fe20.c	1	engine-rust/src/runtime.rs	translated
 0x0066fe30	FUN_0066fe30	234	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07069_0066fe30_FUN_0066fe30.c	1	engine-rust/src/runtime.rs	translated
 0x0066ff40	FUN_0066ff40	18	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07070_0066ff40_FUN_0066ff40.c	1	engine-rust/src/runtime.rs	translated
 0x0066ffd0	FUN_0066ffd0	50	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07071_0066ffd0_FUN_0066ffd0.c	0		decompiled_uncited
 0x00670047	FUN_00670047	179	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07072_00670047_FUN_00670047.c	0		decompiled_uncited
-0x00670130	FUN_00670130	195	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07073_00670130_FUN_00670130.c	0		decompiled_uncited
-0x006706a0	FUN_006706a0	12	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07074_006706a0_FUN_006706a0.c	0		decompiled_uncited
-0x006706b0	FUN_006706b0	12	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07075_006706b0_FUN_006706b0.c	0		decompiled_uncited
+0x00670130	FUN_00670130	195	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07073_00670130_FUN_00670130.c	1	engine-rust/src/client.rs	translated
+0x006706a0	FUN_006706a0	12	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07074_006706a0_FUN_006706a0.c	1	engine-rust/src/client.rs	translated
+0x006706b0	FUN_006706b0	12	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07075_006706b0_FUN_006706b0.c	1	engine-rust/src/client.rs	translated
 0x006706c0	FUN_006706c0	112	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07076_006706c0_FUN_006706c0.c	0		decompiled_uncited
-0x00670750	FUN_00670750	35	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07077_00670750_FUN_00670750.c	0		decompiled_uncited
-0x00670780	FUN_00670780	521	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07078_00670780_FUN_00670780.c	0		decompiled_uncited
-0x00670990	FUN_00670990	41	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07079_00670990_FUN_00670990.c	0		decompiled_uncited
-0x00670a40	FUN_00670a40	115	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07080_00670a40_FUN_00670a40.c	0		decompiled_uncited
-0x00670b30	FUN_00670b30	5	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07081_00670b30_FUN_00670b30.c	0		decompiled_uncited
-0x00670b40	FUN_00670b40	41	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07082_00670b40_FUN_00670b40.c	0		decompiled_uncited
+0x00670750	FUN_00670750	35	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07077_00670750_FUN_00670750.c	1	engine-rust/src/client.rs	translated
+0x00670780	FUN_00670780	521	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07078_00670780_FUN_00670780.c	1	engine-rust/src/client.rs	translated
+0x00670990	FUN_00670990	41	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07079_00670990_FUN_00670990.c	1	engine-rust/src/client.rs	translated
+0x00670a40	FUN_00670a40	115	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07080_00670a40_FUN_00670a40.c	1	engine-rust/src/client.rs	translated
+0x00670b30	FUN_00670b30	5	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07081_00670b30_FUN_00670b30.c	1	engine-rust/src/client.rs	translated
+0x00670b40	FUN_00670b40	41	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07082_00670b40_FUN_00670b40.c	1	engine-rust/src/client.rs	translated
 0x00670b90	FUN_00670b90	598	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07083_00670b90_FUN_00670b90.c	0		decompiled_uncited
 0x00670e10	FUN_00670e10	28	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07084_00670e10_FUN_00670e10.c	0		decompiled_uncited
 0x00670e30	FUN_00670e30	28	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07085_00670e30_FUN_00670e30.c	0		decompiled_uncited
@@ -7089,15 +7089,15 @@ address	name	size	thunk	body	evidence_count	evidence	status
 0x00670e70	FUN_00670e70	16	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07087_00670e70_FUN_00670e70.c	0		decompiled_uncited
 0x00670e80	FUN_00670e80	28	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07088_00670e80_FUN_00670e80.c	0		decompiled_uncited
 0x00670ea0	FUN_00670ea0	28	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07089_00670ea0_FUN_00670ea0.c	0		decompiled_uncited
-0x00670ec0	FUN_00670ec0	27	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07090_00670ec0_FUN_00670ec0.c	0		decompiled_uncited
-0x00670ee0	FUN_00670ee0	15	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07091_00670ee0_FUN_00670ee0.c	0		decompiled_uncited
+0x00670ec0	FUN_00670ec0	27	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07090_00670ec0_FUN_00670ec0.c	1	engine-rust/src/client.rs	translated
+0x00670ee0	FUN_00670ee0	15	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07091_00670ee0_FUN_00670ee0.c	1	engine-rust/src/client.rs	translated
 0x00670ef0	FUN_00670ef0	868	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07092_00670ef0_FUN_00670ef0.c	0		decompile_failed
 0x0067102c	FUN_0067102c	36	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07093_0067102c_FUN_0067102c.c	0		decompiled_uncited
 0x00671050	FUN_00671050	45	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07094_00671050_FUN_00671050.c	0		decompiled_uncited
 0x0067107d	FUN_0067107d	110	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07095_0067107d_FUN_0067107d.c	0		decompiled_uncited
 0x006710eb	FUN_006710eb	36	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07096_006710eb_FUN_006710eb.c	0		decompiled_uncited
-0x006712d0	FUN_006712d0	15	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07097_006712d0_FUN_006712d0.c	0		decompiled_uncited
-0x006712e0	FUN_006712e0	51	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07098_006712e0_FUN_006712e0.c	0		decompiled_uncited
+0x006712d0	FUN_006712d0	15	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07097_006712d0_FUN_006712d0.c	1	engine-rust/src/client.rs	translated
+0x006712e0	FUN_006712e0	51	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07098_006712e0_FUN_006712e0.c	1	engine-rust/src/client.rs	translated
 0x00671340	FUN_00671340	6	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07099_00671340_FUN_00671340.c	0		decompiled_uncited
 0x00671360	FUN_00671360	6	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07100_00671360_FUN_00671360.c	0		decompiled_uncited
 0x00671370	FUN_00671370	6	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07101_00671370_FUN_00671370.c	0		decompiled_uncited
@@ -7105,27 +7105,27 @@ address	name	size	thunk	body	evidence_count	evidence	status
 0x00671390	FUN_00671390	6	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07103_00671390_FUN_00671390.c	0		decompiled_uncited
 0x00671441	FUN_00671441	614	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07104_00671441_FUN_00671441.c	0		decompile_failed
 0x00671562	FUN_00671562	3	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07105_00671562_FUN_00671562.c	0		decompiled_uncited
-0x006719d0	FUN_006719d0	7	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07106_006719d0_FUN_006719d0.c	0		decompiled_uncited
-0x006719e0	FUN_006719e0	11	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07107_006719e0_FUN_006719e0.c	0		decompiled_uncited
-0x006719f0	FUN_006719f0	11	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07108_006719f0_FUN_006719f0.c	0		decompiled_uncited
+0x006719d0	FUN_006719d0	7	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07106_006719d0_FUN_006719d0.c	1	engine-rust/src/client.rs	translated
+0x006719e0	FUN_006719e0	11	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07107_006719e0_FUN_006719e0.c	1	engine-rust/src/client.rs	translated
+0x006719f0	FUN_006719f0	11	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07108_006719f0_FUN_006719f0.c	1	engine-rust/src/client.rs	translated
 0x00671b31	FUN_00671b31	282	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07109_00671b31_FUN_00671b31.c	0		decompiled_uncited
-0x00671d40	FUN_00671d40	285	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07110_00671d40_FUN_00671d40.c	0		decompiled_uncited
-0x00671e60	FUN_00671e60	27	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07111_00671e60_FUN_00671e60.c	0		decompiled_uncited
-0x00671e80	FUN_00671e80	25	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07112_00671e80_FUN_00671e80.c	0		decompiled_uncited
-0x00671fd0	FUN_00671fd0	149	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07113_00671fd0_FUN_00671fd0.c	0		decompiled_uncited
-0x006720f0	FUN_006720f0	10	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07114_006720f0_FUN_006720f0.c	0		decompiled_uncited
-0x00672120	FUN_00672120	26	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07115_00672120_FUN_00672120.c	0		decompiled_uncited
-0x00672140	FUN_00672140	28	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07116_00672140_FUN_00672140.c	0		decompiled_uncited
+0x00671d40	FUN_00671d40	285	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07110_00671d40_FUN_00671d40.c	1	engine-rust/src/client.rs	translated
+0x00671e60	FUN_00671e60	27	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07111_00671e60_FUN_00671e60.c	1	engine-rust/src/client.rs	translated
+0x00671e80	FUN_00671e80	25	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07112_00671e80_FUN_00671e80.c	1	engine-rust/src/client.rs	translated
+0x00671fd0	FUN_00671fd0	149	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07113_00671fd0_FUN_00671fd0.c	1	engine-rust/src/client.rs	translated
+0x006720f0	FUN_006720f0	10	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07114_006720f0_FUN_006720f0.c	1	engine-rust/src/client.rs	translated
+0x00672120	FUN_00672120	26	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07115_00672120_FUN_00672120.c	1	engine-rust/src/client.rs	translated
+0x00672140	FUN_00672140	28	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07116_00672140_FUN_00672140.c	1	engine-rust/src/client.rs	translated
 0x00672160	FUN_00672160	18	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07117_00672160_FUN_00672160.c	0		decompiled_uncited
 0x00672220	FUN_00672220	18	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07118_00672220_FUN_00672220.c	0		decompiled_uncited
 0x00672270	FUN_00672270	3	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07119_00672270_FUN_00672270.c	0		decompiled_uncited
 0x00672273	FUN_00672273	52	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07120_00672273_FUN_00672273.c	0		decompiled_uncited
-0x00672370	FUN_00672370	95	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07121_00672370_FUN_00672370.c	0		decompiled_uncited
-0x006723d0	FUN_006723d0	43	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07122_006723d0_FUN_006723d0.c	0		decompiled_uncited
-0x00672400	FUN_00672400	95	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07123_00672400_FUN_00672400.c	0		decompiled_uncited
-0x00672460	FUN_00672460	44	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07124_00672460_FUN_00672460.c	0		decompiled_uncited
-0x00672490	FUN_00672490	44	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07125_00672490_FUN_00672490.c	0		decompiled_uncited
-0x00672590	FUN_00672590	235	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07126_00672590_FUN_00672590.c	0		decompiled_uncited
+0x00672370	FUN_00672370	95	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07121_00672370_FUN_00672370.c	1	engine-rust/src/client.rs	translated
+0x006723d0	FUN_006723d0	43	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07122_006723d0_FUN_006723d0.c	1	engine-rust/src/client.rs	translated
+0x00672400	FUN_00672400	95	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07123_00672400_FUN_00672400.c	1	engine-rust/src/client.rs	translated
+0x00672460	FUN_00672460	44	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07124_00672460_FUN_00672460.c	1	engine-rust/src/client.rs	translated
+0x00672490	FUN_00672490	44	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07125_00672490_FUN_00672490.c	1	engine-rust/src/client.rs	translated
+0x00672590	FUN_00672590	235	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07126_00672590_FUN_00672590.c	1	engine-rust/src/client.rs	translated
 0x0067269b	FUN_0067269b	126	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07127_0067269b_FUN_0067269b.c	0		decompiled_uncited
 0x0067271c	FUN_0067271c	34	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07128_0067271c_FUN_0067271c.c	0		decompiled_uncited
 0x00672770	FUN_00672770	588	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07129_00672770_FUN_00672770.c	0		decompile_failed
@@ -7133,15 +7133,15 @@ address	name	size	thunk	body	evidence_count	evidence	status
 0x006730ab	FUN_006730ab	32	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07131_006730ab_FUN_006730ab.c	0		decompiled_uncited
 0x00673228	FUN_00673228	5	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07132_00673228_FUN_00673228.c	0		decompiled_uncited
 0x006732b0	FUN_006732b0	324	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07133_006732b0_FUN_006732b0.c	0		decompile_failed
-0x006736f0	FUN_006736f0	10	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07134_006736f0_FUN_006736f0.c	0		decompiled_uncited
-0x006736fc	FUN_006736fc	1002	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07135_006736fc_FUN_006736fc.c	0		decompiled_uncited
-0x00673bb0	FUN_00673bb0	11	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07136_00673bb0_FUN_00673bb0.c	0		decompiled_uncited
-0x00673bc0	FUN_00673bc0	29	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07137_00673bc0_FUN_00673bc0.c	0		decompiled_uncited
+0x006736f0	FUN_006736f0	10	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07134_006736f0_FUN_006736f0.c	1	engine-rust/src/client.rs	translated
+0x006736fc	FUN_006736fc	1002	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07135_006736fc_FUN_006736fc.c	1	engine-rust/src/client.rs	translated
+0x00673bb0	FUN_00673bb0	11	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07136_00673bb0_FUN_00673bb0.c	1	engine-rust/src/client.rs	translated
+0x00673bc0	FUN_00673bc0	29	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07137_00673bc0_FUN_00673bc0.c	1	engine-rust/src/client.rs	translated
 0x00673bdd	FUN_00673bdd	29	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07138_00673bdd_FUN_00673bdd.c	0		decompiled_uncited
-0x00673c40	FUN_00673c40	49	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07139_00673c40_FUN_00673c40.c	0		decompiled_uncited
+0x00673c40	FUN_00673c40	49	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07139_00673c40_FUN_00673c40.c	1	engine-rust/src/client.rs	translated
 0x00673cb5	FUN_00673cb5	6	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07140_00673cb5_FUN_00673cb5.c	0		decompiled_uncited
 0x00673cc0	FUN_00673cc0	53	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07141_00673cc0_FUN_00673cc0.c	0		decompiled_uncited
-0x00673f60	FUN_00673f60	145	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07142_00673f60_FUN_00673f60.c	0		decompiled_uncited
+0x00673f60	FUN_00673f60	145	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07142_00673f60_FUN_00673f60.c	1	engine-rust/src/client.rs	translated
 0x00674000	FUN_00674000	22	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07143_00674000_FUN_00674000.c	0		decompiled_uncited
 0x00674020	FUN_00674020	36	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07144_00674020_FUN_00674020.c	0		decompiled_uncited
 0x00674050	FUN_00674050	106	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07145_00674050_FUN_00674050.c	0		decompiled_uncited
@@ -7152,41 +7152,41 @@ address	name	size	thunk	body	evidence_count	evidence	status
 0x0067440a	FUN_0067440a	32	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07150_0067440a_FUN_0067440a.c	0		decompiled_uncited
 0x00674430	FUN_00674430	15	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07151_00674430_FUN_00674430.c	0		decompiled_uncited
 0x00674440	FUN_00674440	31	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07152_00674440_FUN_00674440.c	0		decompiled_uncited
-0x00674460	FUN_00674460	85	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07153_00674460_FUN_00674460.c	0		decompiled_uncited
-0x006744c0	FUN_006744c0	269	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07154_006744c0_FUN_006744c0.c	0		decompiled_uncited
-0x006745e0	FUN_006745e0	71	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07155_006745e0_FUN_006745e0.c	0		decompiled_uncited
-0x00674630	FUN_00674630	12	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07156_00674630_FUN_00674630.c	0		decompiled_uncited
-0x00674670	FUN_00674670	110	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07157_00674670_FUN_00674670.c	0		decompiled_uncited
-0x006746e0	FUN_006746e0	70	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07158_006746e0_FUN_006746e0.c	0		decompiled_uncited
-0x00674730	FUN_00674730	261	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07159_00674730_FUN_00674730.c	0		decompiled_uncited
-0x00674960	FUN_00674960	7	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07160_00674960_FUN_00674960.c	0		decompiled_uncited
-0x00674970	FUN_00674970	151	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07161_00674970_FUN_00674970.c	0		decompiled_uncited
+0x00674460	FUN_00674460	85	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07153_00674460_FUN_00674460.c	1	engine-rust/src/render.rs	translated
+0x006744c0	FUN_006744c0	269	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07154_006744c0_FUN_006744c0.c	1	engine-rust/src/render.rs	translated
+0x006745e0	FUN_006745e0	71	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07155_006745e0_FUN_006745e0.c	1	engine-rust/src/render.rs	translated
+0x00674630	FUN_00674630	12	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07156_00674630_FUN_00674630.c	1	engine-rust/src/render.rs	translated
+0x00674670	FUN_00674670	110	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07157_00674670_FUN_00674670.c	1	engine-rust/src/render.rs	translated
+0x006746e0	FUN_006746e0	70	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07158_006746e0_FUN_006746e0.c	1	engine-rust/src/render.rs	translated
+0x00674730	FUN_00674730	261	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07159_00674730_FUN_00674730.c	1	engine-rust/src/render.rs	translated
+0x00674960	FUN_00674960	7	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07160_00674960_FUN_00674960.c	1	engine-rust/src/render.rs	translated
+0x00674970	FUN_00674970	151	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07161_00674970_FUN_00674970.c	1	engine-rust/src/render.rs	translated
 0x00674ab2	FUN_00674ab2	8	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07162_00674ab2_FUN_00674ab2.c	0		decompiled_uncited
-0x00674ac0	FUN_00674ac0	33	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07163_00674ac0_FUN_00674ac0.c	0		decompiled_uncited
-0x00674af0	FUN_00674af0	151	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07164_00674af0_FUN_00674af0.c	0		decompiled_uncited
+0x00674ac0	FUN_00674ac0	33	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07163_00674ac0_FUN_00674ac0.c	1	engine-rust/src/render.rs	translated
+0x00674af0	FUN_00674af0	151	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07164_00674af0_FUN_00674af0.c	1	engine-rust/src/render.rs	translated
 0x00674be0	FUN_00674be0	64	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07165_00674be0_FUN_00674be0.c	0		decompiled_uncited
 0x00674d50	FUN_00674d50	197	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07166_00674d50_FUN_00674d50.c	0		decompiled_uncited
-0x00674e40	FUN_00674e40	19	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07167_00674e40_FUN_00674e40.c	0		decompiled_uncited
+0x00674e40	FUN_00674e40	19	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07167_00674e40_FUN_00674e40.c	1	engine-rust/src/render.rs	translated
 0x00674e60	FUN_00674e60	13	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07168_00674e60_FUN_00674e60.c	0		decompiled_uncited
-0x00674f00	FUN_00674f00	79	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07169_00674f00_FUN_00674f00.c	0		decompiled_uncited
-0x00674f50	FUN_00674f50	97	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07170_00674f50_FUN_00674f50.c	0		decompiled_uncited
-0x00674fc0	FUN_00674fc0	81	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07171_00674fc0_FUN_00674fc0.c	0		decompiled_uncited
+0x00674f00	FUN_00674f00	79	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07169_00674f00_FUN_00674f00.c	1	engine-rust/src/render.rs	translated
+0x00674f50	FUN_00674f50	97	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07170_00674f50_FUN_00674f50.c	1	engine-rust/src/render.rs	translated
+0x00674fc0	FUN_00674fc0	81	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07171_00674fc0_FUN_00674fc0.c	1	engine-rust/src/render.rs	translated
 0x00675020	FUN_00675020	60	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07172_00675020_FUN_00675020.c	0		decompiled_uncited
 0x006750ab	FUN_006750ab	23	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07173_006750ab_FUN_006750ab.c	0		decompiled_uncited
 0x00675150	FUN_00675150	90	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07174_00675150_FUN_00675150.c	0		decompiled_uncited
-0x006751d0	FUN_006751d0	95	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07175_006751d0_FUN_006751d0.c	0		decompiled_uncited
-0x00675230	FUN_00675230	66	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07176_00675230_FUN_00675230.c	0		decompiled_uncited
-0x00675280	FUN_00675280	28	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07177_00675280_FUN_00675280.c	0		decompiled_uncited
-0x006752f0	FUN_006752f0	244	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07178_006752f0_FUN_006752f0.c	0		decompiled_uncited
-0x006753f0	FUN_006753f0	85	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07179_006753f0_FUN_006753f0.c	0		decompiled_uncited
-0x00675450	FUN_00675450	55	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07180_00675450_FUN_00675450.c	0		decompiled_uncited
-0x00675490	FUN_00675490	7	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07181_00675490_FUN_00675490.c	0		decompiled_uncited
-0x006754a0	FUN_006754a0	80	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07182_006754a0_FUN_006754a0.c	0		decompiled_uncited
-0x00675500	FUN_00675500	33	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07183_00675500_FUN_00675500.c	0		decompiled_uncited
+0x006751d0	FUN_006751d0	95	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07175_006751d0_FUN_006751d0.c	1	engine-rust/src/render.rs	translated
+0x00675230	FUN_00675230	66	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07176_00675230_FUN_00675230.c	1	engine-rust/src/render.rs	translated
+0x00675280	FUN_00675280	28	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07177_00675280_FUN_00675280.c	1	engine-rust/src/render.rs	translated
+0x006752f0	FUN_006752f0	244	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07178_006752f0_FUN_006752f0.c	1	engine-rust/src/render.rs	translated
+0x006753f0	FUN_006753f0	85	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07179_006753f0_FUN_006753f0.c	1	engine-rust/src/render.rs	translated
+0x00675450	FUN_00675450	55	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07180_00675450_FUN_00675450.c	1	engine-rust/src/render.rs	translated
+0x00675490	FUN_00675490	7	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07181_00675490_FUN_00675490.c	1	engine-rust/src/render.rs	translated
+0x006754a0	FUN_006754a0	80	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07182_006754a0_FUN_006754a0.c	1	engine-rust/src/render.rs	translated
+0x00675500	FUN_00675500	33	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07183_00675500_FUN_00675500.c	1	engine-rust/src/render.rs	translated
 0x00675530	FUN_00675530	156	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07184_00675530_FUN_00675530.c	0		decompiled_uncited
 0x006755e0	FUN_006755e0	47	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07185_006755e0_FUN_006755e0.c	0		decompiled_uncited
 0x00675610	FUN_00675610	66	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07186_00675610_FUN_00675610.c	0		decompiled_uncited
-0x00675770	FUN_00675770	6	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07187_00675770_FUN_00675770.c	0		decompiled_uncited
+0x00675770	FUN_00675770	6	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07187_00675770_FUN_00675770.c	1	engine-rust/src/render.rs	translated
 0x00675780	FUN_00675780	110	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07188_00675780_FUN_00675780.c	0		decompiled_uncited
 0x00675890	FUN_00675890	112	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07189_00675890_FUN_00675890.c	0		decompiled_uncited
 0x00675900	FUN_00675900	169	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07190_00675900_FUN_00675900.c	0		decompiled_uncited
@@ -7209,43 +7209,43 @@ address	name	size	thunk	body	evidence_count	evidence	status
 0x00676127	FUN_00676127	56	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07207_00676127_FUN_00676127.c	0		decompiled_uncited
 0x0067615f	FUN_0067615f	33	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07208_0067615f_FUN_0067615f.c	0		decompiled_uncited
 0x00676190	FUN_00676190	155	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07209_00676190_FUN_00676190.c	0		decompiled_uncited
-0x006762a0	FUN_006762a0	5	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07210_006762a0_FUN_006762a0.c	0		decompiled_uncited
-0x006762b0	FUN_006762b0	79	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07211_006762b0_FUN_006762b0.c	0		decompiled_uncited
+0x006762a0	FUN_006762a0	5	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07210_006762a0_FUN_006762a0.c	1	engine-rust/src/runtime.rs	translated
+0x006762b0	FUN_006762b0	79	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07211_006762b0_FUN_006762b0.c	1	engine-rust/src/runtime.rs	translated
 0x00676320	FUN_00676320	16	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07212_00676320_FUN_00676320.c	0		decompiled_uncited
 0x00676360	FUN_00676360	78	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07213_00676360_FUN_00676360.c	0		decompiled_uncited
 0x006765f7	FUN_006765f7	83	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07214_006765f7_FUN_006765f7.c	0		decompiled_uncited
-0x006768b0	FUN_006768b0	205	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07215_006768b0_FUN_006768b0.c	0		decompiled_uncited
+0x006768b0	FUN_006768b0	205	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07215_006768b0_FUN_006768b0.c	1	engine-rust/src/runtime.rs	translated
 0x0067697d	Catch_All@0067697d	17	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07216_0067697d_Catch_All_0067697d.c	0		decompiled_uncited
-0x00676990	FUN_00676990	48	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07217_00676990_FUN_00676990.c	0		decompiled_uncited
-0x006769c0	FUN_006769c0	127	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07218_006769c0_FUN_006769c0.c	0		decompiled_uncited
+0x00676990	FUN_00676990	48	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07217_00676990_FUN_00676990.c	1	engine-rust/src/runtime.rs	translated
+0x006769c0	FUN_006769c0	127	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07218_006769c0_FUN_006769c0.c	1	engine-rust/src/runtime.rs	translated
 0x00676a3f	Catch_All@00676a3f	20	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07219_00676a3f_Catch_All_00676a3f.c	0		decompiled_uncited
-0x00676a60	FUN_00676a60	38	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07220_00676a60_FUN_00676a60.c	0		decompiled_uncited
-0x00676a90	FUN_00676a90	159	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07221_00676a90_FUN_00676a90.c	0		decompiled_uncited
+0x00676a60	FUN_00676a60	38	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07220_00676a60_FUN_00676a60.c	1	engine-rust/src/runtime.rs	translated
+0x00676a90	FUN_00676a90	159	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07221_00676a90_FUN_00676a90.c	1	engine-rust/src/runtime.rs	translated
 0x00676b2f	Catch_All@00676b2f	20	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07222_00676b2f_Catch_All_00676b2f.c	0		decompiled_uncited
 0x00676ca9	FUN_00676ca9	6	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07223_00676ca9_FUN_00676ca9.c	0		decompiled_uncited
-0x00676cb0	FUN_00676cb0	349	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07224_00676cb0_FUN_00676cb0.c	0		decompiled_uncited
-0x00676e10	FUN_00676e10	147	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07225_00676e10_FUN_00676e10.c	0		decompiled_uncited
+0x00676cb0	FUN_00676cb0	349	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07224_00676cb0_FUN_00676cb0.c	1	engine-rust/src/runtime.rs	translated
+0x00676e10	FUN_00676e10	147	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07225_00676e10_FUN_00676e10.c	1	engine-rust/src/runtime.rs	translated
 0x00676ea3	FUN_00676ea3	43	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07226_00676ea3_FUN_00676ea3.c	0		decompiled_uncited
 0x00676ece	Catch_All@00676ece	20	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07227_00676ece_Catch_All_00676ece.c	0		decompiled_uncited
 0x00676ef0	FUN_00676ef0	319	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07228_00676ef0_FUN_00676ef0.c	0		decompiled_uncited
 0x00677081	Catch_All@00677081	20	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07229_00677081_Catch_All_00677081.c	0		decompiled_uncited
-0x006770a0	FUN_006770a0	64	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07230_006770a0_FUN_006770a0.c	0		decompiled_uncited
+0x006770a0	FUN_006770a0	64	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07230_006770a0_FUN_006770a0.c	1	engine-rust/src/runtime.rs	translated
 0x006770e0	FUN_006770e0	85	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07231_006770e0_FUN_006770e0.c	0		decompiled_uncited
 0x0067722f	FUN_0067722f	87	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07232_0067722f_FUN_0067722f.c	0		decompiled_uncited
 0x006773f0	FUN_006773f0	104	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07233_006773f0_FUN_006773f0.c	0		decompiled_uncited
-0x006775f0	FUN_006775f0	9	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07234_006775f0_FUN_006775f0.c	0		decompiled_uncited
-0x00677600	FUN_00677600	50	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07235_00677600_FUN_00677600.c	0		decompiled_uncited
+0x006775f0	FUN_006775f0	9	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07234_006775f0_FUN_006775f0.c	1	engine-rust/src/runtime.rs	translated
+0x00677600	FUN_00677600	50	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07235_00677600_FUN_00677600.c	1	engine-rust/src/runtime.rs	translated
 0x00677650	FUN_00677650	68	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07236_00677650_FUN_00677650.c	0		decompiled_uncited
 0x006776b0	FUN_006776b0	58	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07237_006776b0_FUN_006776b0.c	0		decompiled_uncited
 0x00677700	FUN_00677700	61	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07238_00677700_FUN_00677700.c	0		decompiled_uncited
-0x00677750	FUN_00677750	190	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07239_00677750_FUN_00677750.c	0		decompiled_uncited
-0x00677830	FUN_00677830	83	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07240_00677830_FUN_00677830.c	0		decompiled_uncited
-0x00677890	FUN_00677890	114	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07241_00677890_FUN_00677890.c	0		decompiled_uncited
-0x00677910	FUN_00677910	33	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07242_00677910_FUN_00677910.c	0		decompiled_uncited
+0x00677750	FUN_00677750	190	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07239_00677750_FUN_00677750.c	1	engine-rust/src/runtime.rs	translated
+0x00677830	FUN_00677830	83	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07240_00677830_FUN_00677830.c	1	engine-rust/src/runtime.rs	translated
+0x00677890	FUN_00677890	114	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07241_00677890_FUN_00677890.c	1	engine-rust/src/runtime.rs	translated
+0x00677910	FUN_00677910	33	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07242_00677910_FUN_00677910.c	1	engine-rust/src/runtime.rs	translated
 0x00677940	FUN_00677940	55	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07243_00677940_FUN_00677940.c	0		decompiled_uncited
 0x00677977	FUN_00677977	582	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07244_00677977_FUN_00677977.c	0		decompiled_uncited
 0x00677ca0	FUN_00677ca0	71	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07245_00677ca0_FUN_00677ca0.c	0		decompiled_uncited
-0x00677d50	FUN_00677d50	65	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07246_00677d50_FUN_00677d50.c	0		decompiled_uncited
+0x00677d50	FUN_00677d50	65	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07246_00677d50_FUN_00677d50.c	1	engine-rust/src/runtime.rs	translated
 0x00677db0	FUN_00677db0	484	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07247_00677db0_FUN_00677db0.c	0		decompiled_uncited
 0x00677fb0	FUN_00677fb0	757	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07248_00677fb0_FUN_00677fb0.c	0		decompiled_uncited
 0x006782b0	FUN_006782b0	348	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07249_006782b0_FUN_006782b0.c	0		decompiled_uncited
@@ -7261,42 +7261,42 @@ address	name	size	thunk	body	evidence_count	evidence	status
 0x006788ed	FUN_006788ed	67	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07259_006788ed_FUN_006788ed.c	0		decompiled_uncited
 0x00678940	FUN_00678940	193	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07260_00678940_FUN_00678940.c	0		decompiled_uncited
 0x00678a10	FUN_00678a10	191	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07261_00678a10_FUN_00678a10.c	0		decompiled_uncited
-0x00678ae0	FUN_00678ae0	224	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07262_00678ae0_FUN_00678ae0.c	0		decompiled_uncited
+0x00678ae0	FUN_00678ae0	224	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07262_00678ae0_FUN_00678ae0.c	1	engine-rust/src/trigger.rs	translated
 0x00678bf0	FUN_00678bf0	174	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07263_00678bf0_FUN_00678bf0.c	0		decompiled_uncited
-0x00678cc0	FUN_00678cc0	26	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07264_00678cc0_FUN_00678cc0.c	0		decompiled_uncited
-0x00678ce0	FUN_00678ce0	34	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07265_00678ce0_FUN_00678ce0.c	0		decompiled_uncited
-0x00678d10	FUN_00678d10	26	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07266_00678d10_FUN_00678d10.c	0		decompiled_uncited
-0x00678d30	FUN_00678d30	34	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07267_00678d30_FUN_00678d30.c	0		decompiled_uncited
+0x00678cc0	FUN_00678cc0	26	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07264_00678cc0_FUN_00678cc0.c	1	engine-rust/src/trigger.rs	translated
+0x00678ce0	FUN_00678ce0	34	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07265_00678ce0_FUN_00678ce0.c	1	engine-rust/src/trigger.rs	translated
+0x00678d10	FUN_00678d10	26	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07266_00678d10_FUN_00678d10.c	1	engine-rust/src/trigger.rs	translated
+0x00678d30	FUN_00678d30	34	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07267_00678d30_FUN_00678d30.c	1	engine-rust/src/trigger.rs	translated
 0x00678d60	FUN_00678d60	52	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07268_00678d60_FUN_00678d60.c	0		decompiled_uncited
 0x00678f70	FUN_00678f70	342	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07269_00678f70_FUN_00678f70.c	0		decompiled_uncited
 0x006790d1	FUN_006790d1	90	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07270_006790d1_FUN_006790d1.c	0		decompiled_uncited
-0x00679130	FUN_00679130	35	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07271_00679130_FUN_00679130.c	0		decompiled_uncited
+0x00679130	FUN_00679130	35	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07271_00679130_FUN_00679130.c	1	engine-rust/src/trigger.rs	translated
 0x00679160	FUN_00679160	164	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07272_00679160_FUN_00679160.c	0		decompiled_uncited
-0x00679210	FUN_00679210	7	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07273_00679210_FUN_00679210.c	0		decompiled_uncited
+0x00679210	FUN_00679210	7	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07273_00679210_FUN_00679210.c	1	engine-rust/src/trigger.rs	translated
 0x00679250	FUN_00679250	10	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07274_00679250_FUN_00679250.c	0		decompiled_uncited
 0x00679280	FUN_00679280	10	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07275_00679280_FUN_00679280.c	0		decompiled_uncited
 0x006792a0	FUN_006792a0	10	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07276_006792a0_FUN_006792a0.c	0		decompiled_uncited
 0x006792ac	FUN_006792ac	17	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07277_006792ac_FUN_006792ac.c	0		decompiled_uncited
 0x006792c0	FUN_006792c0	13	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07278_006792c0_FUN_006792c0.c	0		decompiled_uncited
 0x006792e0	FUN_006792e0	64	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07279_006792e0_FUN_006792e0.c	0		decompiled_uncited
-0x00679340	FUN_00679340	46	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07280_00679340_FUN_00679340.c	0		decompiled_uncited
+0x00679340	FUN_00679340	46	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07280_00679340_FUN_00679340.c	1	engine-rust/src/trigger.rs	translated
 0x00679380	FUN_00679380	106	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07281_00679380_FUN_00679380.c	0		decompiled_uncited
 0x00679410	FUN_00679410	623	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07282_00679410_FUN_00679410.c	0		decompiled_uncited
 0x00679680	FUN_00679680	13	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07283_00679680_FUN_00679680.c	0		decompiled_uncited
-0x006796a0	FUN_006796a0	84	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07284_006796a0_FUN_006796a0.c	0		decompiled_uncited
-0x00679700	FUN_00679700	88	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07285_00679700_FUN_00679700.c	0		decompiled_uncited
-0x00679760	FUN_00679760	122	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07286_00679760_FUN_00679760.c	0		decompiled_uncited
+0x006796a0	FUN_006796a0	84	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07284_006796a0_FUN_006796a0.c	1	engine-rust/src/trigger.rs	translated
+0x00679700	FUN_00679700	88	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07285_00679700_FUN_00679700.c	1	engine-rust/src/trigger.rs	translated
+0x00679760	FUN_00679760	122	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07286_00679760_FUN_00679760.c	1	engine-rust/src/trigger.rs	translated
 0x006797f0	FUN_006797f0	57	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07287_006797f0_FUN_006797f0.c	0		decompiled_uncited
 0x00679900	FUN_00679900	207	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07288_00679900_FUN_00679900.c	0		decompiled_uncited
-0x006799f0	FUN_006799f0	68	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07289_006799f0_FUN_006799f0.c	0		decompiled_uncited
-0x00679a40	FUN_00679a40	381	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07290_00679a40_FUN_00679a40.c	0		decompiled_uncited
+0x006799f0	FUN_006799f0	68	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07289_006799f0_FUN_006799f0.c	1	engine-rust/src/trigger.rs	translated
+0x00679a40	FUN_00679a40	381	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07290_00679a40_FUN_00679a40.c	1	engine-rust/src/trigger.rs	translated
 0x00679bc0	FUN_00679bc0	141	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07291_00679bc0_FUN_00679bc0.c	0		decompiled_uncited
-0x00679c50	FUN_00679c50	51	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07292_00679c50_FUN_00679c50.c	0		decompiled_uncited
+0x00679c50	FUN_00679c50	51	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07292_00679c50_FUN_00679c50.c	1	engine-rust/src/trigger.rs	translated
 0x00679c90	FUN_00679c90	63	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07293_00679c90_FUN_00679c90.c	0		decompiled_uncited
 0x00679cd0	FUN_00679cd0	30	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07294_00679cd0_FUN_00679cd0.c	0		decompiled_uncited
-0x00679d40	FUN_00679d40	63	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07295_00679d40_FUN_00679d40.c	0		decompiled_uncited
+0x00679d40	FUN_00679d40	63	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07295_00679d40_FUN_00679d40.c	1	engine-rust/src/trigger.rs	translated
 0x00679d80	FUN_00679d80	35	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07296_00679d80_FUN_00679d80.c	0		decompiled_uncited
-0x00679db0	FUN_00679db0	163	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07297_00679db0_FUN_00679db0.c	0		decompiled_uncited
+0x00679db0	FUN_00679db0	163	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07297_00679db0_FUN_00679db0.c	1	engine-rust/src/trigger.rs	translated
 0x00679e53	FUN_00679e53	3	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07298_00679e53_FUN_00679e53.c	0		decompiled_uncited
 0x00679e60	FUN_00679e60	68	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07299_00679e60_FUN_00679e60.c	0		decompiled_uncited
 0x00679f80	FUN_00679f80	45	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07300_00679f80_FUN_00679f80.c	0		decompiled_uncited
@@ -7304,121 +7304,121 @@ address	name	size	thunk	body	evidence_count	evidence	status
 0x0067a110	FUN_0067a110	62	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07302_0067a110_FUN_0067a110.c	0		decompiled_uncited
 0x0067a164	FUN_0067a164	95	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07303_0067a164_FUN_0067a164.c	0		decompiled_uncited
 0x0067a1d0	FUN_0067a1d0	179	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07304_0067a1d0_FUN_0067a1d0.c	0		decompiled_uncited
-0x0067a2e0	FUN_0067a2e0	92	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07305_0067a2e0_FUN_0067a2e0.c	0		decompiled_uncited
-0x0067a340	FUN_0067a340	128	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07306_0067a340_FUN_0067a340.c	0		decompiled_uncited
-0x0067a3c0	FUN_0067a3c0	76	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07307_0067a3c0_FUN_0067a3c0.c	0		decompiled_uncited
+0x0067a2e0	FUN_0067a2e0	92	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07305_0067a2e0_FUN_0067a2e0.c	1	engine-rust/src/audio.rs	translated
+0x0067a340	FUN_0067a340	128	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07306_0067a340_FUN_0067a340.c	1	engine-rust/src/audio.rs	translated
+0x0067a3c0	FUN_0067a3c0	76	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07307_0067a3c0_FUN_0067a3c0.c	1	engine-rust/src/audio.rs	translated
 0x0067a410	FUN_0067a410	33	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07308_0067a410_FUN_0067a410.c	0		decompiled_uncited
 0x0067a440	FUN_0067a440	343	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07309_0067a440_FUN_0067a440.c	0		decompiled_uncited
-0x0067a6a0	FUN_0067a6a0	101	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07310_0067a6a0_FUN_0067a6a0.c	0		decompiled_uncited
+0x0067a6a0	FUN_0067a6a0	101	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07310_0067a6a0_FUN_0067a6a0.c	1	engine-rust/src/audio.rs	translated
 0x0067a705	Catch_All@0067a705	6	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07311_0067a705_Catch_All_0067a705.c	0		decompiled_uncited
-0x0067a730	FUN_0067a730	107	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07312_0067a730_FUN_0067a730.c	0		decompiled_uncited
+0x0067a730	FUN_0067a730	107	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07312_0067a730_FUN_0067a730.c	1	engine-rust/src/audio.rs	translated
 0x0067a79b	Catch_All@0067a79b	6	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07313_0067a79b_Catch_All_0067a79b.c	0		decompiled_uncited
-0x0067a7c0	FUN_0067a7c0	70	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07314_0067a7c0_FUN_0067a7c0.c	0		decompiled_uncited
+0x0067a7c0	FUN_0067a7c0	70	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07314_0067a7c0_FUN_0067a7c0.c	1	engine-rust/src/audio.rs	translated
 0x0067a810	FUN_0067a810	79	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07315_0067a810_FUN_0067a810.c	0		decompiled_uncited
-0x0067a9c0	FUN_0067a9c0	51	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07316_0067a9c0_FUN_0067a9c0.c	0		decompiled_uncited
+0x0067a9c0	FUN_0067a9c0	51	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07316_0067a9c0_FUN_0067a9c0.c	1	engine-rust/src/audio.rs	translated
 0x0067aa00	FUN_0067aa00	526	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07317_0067aa00_FUN_0067aa00.c	0		decompiled_uncited
-0x0067ac20	FUN_0067ac20	157	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07318_0067ac20_FUN_0067ac20.c	0		decompiled_uncited
-0x0067acc0	FUN_0067acc0	8	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07319_0067acc0_FUN_0067acc0.c	0		decompiled_uncited
-0x0067acd0	FUN_0067acd0	122	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07320_0067acd0_FUN_0067acd0.c	0		decompiled_uncited
-0x0067ad50	FUN_0067ad50	147	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07321_0067ad50_FUN_0067ad50.c	0		decompiled_uncited
+0x0067ac20	FUN_0067ac20	157	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07318_0067ac20_FUN_0067ac20.c	1	engine-rust/src/audio.rs	translated
+0x0067acc0	FUN_0067acc0	8	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07319_0067acc0_FUN_0067acc0.c	1	engine-rust/src/audio.rs	translated
+0x0067acd0	FUN_0067acd0	122	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07320_0067acd0_FUN_0067acd0.c	1	engine-rust/src/audio.rs	translated
+0x0067ad50	FUN_0067ad50	147	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07321_0067ad50_FUN_0067ad50.c	1	engine-rust/src/audio.rs	translated
 0x0067b060	FUN_0067b060	58	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07322_0067b060_FUN_0067b060.c	0		decompiled_uncited
-0x0067b0a0	FUN_0067b0a0	309	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07323_0067b0a0_FUN_0067b0a0.c	0		decompiled_uncited
-0x0067b1e0	FUN_0067b1e0	93	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07324_0067b1e0_FUN_0067b1e0.c	0		decompiled_uncited
-0x0067b240	FUN_0067b240	177	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07325_0067b240_FUN_0067b240.c	0		decompiled_uncited
-0x0067b300	FUN_0067b300	178	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07326_0067b300_FUN_0067b300.c	0		decompiled_uncited
-0x0067b3c0	FUN_0067b3c0	67	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07327_0067b3c0_FUN_0067b3c0.c	0		decompiled_uncited
+0x0067b0a0	FUN_0067b0a0	309	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07323_0067b0a0_FUN_0067b0a0.c	1	engine-rust/src/audio.rs	translated
+0x0067b1e0	FUN_0067b1e0	93	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07324_0067b1e0_FUN_0067b1e0.c	1	engine-rust/src/audio.rs	translated
+0x0067b240	FUN_0067b240	177	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07325_0067b240_FUN_0067b240.c	1	engine-rust/src/audio.rs	translated
+0x0067b300	FUN_0067b300	178	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07326_0067b300_FUN_0067b300.c	1	engine-rust/src/audio.rs	translated
+0x0067b3c0	FUN_0067b3c0	67	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07327_0067b3c0_FUN_0067b3c0.c	1	engine-rust/src/audio.rs	translated
 0x0067b405	FUN_0067b405	1097	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07328_0067b405_FUN_0067b405.c	0		decompiled_uncited
 0x0067b860	FUN_0067b860	95	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07329_0067b860_FUN_0067b860.c	0		decompiled_uncited
-0x0067bb00	FUN_0067bb00	34	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07330_0067bb00_FUN_0067bb00.c	0		decompiled_uncited
-0x0067bb30	FUN_0067bb30	73	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07331_0067bb30_FUN_0067bb30.c	0		decompiled_uncited
-0x0067bb80	FUN_0067bb80	107	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07332_0067bb80_FUN_0067bb80.c	0		decompiled_uncited
-0x0067bbf0	FUN_0067bbf0	106	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07333_0067bbf0_FUN_0067bbf0.c	0		decompiled_uncited
-0x0067bc60	FUN_0067bc60	123	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07334_0067bc60_FUN_0067bc60.c	0		decompiled_uncited
-0x0067bce0	FUN_0067bce0	107	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07335_0067bce0_FUN_0067bce0.c	0		decompiled_uncited
-0x0067bd50	FUN_0067bd50	35	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07336_0067bd50_FUN_0067bd50.c	0		decompiled_uncited
-0x0067bd80	FUN_0067bd80	623	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07337_0067bd80_FUN_0067bd80.c	0		decompiled_uncited
+0x0067bb00	FUN_0067bb00	34	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07330_0067bb00_FUN_0067bb00.c	1	engine-rust/src/audio.rs	translated
+0x0067bb30	FUN_0067bb30	73	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07331_0067bb30_FUN_0067bb30.c	1	engine-rust/src/audio.rs	translated
+0x0067bb80	FUN_0067bb80	107	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07332_0067bb80_FUN_0067bb80.c	1	engine-rust/src/audio.rs	translated
+0x0067bbf0	FUN_0067bbf0	106	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07333_0067bbf0_FUN_0067bbf0.c	1	engine-rust/src/audio.rs	translated
+0x0067bc60	FUN_0067bc60	123	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07334_0067bc60_FUN_0067bc60.c	1	engine-rust/src/audio.rs	translated
+0x0067bce0	FUN_0067bce0	107	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07335_0067bce0_FUN_0067bce0.c	1	engine-rust/src/audio.rs	translated
+0x0067bd50	FUN_0067bd50	35	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07336_0067bd50_FUN_0067bd50.c	1	engine-rust/src/audio.rs	translated
+0x0067bd80	FUN_0067bd80	623	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07337_0067bd80_FUN_0067bd80.c	1	engine-rust/src/audio.rs	translated
 0x0067bff0	FUN_0067bff0	313	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07338_0067bff0_FUN_0067bff0.c	0		decompiled_uncited
 0x0067c160	FUN_0067c160	285	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07339_0067c160_FUN_0067c160.c	0		decompiled_uncited
 0x0067c260	FUN_0067c260	287	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07340_0067c260_FUN_0067c260.c	0		decompiled_uncited
-0x0067c380	FUN_0067c380	51	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07341_0067c380_FUN_0067c380.c	0		decompiled_uncited
+0x0067c380	FUN_0067c380	51	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07341_0067c380_FUN_0067c380.c	1	engine-rust/src/runtime.rs	translated
 0x0067c3c0	FUN_0067c3c0	93	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07342_0067c3c0_FUN_0067c3c0.c	0		decompiled_uncited
 0x0067c450	FUN_0067c450	321	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07343_0067c450_FUN_0067c450.c	0		decompiled_uncited
 0x0067c5a0	FUN_0067c5a0	236	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07344_0067c5a0_FUN_0067c5a0.c	0		decompiled_uncited
-0x0067c690	FUN_0067c690	89	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07345_0067c690_FUN_0067c690.c	0		decompiled_uncited
-0x0067c6f0	FUN_0067c6f0	72	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07346_0067c6f0_FUN_0067c6f0.c	0		decompiled_uncited
+0x0067c690	FUN_0067c690	89	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07345_0067c690_FUN_0067c690.c	1	engine-rust/src/runtime.rs	translated
+0x0067c6f0	FUN_0067c6f0	72	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07346_0067c6f0_FUN_0067c6f0.c	1	engine-rust/src/runtime.rs	translated
 0x0067c740	FUN_0067c740	90	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07347_0067c740_FUN_0067c740.c	0		decompiled_uncited
 0x0067c820	FUN_0067c820	309	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07348_0067c820_FUN_0067c820.c	0		decompiled_uncited
-0x0067c970	FUN_0067c970	88	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07349_0067c970_FUN_0067c970.c	0		decompiled_uncited
+0x0067c970	FUN_0067c970	88	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07349_0067c970_FUN_0067c970.c	1	engine-rust/src/runtime.rs	translated
 0x0067c9d0	FUN_0067c9d0	301	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07350_0067c9d0_FUN_0067c9d0.c	0		decompiled_uncited
-0x0067cc50	FUN_0067cc50	136	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07351_0067cc50_FUN_0067cc50.c	0		decompiled_uncited
+0x0067cc50	FUN_0067cc50	136	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07351_0067cc50_FUN_0067cc50.c	1	engine-rust/src/runtime.rs	translated
 0x0067cced	FUN_0067cced	314	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07352_0067cced_FUN_0067cced.c	0		decompiled_uncited
-0x0067ce30	FUN_0067ce30	58	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07353_0067ce30_FUN_0067ce30.c	0		decompiled_uncited
-0x0067ce70	FUN_0067ce70	88	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07354_0067ce70_FUN_0067ce70.c	0		decompiled_uncited
+0x0067ce30	FUN_0067ce30	58	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07353_0067ce30_FUN_0067ce30.c	1	engine-rust/src/runtime.rs	translated
+0x0067ce70	FUN_0067ce70	88	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07354_0067ce70_FUN_0067ce70.c	1	engine-rust/src/runtime.rs	translated
 0x0067ced0	FUN_0067ced0	255	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07355_0067ced0_FUN_0067ced0.c	0		decompiled_uncited
-0x0067cfd0	FUN_0067cfd0	131	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07356_0067cfd0_FUN_0067cfd0.c	0		decompiled_uncited
+0x0067cfd0	FUN_0067cfd0	131	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07356_0067cfd0_FUN_0067cfd0.c	1	engine-rust/src/runtime.rs	translated
 0x0067d060	FUN_0067d060	50	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07357_0067d060_FUN_0067d060.c	1	engine-rust/src/handlers.rs	translated
-0x0067d0a0	FUN_0067d0a0	70	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07358_0067d0a0_FUN_0067d0a0.c	0		decompiled_uncited
+0x0067d0a0	FUN_0067d0a0	70	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07358_0067d0a0_FUN_0067d0a0.c	1	engine-rust/src/runtime.rs	translated
 0x0067d0f0	FUN_0067d0f0	299	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07359_0067d0f0_FUN_0067d0f0.c	1	engine-rust/src/handlers.rs	translated
-0x0067d220	FUN_0067d220	76	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07360_0067d220_FUN_0067d220.c	0		decompiled_uncited
-0x0067d270	FUN_0067d270	15	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07361_0067d270_FUN_0067d270.c	0		decompiled_uncited
-0x0067d280	FUN_0067d280	15	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07362_0067d280_FUN_0067d280.c	0		decompiled_uncited
-0x0067d290	FUN_0067d290	15	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07363_0067d290_FUN_0067d290.c	0		decompiled_uncited
-0x0067d2a0	FUN_0067d2a0	42	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07364_0067d2a0_FUN_0067d2a0.c	0		decompiled_uncited
-0x0067d2d0	FUN_0067d2d0	75	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07365_0067d2d0_FUN_0067d2d0.c	0		decompiled_uncited
-0x0067d320	FUN_0067d320	89	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07366_0067d320_FUN_0067d320.c	0		decompiled_uncited
+0x0067d220	FUN_0067d220	76	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07360_0067d220_FUN_0067d220.c	1	engine-rust/src/runtime.rs	translated
+0x0067d270	FUN_0067d270	15	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07361_0067d270_FUN_0067d270.c	1	engine-rust/src/runtime.rs	translated
+0x0067d280	FUN_0067d280	15	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07362_0067d280_FUN_0067d280.c	1	engine-rust/src/runtime.rs	translated
+0x0067d290	FUN_0067d290	15	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07363_0067d290_FUN_0067d290.c	1	engine-rust/src/runtime.rs	translated
+0x0067d2a0	FUN_0067d2a0	42	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07364_0067d2a0_FUN_0067d2a0.c	1	engine-rust/src/runtime.rs	translated
+0x0067d2d0	FUN_0067d2d0	75	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07365_0067d2d0_FUN_0067d2d0.c	1	engine-rust/src/runtime.rs	translated
+0x0067d320	FUN_0067d320	89	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07366_0067d320_FUN_0067d320.c	1	engine-rust/src/runtime.rs	translated
 0x0067d380	FUN_0067d380	102	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07367_0067d380_FUN_0067d380.c	0		decompiled_uncited
-0x0067d580	FUN_0067d580	70	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07368_0067d580_FUN_0067d580.c	0		decompiled_uncited
+0x0067d580	FUN_0067d580	70	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07368_0067d580_FUN_0067d580.c	1	engine-rust/src/runtime.rs	translated
 0x0067d5d0	FUN_0067d5d0	96	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07369_0067d5d0_FUN_0067d5d0.c	0		decompiled_uncited
-0x0067d6b0	FUN_0067d6b0	47	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07370_0067d6b0_FUN_0067d6b0.c	0		decompiled_uncited
-0x0067d6e0	FUN_0067d6e0	31	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07371_0067d6e0_FUN_0067d6e0.c	0		decompiled_uncited
-0x0067d730	FUN_0067d730	53	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07372_0067d730_FUN_0067d730.c	0		decompiled_uncited
-0x0067d770	FUN_0067d770	53	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07373_0067d770_FUN_0067d770.c	0		decompiled_uncited
+0x0067d6b0	FUN_0067d6b0	47	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07370_0067d6b0_FUN_0067d6b0.c	1	engine-rust/src/runtime.rs	translated
+0x0067d6e0	FUN_0067d6e0	31	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07371_0067d6e0_FUN_0067d6e0.c	1	engine-rust/src/runtime.rs	translated
+0x0067d730	FUN_0067d730	53	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07372_0067d730_FUN_0067d730.c	1	engine-rust/src/runtime.rs	translated
+0x0067d770	FUN_0067d770	53	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07373_0067d770_FUN_0067d770.c	1	engine-rust/src/runtime.rs	translated
 0x0067d7b0	FUN_0067d7b0	321	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07374_0067d7b0_FUN_0067d7b0.c	0		decompiled_uncited
 0x0067d901	FUN_0067d901	110	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07375_0067d901_FUN_0067d901.c	0		decompiled_uncited
 0x0067d982	FUN_0067d982	34	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07376_0067d982_FUN_0067d982.c	0		decompiled_uncited
-0x0067d9b0	FUN_0067d9b0	57	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07377_0067d9b0_FUN_0067d9b0.c	0		decompiled_uncited
-0x0067d9f0	FUN_0067d9f0	166	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07378_0067d9f0_FUN_0067d9f0.c	0		decompiled_uncited
+0x0067d9b0	FUN_0067d9b0	57	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07377_0067d9b0_FUN_0067d9b0.c	1	engine-rust/src/runtime.rs	translated
+0x0067d9f0	FUN_0067d9f0	166	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07378_0067d9f0_FUN_0067d9f0.c	1	engine-rust/src/runtime.rs	translated
 0x0067daa0	FUN_0067daa0	47	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07379_0067daa0_FUN_0067daa0.c	0		decompiled_uncited
-0x0067dbd0	FUN_0067dbd0	219	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07380_0067dbd0_FUN_0067dbd0.c	0		decompiled_uncited
+0x0067dbd0	FUN_0067dbd0	219	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07380_0067dbd0_FUN_0067dbd0.c	1	engine-rust/src/runtime.rs	translated
 0x0067dcc0	FUN_0067dcc0	96	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07381_0067dcc0_FUN_0067dcc0.c	0		decompiled_uncited
 0x0067dda0	FUN_0067dda0	96	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07382_0067dda0_FUN_0067dda0.c	0		decompiled_uncited
 0x0067de2a	FUN_0067de2a	20	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07383_0067de2a_FUN_0067de2a.c	0		decompiled_uncited
 0x0067de80	FUN_0067de80	116	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07384_0067de80_FUN_0067de80.c	0		decompiled_uncited
-0x0067e030	FUN_0067e030	260	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07385_0067e030_FUN_0067e030.c	0		decompiled_uncited
-0x0067e150	FUN_0067e150	106	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07386_0067e150_FUN_0067e150.c	0		decompiled_uncited
-0x0067e1c0	FUN_0067e1c0	260	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07387_0067e1c0_FUN_0067e1c0.c	0		decompiled_uncited
-0x0067e2e0	FUN_0067e2e0	120	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07388_0067e2e0_FUN_0067e2e0.c	0		decompiled_uncited
-0x0067e360	FUN_0067e360	126	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07389_0067e360_FUN_0067e360.c	0		decompiled_uncited
-0x0067e440	FUN_0067e440	96	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07390_0067e440_FUN_0067e440.c	0		decompiled_uncited
-0x0067e4a0	FUN_0067e4a0	118	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07391_0067e4a0_FUN_0067e4a0.c	0		decompiled_uncited
+0x0067e030	FUN_0067e030	260	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07385_0067e030_FUN_0067e030.c	1	engine-rust/src/client.rs	translated
+0x0067e150	FUN_0067e150	106	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07386_0067e150_FUN_0067e150.c	1	engine-rust/src/client.rs	translated
+0x0067e1c0	FUN_0067e1c0	260	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07387_0067e1c0_FUN_0067e1c0.c	1	engine-rust/src/client.rs	translated
+0x0067e2e0	FUN_0067e2e0	120	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07388_0067e2e0_FUN_0067e2e0.c	1	engine-rust/src/client.rs	translated
+0x0067e360	FUN_0067e360	126	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07389_0067e360_FUN_0067e360.c	1	engine-rust/src/client.rs	translated
+0x0067e440	FUN_0067e440	96	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07390_0067e440_FUN_0067e440.c	1	engine-rust/src/client.rs	translated
+0x0067e4a0	FUN_0067e4a0	118	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07391_0067e4a0_FUN_0067e4a0.c	1	engine-rust/src/client.rs	translated
 0x0067e650	FUN_0067e650	12	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07392_0067e650_FUN_0067e650.c	0		decompiled_uncited
 0x0067e7c9	FUN_0067e7c9	35	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07393_0067e7c9_FUN_0067e7c9.c	0		decompiled_uncited
 0x0067e9d4	FUN_0067e9d4	34	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07394_0067e9d4_FUN_0067e9d4.c	0		decompiled_uncited
 0x0067ea45	FUN_0067ea45	39	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07395_0067ea45_FUN_0067ea45.c	0		decompiled_uncited
 0x0067eb10	FUN_0067eb10	17	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07396_0067eb10_FUN_0067eb10.c	0		decompiled_uncited
-0x0067ebd0	FUN_0067ebd0	110	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07397_0067ebd0_FUN_0067ebd0.c	0		decompiled_uncited
-0x0067ec70	FUN_0067ec70	63	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07398_0067ec70_FUN_0067ec70.c	0		decompiled_uncited
-0x0067ecb0	FUN_0067ecb0	53	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07399_0067ecb0_FUN_0067ecb0.c	0		decompiled_uncited
-0x0067ed90	FUN_0067ed90	121	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07400_0067ed90_FUN_0067ed90.c	0		decompiled_uncited
-0x0067ee60	FUN_0067ee60	100	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07401_0067ee60_FUN_0067ee60.c	0		decompiled_uncited
-0x0067f450	FUN_0067f450	198	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07402_0067f450_FUN_0067f450.c	0		decompiled_uncited
+0x0067ebd0	FUN_0067ebd0	110	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07397_0067ebd0_FUN_0067ebd0.c	1	engine-rust/src/client.rs	translated
+0x0067ec70	FUN_0067ec70	63	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07398_0067ec70_FUN_0067ec70.c	1	engine-rust/src/client.rs	translated
+0x0067ecb0	FUN_0067ecb0	53	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07399_0067ecb0_FUN_0067ecb0.c	1	engine-rust/src/client.rs	translated
+0x0067ed90	FUN_0067ed90	121	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07400_0067ed90_FUN_0067ed90.c	1	engine-rust/src/client.rs	translated
+0x0067ee60	FUN_0067ee60	100	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07401_0067ee60_FUN_0067ee60.c	1	engine-rust/src/client.rs	translated
+0x0067f450	FUN_0067f450	198	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07402_0067f450_FUN_0067f450.c	1	engine-rust/src/client.rs	translated
 0x0067fc30	FUN_0067fc30	1349	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07403_0067fc30_FUN_0067fc30.c	0		decompile_failed
-0x0067ff80	FUN_0067ff80	409	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07404_0067ff80_FUN_0067ff80.c	0		decompiled_uncited
-0x00680190	FUN_00680190	127	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07405_00680190_FUN_00680190.c	0		decompiled_uncited
-0x00680210	FUN_00680210	121	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07406_00680210_FUN_00680210.c	0		decompiled_uncited
+0x0067ff80	FUN_0067ff80	409	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07404_0067ff80_FUN_0067ff80.c	1	engine-rust/src/client.rs	translated
+0x00680190	FUN_00680190	127	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07405_00680190_FUN_00680190.c	1	engine-rust/src/client.rs	translated
+0x00680210	FUN_00680210	121	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07406_00680210_FUN_00680210.c	1	engine-rust/src/client.rs	translated
 0x00680290	FUN_00680290	146	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07407_00680290_FUN_00680290.c	0		decompiled_uncited
-0x00680330	FUN_00680330	31	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07408_00680330_FUN_00680330.c	0		decompiled_uncited
+0x00680330	FUN_00680330	31	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07408_00680330_FUN_00680330.c	1	engine-rust/src/client.rs	translated
 0x006803a0	FUN_006803a0	204	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07409_006803a0_FUN_006803a0.c	0		decompiled_uncited
 0x006804be	FUN_006804be	1	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07410_006804be_FUN_006804be.c	0		decompiled_uncited
-0x006806a0	FUN_006806a0	119	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07411_006806a0_FUN_006806a0.c	0		decompiled_uncited
+0x006806a0	FUN_006806a0	119	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07411_006806a0_FUN_006806a0.c	1	engine-rust/src/client.rs	translated
 0x00680742	FUN_00680742	78	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07412_00680742_FUN_00680742.c	0		decompiled_uncited
 0x0068090b	FUN_0068090b	1	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07413_0068090b_FUN_0068090b.c	0		decompiled_uncited
 0x006809df	FUN_006809df	30	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07414_006809df_FUN_006809df.c	0		decompiled_uncited
-0x00680a00	FUN_00680a00	141	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07415_00680a00_FUN_00680a00.c	0		decompiled_uncited
+0x00680a00	FUN_00680a00	141	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07415_00680a00_FUN_00680a00.c	1	engine-rust/src/client.rs	translated
 0x00680a90	FUN_00680a90	161	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07416_00680a90_FUN_00680a90.c	0		decompile_failed
 0x00680c30	FUN_00680c30	96	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07417_00680c30_FUN_00680c30.c	0		decompiled_uncited
 0x00680cb0	FUN_00680cb0	22	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07418_00680cb0_FUN_00680cb0.c	0		decompiled_uncited
-0x00680cd0	FUN_00680cd0	197	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07419_00680cd0_FUN_00680cd0.c	0		decompiled_uncited
+0x00680cd0	FUN_00680cd0	197	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07419_00680cd0_FUN_00680cd0.c	1	engine-rust/src/client.rs	translated
 0x00680d21	FUN_00680d21	7	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07420_00680d21_FUN_00680d21.c	0		decompiled_uncited
 0x00680da0	FUN_00680da0	10	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07421_00680da0_FUN_00680da0.c	0		decompiled_uncited
 0x00680df0	FUN_00680df0	104	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07422_00680df0_FUN_00680df0.c	0		decompiled_uncited
@@ -7426,30 +7426,30 @@ address	name	size	thunk	body	evidence_count	evidence	status
 0x006811c0	FUN_006811c0	10	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07424_006811c0_FUN_006811c0.c	0		decompiled_uncited
 0x006811eb	FUN_006811eb	128	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07425_006811eb_FUN_006811eb.c	0		decompiled_uncited
 0x00681360	FUN_00681360	50	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07426_00681360_FUN_00681360.c	0		decompiled_uncited
-0x006813a0	FUN_006813a0	480	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07427_006813a0_FUN_006813a0.c	0		decompiled_uncited
-0x006815b0	FUN_006815b0	217	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07428_006815b0_FUN_006815b0.c	0		decompiled_uncited
-0x00681750	FUN_00681750	234	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07429_00681750_FUN_00681750.c	0		decompiled_uncited
-0x00681900	FUN_00681900	175	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07430_00681900_FUN_00681900.c	0		decompiled_uncited
+0x006813a0	FUN_006813a0	480	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07427_006813a0_FUN_006813a0.c	1	engine-rust/src/client.rs	translated
+0x006815b0	FUN_006815b0	217	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07428_006815b0_FUN_006815b0.c	1	engine-rust/src/client.rs	translated
+0x00681750	FUN_00681750	234	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07429_00681750_FUN_00681750.c	1	engine-rust/src/client.rs	translated
+0x00681900	FUN_00681900	175	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07430_00681900_FUN_00681900.c	1	engine-rust/src/client.rs	translated
 0x006819af	FUN_006819af	22	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07431_006819af_FUN_006819af.c	0		decompiled_uncited
-0x006819c5	FUN_006819c5	261	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07432_006819c5_FUN_006819c5.c	0		decompiled_uncited
-0x00681ad0	FUN_00681ad0	477	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07433_00681ad0_FUN_00681ad0.c	0		decompiled_uncited
-0x00681cc0	FUN_00681cc0	75	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07434_00681cc0_FUN_00681cc0.c	0		decompiled_uncited
+0x006819c5	FUN_006819c5	261	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07432_006819c5_FUN_006819c5.c	1	engine-rust/src/client.rs	translated
+0x00681ad0	FUN_00681ad0	477	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07433_00681ad0_FUN_00681ad0.c	1	engine-rust/src/client.rs	translated
+0x00681cc0	FUN_00681cc0	75	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07434_00681cc0_FUN_00681cc0.c	1	engine-rust/src/client.rs	translated
 0x00681d90	FUN_00681d90	57	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07435_00681d90_FUN_00681d90.c	0		decompiled_uncited
-0x00681e70	FUN_00681e70	378	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07436_00681e70_FUN_00681e70.c	0		decompiled_uncited
-0x00681ff0	FUN_00681ff0	323	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07437_00681ff0_FUN_00681ff0.c	0		decompiled_uncited
-0x00682140	FUN_00682140	277	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07438_00682140_FUN_00682140.c	0		decompiled_uncited
-0x006822c0	FUN_006822c0	325	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07439_006822c0_FUN_006822c0.c	0		decompiled_uncited
-0x00682410	FUN_00682410	165	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07440_00682410_FUN_00682410.c	0		decompiled_uncited
-0x00682540	FUN_00682540	46	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07441_00682540_FUN_00682540.c	0		decompiled_uncited
+0x00681e70	FUN_00681e70	378	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07436_00681e70_FUN_00681e70.c	1	engine-rust/src/client.rs	translated
+0x00681ff0	FUN_00681ff0	323	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07437_00681ff0_FUN_00681ff0.c	1	engine-rust/src/client.rs	translated
+0x00682140	FUN_00682140	277	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07438_00682140_FUN_00682140.c	1	engine-rust/src/client.rs	translated
+0x006822c0	FUN_006822c0	325	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07439_006822c0_FUN_006822c0.c	1	engine-rust/src/client.rs	translated
+0x00682410	FUN_00682410	165	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07440_00682410_FUN_00682410.c	1	engine-rust/src/client.rs	translated
+0x00682540	FUN_00682540	46	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07441_00682540_FUN_00682540.c	1	engine-rust/src/client.rs	translated
 0x00682580	FUN_00682580	129	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07442_00682580_FUN_00682580.c	1	engine-rust/src/profile.rs	translated
 0x00682810	FUN_00682810	12	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07443_00682810_FUN_00682810.c	0		decompiled_uncited
 0x00682820	FUN_00682820	28	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07444_00682820_FUN_00682820.c	0		decompiled_uncited
 0x00682840	FUN_00682840	151	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07445_00682840_FUN_00682840.c	0		decompiled_uncited
-0x00682960	FUN_00682960	168	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07446_00682960_FUN_00682960.c	0		decompiled_uncited
+0x00682960	FUN_00682960	168	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07446_00682960_FUN_00682960.c	1	engine-rust/src/client.rs	translated
 0x00682a70	FUN_00682a70	6	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07447_00682a70_FUN_00682a70.c	0		decompiled_uncited
 0x00682a80	FUN_00682a80	353	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07448_00682a80_FUN_00682a80.c	1	engine-rust/src/profile.rs	translated
 0x00682c00	FUN_00682c00	301	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07449_00682c00_FUN_00682c00.c	0		decompiled_uncited
-0x00682e20	FUN_00682e20	213	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07450_00682e20_FUN_00682e20.c	0		decompiled_uncited
+0x00682e20	FUN_00682e20	213	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07450_00682e20_FUN_00682e20.c	1	engine-rust/src/client.rs	translated
 0x00683000	FUN_00683000	22	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07451_00683000_FUN_00683000.c	1	engine-rust/src/profile.rs	translated
 0x00683080	FUN_00683080	212	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07452_00683080_FUN_00683080.c	1	engine-rust/src/profile.rs	translated
 0x006831b0	FUN_006831b0	100	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07453_006831b0_FUN_006831b0.c	0		decompiled_uncited
@@ -7464,13 +7464,13 @@ address	name	size	thunk	body	evidence_count	evidence	status
 0x006834f7	FUN_006834f7	34	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07462_006834f7_FUN_006834f7.c	0		decompiled_uncited
 0x00683519	FUN_00683519	18	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07463_00683519_FUN_00683519.c	0		decompiled_uncited
 0x0068352b	FUN_0068352b	12	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07464_0068352b_FUN_0068352b.c	0		decompiled_uncited
-0x00683540	FUN_00683540	169	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07465_00683540_FUN_00683540.c	0		decompiled_uncited
-0x00683760	FUN_00683760	166	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07466_00683760_FUN_00683760.c	0		decompiled_uncited
+0x00683540	FUN_00683540	169	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07465_00683540_FUN_00683540.c	1	engine-rust/src/client.rs	translated
+0x00683760	FUN_00683760	166	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07466_00683760_FUN_00683760.c	1	engine-rust/src/client.rs	translated
 0x00683810	FUN_00683810	153	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07467_00683810_FUN_00683810.c	0		decompiled_uncited
-0x00683d80	FUN_00683d80	188	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07468_00683d80_FUN_00683d80.c	0		decompiled_uncited
-0x00683e40	FUN_00683e40	337	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07469_00683e40_FUN_00683e40.c	0		decompiled_uncited
+0x00683d80	FUN_00683d80	188	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07468_00683d80_FUN_00683d80.c	1	engine-rust/src/client.rs	translated
+0x00683e40	FUN_00683e40	337	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07469_00683e40_FUN_00683e40.c	1	engine-rust/src/client.rs	translated
 0x00683fd3	FUN_00683fd3	18	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07470_00683fd3_FUN_00683fd3.c	0		decompiled_uncited
-0x00683ff0	FUN_00683ff0	230	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07471_00683ff0_FUN_00683ff0.c	0		decompiled_uncited
+0x00683ff0	FUN_00683ff0	230	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07471_00683ff0_FUN_00683ff0.c	1	engine-rust/src/client.rs	translated
 0x00684454	FUN_00684454	110	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07472_00684454_FUN_00684454.c	0		decompiled_uncited
 0x006844fd	FUN_006844fd	6	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07473_006844fd_FUN_006844fd.c	0		decompiled_uncited
 0x00684504	FUN_00684504	90	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07474_00684504_FUN_00684504.c	0		decompiled_uncited

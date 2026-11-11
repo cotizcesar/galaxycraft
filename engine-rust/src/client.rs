@@ -55374,3 +55374,5364 @@ mod tests_wave13_agent09 {
         );
     }
 }
+
+// ===========================================================================
+// Merged from src/wave14/agent01.rs
+// ===========================================================================
+// Wave 14 translation batch 01 (staging).
+//
+// Window: `00670000..=00671fff`.  The window holds the support layer of
+// the MSVC `std::string`-shaped `bc::basic_string` (byte-identity tables,
+// copy assignment, small-buffer construction, C-string forwarding) plus a
+// small client object with a `+0x110` child and an ordered 16-byte-value
+// key/value table.
+//
+// ## Recovered layout
+//
+// | offset | shape | meaning |
+// |---|---|---|
+// | `+0x00` | `u32` | keyed-table count / string data pointer |
+// | `+0x04` | `u32` | keyed-table capacity / string size |
+// | `+0x08` | `u32` | keyed-table data / string capacity word |
+// | `+0x0c` | 16 bytes | inline string buffer |
+// | `+0x1c` | `u32` | pointer-table slot count |
+// | `+0x20` | `u32` | pointer-table base |
+// | `+0x110` | `u32` | child object used by every trampoline |
+// | `+0xe8` | `u32` | mode word tested by `w14a01_is_mode_one` |
+// | `+0xec` | `u8` | state byte returned by `w14a01_state_byte` |
+// | `+0x100` | `u8` | flag cleared by `w14a01_reset_child` |
+//
+// A string object is the 28-byte MSVC `std::string`: data pointer at
+// `+0x00`, size at `+0x04`, capacity/flags at `+0x08` and a 16-byte inline
+// buffer at `+0x0c`.  The small-buffer capacity tag is `0x8000_000f`
+// ("capacity 15, heap flag clear"); the inline buffer starts zeroed.
+//
+// The keyed table holds `0x20`-byte elements: a 16-byte `bc::value` key at
+// `+0x00` and a 16-byte `bc::value` mapped value at `+0x10`.  Both carry a
+// `u16` tag at `+0x0e`; tag bit `0x1000` marks an inline string.  Key
+// equality is the value's string compare (`u32` length at `+0x00` with the
+// bytes reached through `+0x08` for the heap form, or the inline bytes with
+// length `0xd - *(i8 *)(key + 0xd)`), so the translation stores the
+// resolved key bytes and compares them byte-wise.  The original clears both
+// source tags after moving the records into the table.
+//
+// Skipped rows (detailed in the batch report): `FUN_00670047` (mid-function
+// fragment of a constructor that begins before the window),
+// `FUN_006706c0` (tagged variant assignment through an allocator singleton),
+// the six `bc::copyable_function` copy constructors
+// `FUN_00670e10`/`FUN_00670e30`/`FUN_00670e50`/`FUN_00670e70`/
+// `FUN_00670e80`/`FUN_00670ea0`, the SEH funclets
+// `FUN_0067102c`/`FUN_00671050`/`FUN_0067107d`/`FUN_006710eb`, the static
+// RTTI descriptor getters `FUN_00671340`/`FUN_00671360`/`FUN_00671370`/
+// `FUN_00671380`/`FUN_00671390`, `FUN_00670b90` and `FUN_00671b31` (control
+// flow on bad instruction data), `FUN_00671562` (`halt_baddata`) and the two
+// failed decompilations `FUN_00670ef0`/`FUN_00671441`.
+//
+// Every routine is a detached reference helper: nothing is wired into
+// `World`, `SimUnit`, the renderer or the client, and no save/replay state
+// is introduced.
+
+// ---------------------------------------------------------------------------
+// Recovered constants
+// ---------------------------------------------------------------------------
+
+/// Small-buffer capacity tag of the recovered string object: capacity `15`
+/// with the heap flag clear.
+pub const W14A01_SSO_CAPACITY_TAG: u32 = 0x8000_000f;
+
+/// Offset of the pointer-table slot count in the swept object.
+pub const W14A01_SLOT_COUNT_OFFSET: u32 = 0x1c;
+
+/// Offset of the pointer-table base in the swept object.
+pub const W14A01_SLOT_TABLE_OFFSET: u32 = 0x20;
+
+/// Offset of the child object used by every trampoline in this batch.
+pub const W14A01_CHILD_OFFSET: u32 = 0x110;
+
+/// Size of one keyed-table element: two 16-byte `bc::value` records.
+pub const W14A01_KEYED_ELEMENT_BYTES: usize = 0x20;
+
+/// First capacity of the keyed table (`0x10` elements, `0x200` bytes).
+pub const W14A01_KEYED_FIRST_CAPACITY: u32 = 0x10;
+
+/// `bc::value` tag bit that marks an inline string payload.
+pub const W14A01_VALUE_INLINE_STRING: u16 = 0x1000;
+
+/// Inline string length: `13 - *(i8 *)(value + 0x0d)`.
+pub const W14A01_VALUE_INLINE_LEN_BASE: i32 = 0xd;
+
+/// Second argument passed to the `+0x110` child by
+/// `w14a01_apply_text_buffer`.
+pub const W14A01_TEXT_NOTIFY_FLAGS: u32 = 0x4400_00ff;
+
+/// Recovered object size used by the scalar deleting destructor.
+pub const W14A01_SCALAR_BYTES: usize = 0x118;
+
+// ---------------------------------------------------------------------------
+// 0x006706a0 / 0x006706b0 - byte-identity table initialisers
+// ---------------------------------------------------------------------------
+
+/// `0x006706a0`: fills the 32-byte (`0x20`) table at the object base with the
+/// byte sequence `0..=0x1f` (`dst[i] = i as u8`).
+pub fn w14a01_fill_identity_32(dst: &mut [u8; 0x20]) {
+    for (index, slot) in dst.iter_mut().enumerate() {
+        *slot = index as u8;
+    }
+}
+
+/// `0x006706b0`: fills the 56-byte (`0x38`) table at the object base with the
+/// byte sequence `0..=0x37`.
+pub fn w14a01_fill_identity_56(dst: &mut [u8; 0x38]) {
+    for (index, slot) in dst.iter_mut().enumerate() {
+        *slot = index as u8;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 0x00670b30 - constant predicate
+// ---------------------------------------------------------------------------
+
+/// `0x00670b30`: returns `1` (`true`).  The routine is `stdcall` with one
+/// stack argument (`ret 4`) which it ignores; the argument is kept so the
+/// recovered calling convention stays visible.
+pub fn w14a01_always_true(_argument: u32) -> bool {
+    true
+}
+
+// ---------------------------------------------------------------------------
+// 0x006719d0 / 0x006719f0 / 0x00671e80 - client-object accessors
+// ---------------------------------------------------------------------------
+
+/// Recovered fields of the client object touched by the accessors and the
+/// reset trampoline in this batch.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct W14a01UiState {
+    /// `+0xe8`: mode word; the object is in mode one when this equals `1`.
+    pub mode_e8: i32,
+    /// `+0xec`: state byte returned verbatim.
+    pub flag_ec: u8,
+    /// `+0x100`: byte cleared by [`w14a01_reset_child`].
+    pub flag_100: u8,
+}
+
+/// `0x006719d0`: returns the state byte at `+0xec`.
+pub fn w14a01_state_byte(state: &W14a01UiState) -> u8 {
+    state.flag_ec
+}
+
+/// `0x006719f0`: returns `true` exactly when the mode word at `+0xe8` is `1`
+/// (`cmp dword [ecx+0xe8],1; sete al`).
+pub fn w14a01_is_mode_one(state: &W14a01UiState) -> bool {
+    state.mode_e8 == 1
+}
+
+/// `0x00671e80`: calls the `+0x110` child's reset entry point, clears the
+/// object's `+0x100` byte and returns `true` (`mov al,1`).
+pub fn w14a01_reset_child<F>(state: &mut W14a01UiState, reset: F) -> bool
+where
+    F: FnOnce(),
+{
+    reset();
+    state.flag_100 = 0;
+    true
+}
+
+// ---------------------------------------------------------------------------
+// 0x00670750 - scalar deleting destructor
+// ---------------------------------------------------------------------------
+
+/// `0x00670750`: scalar deleting destructor.  Runs the object destructor and,
+/// when bit 0 of `flag` is set, releases the object with the recovered size
+/// `0x118`.  The original returns `this`, which is reproduced here.
+pub fn w14a01_scalar_delete<D, F>(object: usize, flag: u32, destroy: D, release: F) -> usize
+where
+    D: FnOnce(),
+    F: FnOnce(usize, usize),
+{
+    destroy();
+    if flag & 1 != 0 {
+        release(object, W14A01_SCALAR_BYTES);
+    }
+    object
+}
+
+// ---------------------------------------------------------------------------
+// 0x00670130 - pointer-table release sweep
+// ---------------------------------------------------------------------------
+
+/// One node of the chains held by the `+0x20` pointer table.
+///
+/// The recovered node has a `next` link at `+0x00`, an intrusive handle pair
+/// at `+0x04`/`+0x0c` and a second pair at `+0x20`/`+0x28`.  A pair's second
+/// word is its ownership tag: a non-negative value means the first word is
+/// owned and must be released, a negative value means the pair is empty.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct W14a01SweepNode {
+    /// `+0x00`: next node index; `0` terminates the chain.
+    pub next: u32,
+    /// `+0x04`: first handle.
+    pub first_handle: u32,
+    /// `+0x0c`: first ownership tag.
+    pub first_owner: i32,
+    /// `+0x20`: second handle.
+    pub second_handle: u32,
+    /// `+0x28`: second ownership tag.
+    pub second_owner: i32,
+}
+
+/// `0x00670130`: release every chain of the pointer table.
+///
+/// The recovered order is: for each table slot (ascending), follow the chain,
+/// release the `+0x20` handle, then the `+0x04` handle, then the node itself.
+/// The original then releases the table block and finally the trailing pair at
+/// `+0x00`/`+0x08` when its ownership tag is non-negative.
+///
+/// `table` is the slot array (the original reads the count from `+0x1c` and
+/// the base from `+0x20`).  Node indices are 1-based; `0` terminates a chain,
+/// mirroring the null link of the original.  The table block is owned by the
+/// caller in this safe model, so only the node and trailing handles are passed
+/// to `release`.  Returns the number of handles released (the table block is
+/// not counted).
+pub fn w14a01_release_pointer_table(
+    table: &[u32],
+    nodes: &[W14a01SweepNode],
+    tail: (u32, i32),
+    mut release: impl FnMut(u32),
+) -> usize {
+    let mut released = 0usize;
+    for &head in table {
+        let mut cursor = head;
+        while cursor != 0 {
+            let Some(node) = nodes.get(cursor as usize).copied() else {
+                break;
+            };
+            if node.second_owner >= 0 {
+                release(node.second_handle);
+                released += 1;
+            }
+            if node.first_owner >= 0 {
+                release(node.first_handle);
+                released += 1;
+            }
+            release(cursor);
+            released += 1;
+            cursor = node.next;
+        }
+    }
+    if tail.1 >= 0 {
+        release(tail.0);
+        released += 1;
+    }
+    released
+}
+
+// ---------------------------------------------------------------------------
+// 0x00670780 - ordered key/value table insert-or-assign
+// ---------------------------------------------------------------------------
+
+/// A 16-byte `bc::value` record: an eight-byte payload, four pad/tag bytes and
+/// a `u16` tag at `+0x0e`.  The table stores keys and mapped values in this
+/// form.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct W14a01Value16(pub [u8; 0x10]);
+
+/// One keyed-table element with its key resolved to bytes.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct W14a01KeyedEntry {
+    /// The key's string bytes (the original stores the 16-byte `bc::value`).
+    pub key: Vec<u8>,
+    /// The 16-byte mapped value at element offset `+0x10`.
+    pub value: W14a01Value16,
+}
+
+/// The ordered key/value table: count at `+0x00`, capacity at `+0x04`, data at
+/// `+0x08`; elements are `0x20` bytes.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct W14a01KeyedTable {
+    /// Current capacity in elements (`+0x04`); `0` before the first insert.
+    pub capacity: u32,
+    /// Insertion-ordered entries; the length is the recovered count.
+    pub entries: Vec<W14a01KeyedEntry>,
+}
+
+/// `0x00670780`: insert a key/value pair, or replace the mapped value when the
+/// key is already present.  Returns the table, as the original returns
+/// `param_1`.
+///
+/// The recovered search compares the 16-byte key records by their string
+/// payload; a match overwrites the stored value and leaves the order
+/// untouched.  Otherwise the pair is appended.  When the table is full the
+/// capacity grows from `0` to `0x10`, or from `n` to `n + (n + 1) / 2`, and
+/// the element storage is reallocated (the original calls its allocator and
+/// copies `count * 0x20` bytes).
+pub fn w14a01_object_insert<'a>(
+    table: &'a mut W14a01KeyedTable,
+    key: &[u8],
+    value: W14a01Value16,
+) -> &'a mut W14a01KeyedTable {
+    if let Some(entry) = table
+        .entries
+        .iter_mut()
+        .find(|entry| entry.key.as_slice() == key)
+    {
+        entry.value = value;
+        return table;
+    }
+    if table.entries.len() as u32 >= table.capacity {
+        table.capacity = if table.capacity == 0 {
+            W14A01_KEYED_FIRST_CAPACITY
+        } else {
+            table.capacity + table.capacity.div_ceil(2)
+        };
+    }
+    table.entries.push(W14a01KeyedEntry {
+        key: key.to_vec(),
+        value,
+    });
+    table
+}
+
+// ---------------------------------------------------------------------------
+// 0x00670990 / 0x00670b40 - tagged dispatch
+// ---------------------------------------------------------------------------
+
+/// `0x00670990`: dispatch on the tagged word at `[this+4] + 0x24`.
+///
+/// Bit 0 of the stored word marks a heap reference and is cleared before use;
+/// a clear bit means the object is embedded at the slot address, represented
+/// here by the stored word itself.  A zero target does nothing.  The original
+/// tail-jumps through vtable slot 1 of the resolved object and returns
+/// nothing; the call is supplied by the caller.  Returns whether the dispatch
+/// happened.
+pub fn w14a01_dispatch_tagged_at_24(stored: u32, invoke: impl FnOnce(u32)) -> bool {
+    let target = if stored & 1 != 0 { stored & !1 } else { stored };
+    if target == 0 {
+        return false;
+    }
+    invoke(target);
+    true
+}
+
+/// `0x00670b40`: the same tagged dispatch over the slot at `[this+4] + 0x10`.
+pub fn w14a01_dispatch_tagged_at_10(stored: u32, invoke: impl FnOnce(u32)) -> bool {
+    let target = if stored & 1 != 0 { stored & !1 } else { stored };
+    if target == 0 {
+        return false;
+    }
+    invoke(target);
+    true
+}
+
+// ---------------------------------------------------------------------------
+// 0x00670ec0 / 0x00670ee0 / 0x006712d0 / 0x006719e0 / 0x00671e60 -
+// +0x110 trampolines
+// ---------------------------------------------------------------------------
+
+/// `0x00670ec0`: forwards `(a, b, c)` to the `+0x110` child's three-argument
+/// message entry point (the callee is outside this window and is supplied by
+/// the caller).  The original loads the child into `ecx` and calls it.
+pub fn w14a01_forward_child3<F>(child: F, a: u32, b: u32, c: u32)
+where
+    F: FnOnce(u32, u32, u32),
+{
+    child(a, b, c);
+}
+
+/// `0x00670ee0`: tail-forwards no arguments to the `+0x110` child's
+/// zero-argument entry point.
+pub fn w14a01_forward_child0<F>(child: F)
+where
+    F: FnOnce(),
+{
+    child();
+}
+
+/// `0x006712d0`: tail-forwards no arguments to the `+0x110` child's second
+/// zero-argument entry point.
+pub fn w14a01_forward_child0_b<F>(child: F)
+where
+    F: FnOnce(),
+{
+    child();
+}
+
+/// `0x006719e0`: tail-forwards no arguments to the `+0x110` child's third
+/// zero-argument entry point.
+pub fn w14a01_forward_child0_c<F>(child: F)
+where
+    F: FnOnce(),
+{
+    child();
+}
+
+/// `0x00671e60`: forwards `(a, b, c)` to the `+0x110` child's second
+/// three-argument message entry point.
+pub fn w14a01_forward_child3_b<F>(child: F, a: u32, b: u32, c: u32)
+where
+    F: FnOnce(u32, u32, u32),
+{
+    child(a, b, c);
+}
+
+// ---------------------------------------------------------------------------
+// 0x006712e0 - string copy assignment
+// ---------------------------------------------------------------------------
+
+/// `0x006712e0`: copy-assigns the string held at `+0xb8` (`+0xbc` bytes) of
+/// the source object into `dst`.
+///
+/// The recovered destination prologue resets the header to the small-buffer
+/// form: data pointer to the inline buffer at `+0x0c`, size `0`, capacity
+/// `0x8000_000f`, first buffer byte `0`.  The assign helper then reserves
+/// `len` bytes, copies them, appends the NUL terminator and stores `len` at
+/// `+0x04`.  The model keeps the resulting bytes and returns the new size.
+pub fn w14a01_string_copy_assign(dst: &mut Vec<u8>, src: &[u8]) -> u32 {
+    dst.clear();
+    dst.extend_from_slice(src);
+    dst.len() as u32
+}
+
+// ---------------------------------------------------------------------------
+// 0x00671d40 - capability word
+// ---------------------------------------------------------------------------
+
+/// `0x00671d40`: assembles the capability word from nine queries.
+///
+/// `probe` is the recovered `FUN_006bbcd0` byte probe (three ids per group);
+/// `feature` is the recovered `FUN_00944e70` mode query (`== 1` sets a bit).
+/// Bit layout:
+///
+/// | bit | source |
+/// |---|---|
+/// | `0x002` | probe `0x10`, `0xa0`, `0xa1` (any non-zero) |
+/// | `0x004` | probe `0x11`, `0xa2`, `0xa3` (any non-zero) |
+/// | `0x008` | probe `0x12`, `0xa4`, `0xa5` (any non-zero) |
+/// | `0x200` | feature `1` |
+/// | `0x400` | feature `2` |
+/// | `0x800` | feature `4` |
+pub fn w14a01_capability_bits(
+    mut probe: impl FnMut(i32) -> u8,
+    mut feature: impl FnMut(i32) -> u32,
+) -> u16 {
+    let group_a = probe(0x10) != 0 || probe(0xa0) != 0 || probe(0xa1) != 0;
+    let group_b = probe(0x11) != 0 || probe(0xa2) != 0 || probe(0xa3) != 0;
+    let group_c = probe(0x12) != 0 || probe(0xa4) != 0 || probe(0xa5) != 0;
+    let feature_1 = feature(1) == 1;
+    let feature_4 = feature(4) == 1;
+
+    let mut bits = 0u16;
+    if group_a {
+        bits |= 0x002;
+    }
+    if group_b {
+        bits |= 0x004;
+    }
+    if group_c {
+        bits |= 0x008;
+    }
+    if feature_1 {
+        bits |= 0x200;
+    }
+    if feature_4 {
+        bits |= 0x800;
+    }
+    if feature(2) == 1 {
+        bits |= 0x400;
+    }
+    bits
+}
+
+// ---------------------------------------------------------------------------
+// 0x00670a40 / 0x00671fd0 - C-string forwarding
+// ---------------------------------------------------------------------------
+
+/// `0x00670a40`: converts the NUL-terminated byte string reached through
+/// `c_string` and forwards `(1, key, string)` to the handler at `[this+4]`.
+///
+/// The recovered body computes the C-string length (zero for an empty first
+/// byte), builds the string, and calls the handler through the member at
+/// `[this+4]`.  The handler is supplied by the caller.
+pub fn w14a01_forward_c_string<F>(key: u32, c_string: &[u8], forward: F)
+where
+    F: FnOnce(u32, u32, &[u8]),
+{
+    let len = c_string
+        .iter()
+        .position(|&byte| byte == 0)
+        .unwrap_or(c_string.len());
+    forward(1, key, &c_string[..len]);
+}
+
+/// `0x00671fd0`: copies the recovered 256-byte text buffer into a string up to
+/// the first NUL, forwards `(text, 0x4400_00ff)` to the `+0x110` child and
+/// returns `true`.
+///
+/// The original fills a `0x100`-byte stack buffer through `FUN_00940aa0`,
+/// computes the C-string length, builds the string and calls the child's
+/// two-argument entry point.  A buffer without a NUL is clamped to its full
+/// length here instead of reading past it.
+pub fn w14a01_apply_text_buffer<F>(buffer: &[u8], notify: F) -> bool
+where
+    F: FnOnce(&[u8], u32),
+{
+    let len = buffer
+        .iter()
+        .position(|&byte| byte == 0)
+        .unwrap_or(buffer.len());
+    notify(&buffer[..len], W14A01_TEXT_NOTIFY_FLAGS);
+    true
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests_wave14_agent01 {
+    use super::*;
+    use std::cell::{Cell, RefCell};
+
+    #[test]
+    fn identity_tables_fill_with_their_index() {
+        let mut small = [0xaa_u8; 0x20];
+        w14a01_fill_identity_32(&mut small);
+        for (index, byte) in small.iter().enumerate() {
+            assert_eq!(*byte, index as u8);
+        }
+        assert_eq!(small[0], 0);
+        assert_eq!(small[0x1f], 0x1f);
+
+        let mut large = [0xff_u8; 0x38];
+        w14a01_fill_identity_56(&mut large);
+        for (index, byte) in large.iter().enumerate() {
+            assert_eq!(*byte, index as u8);
+        }
+        assert_eq!(large[0x20], 0x20);
+        assert_eq!(large[0x37], 0x37);
+    }
+
+    #[test]
+    fn constant_predicate_and_state_accessors() {
+        assert!(w14a01_always_true(0));
+        assert!(w14a01_always_true(0xffff_ffff));
+
+        let state = W14a01UiState {
+            mode_e8: 1,
+            flag_ec: 0x5a,
+            flag_100: 1,
+        };
+        assert_eq!(w14a01_state_byte(&state), 0x5a);
+        assert!(w14a01_is_mode_one(&state));
+        assert!(!w14a01_is_mode_one(&W14a01UiState {
+            mode_e8: 0,
+            ..state
+        }));
+        assert!(!w14a01_is_mode_one(&W14a01UiState {
+            mode_e8: 2,
+            ..state
+        }));
+    }
+
+    #[test]
+    fn reset_child_calls_first_then_clears_the_flag() {
+        let mut state = W14a01UiState {
+            mode_e8: 1,
+            flag_ec: 0,
+            flag_100: 1,
+        };
+        let flag_before = state.flag_100;
+        let mut saw_flag_before_reset = false;
+        let result = w14a01_reset_child(&mut state, || {
+            saw_flag_before_reset = flag_before == 1;
+        });
+        assert!(result);
+        assert!(saw_flag_before_reset);
+        assert_eq!(state.flag_100, 0);
+        assert_eq!(state.mode_e8, 1);
+    }
+
+    #[test]
+    fn scalar_delete_honours_bit_zero_and_reports_the_size() {
+        let destroyed = Cell::new(0u32);
+        let released = Cell::new((0usize, 0usize));
+
+        let returned = w14a01_scalar_delete(
+            0x1234,
+            2,
+            || destroyed.set(destroyed.get() + 1),
+            |object, size| released.set((object, size)),
+        );
+        assert_eq!(returned, 0x1234);
+        assert_eq!(destroyed.get(), 1);
+        assert_eq!(released.get(), (0, 0));
+
+        let returned = w14a01_scalar_delete(
+            0x5678,
+            3,
+            || destroyed.set(destroyed.get() + 1),
+            |object, size| released.set((object, size)),
+        );
+        assert_eq!(returned, 0x5678);
+        assert_eq!(destroyed.get(), 2);
+        assert_eq!(released.get(), (0x5678, 0x118));
+    }
+
+    #[test]
+    fn pointer_table_sweep_releases_payloads_nodes_and_tail() {
+        // Node 0 is the chain terminator, so real nodes start at index 1.
+        let nodes = [
+            W14a01SweepNode::default(),
+            W14a01SweepNode {
+                next: 2,
+                first_handle: 0x11,
+                first_owner: 0,
+                second_handle: 0x21,
+                second_owner: 0,
+            },
+            W14a01SweepNode {
+                next: 0,
+                first_handle: 0x12,
+                first_owner: -1,
+                second_handle: 0x22,
+                second_owner: -1,
+            },
+            W14a01SweepNode {
+                next: 0,
+                first_handle: 0x13,
+                first_owner: 0,
+                second_handle: 0x23,
+                second_owner: 1,
+            },
+        ];
+        let table = [1u32, 0, 3];
+        let mut calls = Vec::new();
+        let released =
+            w14a01_release_pointer_table(&table, &nodes, (0x99, 0), |handle| calls.push(handle));
+
+        assert_eq!(calls, vec![0x21, 0x11, 1, 2, 0x23, 0x13, 3, 0x99]);
+        assert_eq!(released, 8);
+
+        let mut calls = Vec::new();
+        let released =
+            w14a01_release_pointer_table(&table, &nodes, (0x99, -1), |handle| calls.push(handle));
+        assert_eq!(calls, vec![0x21, 0x11, 1, 2, 0x23, 0x13, 3]);
+        assert_eq!(released, 7);
+
+        let mut calls = Vec::new();
+        assert_eq!(
+            w14a01_release_pointer_table(&[], &nodes, (0, -1), |handle| calls.push(handle)),
+            0
+        );
+        assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn keyed_table_inserts_appends_and_replaces() {
+        let value = |tag: u8| W14a01Value16([tag; 0x10]);
+        let mut table = W14a01KeyedTable::default();
+
+        w14a01_object_insert(&mut table, b"alpha", value(1));
+        assert_eq!(table.entries.len(), 1);
+        assert_eq!(table.capacity, 0x10);
+
+        w14a01_object_insert(&mut table, b"beta", value(2));
+        assert_eq!(table.entries.len(), 2);
+        assert_eq!(table.entries[1].key, b"beta".to_vec());
+        assert_eq!(table.entries[1].value, value(2));
+
+        w14a01_object_insert(&mut table, b"alpha", value(9));
+        assert_eq!(table.entries.len(), 2);
+        assert_eq!(table.entries[0].key, b"alpha".to_vec());
+        assert_eq!(table.entries[0].value, value(9));
+
+        for index in 0..0xe_u8 {
+            let key = [b'a' + index];
+            w14a01_object_insert(&mut table, &key, value(index));
+        }
+        assert_eq!(table.entries.len(), 0x10);
+        assert_eq!(table.capacity, 0x10);
+
+        w14a01_object_insert(&mut table, b"seventeen", value(0x11));
+        assert_eq!(table.entries.len(), 0x11);
+        assert_eq!(table.capacity, 0x18);
+        assert_eq!(table.entries[table.entries.len() - 1].value, value(0x11));
+    }
+
+    #[test]
+    fn tagged_dispatch_normalises_the_heap_bit() {
+        let mut seen = None;
+        assert!(w14a01_dispatch_tagged_at_24(0x1001, |target| {
+            seen = Some(target);
+        }));
+        assert_eq!(seen, Some(0x1000));
+
+        let mut seen = None;
+        assert!(w14a01_dispatch_tagged_at_10(0x2000, |target| {
+            seen = Some(target);
+        }));
+        assert_eq!(seen, Some(0x2000));
+
+        assert!(!w14a01_dispatch_tagged_at_24(0, |_| unreachable!()));
+        assert!(!w14a01_dispatch_tagged_at_10(1, |_| unreachable!()));
+    }
+
+    #[test]
+    fn child_trampolines_forward_their_arguments() {
+        let seen = Cell::new((0u32, 0u32, 0u32));
+        w14a01_forward_child3(|a, b, c| seen.set((a, b, c)), 0x11, 0x22, 0x33);
+        assert_eq!(seen.get(), (0x11, 0x22, 0x33));
+
+        let seen = Cell::new((0u32, 0u32, 0u32));
+        w14a01_forward_child3_b(|a, b, c| seen.set((a, b, c)), 0x44, 0x55, 0x66);
+        assert_eq!(seen.get(), (0x44, 0x55, 0x66));
+
+        let calls = Cell::new(0u32);
+        w14a01_forward_child0(|| calls.set(calls.get() + 1));
+        w14a01_forward_child0_b(|| calls.set(calls.get() + 1));
+        w14a01_forward_child0_c(|| calls.set(calls.get() + 1));
+        assert_eq!(calls.get(), 3);
+    }
+
+    #[test]
+    fn string_copy_assign_replaces_the_destination() {
+        let mut dst = b"old".to_vec();
+        assert_eq!(w14a01_string_copy_assign(&mut dst, b"new-bytes"), 9);
+        assert_eq!(dst.as_slice(), b"new-bytes");
+
+        assert_eq!(w14a01_string_copy_assign(&mut dst, b""), 0);
+        assert!(dst.is_empty());
+
+        let mut dst = Vec::new();
+        assert_eq!(w14a01_string_copy_assign(&mut dst, &[0, 1, 2, 0xff]), 4);
+        assert_eq!(dst, vec![0u8, 1, 2, 0xff]);
+    }
+
+    #[test]
+    fn capability_bits_cover_every_source() {
+        assert_eq!(w14a01_capability_bits(|_| 0, |_| 0), 0);
+
+        assert_eq!(
+            w14a01_capability_bits(|id| (id == 0x10) as u8, |_| 0),
+            0x002
+        );
+        assert_eq!(
+            w14a01_capability_bits(|id| (id == 0xa1) as u8, |_| 0),
+            0x002
+        );
+        assert_eq!(
+            w14a01_capability_bits(|id| (id == 0x11) as u8, |_| 0),
+            0x004
+        );
+        assert_eq!(
+            w14a01_capability_bits(|id| (id == 0xa3) as u8, |_| 0),
+            0x004
+        );
+        assert_eq!(
+            w14a01_capability_bits(|id| (id == 0x12) as u8, |_| 0),
+            0x008
+        );
+        assert_eq!(
+            w14a01_capability_bits(|id| (id == 0xa5) as u8, |_| 0),
+            0x008
+        );
+
+        assert_eq!(w14a01_capability_bits(|_| 0, |id| (id == 1) as u32), 0x200);
+        assert_eq!(w14a01_capability_bits(|_| 0, |id| (id == 2) as u32), 0x400);
+        assert_eq!(w14a01_capability_bits(|_| 0, |id| (id == 4) as u32), 0x800);
+        // A mode value other than 1 sets nothing.
+        assert_eq!(w14a01_capability_bits(|_| 0, |_| 2), 0);
+
+        assert_eq!(
+            w14a01_capability_bits(|id| matches!(id, 0x10 | 0xa2 | 0x12) as u8, |_| 1,),
+            0x002 | 0x004 | 0x008 | 0x200 | 0x400 | 0x800
+        );
+    }
+
+    #[test]
+    fn c_string_forwarding_computes_the_bounded_length() {
+        let seen = RefCell::new(None);
+        w14a01_forward_c_string(7, b"hello\0tail", |one, key, text| {
+            *seen.borrow_mut() = Some((one, key, text.to_vec()));
+        });
+        assert_eq!(*seen.borrow(), Some((1, 7, b"hello".to_vec())));
+
+        let seen = RefCell::new(None);
+        w14a01_forward_c_string(0, b"", |one, key, text| {
+            *seen.borrow_mut() = Some((one, key, text.to_vec()));
+        });
+        assert_eq!(*seen.borrow(), Some((1, 0, Vec::new())));
+
+        let seen = RefCell::new(None);
+        w14a01_forward_c_string(3, b"no-terminator", |one, key, text| {
+            *seen.borrow_mut() = Some((one, key, text.to_vec()));
+        });
+        assert_eq!(*seen.borrow(), Some((1, 3, b"no-terminator".to_vec())));
+    }
+
+    #[test]
+    fn text_buffer_stops_at_the_first_nul_and_forwards_the_flags() {
+        let seen = RefCell::new(None);
+        assert!(w14a01_apply_text_buffer(b"abc\0def", |text, flags| {
+            *seen.borrow_mut() = Some((text.to_vec(), flags));
+        }));
+        assert_eq!(
+            *seen.borrow(),
+            Some((b"abc".to_vec(), W14A01_TEXT_NOTIFY_FLAGS))
+        );
+
+        let seen = RefCell::new(None);
+        assert!(w14a01_apply_text_buffer(b"", |text, flags| {
+            *seen.borrow_mut() = Some((text.to_vec(), flags));
+        }));
+        assert_eq!(*seen.borrow(), Some((Vec::new(), W14A01_TEXT_NOTIFY_FLAGS)));
+
+        let mut buffer = [0x41u8; 0x100];
+        buffer[0xff] = 0x42;
+        let seen = Cell::new(None);
+        assert!(w14a01_apply_text_buffer(&buffer, |text, _| {
+            seen.set(Some(text.len()));
+        }));
+        assert_eq!(seen.get(), Some(0x100));
+
+        assert_eq!(W14A01_SSO_CAPACITY_TAG, 0x8000_000f);
+        assert_eq!(W14A01_KEYED_ELEMENT_BYTES, 0x20);
+        assert_eq!(W14A01_SLOT_COUNT_OFFSET, 0x1c);
+        assert_eq!(W14A01_SLOT_TABLE_OFFSET, 0x20);
+        assert_eq!(W14A01_CHILD_OFFSET, 0x110);
+        assert_eq!(W14A01_VALUE_INLINE_STRING, 0x1000);
+        assert_eq!(W14A01_VALUE_INLINE_LEN_BASE, 0xd);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave14/agent02.rs
+// ===========================================================================
+// Wave 14 translation batch 02 (staging).
+//
+// Window: `00672000..00673fff`.
+//
+// The window is the tail of one 32-bit `__thiscall` input/text control: a
+// record queue plus the pointer, hot-key and source-string entry points that
+// feed it.  Ghidra passes the object in `ECX`, so the recovered layout is the
+// `this`-relative offsets the bodies read:
+//
+// | offset | layout |
+// |--------|--------|
+// | `+0xe8` | `i32` state: `1` is the queue-drain state, `2` the empty-source state |
+// | `+0xec` | `u8` dispatch enable; every event gate tests it |
+// | `+0xf0` | block-pointer array of the record ring (not modelled) |
+// | `+0xf4` | `u32` block count, a power of two |
+// | `+0xf8` | `u32` monotonic ring cursor |
+// | `+0xfc` | `i32` queued record count |
+// | `+0x100` | `u8` accept-any-key override |
+//
+// Ring records are `0x1c` bytes and eight records share one block:
+// `block = (block_count - 1) & (cursor >> 3)`, `slot = cursor & 7`,
+// `record = blocks[block] + slot * 0x1c`.  The write side of the same ring
+// (`FUN_00631120`) computes the identical indices, which corroborates the
+// geometry recovered from the two drain bodies.
+//
+// Only the events and the source dispatch are modelled; the client sinks
+// (`FUN_008062f0`, `FUN_00806490`, `FUN_00806620`, `FUN_00866d20`), the
+// allocator (`FUN_0093ec70`) and the queue storage itself are left out.  The
+// helpers take and return plain values so they can be audited without the
+// shipped object graph.
+//
+// ## Skipped rows
+//
+// * `FUN_00672160`, `FUN_00672220` - identical 18-byte thunks that forward
+//   `this` to `FUN_007e1fd0` and never return; no other argument and no
+//   recovered contract.
+// * `FUN_00672270` - three-byte row that opens an SEH registration
+//   (`ExceptionList` link and a cookie slot) and then calls `FUN_007e1fd0`;
+//   it is a prologue fragment with no recoverable arguments.
+// * `FUN_00672273` - mid-function SEH fragment: stores the frame cookie from
+//   `unaff_EBP`, relinks `ExceptionList` and calls `FUN_007e1fd0`; every
+//   operand is `unaff_EBP`.
+// * `FUN_0067269b` - mid-function block of the local-path branch; it writes
+//   `0x2f` through `unaff_EBP`/`unaff_EDI` slots and ends in the
+//   non-returning `FUN_00538810`/`FUN_00c86b6e` pair with no arguments.
+// * `FUN_0067271c` - virtual call through the unrecovered object in `EAX`
+//   (`[eax + 0x10]`) followed by the SEH epilogue; no arguments, no result.
+// * `FUN_00672770` - ledger row `decompile_failed`.
+// * `FUN_00672d51` - dominated by `halt_baddata`, overlapping instructions and
+//   an unrecovered jump table; the surviving blocks are `unaff_*` pointer
+//   arithmetic.
+// * `FUN_006730ab` - bare two-call terminate stub (`FUN_0053f940`,
+//   `FUN_0053a640`), both non-returning, with no arguments or state.
+// * `FUN_00673228` - five-byte `ret`.
+// * `FUN_006732b0` - ledger row `decompile_failed`.
+// * `FUN_00673bdd` - fragment that reads `unaff_EBX`/`unaff_EBP` plus a flags
+//   register (`in_ZF`) and stores `[ebp + 8] = [ebx + 0x108]`; no recovered
+//   arguments.
+// * `FUN_00673cb5` - six-byte bare `ret`.
+// * `FUN_00673cc0` - SEH prologue that calls `FUN_0066f490` with the frame
+//   cookie and never returns; no arguments.
+//
+// The two drain rows `0x006736f0` and `0x006736fc` are the same routine at
+// two entry points.  Their bodies are dominated by bad instruction data after
+// the first few blocks, so only the recovered drain gate, the ring geometry
+// and the pop side effects are translated here; the validator call, the
+// per-record `+8` teardown and the sink call are not modelled.  The source
+// router `0x00672590` is likewise translated for its recovered branch
+// structure only: the local-file branch copies the text, runs an inlined
+// capacity guard that reduces to `reserve(len)` and then dispatches through
+// `FUN_00672770`, none of which is modelled.
+
+// ---------------------------------------------------------------------------
+// Recovered constants
+// ---------------------------------------------------------------------------
+
+/// `this + 0xe8`: queue-drain state.  Both drain rows only run when it is `1`.
+pub const W14A02_STATE_DRAINABLE: i32 = 1;
+
+/// `this + 0xe8`: state stored by the source router when the text is empty.
+pub const W14A02_STATE_EMPTY_SOURCE: i32 = 2;
+
+/// Offset of the `i32` state word (`0x00672590`, `0x006736f0`,
+/// `0x006736fc`, `0x00673bb0`).
+pub const W14A02_OFFSET_STATE: usize = 0xe8;
+
+/// Offset of the `u8` dispatch enable byte (`0x00672120`, `0x00672140`,
+/// `0x00672370`, `0x006723d0`, `0x00672400`, `0x00672460`).
+pub const W14A02_OFFSET_ENABLED: usize = 0xec;
+
+/// Offset of the `u32` block count of the record ring (`0x006736f0`,
+/// `0x006736fc`).
+pub const W14A02_OFFSET_QUEUE_BLOCK_COUNT: usize = 0xf4;
+
+/// Offset of the `u32` ring cursor (`0x006736f0`, `0x006736fc`).
+pub const W14A02_OFFSET_QUEUE_CURSOR: usize = 0xf8;
+
+/// Offset of the `i32` queued record count (`0x006736f0`, `0x006736fc`).
+pub const W14A02_OFFSET_QUEUE_COUNT: usize = 0xfc;
+
+/// Offset of the `u8` accept-any-key byte (`0x006720f0`, `0x00673bc0`,
+/// `0x00673c40`).
+pub const W14A02_OFFSET_ACCEPT_ANY_KEY: usize = 0x100;
+
+/// Bytes per queued record: the stride between ring slots (`0x006736f0`,
+/// `0x006736fc`).
+pub const W14A02_RING_RECORD_BYTES: usize = 0x1c;
+
+/// Records per ring block (`0x006736f0`, `0x006736fc`).
+pub const W14A02_RING_SLOTS_PER_BLOCK: u32 = 8;
+
+/// Highest key code the filter accepts without the `+0x100` override
+/// (`0x00673bc0`).
+pub const W14A02_VK_MAX_CONTROL: u32 = 0x0c;
+
+/// First key code above the always-accepted control range; the gap between
+/// this and `W14A02_VK_MAX_CONTROL` is rejected without the override
+/// (`0x00673bc0`).
+pub const W14A02_VK_MIN_EXTENDED: u32 = 0x0e;
+
+/// Last key code of the always-accepted extended range (`0x00673bc0`).
+pub const W14A02_VK_MAX_EXTENDED: u32 = 0x1f;
+
+/// Key codes the hot-key switch answers for indices `0..=5` (`0x00672490`):
+/// `A`, `X`, `C`, `V`, `Z`, `Z`.
+pub const W14A02_HOTKEY_VK: [u8; 6] = [0x41, 0x58, 0x43, 0x56, 0x5a, 0x5a];
+
+/// Scheme bytes tested first by the source router (`0x00672590`).
+pub const W14A02_HTTP_PREFIX: &[u8] = b"http://";
+
+/// Scheme bytes tested second by the source router (`0x00672590`).
+pub const W14A02_HTTPS_PREFIX: &[u8] = b"https://";
+
+/// Byte searched for in the local-file branch (`0x00672590`): the backslash
+/// passed to `FUN_00674460`.
+pub const W14A02_PATH_SEPARATOR: u8 = 0x5c;
+
+// ---------------------------------------------------------------------------
+// Recovered object
+// ---------------------------------------------------------------------------
+
+/// The `this`-relative words the translated routines read or write.
+///
+/// The pointer fields of the shipped object (`+0xf0` block array and the
+/// `+0xe0`/`+0xe4` sink words) are deliberately absent: they are not
+/// representable as plain values and none of the modelled routines own them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct W14a02EditState {
+    /// `+0xe8`: `1` drains the queue, `2` marks an empty source.
+    pub state: i32,
+    /// `+0xec`: event dispatch enable.
+    pub enabled: bool,
+    /// `+0x100`: accept every key code (skip the filter and the apply gate).
+    pub accept_any_key: bool,
+    /// `+0xf4`: number of allocated ring blocks.
+    pub queue_block_count: u32,
+    /// `+0xf8`: monotonic ring cursor.
+    pub queue_cursor: u32,
+    /// `+0xfc`: queued record count.
+    pub queue_count: i32,
+}
+
+/// The dispatch record the pointer handlers build before calling their sink.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct W14a02Dispatch {
+    /// First payload word.
+    pub first: u32,
+    /// Second payload word.
+    pub second: u32,
+    /// Third payload word: the remapped button for the two button
+    /// dispatchers, the pass-through word for `0x00672460`, and `0` when the
+    /// routine has no third word (`0x006723d0`).
+    pub code: u32,
+    /// The literal `1`/`0` selector of the two button dispatchers; `None` for
+    /// the payload dispatchers, which pass no selector.
+    pub selector: Option<u32>,
+    /// Modifier mask built by `FUN_00671d40` at the call site.
+    pub modifiers: u16,
+}
+
+/// One ring slot, as addressed by the queue drain.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct W14a02RingSlot {
+    /// Index into the `+0xf0` block-pointer array.
+    pub block: usize,
+    /// Slot inside the block, `0..8`.
+    pub slot: usize,
+    /// Byte offset of the record inside its block; `slot * 0x1c`.
+    pub record_offset: usize,
+}
+
+/// Outcome of the hot-key table (`0x00672490`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum W14a02Hotkey {
+    /// Index outside `0..=5`; the shipped routine answers `0` without
+    /// applying a key.
+    Unbound,
+    /// Index mapped and the `+0x100` byte set; the routine applies `vk` and
+    /// answers `1`.
+    Applied(u8),
+    /// Index mapped but `+0x100` clear; the routine reaches the
+    /// non-returning `FUN_00c66860`.
+    Aborted(u8),
+}
+
+/// Recovered branch of the source router (`0x00672590`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum W14a02Route {
+    /// Zero-length source: the routine stores `2` at `this + 0xe8` and
+    /// returns without dispatching.
+    Empty,
+    /// Scheme matched; the recovered body dispatched through
+    /// `FUN_006732b0` for both schemes.
+    Url {
+        /// Length the compare was clamped to: `7` or `8`.
+        prefix_len: usize,
+    },
+    /// Every other source: the body copies the text, looks up the first
+    /// backslash with `FUN_00674460` and dispatches through `FUN_00672770`.
+    LocalFile {
+        /// Index of the first `0x5c` byte, or `None` when there is none.
+        first_backslash: Option<usize>,
+    },
+}
+
+// ---------------------------------------------------------------------------
+// 0x006720f0 - set the accept-any-key override
+// ---------------------------------------------------------------------------
+
+/// `0x006720f0`: writes `1` to `this + 0x100` and returns `1`.
+///
+/// The shipped routine is a `__thiscall` with no stack arguments.  The
+/// override is what lets the key filter (`0x00673bc0`) and the key apply
+/// (`0x00673c40`) complete for rejected codes.
+pub fn w14a02_accept_any_key(state: &mut W14a02EditState) -> u8 {
+    state.accept_any_key = true;
+    1
+}
+
+// ---------------------------------------------------------------------------
+// 0x00672120 / 0x00672140 - enabled key entry points
+// ---------------------------------------------------------------------------
+
+/// `0x00672120`: when the `+0xec` enable byte is set, run the key filter
+/// (`0x00673bc0`) over `key`, then return `1`.
+///
+/// `Some(1)` is the constant result of the shipped routine; `None` means the
+/// filter took its non-returning abort path (`FUN_00c66860`), so the
+/// `return 1` was never reached.  A disabled object returns `1` without
+/// touching the filter, exactly like the shipped early exit.
+pub fn w14a02_filter_key(state: &W14a02EditState, key: u32) -> Option<u8> {
+    if !state.enabled {
+        return Some(1);
+    }
+    if w14a02_key_allowed(key, state.accept_any_key) {
+        Some(1)
+    } else {
+        None
+    }
+}
+
+/// `0x00672140`: when the `+0xec` enable byte is set, apply `key` through
+/// `FUN_00944d40`, then return `1`.
+///
+/// The shipped call is `FUN_00673c40(key, 0)`; the second (zero) argument is
+/// discarded by the callee, so only the key and the `+0x100` gate survive.
+/// `Some(1)` is the constant result; `None` means the apply gate aborted.
+pub fn w14a02_apply_key(state: &W14a02EditState, key: u32) -> Option<u8> {
+    if !state.enabled {
+        return Some(1);
+    }
+    w14a02_key_apply(state.accept_any_key, key).map(|_| 1)
+}
+
+// ---------------------------------------------------------------------------
+// 0x00672370 / 0x006723d0 / 0x00672400 / 0x00672460 - pointer dispatchers
+// ---------------------------------------------------------------------------
+
+/// `0x00672370`, `0x00672400`: button-code remap shared by the two button
+/// dispatchers.
+///
+/// Button `2` becomes `3`, button `3` becomes `2`, and every other code
+/// becomes the literal `1`.
+pub fn w14a02_pointer_code(code: u32) -> u32 {
+    match code {
+        2 => 3,
+        3 => 2,
+        _ => 1,
+    }
+}
+
+/// `0x00672370` (selector `1`) and `0x00672400` (selector `0`): build the
+/// pointer event and hand it to `FUN_008062f0`.
+///
+/// The two rows are identical apart from the selector literal: both remap the
+/// third argument through [`w14a02_pointer_code`], copy the first two words
+/// into a two-word payload, and append the modifier mask.  `None` means the
+/// `+0xec` gate was closed and nothing was dispatched.
+pub fn w14a02_pointer_dispatch(
+    state: &W14a02EditState,
+    first: u32,
+    second: u32,
+    code: u32,
+    selector: u32,
+    modifiers: u16,
+) -> Option<W14a02Dispatch> {
+    if !state.enabled {
+        return None;
+    }
+    Some(W14a02Dispatch {
+        first,
+        second,
+        code: w14a02_pointer_code(code),
+        selector: Some(selector),
+        modifiers,
+    })
+}
+
+/// `0x006723d0`: dispatch a two-word payload plus the modifier mask.
+///
+/// The shipped body passes the address of its first stack word to
+/// `FUN_00806490`, which reads two payload words and the modifier mask; the
+/// two words are modelled directly.  `None` means the `+0xec` gate was
+/// closed.
+pub fn w14a02_payload_dispatch(
+    state: &W14a02EditState,
+    first: u32,
+    second: u32,
+    modifiers: u16,
+) -> Option<W14a02Dispatch> {
+    if !state.enabled {
+        return None;
+    }
+    Some(W14a02Dispatch {
+        first,
+        second,
+        code: 0,
+        selector: None,
+        modifiers,
+    })
+}
+
+/// `0x00672460`: dispatch a two-word payload, a third word and the modifier
+/// mask to `FUN_00806620`.
+///
+/// The third argument is forwarded unchanged (`param_3`) and the two payload
+/// words travel as one two-word record.  `None` means the `+0xec` gate was
+/// closed.
+pub fn w14a02_payload_code_dispatch(
+    state: &W14a02EditState,
+    first: u32,
+    second: u32,
+    code: u32,
+    modifiers: u16,
+) -> Option<W14a02Dispatch> {
+    if !state.enabled {
+        return None;
+    }
+    Some(W14a02Dispatch {
+        first,
+        second,
+        code,
+        selector: None,
+        modifiers,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// 0x00672490 - hot-key table
+// ---------------------------------------------------------------------------
+
+/// `0x00672490`: map a hot-key index to a virtual-key code and apply it.
+///
+/// The switch answers `0x41`, `0x58`, `0x43`, `0x56`, `0x5a`, `0x5a` for
+/// indices `0..=5` (index `4` falls through into case `5`) and `0` for every
+/// other index.  The mapped code is applied through `FUN_00944d40`; when the
+/// `+0x100` byte is clear the routine then reaches the non-returning
+/// `FUN_00c66860`, which the `Aborted` variant records.
+pub fn w14a02_hotkey(index: u32, accept_any_key: bool) -> W14a02Hotkey {
+    let Some(&vk) = usize::try_from(index)
+        .ok()
+        .and_then(|i| W14A02_HOTKEY_VK.get(i))
+    else {
+        return W14a02Hotkey::Unbound;
+    };
+    if accept_any_key {
+        W14a02Hotkey::Applied(vk)
+    } else {
+        W14a02Hotkey::Aborted(vk)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 0x00672590 - source router
+// ---------------------------------------------------------------------------
+
+/// `0x00672590`: classify the source string handed to the object.
+///
+/// The recovered body:
+///
+/// 1. stores `2` at `this + 0xe8` and returns when the length word is zero;
+/// 2. compares the text with `http://` and then `https://` (both through
+///    `FUN_0067d9b0`, which clamps the compare to the shorter length and
+///    requires equal lengths, so this is a prefix test) and dispatches
+///    through `FUN_006732b0`;
+/// 3. otherwise copies the text, looks up the first `0x5c` with
+///    `FUN_00674460`, and dispatches through `FUN_00672770`.
+///
+/// Only the decision is modelled.  The local-file copy, the inlined capacity
+/// guard (which reduces to `reserve(len)`) and both sinks are not.
+pub fn w14a02_source_route(text: &[u8]) -> W14a02Route {
+    if text.is_empty() {
+        return W14a02Route::Empty;
+    }
+    if text.starts_with(W14A02_HTTP_PREFIX) {
+        return W14a02Route::Url {
+            prefix_len: W14A02_HTTP_PREFIX.len(),
+        };
+    }
+    if text.starts_with(W14A02_HTTPS_PREFIX) {
+        return W14a02Route::Url {
+            prefix_len: W14A02_HTTPS_PREFIX.len(),
+        };
+    }
+    W14a02Route::LocalFile {
+        first_backslash: text.iter().position(|&b| b == W14A02_PATH_SEPARATOR),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 0x00673bb0 / 0x00673bc0 / 0x00673c40 - state and key predicates
+// ---------------------------------------------------------------------------
+
+/// `0x00673bb0`: `this + 0xe8 != 2`, the state predicate the control exposes
+/// to its caller.
+pub fn w14a02_state_present(state: i32) -> bool {
+    state != W14A02_STATE_EMPTY_SOURCE
+}
+
+/// `0x00673bc0`: whether the key filter accepts `key`.
+///
+/// The shipped routine aborts through the non-returning `FUN_00c66860` when
+/// `key > 0x0c` and (`key < 0x0e` or `key > 0x1f`) and the `+0x100` override
+/// byte is clear.  `true` here means the routine returns normally.
+pub fn w14a02_key_allowed(key: u32, accept_any_key: bool) -> bool {
+    if accept_any_key {
+        return true;
+    }
+    !(key > W14A02_VK_MAX_CONTROL
+        && !(W14A02_VK_MIN_EXTENDED..=W14A02_VK_MAX_EXTENDED).contains(&key))
+}
+
+/// `0x00673c40`: apply `key` and report whether the routine completed.
+///
+/// The body forwards `key` to `FUN_00944d40` unchanged and then aborts through
+/// the non-returning `FUN_00c66860` unless the `+0x100` byte is set, so the
+/// applied key is echoed back only when the gate is open.
+pub fn w14a02_key_apply(accept_any_key: bool, key: u32) -> Option<u32> {
+    if accept_any_key { Some(key) } else { None }
+}
+
+// ---------------------------------------------------------------------------
+// 0x006736f0 / 0x006736fc - queue drain geometry
+// ---------------------------------------------------------------------------
+
+/// `0x006736f0`, `0x006736fc`: address of the ring slot a cursor selects.
+///
+/// The recovered arithmetic is `(block_count - 1) & (cursor >> 3)` for the
+/// block index and `cursor & 7` for the slot.  The subtraction wraps in the
+/// shipped code, so a zero block count yields `cursor >> 3`; that is
+/// preserved with `wrapping_sub`.
+pub fn w14a02_ring_slot(block_count: u32, cursor: u32) -> (usize, usize) {
+    let block = block_count.wrapping_sub(1) & (cursor >> 3);
+    let slot = cursor & (W14A02_RING_SLOTS_PER_BLOCK - 1);
+    (block as usize, slot as usize)
+}
+
+/// `0x006736f0`, `0x006736fc`: pop one record from the queue ring.
+///
+/// Both drain bodies start with `if (this + 0xe8 != 1) goto done;` and then
+/// loop while `this + 0xfc != 0`, computing the slot with
+/// [`w14a02_ring_slot`] and closing each iteration with `--count` and
+/// `++cursor`.  This helper performs one such iteration and reports the slot.
+/// The shipped loop also validates the record through `FUN_007a73c0`, tears
+/// down the record's `+8` field and calls `FUN_00866d20`; none of that is
+/// modelled.
+///
+/// `None` means the drain gate was closed or the queue was empty.  A negative
+/// count also answers `None`; the shipped `!= 0` test would loop on a
+/// corrupted count, which the safe model does not reproduce.
+pub fn w14a02_queue_pop(state: &mut W14a02EditState) -> Option<W14a02RingSlot> {
+    if state.state != W14A02_STATE_DRAINABLE || state.queue_count <= 0 {
+        return None;
+    }
+    let (block, slot) = w14a02_ring_slot(state.queue_block_count, state.queue_cursor);
+    state.queue_count -= 1;
+    state.queue_cursor = state.queue_cursor.wrapping_add(1);
+    Some(W14a02RingSlot {
+        block,
+        slot,
+        record_offset: slot * W14A02_RING_RECORD_BYTES,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// 0x00673f60 - enqueue validation gate
+// ---------------------------------------------------------------------------
+
+/// `0x00673f60`: whether a text argument passes the validator that guards the
+/// queue insert.
+///
+/// The body builds a temporary from `param_1`, calls the UTF-8 validator
+/// `FUN_007a73c0`, and on acceptance calls the ring insert `FUN_00631120`
+/// before the non-returning copy/teardown.  The validator walks a
+/// NUL-terminated string and accepts `0..=0x7f` and well-formed multi-byte
+/// UTF-8, so the helper validates the prefix before the first NUL and treats
+/// the rest of the slice as unreachable.  The temporary and the insert are
+/// not modelled.
+pub fn w14a02_text_accepted(text: &[u8]) -> bool {
+    let end = text.iter().position(|&b| b == 0).unwrap_or(text.len());
+    core::str::from_utf8(&text[..end]).is_ok()
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests_wave14_agent02 {
+    use super::*;
+
+    /// `0x006720f0`
+    #[test]
+    fn accept_any_key_flag_is_set_and_one_returned() {
+        let mut state = W14a02EditState::default();
+        assert!(!state.accept_any_key);
+        assert_eq!(w14a02_accept_any_key(&mut state), 1);
+        assert!(state.accept_any_key);
+        // Idempotent: the shipped body stores the constant each time.
+        assert_eq!(w14a02_accept_any_key(&mut state), 1);
+        assert!(state.accept_any_key);
+        assert_eq!(W14A02_OFFSET_ACCEPT_ANY_KEY, 0x100);
+    }
+
+    /// `0x00672120`
+    #[test]
+    fn filter_key_is_gated_by_enable_and_the_key_filter() {
+        let mut state = W14a02EditState::default();
+        // Disabled: constant 1, the filter is never consulted.
+        assert_eq!(w14a02_filter_key(&state, 0x41), Some(1));
+
+        state.enabled = true;
+        assert_eq!(w14a02_filter_key(&state, 0x09), Some(1));
+        assert_eq!(w14a02_filter_key(&state, 0x41), None);
+        assert_eq!(w14a02_filter_key(&state, 0x0d), None);
+
+        state.accept_any_key = true;
+        assert_eq!(w14a02_filter_key(&state, 0x41), Some(1));
+        assert_eq!(w14a02_filter_key(&state, 0x0d), Some(1));
+        assert_eq!(W14A02_OFFSET_ENABLED, 0xec);
+    }
+
+    /// `0x00672140`
+    #[test]
+    fn apply_key_is_gated_by_enable_then_the_override_byte() {
+        let mut state = W14a02EditState::default();
+        assert_eq!(w14a02_apply_key(&state, 0x41), Some(1));
+
+        state.enabled = true;
+        assert_eq!(w14a02_apply_key(&state, 0x41), None);
+
+        state.accept_any_key = true;
+        assert_eq!(w14a02_apply_key(&state, 0x41), Some(1));
+    }
+
+    /// `0x00672370`, `0x00672400`
+    #[test]
+    fn pointer_dispatch_remaps_buttons_and_keeps_the_selector() {
+        let mut state = W14a02EditState::default();
+        assert_eq!(w14a02_pointer_dispatch(&state, 10, 20, 2, 1, 0x0005), None);
+
+        state.enabled = true;
+        let pressed = w14a02_pointer_dispatch(&state, 10, 20, 2, 1, 0x0005).unwrap();
+        assert_eq!(pressed.first, 10);
+        assert_eq!(pressed.second, 20);
+        assert_eq!(pressed.code, 3);
+        assert_eq!(pressed.selector, Some(1));
+        assert_eq!(pressed.modifiers, 0x0005);
+
+        let released = w14a02_pointer_dispatch(&state, 11, 21, 3, 0, 0).unwrap();
+        assert_eq!(released.code, 2);
+        assert_eq!(released.selector, Some(0));
+    }
+
+    /// `0x00672370`, `0x00672400`: the remap table itself.
+    #[test]
+    fn pointer_code_table_swaps_two_and_three_and_defaults_to_one() {
+        assert_eq!(w14a02_pointer_code(0), 1);
+        assert_eq!(w14a02_pointer_code(1), 1);
+        assert_eq!(w14a02_pointer_code(2), 3);
+        assert_eq!(w14a02_pointer_code(3), 2);
+        assert_eq!(w14a02_pointer_code(4), 1);
+        assert_eq!(w14a02_pointer_code(u32::MAX), 1);
+    }
+
+    /// `0x006723d0`
+    #[test]
+    fn payload_dispatch_carries_two_words_and_no_selector() {
+        let state = W14a02EditState {
+            enabled: true,
+            ..W14a02EditState::default()
+        };
+        let event = w14a02_payload_dispatch(&state, 7, 8, 0x0040).unwrap();
+        assert_eq!(event.first, 7);
+        assert_eq!(event.second, 8);
+        assert_eq!(event.code, 0);
+        assert_eq!(event.selector, None);
+        assert_eq!(event.modifiers, 0x0040);
+
+        let closed = W14a02EditState::default();
+        assert_eq!(w14a02_payload_dispatch(&closed, 7, 8, 0), None);
+    }
+
+    /// `0x00672460`
+    #[test]
+    fn payload_code_dispatch_forwards_the_third_word() {
+        let state = W14a02EditState {
+            enabled: true,
+            ..W14a02EditState::default()
+        };
+        let event = w14a02_payload_code_dispatch(&state, 1, 2, 0x1234, 0x0003).unwrap();
+        assert_eq!(event.first, 1);
+        assert_eq!(event.second, 2);
+        assert_eq!(event.code, 0x1234);
+        assert_eq!(event.selector, None);
+        assert_eq!(event.modifiers, 0x0003);
+
+        let closed = W14a02EditState::default();
+        assert_eq!(w14a02_payload_code_dispatch(&closed, 1, 2, 3, 0), None);
+    }
+
+    /// `0x00672490`
+    #[test]
+    fn hotkey_table_matches_the_recovered_switch() {
+        let expected = [0x41u8, 0x58, 0x43, 0x56, 0x5a, 0x5a];
+        for (index, &vk) in expected.iter().enumerate() {
+            assert_eq!(
+                w14a02_hotkey(index as u32, true),
+                W14a02Hotkey::Applied(vk),
+                "index {index}"
+            );
+            assert_eq!(
+                w14a02_hotkey(index as u32, false),
+                W14a02Hotkey::Aborted(vk),
+                "index {index}"
+            );
+        }
+        // Index 4 falls through into case 5 in the shipped switch.
+        assert_eq!(w14a02_hotkey(4, true), w14a02_hotkey(5, true));
+        // Anything outside the switch answers 0 without applying a key,
+        // whatever the override byte says.
+        assert_eq!(w14a02_hotkey(6, true), W14a02Hotkey::Unbound);
+        assert_eq!(w14a02_hotkey(6, false), W14a02Hotkey::Unbound);
+        assert_eq!(w14a02_hotkey(u32::MAX, true), W14a02Hotkey::Unbound);
+        assert_eq!(W14A02_HOTKEY_VK, expected);
+    }
+
+    /// `0x00672590`
+    #[test]
+    fn source_route_splits_empty_schemes_and_local_files() {
+        assert_eq!(w14a02_source_route(b""), W14a02Route::Empty);
+        assert_eq!(
+            w14a02_source_route(b"http://example"),
+            W14a02Route::Url { prefix_len: 7 }
+        );
+        assert_eq!(
+            w14a02_source_route(b"https://example"),
+            W14a02Route::Url { prefix_len: 8 }
+        );
+        // A bare "http:/" is not the seven-byte scheme.
+        assert_eq!(
+            w14a02_source_route(b"http:/x"),
+            W14a02Route::LocalFile {
+                first_backslash: None
+            }
+        );
+        assert_eq!(
+            w14a02_source_route(b"C:\\dir\\file.txt"),
+            W14a02Route::LocalFile {
+                first_backslash: Some(2)
+            }
+        );
+        assert_eq!(
+            w14a02_source_route(b"no separator"),
+            W14a02Route::LocalFile {
+                first_backslash: None
+            }
+        );
+        assert_eq!(
+            w14a02_source_route(b"\\leading"),
+            W14a02Route::LocalFile {
+                first_backslash: Some(0)
+            }
+        );
+        assert_eq!(
+            w14a02_source_route(b"trailing\\"),
+            W14a02Route::LocalFile {
+                first_backslash: Some(8)
+            }
+        );
+    }
+
+    /// `0x00673bb0`
+    #[test]
+    fn state_present_is_false_only_for_the_empty_source_state() {
+        assert!(w14a02_state_present(0));
+        assert!(w14a02_state_present(W14A02_STATE_DRAINABLE));
+        assert!(!w14a02_state_present(W14A02_STATE_EMPTY_SOURCE));
+        assert!(w14a02_state_present(3));
+        assert!(w14a02_state_present(-1));
+        assert_eq!(W14A02_STATE_EMPTY_SOURCE, 2);
+        assert_eq!(W14A02_OFFSET_STATE, 0xe8);
+    }
+
+    /// `0x00673bc0`
+    #[test]
+    fn key_filter_rejects_enter_and_printable_codes_without_override() {
+        for key in 0..=W14A02_VK_MAX_CONTROL {
+            assert!(w14a02_key_allowed(key, false), "control {key:#x}");
+        }
+        // 0x0d sits in the gap above 0x0c and below 0x0e.
+        assert!(!w14a02_key_allowed(0x0d, false));
+        for key in W14A02_VK_MIN_EXTENDED..=W14A02_VK_MAX_EXTENDED {
+            assert!(w14a02_key_allowed(key, false), "extended {key:#x}");
+        }
+        assert!(!w14a02_key_allowed(0x20, false));
+        assert!(!w14a02_key_allowed(0x41, false));
+        assert!(!w14a02_key_allowed(u32::MAX, false));
+
+        // The override opens every code, including the two rejected ranges.
+        for key in [0x0d, 0x20, 0x41, u32::MAX] {
+            assert!(w14a02_key_allowed(key, true), "override {key:#x}");
+        }
+        assert_eq!(W14A02_VK_MAX_CONTROL + 1, W14A02_VK_MIN_EXTENDED - 1);
+    }
+
+    /// `0x00673c40`
+    #[test]
+    fn key_apply_echoes_the_key_only_when_the_override_is_set() {
+        assert_eq!(w14a02_key_apply(true, 0x41), Some(0x41));
+        assert_eq!(w14a02_key_apply(true, 0), Some(0));
+        assert_eq!(w14a02_key_apply(false, 0x41), None);
+        assert_eq!(w14a02_key_apply(false, u32::MAX), None);
+    }
+
+    /// `0x006736f0`, `0x006736fc`
+    #[test]
+    fn ring_slot_wraps_through_the_block_array() {
+        // One block: every cursor lands in block 0, slots cycle 0..7.
+        for cursor in 0..8u32 {
+            assert_eq!(w14a02_ring_slot(1, cursor), (0, cursor as usize));
+        }
+        // Two blocks: the block index alternates with cursor >> 3.
+        assert_eq!(w14a02_ring_slot(2, 0), (0, 0));
+        assert_eq!(w14a02_ring_slot(2, 7), (0, 7));
+        assert_eq!(w14a02_ring_slot(2, 8), (1, 0));
+        assert_eq!(w14a02_ring_slot(2, 15), (1, 7));
+        assert_eq!(w14a02_ring_slot(2, 16), (0, 0));
+        assert_eq!(w14a02_ring_slot(2, 24), (1, 0));
+        // A zero block count wraps the subtraction in the shipped code.
+        assert_eq!(w14a02_ring_slot(0, 16), (2, 0));
+        assert_eq!(W14A02_RING_SLOTS_PER_BLOCK, 8);
+        assert_eq!(W14A02_RING_RECORD_BYTES, 0x1c);
+    }
+
+    /// `0x006736f0`, `0x006736fc`
+    #[test]
+    fn queue_pop_advances_the_cursor_and_decrements_the_count() {
+        let mut state = W14a02EditState {
+            state: W14A02_STATE_DRAINABLE,
+            queue_block_count: 1,
+            queue_cursor: 7,
+            queue_count: 2,
+            ..W14a02EditState::default()
+        };
+        let slot = w14a02_queue_pop(&mut state).unwrap();
+        assert_eq!(
+            slot,
+            W14a02RingSlot {
+                block: 0,
+                slot: 7,
+                record_offset: 7 * 0x1c
+            }
+        );
+        assert_eq!(state.queue_count, 1);
+        assert_eq!(state.queue_cursor, 8);
+
+        // Second pop wraps into block (1 - 1) & (8 >> 3) = 0, slot 0.
+        let slot = w14a02_queue_pop(&mut state).unwrap();
+        assert_eq!(slot.block, 0);
+        assert_eq!(slot.slot, 0);
+        assert_eq!(state.queue_count, 0);
+        assert_eq!(state.queue_cursor, 9);
+        assert_eq!(w14a02_queue_pop(&mut state), None);
+        assert_eq!(W14A02_OFFSET_QUEUE_BLOCK_COUNT, 0xf4);
+        assert_eq!(W14A02_OFFSET_QUEUE_CURSOR, 0xf8);
+        assert_eq!(W14A02_OFFSET_QUEUE_COUNT, 0xfc);
+
+        // The drain gate refuses every other state.
+        let mut idle = W14a02EditState {
+            state: W14A02_STATE_EMPTY_SOURCE,
+            queue_count: 4,
+            queue_cursor: 4,
+            ..W14a02EditState::default()
+        };
+        assert_eq!(w14a02_queue_pop(&mut idle), None);
+        assert_eq!(idle.queue_count, 4);
+        assert_eq!(idle.queue_cursor, 4);
+
+        // A negative count is refused by the safe model.
+        let mut corrupt = W14a02EditState {
+            state: W14A02_STATE_DRAINABLE,
+            queue_count: -1,
+            queue_cursor: 0,
+            ..W14a02EditState::default()
+        };
+        assert_eq!(w14a02_queue_pop(&mut corrupt), None);
+    }
+
+    /// `0x00673f60`
+    #[test]
+    fn text_gate_validates_utf8_up_to_the_first_nul() {
+        assert!(w14a02_text_accepted(b""));
+        assert!(w14a02_text_accepted(b"plain ascii"));
+        assert!(w14a02_text_accepted("héllo".as_bytes()));
+        assert!(w14a02_text_accepted("日本語".as_bytes()));
+        // The shipped validator stops at the terminator, so a bad tail after
+        // an embedded NUL is never examined.
+        assert!(w14a02_text_accepted(b"ok\0\xff"));
+        // Without the NUL the same bytes are rejected.
+        assert!(!w14a02_text_accepted(b"\xff"));
+        assert!(!w14a02_text_accepted(b"a\xc3"));
+        // Overlong and surrogate encodings are rejected.
+        assert!(!w14a02_text_accepted(b"\xc0\xaf"));
+        assert!(!w14a02_text_accepted(b"\xed\xa0\x80"));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave14/agent08.rs
+// ===========================================================================
+// Wave 14 translation batch 08.
+//
+// Window: `67e000..67ffff`.  This window is library code, not combat code:
+// the shipped runtime keeps two small-string classes and the containers that
+// hold them here.
+//
+// * `0067e030`, `0067e150`, `0067e1c0`, `0067e2e0`, `0067e360` and
+//   `0067e440` are the UTF-32 side: the `String` object stores 32-bit code
+//   points with fifteen inline slots, and the routines trim, search and
+//   assign it.  The two `...030`/`...1c0` rows are the by-value wrappers: they
+//   widen their two 8-bit arguments through the process-locale conversion
+//   helper, trim, and return the new string through the hidden result
+//   pointer.
+// * `0067e4a0` is the byte-oriented twin: a 15-byte inline capacity plus a
+//   single-byte terminator, and a replace-every-occurrence loop.  The
+//   decompiled row stops after the first 118 bytes; the loop was recovered
+//   from the shipped machine code (the function ends with `ret 0x10`).
+// * `0067ecb0`, `0067ed90` and `0067ec70` operate on the client's ordered
+//   `std::map`-style tree keyed by a `u16`; each value is a 12-byte
+//   `vector<u32>`.
+// * `0067ebd0` and `0067ee60` release and clear the client's global chained
+//   hash map.
+// * `0067f450` is the terrain walk around the camera.  Its decompiled body is
+//   cut at a mis-identified non-returning getter, but the clamp, the block
+//   granularity and the half-open tile window are complete in the machine
+//   code and are reproduced here as three helpers.  The subsequent map and
+//   unit walks are not part of this batch.
+// * `0067ff80` is the tile-buffer setup that walks the map in thirty-two
+//   tile blocks.  Its header reads, cursor seed, row advance, cell predicate
+//   and visit order are recovered; the sprite stamp it calls for every
+//   visible cell is outside this window and is not modelled.
+//
+// ## Recovered layouts
+//
+// ### UTF-32 string (`0x4c` bytes)
+//
+// | offset | field |
+// |--------|-------|
+// | `+0x00` | data pointer |
+// | `+0x04` | length in code points |
+// | `+0x08` | capacity word: low 31 bits hold the capacity, bit 31 is set for the inline buffer |
+// | `+0x0c` | inline buffer: fifteen code points plus a four-byte terminator |
+//
+// ### Byte string (`0x1c` bytes)
+//
+// | offset | field |
+// |--------|-------|
+// | `+0x00` | data pointer |
+// | `+0x04` | length in bytes |
+// | `+0x08` | capacity word, same bit-31 convention |
+// | `+0x0c` | inline buffer: fifteen bytes plus a one-byte terminator |
+//
+// ### Ordered map
+//
+// | object | offset | field |
+// |--------|--------|-------|
+// | map | `+0x00` | tree root |
+// | map | `+0x10` | entry count |
+// | node | `+0x00` | parent |
+// | node | `+0x04` | left child |
+// | node | `+0x08` | right child |
+// | node | `+0x0c` | colour byte |
+// | node | `+0x10` | `u16` key |
+// | node | `+0x14` | twelve-byte value (`vector<u32>`) |
+// | node | size | `0x20` bytes |
+//
+// The value vector uses the same three-word header as the byte string:
+// data, length, capacity word.
+//
+// ### Global chained hash map
+//
+// | offset | field |
+// |--------|-------|
+// | `+0x00` | bucket count |
+// | `+0x04` | bucket-array pointer, null until the first insert |
+// | `+0x08` | live entry count |
+// | `+0x0c` | load limit, `1.0f` |
+//
+// A bucket is the head of a singly linked chain; a node keeps its next
+// pointer at `+0x00` and a pointer to a thirty-six-byte payload object at
+// `+0x08`.
+//
+// ## Rows not translated
+//
+// | row | reason |
+// |-----|--------|
+// | `67e650` | Ghidra's row is only the first twelve bytes of the terrain-column copy; it ends at a getter that the decompiler marked non-returning, and the remainder of the routine is not part of the candidate body. |
+// | `67e7c9` | inline row-stride fragment inside that copy loop (`in_EAX`, `in_EDX` and a stack slot); no recoverable arguments. |
+// | `67e9d4` | overlapping-instruction fragment that writes through `unaff_EBX` and consumes `in_ECX`/`in_EAX`; no recoverable signature. |
+// | `67ea45` | mid-function tile-slot store over `unaff_EBX`/`unaff_ESI`; no recoverable arguments. |
+// | `67eb10` | Ghidra's seventeen-byte row ends at an allocator call; the real routine continues past the declared boundary and the candidate body has no behaviour. |
+// | `67fc30` | decompile_failed. |
+//
+// The two partial rows (`67f450` and `67ff80`) are listed with the translated
+// helpers below rather than in this table; only their fully recovered
+// arithmetic is reproduced.
+//
+// Everything below is a free function over caller-owned data.  No `World`,
+// `SimUnit`, renderer or client state is touched, and no save/replay state is
+// added.
+
+// ---------------------------------------------------------------------------
+// Recovered constants
+// ---------------------------------------------------------------------------
+
+/// Capacity word of an empty string: fifteen inline elements plus the inline
+/// tag bit.
+pub const W14A08_EMPTY_CAPACITY_WORD: u32 = 0x8000_000f;
+
+/// Mask that keeps the capacity bits and drops the inline/heap tag.
+pub const W14A08_CAPACITY_MASK: u32 = 0x7fff_ffff;
+
+/// Number of elements stored inline by both string forms.
+pub const W14A08_INLINE_CAPACITY: u32 = 15;
+
+/// Size of one UTF-32 string object.
+pub const W14A08_U32_STRING_BYTES: u32 = 0x4c;
+
+/// Offset of the UTF-32 inline buffer.
+pub const W14A08_U32_INLINE_BUFFER_OFFSET: u32 = 0x0c;
+
+/// Size of one byte string object.
+pub const W14A08_BYTE_STRING_BYTES: u32 = 0x1c;
+
+/// Offset of the byte-string inline buffer.
+pub const W14A08_BYTE_INLINE_BUFFER_OFFSET: u32 = 0x0c;
+
+/// Size of one ordered-map node.
+pub const W14A08_ORDERED_NODE_BYTES: u32 = 0x20;
+
+/// Offset of the `u16` key inside an ordered-map node.
+pub const W14A08_ORDERED_NODE_KEY_OFFSET: u32 = 0x10;
+
+/// Offset of the value vector inside an ordered-map node.
+pub const W14A08_ORDERED_NODE_VALUE_OFFSET: u32 = 0x14;
+
+/// Offset of the tree root in an ordered map.
+pub const W14A08_ORDERED_ROOT_OFFSET: u32 = 0x00;
+
+/// Offset of the entry count in an ordered map.
+pub const W14A08_ORDERED_SIZE_OFFSET: u32 = 0x10;
+
+/// Offset of the bucket count in the global hash map.
+pub const W14A08_HASH_BUCKET_COUNT_OFFSET: u32 = 0x00;
+
+/// Offset of the bucket-array pointer in the global hash map.
+pub const W14A08_HASH_BUCKET_ARRAY_OFFSET: u32 = 0x04;
+
+/// Offset of the live entry count in the global hash map.
+pub const W14A08_HASH_SIZE_OFFSET: u32 = 0x08;
+
+/// Offset of the load limit in the global hash map.
+pub const W14A08_HASH_LOAD_OFFSET: u32 = 0x0c;
+
+/// Load limit stored by the hash-map constructor.
+pub const W14A08_HASH_LOAD_LIMIT: f32 = 1.0;
+
+/// Offset of the chain link in a hash-map node.
+pub const W14A08_HASH_NODE_NEXT_OFFSET: u32 = 0x00;
+
+/// Offset of the payload pointer in a hash-map node.
+pub const W14A08_HASH_NODE_PAYLOAD_OFFSET: u32 = 0x08;
+
+// ---------------------------------------------------------------------------
+// UTF-32 string: assign and grow (`0067e360`)
+// ---------------------------------------------------------------------------
+
+/// `0x0067e360`: the capacity the shipped string assign selects when the
+/// current capacity word cannot hold `needed` code points.
+///
+/// The recovered sequence is:
+///
+/// ```text
+/// current = capacity_word & 0x7fffffff
+/// if needed <= current: no reallocation
+/// grown = ((capacity_word >> 1) & 0x3fffffff) + current
+/// if grown < needed: grown = needed
+/// new capacity word = ((capacity_word ^ grown) & 0x7fffffff) ^ capacity_word
+/// ```
+///
+/// The last expression reduces to `grown` once the tag bit is masked off, so
+/// the helper returns `None` when no reallocation is needed and
+/// `Some(grown)` otherwise.  For the empty header `0x8000000f` the first
+/// growth target is `7 + 15 = 22`.
+pub fn w14a08_u32_growth_capacity(capacity_word: u32, needed: u32) -> Option<u32> {
+    let current = capacity_word & W14A08_CAPACITY_MASK;
+    if needed <= current {
+        return None;
+    }
+    let mut grown = ((capacity_word >> 1) & 0x3fff_ffff) + current;
+    if grown < needed {
+        grown = needed;
+    }
+    Some(grown)
+}
+
+/// `0x0067e360`: replace `destination` with `source`.
+///
+/// The shipped member function first resets its header to the empty inline
+/// form (data at `this + 0x0c`, length zero, capacity word `0x8000000f`),
+/// grows the buffer with [`w14a08_u32_growth_capacity`] when the source needs
+/// more than fifteen code points, copies the code points, writes a four-byte
+/// terminator after the last one and stores the length.  The Rust model uses
+/// a `Vec<u32>` for the same payload; the terminator is implicit.
+pub fn w14a08_u32_assign(destination: &mut Vec<u32>, source: &[u32]) {
+    destination.clear();
+    let needed = u32::try_from(source.len()).unwrap_or(u32::MAX);
+    if let Some(capacity) = w14a08_u32_growth_capacity(W14A08_EMPTY_CAPACITY_WORD, needed) {
+        destination.reserve(capacity as usize);
+    }
+    destination.extend_from_slice(source);
+}
+
+// ---------------------------------------------------------------------------
+// UTF-32 string: find (`0067e440`)
+// ---------------------------------------------------------------------------
+
+/// `0x0067e440`: the first index at or after `position` whose code point is
+/// `wanted`, or `None`.
+///
+/// The shipped loop rejects `position > length` with `0xffffffff`, requires
+/// `position + 1 <= length` for the first comparison, and then compares one
+/// 32-bit code point per step.  `None` is therefore returned both for an
+/// out-of-range position and for `position == length`.
+pub fn w14a08_u32_find(haystack: &[u32], wanted: u32, position: u32) -> Option<u32> {
+    let start = position as usize;
+    if start >= haystack.len() {
+        return None;
+    }
+    haystack[start..]
+        .iter()
+        .position(|&code_point| code_point == wanted)
+        .map(|offset| (start + offset) as u32)
+}
+
+// ---------------------------------------------------------------------------
+// UTF-32 string: trim right (`0067e150`) and its wrapper (`0067e030`)
+// ---------------------------------------------------------------------------
+
+/// `0x0067e150`: assign the longest prefix of `source` that does not end in a
+/// code point contained in `set` to `destination`.
+///
+/// The shipped loop walks `source` from its last code point towards the front
+/// and stops at the first code point for which `set.find(code_point, 0)`
+/// returns `-1`; when every code point is a member of `set` the result is
+/// empty.  The destination is written through `0067e360`, so the store
+/// always replaces the previous contents.
+pub fn w14a08_u32_trim_end_into(destination: &mut Vec<u32>, source: &[u32], set: &[u32]) {
+    let mut end = source.len();
+    while end > 0 {
+        if w14a08_u32_find(set, source[end - 1], 0).is_none() {
+            break;
+        }
+        end -= 1;
+    }
+    w14a08_u32_assign(destination, &source[..end]);
+}
+
+/// `0x0067e030`: widen both 8-bit arguments and return the right-trimmed
+/// UTF-32 string.
+///
+/// The shipped row is the by-value wrapper: it constructs two temporary
+/// UTF-32 strings from the 8-bit arguments through the process-locale
+/// conversion helper, calls the in-place trim, and then copy-assigns the
+/// temporary into the hidden result pointer.  The copies make the wrapper
+/// safe when the result aliases an argument.  Here the two inputs are taken
+/// as octets and widened one-to-one; that is the conversion the process
+/// locale performs for the ASCII trim sets used by the callers, while the
+/// trim itself is exact.
+pub fn w14a08_u32_trim_end_bytes(source: &[u8], set: &[u8]) -> Vec<u32> {
+    let widened_source: Vec<u32> = source.iter().map(|&byte| u32::from(byte)).collect();
+    let widened_set: Vec<u32> = set.iter().map(|&byte| u32::from(byte)).collect();
+    let mut result = Vec::new();
+    w14a08_u32_trim_end_into(&mut result, &widened_source, &widened_set);
+    result
+}
+
+// ---------------------------------------------------------------------------
+// UTF-32 string: trim left (`0067e2e0`) and its wrapper (`0067e1c0`)
+// ---------------------------------------------------------------------------
+
+/// `0x0067e2e0`: assign the longest suffix of `source` that does not start
+/// with a code point contained in `set` to `destination`.
+///
+/// This is the mirror image of the right trim: the loop advances from the
+/// first code point while the code point is a member of `set`, then assigns
+/// `source[start..]`.  When every code point is a member of `set` the result
+/// is empty.
+pub fn w14a08_u32_trim_start_into(destination: &mut Vec<u32>, source: &[u32], set: &[u32]) {
+    let mut start = 0;
+    while start < source.len() {
+        if w14a08_u32_find(set, source[start], 0).is_none() {
+            break;
+        }
+        start += 1;
+    }
+    w14a08_u32_assign(destination, &source[start..]);
+}
+
+/// `0x0067e1c0`: widen both 8-bit arguments and return the left-trimmed
+/// UTF-32 string.
+///
+/// Same wrapper shape as [`w14a08_u32_trim_end_bytes`]: two temporary UTF-32
+/// strings are built through the process-locale conversion helper, the
+/// in-place left trim runs, and the result is copied into the hidden result
+/// pointer.  The ASCII widening used here matches the recovery model of the
+/// right-trim wrapper.
+pub fn w14a08_u32_trim_start_bytes(source: &[u8], set: &[u8]) -> Vec<u32> {
+    let widened_source: Vec<u32> = source.iter().map(|&byte| u32::from(byte)).collect();
+    let widened_set: Vec<u32> = set.iter().map(|&byte| u32::from(byte)).collect();
+    let mut result = Vec::new();
+    w14a08_u32_trim_start_into(&mut result, &widened_source, &widened_set);
+    result
+}
+
+// ---------------------------------------------------------------------------
+// Byte string: replace every occurrence (`0067e4a0`)
+// ---------------------------------------------------------------------------
+
+/// The byte-search primitive used by the replace loop.
+///
+/// The shipped routine delegates to a byte-search helper outside this window
+/// with the same contract: `position > length` misses, a zero-length needle
+/// matches at `position`, and `position + needle.len() > length` misses.
+fn w14a08_byte_find(haystack: &[u8], needle: &[u8], position: u32) -> Option<usize> {
+    let start = position as usize;
+    if start > haystack.len() {
+        return None;
+    }
+    if needle.is_empty() {
+        return Some(start);
+    }
+    if needle.len() > haystack.len() - start {
+        return None;
+    }
+    haystack[start..]
+        .windows(needle.len())
+        .position(|window| window == needle)
+        .map(|offset| start + offset)
+}
+
+/// `0x0067e4a0`: replace every occurrence of `needle` with `replacement` in
+/// the byte string `haystack`, left to right, and return the substitution
+/// count.
+///
+/// The recovered loop is:
+///
+/// ```text
+/// pos = find(haystack, needle, 0)
+/// while pos fits:
+///     removed = min(needle.len(), length - pos)
+///     reserve(length - removed + replacement.len())
+///     move the tail behind the match by replacement.len() - removed bytes
+///     copy replacement to pos
+///     length = length - removed + replacement.len()
+///     pos = pos + replacement.len()
+///     pos = find(haystack, needle, pos)
+/// ```
+///
+/// A match is therefore never re-scanned as part of the inserted text.  The
+/// shipped function returns the string itself; the count is returned only so
+/// the tests can observe the loop.  The only guard added here is the
+/// empty-needle case: without it the recovered loop advances `pos` and the
+/// length by the same amount for ever, so the helper leaves the string
+/// unchanged instead (the shipped callers pass the three fixed two- or
+/// three-byte literals).
+pub fn w14a08_byte_replace_all(haystack: &mut Vec<u8>, needle: &[u8], replacement: &[u8]) -> usize {
+    if needle.is_empty() {
+        return 0;
+    }
+    let mut position = match w14a08_byte_find(haystack, needle, 0) {
+        Some(found) => found,
+        None => return 0,
+    };
+    let mut substitutions = 0usize;
+    loop {
+        let removed = needle.len().min(haystack.len() - position);
+        haystack.drain(position..position + removed);
+        haystack.splice(position..position, replacement.iter().copied());
+        substitutions += 1;
+        position += replacement.len();
+        match w14a08_byte_find(haystack, needle, position as u32) {
+            Some(found) => position = found,
+            None => break,
+        }
+    }
+    substitutions
+}
+
+// ---------------------------------------------------------------------------
+// Ordered map (`0067ecb0`, `0067ed90`, `0067ec70`)
+// ---------------------------------------------------------------------------
+
+/// The recovered `std::map<u16, std::vector<u32>>` value type.
+///
+/// A `BTreeMap` models the ordered tree: keys are unique and visited in key
+/// order, and each value is the twelve-byte vector recovered from node
+/// `+0x14`.
+pub type W14a08OrderedMap = std::collections::BTreeMap<u16, Vec<u32>>;
+
+/// `0x0067ecb0`: return the value vector for `key`, inserting an empty entry
+/// when the key is absent.
+///
+/// The shipped member is the tree's `operator[]`: it descends the red-black
+/// tree through the lookup helper `FUN_00680cd0`, allocates a `0x20`-byte
+/// node on a miss (parent, left, right, colour, the `u16` key at `+0x10` and
+/// a zeroed twelve-byte value vector at `+0x14`), links and rebalances it,
+/// bumps the entry count at `+0x10` of the map, and returns `node + 0x14`.
+/// The `BTreeMap` entry API performs the same lookup-or-insert.
+pub fn w14a08_ordered_map_entry(map: &mut W14a08OrderedMap, key: u16) -> &mut Vec<u32> {
+    map.entry(key).or_default()
+}
+
+/// `0x0067ed90`: assign a fresh value vector to `map[key]` and return it.
+///
+/// The shipped function looks the entry up, releases the value vector it
+/// already held (a heap buffer is freed and the three-word header is zeroed),
+/// re-obtains the entry and calls the vector resize helper `FUN_00682410`
+/// with `count`.  That resize fills every new slot with `0xffffffff`, so the
+/// observable result is `count` copies of `u32::MAX`.  The temporary empty
+/// vector and the intermediate clear are folded into the final assignment
+/// here.
+pub fn w14a08_ordered_map_assign_minus_one(
+    map: &mut W14a08OrderedMap,
+    key: u16,
+    count: u32,
+) -> &mut Vec<u32> {
+    let value = w14a08_ordered_map_entry(map, key);
+    value.clear();
+    value.resize(count as usize, u32::MAX);
+    value
+}
+
+/// `0x0067ec70`: release the ordered tree rooted at the map's first word.
+///
+/// The body is a single call to the recursive node destructor
+/// `FUN_00680c30` with `*(this + 0x00)`; that destructor walks the node link
+/// at `+0x04`, destroys the twelve-byte vector value and releases the node.
+/// The `BTreeMap` model reproduces the resulting empty map and reports how
+/// many entries were released.
+pub fn w14a08_ordered_map_release(map: &mut W14a08OrderedMap) -> usize {
+    let released = map.len();
+    map.clear();
+    released
+}
+
+// ---------------------------------------------------------------------------
+// Global chained hash map (`0067ebd0`, `0067ee60`)
+// ---------------------------------------------------------------------------
+
+/// The recovered shape of the client's global chained hash map.
+///
+/// The bucket array is optional because the shipped routines distinguish a
+/// null array pointer from an allocated one.  When present, the vector holds
+/// `bucket_count` buckets, and each bucket holds the chain of node
+/// identifiers from head to tail.  Node identity and payload destruction are
+/// abstracted: releasing a chain drops its identifiers, exactly as the
+/// shipped loop destroys the payload object at node `+0x08` and frees the
+/// node.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct W14a08HashTable {
+    /// `+0x00`: bucket count.
+    pub bucket_count: u32,
+    /// `+0x04`: bucket array, `None` while the pointer is null.
+    pub buckets: Option<Vec<Vec<u32>>>,
+    /// `+0x08`: live entry count.
+    pub size: u32,
+}
+
+/// Total number of chained nodes in a bucket array.
+fn w14a08_hash_chain_nodes(buckets: &[Vec<u32>]) -> usize {
+    buckets.iter().map(Vec::len).sum()
+}
+
+/// `0x0067ebd0`: destroy the hash table.
+///
+/// The shipped body returns immediately when the bucket-array pointer is
+/// null.  Otherwise it walks every bucket `0..bucket_count`, and for each
+/// node in the chain it saves the `+0x00` link, destroys the payload pointer
+/// stored at `+0x08` through `FUN_0065bf90`, and frees the node.  It then
+/// frees the bucket array itself and writes null to `+0x04`.  The bucket
+/// count at `+0x00` and the entry count at `+0x08` are left untouched.
+///
+/// The model releases the chain identifiers and sets `buckets` to `None`;
+/// the returned value is the number of nodes released.
+pub fn w14a08_hash_table_destroy(table: &mut W14a08HashTable) -> usize {
+    let released = table
+        .buckets
+        .as_deref()
+        .map(w14a08_hash_chain_nodes)
+        .unwrap_or(0);
+    table.buckets = None;
+    released
+}
+
+/// `0x0067ee60`: clear the hash table while keeping its bucket array.
+///
+/// The shipped body obtains the global table pointer, returns early when the
+/// bucket array is null (after storing zero in the size field), and otherwise
+/// walks each bucket, releases the chain exactly like the destructor, writes
+/// zero into that bucket head, and finally stores zero in the size field.
+///
+/// The model empties every bucket, keeps the array allocated, and resets
+/// `size` to zero.  The returned value is the number of nodes released.
+pub fn w14a08_hash_table_clear(table: &mut W14a08HashTable) -> usize {
+    let released = match table.buckets.as_mut() {
+        Some(buckets) => {
+            let released = w14a08_hash_chain_nodes(buckets);
+            for chain in buckets.iter_mut() {
+                chain.clear();
+            }
+            released
+        }
+        None => 0,
+    };
+    table.size = 0;
+    released
+}
+
+// ---------------------------------------------------------------------------
+// Camera tile window (`0067f450`)
+// ---------------------------------------------------------------------------
+
+/// `0x0067f450`: the screen extent used by the camera tile walk.
+///
+/// The machine code converts the floating-point screen dimension with
+/// `cvttss2si`, subtracts one and clamps the result to zero:
+///
+/// ```text
+/// value = cvttss2si(pixels) - 1
+/// if value <= 0: value = 0
+/// ```
+///
+/// `cvttss2si` returns `0x80000000` for NaN and out-of-range inputs; the
+/// helper reproduces that conversion before the wrapping decrement.  The
+/// callers pass a finite screen dimension.
+pub fn w14a08_screen_tile_extent(pixels: f32) -> i32 {
+    let converted = if !pixels.is_finite() || pixels >= 2_147_483_648.0 || pixels < -2_147_483_648.0
+    {
+        i32::MIN
+    } else {
+        pixels.trunc() as i32
+    };
+    let extent = converted.wrapping_sub(1);
+    if extent <= 0 { 0 } else { extent }
+}
+
+/// `0x0067f450`: the recovered tile-block count for one map dimension.
+///
+/// The shipped expression is the compiler's signed-division bias around a
+/// thirty-two tile block, followed by one extra block:
+///
+/// ```text
+/// biased = dimension + 0x1f
+/// count  = ((biased + ((biased >> 31) & 0x1f)) >> 5) + 1
+/// ```
+///
+/// For a non-negative dimension this is `ceil(dimension / 32) + 1`.
+pub fn w14a08_tile_block_span(dimension: i32) -> i32 {
+    let biased = dimension.wrapping_add(0x1f);
+    (biased.wrapping_add((biased >> 31) & 0x1f) >> 5).wrapping_add(1)
+}
+
+/// The half-open tile rectangle recovered from the camera walk.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct W14a08TileWindow {
+    /// `[ebp-0x18]`: first column, `-extent_x`.
+    pub x_start: i32,
+    /// `[ebp-0x14]`: one past the last column.
+    pub x_end: i32,
+    /// `[ebp-0x10]`: first row, `-extent_y`.
+    pub y_start: i32,
+    /// `[ebp-0x20]`: one past the last row.
+    pub y_end: i32,
+}
+
+/// `0x0067f450`: the half-open tile window the camera walk iterates.
+///
+/// The recovered setup is:
+///
+/// ```text
+/// w = clamp_extent(screen_width)      // 0 .. screen_width - 1
+/// h = clamp_extent(screen_height)
+/// x_start = -w
+/// x_end   = block_span(map_width)  + w
+/// y_start = -h
+/// y_end   = block_span(map_height) + h
+/// ```
+///
+/// The rows are visited for `y_start .. y_end` and the columns for
+/// `x_start .. x_end`; the inner walk and the tile stamp are not modelled.
+pub fn w14a08_camera_tile_window(
+    screen_width: f32,
+    screen_height: f32,
+    map_width: i32,
+    map_height: i32,
+) -> W14a08TileWindow {
+    let extent_x = w14a08_screen_tile_extent(screen_width);
+    let extent_y = w14a08_screen_tile_extent(screen_height);
+    W14a08TileWindow {
+        x_start: extent_x.wrapping_neg(),
+        x_end: w14a08_tile_block_span(map_width).wrapping_add(extent_x),
+        y_start: extent_y.wrapping_neg(),
+        y_end: w14a08_tile_block_span(map_height).wrapping_add(extent_y),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tile-buffer walk (`0067ff80`)
+// ---------------------------------------------------------------------------
+
+/// `0x0067ff80`: the map-header fields consumed by the tile walk.
+///
+/// The routine obtains the header through an obfuscated map-pointer global
+/// and reads four unsigned words.  The column loop compares
+/// `column_offset + column < row_width`; the row loop compares
+/// `row_offset + row < row_limit`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct W14a08TileMapHeader {
+    /// `+0xe0`: column offset added to the visited column.
+    pub column_offset: u16,
+    /// `+0xe2`: row offset added to the visited row.
+    pub row_offset: u16,
+    /// `+0xe4`: row width in tiles, also the exclusive column limit.
+    pub row_width: u16,
+    /// `+0xe6`: exclusive row limit.
+    pub row_limit: u16,
+}
+
+/// `0x0067ff80`: the first destination cursor of the tile walk.
+///
+/// The recovered seed is
+/// `array_base + (row_width * row_offset + column_offset) * 2`; the factor of
+/// two is the size of one tile word.
+pub fn w14a08_tile_cursor_seed(array_base: u32, header: &W14a08TileMapHeader) -> u32 {
+    let tile_offset = u32::from(header.row_width)
+        .wrapping_mul(u32::from(header.row_offset))
+        .wrapping_add(u32::from(header.column_offset));
+    array_base.wrapping_add(tile_offset.wrapping_mul(2))
+}
+
+/// `0x0067ff80`: the destination cursor advance between two visited rows.
+///
+/// The row cursor is reset from the previous row seed and advanced by
+/// `row_width * 2` bytes after every row.
+pub fn w14a08_tile_row_advance(header: &W14a08TileMapHeader) -> u32 {
+    u32::from(header.row_width).wrapping_mul(2)
+}
+
+/// `0x0067ff80`: whether the tile walk visits `(row, column)`.
+///
+/// Both comparisons are the unsigned ones from the shipped loop; the walk
+/// index starts at zero and is offset by the header's row and column bases.
+pub fn w14a08_tile_cell_visible(header: &W14a08TileMapHeader, row: u32, column: u32) -> bool {
+    u32::from(header.row_offset).wrapping_add(row) < u32::from(header.row_limit)
+        && u32::from(header.column_offset).wrapping_add(column) < u32::from(header.row_width)
+}
+
+/// `0x0067ff80`: the visited `(row, column)` pairs, in shipped order.
+///
+/// The row count comes from the map height with [`w14a08_tile_block_span`]
+/// and the column count from the map width; the shipped loop re-reads those
+/// globals for every iteration, which is equivalent to the parameter values
+/// used here.  A failing row predicate skips that row's column loop and
+/// continues with the next row; a failing column predicate leaves the column
+/// loop and continues with the next row.  A non-positive count skips the
+/// corresponding loop.
+///
+/// Each visited cell is handed to the sprite stamp with the cell cursor, the
+/// row and the column; that callee is outside this window and is not
+/// modelled.
+pub fn w14a08_tile_walk(
+    header: &W14a08TileMapHeader,
+    map_width: i32,
+    map_height: i32,
+) -> Vec<(u32, u32)> {
+    let mut cells = Vec::new();
+    let rows = w14a08_tile_block_span(map_height);
+    if rows <= 0 {
+        return cells;
+    }
+    for row in 0..rows as u32 {
+        let columns = w14a08_tile_block_span(map_width);
+        if columns <= 0 {
+            continue;
+        }
+        for column in 0..columns as u32 {
+            if !w14a08_tile_cell_visible(header, row, column) {
+                break;
+            }
+            cells.push((row, column));
+        }
+    }
+    cells
+}
+
+/// `0x0067ff80`: the byte address of a visited tile word.
+///
+/// The row seed advances by [`w14a08_tile_row_advance`] and the column cursor
+/// by two bytes, so the address is
+/// `seed + row * row_width * 2 + column * 2`.  `row` and `column` are walk
+/// indices, not the biased map coordinates.
+pub fn w14a08_tile_cell_address(
+    array_base: u32,
+    header: &W14a08TileMapHeader,
+    row: u32,
+    column: u32,
+) -> u32 {
+    w14a08_tile_cursor_seed(array_base, header)
+        .wrapping_add(
+            row.wrapping_mul(u32::from(header.row_width))
+                .wrapping_mul(2),
+        )
+        .wrapping_add(column.wrapping_mul(2))
+}
+
+#[cfg(test)]
+mod tests_wave14_agent08 {
+    use super::*;
+
+    // -- UTF-32 assign and growth -------------------------------------------
+
+    #[test]
+    fn growth_uses_the_recovered_double_plus_fifteen_rule() {
+        assert_eq!(
+            w14a08_u32_growth_capacity(W14A08_EMPTY_CAPACITY_WORD, 0),
+            None
+        );
+        assert_eq!(
+            w14a08_u32_growth_capacity(W14A08_EMPTY_CAPACITY_WORD, 15),
+            None
+        );
+        assert_eq!(
+            w14a08_u32_growth_capacity(W14A08_EMPTY_CAPACITY_WORD, 16),
+            Some(22)
+        );
+        assert_eq!(
+            w14a08_u32_growth_capacity(W14A08_EMPTY_CAPACITY_WORD, 22),
+            Some(22)
+        );
+        assert_eq!(
+            w14a08_u32_growth_capacity(W14A08_EMPTY_CAPACITY_WORD, 23),
+            Some(23)
+        );
+        // A heap header without the tag bit grows by half of its capacity.
+        assert_eq!(w14a08_u32_growth_capacity(100, 100), None);
+        assert_eq!(w14a08_u32_growth_capacity(100, 101), Some(150));
+        assert_eq!(w14a08_u32_growth_capacity(100, 200), Some(200));
+    }
+
+    #[test]
+    fn assign_replaces_every_element_and_grows_inline() {
+        let source: Vec<u32> = (1..=20).collect();
+        let mut destination = vec![0xdead_beef; 3];
+        w14a08_u32_assign(&mut destination, &source);
+        assert_eq!(destination, source);
+        assert!(
+            destination.capacity() >= 22,
+            "growth target must be reserved"
+        );
+
+        w14a08_u32_assign(&mut destination, &[]);
+        assert!(destination.is_empty());
+    }
+
+    #[test]
+    fn assign_keeps_the_fifteen_inline_elements_without_reallocation() {
+        for length in 0..=15usize {
+            let source: Vec<u32> = (0..length as u32).collect();
+            let mut destination = Vec::new();
+            w14a08_u32_assign(&mut destination, &source);
+            assert_eq!(destination, source, "length {length}");
+        }
+    }
+
+    // -- UTF-32 find ---------------------------------------------------------
+
+    #[test]
+    fn find_honours_position_and_returns_none_at_or_past_the_end() {
+        let haystack = [10, 20, 30, 20, 0x1f600];
+        assert_eq!(w14a08_u32_find(&haystack, 20, 0), Some(1));
+        assert_eq!(w14a08_u32_find(&haystack, 20, 1), Some(1));
+        assert_eq!(w14a08_u32_find(&haystack, 20, 2), Some(3));
+        assert_eq!(w14a08_u32_find(&haystack, 20, 3), Some(3));
+        assert_eq!(w14a08_u32_find(&haystack, 20, 4), None);
+        assert_eq!(w14a08_u32_find(&haystack, 20, 5), None);
+        assert_eq!(w14a08_u32_find(&haystack, 20, 999), None);
+        assert_eq!(w14a08_u32_find(&haystack, 99, 0), None);
+        assert_eq!(w14a08_u32_find(&haystack, 0x1f600, 0), Some(4));
+        assert_eq!(w14a08_u32_find(&[], 1, 0), None);
+    }
+
+    // -- UTF-32 trim right ---------------------------------------------------
+
+    #[test]
+    fn trim_end_removes_only_the_trailing_members_of_the_set() {
+        let source = ['a' as u32, 'b' as u32, 'x' as u32, 'x' as u32];
+        let set = ['x' as u32];
+        let mut destination = vec![0xffff_ffff];
+        w14a08_u32_trim_end_into(&mut destination, &source, &set);
+        assert_eq!(destination, vec!['a' as u32, 'b' as u32]);
+
+        // Every code point is in the set: the result is empty.
+        let all = ['x' as u32, 'x' as u32];
+        w14a08_u32_trim_end_into(&mut destination, &all, &set);
+        assert!(destination.is_empty());
+
+        // An empty set and an empty source both leave the source prefix.
+        w14a08_u32_trim_end_into(&mut destination, &source, &[]);
+        assert_eq!(destination, source);
+        w14a08_u32_trim_end_into(&mut destination, &[], &set);
+        assert!(destination.is_empty());
+
+        // A mismatching code point at the front keeps the whole string.
+        let no_trailing = ['a' as u32, 'x' as u32, 'b' as u32];
+        w14a08_u32_trim_end_into(&mut destination, &no_trailing, &set);
+        assert_eq!(destination, no_trailing);
+    }
+
+    #[test]
+    fn trim_end_bytes_widens_octets_and_trims_the_right_edge() {
+        let result = w14a08_u32_trim_end_bytes(b"value \t\r\n", b" \t\r\n");
+        assert_eq!(result, "value".chars().map(u32::from).collect::<Vec<_>>());
+        assert!(w14a08_u32_trim_end_bytes(b"", b" ").is_empty());
+        assert_eq!(
+            w14a08_u32_trim_end_bytes(b"  ab  ", b" "),
+            "  ab".chars().map(u32::from).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            w14a08_u32_trim_end_bytes(b"ab", b""),
+            "ab".chars().map(u32::from).collect::<Vec<_>>()
+        );
+    }
+
+    // -- UTF-32 trim left ----------------------------------------------------
+
+    #[test]
+    fn trim_start_removes_only_the_leading_members_of_the_set() {
+        let source = ['x' as u32, 'x' as u32, 'a' as u32, 'b' as u32];
+        let set = ['x' as u32];
+        let mut destination = vec![0xdead_beef];
+        w14a08_u32_trim_start_into(&mut destination, &source, &set);
+        assert_eq!(destination, vec!['a' as u32, 'b' as u32]);
+
+        let all = ['x' as u32, 'x' as u32];
+        w14a08_u32_trim_start_into(&mut destination, &all, &set);
+        assert!(destination.is_empty());
+
+        w14a08_u32_trim_start_into(&mut destination, &source, &[]);
+        assert_eq!(destination, source);
+        w14a08_u32_trim_start_into(&mut destination, &[], &set);
+        assert!(destination.is_empty());
+    }
+
+    #[test]
+    fn trim_start_and_trim_end_are_mirror_images() {
+        let mixed = ['x' as u32, 'a' as u32, 'y' as u32, 'x' as u32];
+        let set = ['x' as u32];
+        assert_eq!(
+            w14a08_u32_trim_start_bytes(b"xayx", b"x"),
+            vec!['a' as u32, 'y' as u32, 'x' as u32]
+        );
+        let mut left = Vec::new();
+        let mut right = Vec::new();
+        w14a08_u32_trim_start_into(&mut left, &mixed, &set);
+        w14a08_u32_trim_end_into(&mut right, &mixed, &set);
+        assert_eq!(left, vec!['a' as u32, 'y' as u32, 'x' as u32]);
+        assert_eq!(right, vec!['x' as u32, 'a' as u32, 'y' as u32]);
+    }
+
+    #[test]
+    fn both_trim_wrappers_match_their_in_place_helpers() {
+        let source: Vec<u32> = "xy middle yx".chars().map(u32::from).collect();
+        let set: Vec<u32> = "xy".chars().map(u32::from).collect();
+        let mut expected = Vec::new();
+        w14a08_u32_trim_end_into(&mut expected, &source, &set);
+        assert_eq!(w14a08_u32_trim_end_bytes(b"xy middle yx", b"xy"), expected);
+
+        let mut expected = Vec::new();
+        w14a08_u32_trim_start_into(&mut expected, &source, &set);
+        assert_eq!(
+            w14a08_u32_trim_start_bytes(b"xy middle yx", b"xy"),
+            expected
+        );
+    }
+
+    // -- Byte-string replace-all --------------------------------------------
+
+    #[test]
+    fn replace_all_substitutes_every_occurrence_left_to_right() {
+        let mut text = Vec::from(&b"a\\ub"[..]);
+        assert_eq!(w14a08_byte_replace_all(&mut text, b"\\u", b"X"), 1);
+        assert_eq!(text, b"aXb");
+
+        let mut text = Vec::from(&b"\\u\\u"[..]);
+        assert_eq!(w14a08_byte_replace_all(&mut text, b"\\u", b"Q"), 2);
+        assert_eq!(text, b"QQ");
+
+        let mut text = Vec::from(&b"\\n\\t\\u"[..]);
+        assert_eq!(w14a08_byte_replace_all(&mut text, b"\\n", b"\\\\n"), 1);
+        assert_eq!(w14a08_byte_replace_all(&mut text, b"\\t", b"\\\\t"), 1);
+        assert_eq!(text, b"\\\\n\\\\t\\u");
+    }
+
+    #[test]
+    fn replace_all_leaves_non_matching_text_alone() {
+        let mut text = Vec::from(&b"plain text"[..]);
+        assert_eq!(w14a08_byte_replace_all(&mut text, b"\\u", b"x"), 0);
+        assert_eq!(text, b"plain text");
+
+        let mut text = Vec::from(&b"abc"[..]);
+        assert_eq!(w14a08_byte_replace_all(&mut text, b"", b"x"), 0);
+        assert_eq!(text, b"abc");
+    }
+
+    #[test]
+    fn replace_all_handles_the_truncated_tail_at_the_end() {
+        // The last occurrence is shorter than the needle only when the match
+        // starts inside the string; the shipped loop clamps the removal with
+        // min(needle.len(), length - position).
+        let mut text = Vec::from(&b"xx"[..]);
+        assert_eq!(w14a08_byte_replace_all(&mut text, b"xx", b"y"), 1);
+        assert_eq!(text, b"y");
+
+        let mut text = Vec::from(&b"aaaa"[..]);
+        assert_eq!(w14a08_byte_replace_all(&mut text, b"aa", b"b"), 2);
+        assert_eq!(text, b"bb");
+    }
+
+    // -- Ordered map ---------------------------------------------------------
+
+    #[test]
+    fn ordered_map_entry_inserts_missing_keys_and_keeps_existing_values() {
+        let mut map = W14a08OrderedMap::new();
+        assert!(w14a08_ordered_map_entry(&mut map, 7).is_empty());
+        assert_eq!(map.len(), 1);
+        w14a08_ordered_map_entry(&mut map, 7).extend_from_slice(&[1, 2, 3]);
+        assert_eq!(map.get(&7).map(Vec::as_slice), Some(&[1u32, 2, 3][..]));
+        let entry = w14a08_ordered_map_entry(&mut map, 7);
+        assert_eq!(entry.as_slice(), &[1u32, 2, 3][..]);
+        assert_eq!(map.len(), 1);
+    }
+
+    #[test]
+    fn ordered_map_assign_fills_with_minus_one() {
+        let mut map = W14a08OrderedMap::new();
+        let value = w14a08_ordered_map_assign_minus_one(&mut map, 2, 4);
+        assert_eq!(value.len(), 4);
+        assert!(value.iter().all(|&element| element == u32::MAX));
+        assert_eq!(map.get(&2).map(Vec::as_slice), Some(&[u32::MAX; 4][..]));
+
+        // The previous value is replaced, other keys are untouched.
+        map.insert(6, vec![9]);
+        let value = w14a08_ordered_map_assign_minus_one(&mut map, 2, 1);
+        assert_eq!(value.as_slice(), &[u32::MAX][..]);
+        assert_eq!(map.get(&2).map(Vec::as_slice), Some(&[u32::MAX][..]));
+        assert_eq!(map.get(&6).map(Vec::as_slice), Some(&[9u32][..]));
+
+        // A zero count assigns an empty value.
+        assert!(w14a08_ordered_map_assign_minus_one(&mut map, 6, 0).is_empty());
+        assert_eq!(map.get(&6).map(Vec::as_slice), Some(&[][..]));
+    }
+
+    #[test]
+    fn ordered_map_release_empties_the_tree_and_counts_entries() {
+        let mut map = W14a08OrderedMap::new();
+        map.insert(1, vec![10]);
+        map.insert(2, vec![20, 21]);
+        assert_eq!(w14a08_ordered_map_release(&mut map), 2);
+        assert!(map.is_empty());
+        assert_eq!(w14a08_ordered_map_release(&mut map), 0);
+    }
+
+    // -- Hash-map cleanup ----------------------------------------------------
+
+    fn sample_hash_table() -> W14a08HashTable {
+        W14a08HashTable {
+            bucket_count: 4,
+            buckets: Some(vec![vec![0, 1], vec![2], Vec::new(), vec![3, 4, 5]]),
+            size: 6,
+        }
+    }
+
+    #[test]
+    fn hash_destroy_releases_chains_and_the_bucket_array() {
+        let mut table = sample_hash_table();
+        assert_eq!(w14a08_hash_table_destroy(&mut table), 6);
+        assert_eq!(table.buckets, None);
+        // The shipped destructor leaves the count and size fields alone.
+        assert_eq!(table.bucket_count, 4);
+        assert_eq!(table.size, 6);
+
+        // A null bucket array is a no-op.
+        let mut empty = W14a08HashTable {
+            bucket_count: 8,
+            buckets: None,
+            size: 0,
+        };
+        assert_eq!(w14a08_hash_table_destroy(&mut empty), 0);
+        assert_eq!(empty.buckets, None);
+    }
+
+    #[test]
+    fn hash_clear_keeps_the_array_and_resets_the_size() {
+        let mut table = sample_hash_table();
+        assert_eq!(w14a08_hash_table_clear(&mut table), 6);
+        assert_eq!(
+            table.buckets,
+            Some(vec![Vec::new(), Vec::new(), Vec::new(), Vec::new()])
+        );
+        assert_eq!(table.bucket_count, 4);
+        assert_eq!(table.size, 0);
+
+        let mut empty = W14a08HashTable {
+            bucket_count: 8,
+            buckets: None,
+            size: 7,
+        };
+        assert_eq!(w14a08_hash_table_clear(&mut empty), 0);
+        assert_eq!(empty.buckets, None);
+        assert_eq!(empty.size, 0);
+    }
+
+    // -- Camera tile window --------------------------------------------------
+
+    #[test]
+    fn screen_extent_truncates_decrements_and_clamps() {
+        assert_eq!(w14a08_screen_tile_extent(0.0), 0);
+        assert_eq!(w14a08_screen_tile_extent(1.0), 0);
+        assert_eq!(w14a08_screen_tile_extent(1.9), 0);
+        assert_eq!(w14a08_screen_tile_extent(2.0), 1);
+        assert_eq!(w14a08_screen_tile_extent(32.9), 31);
+        assert_eq!(w14a08_screen_tile_extent(-5.0), 0);
+        // `cvttss2si` turns NaN into 0x80000000; the decrement wraps to
+        // 0x7fffffff, which is positive and therefore survives the clamp.
+        assert_eq!(w14a08_screen_tile_extent(f32::NAN), i32::MAX);
+    }
+
+    #[test]
+    fn tile_block_span_is_ceil_over_thirty_two_plus_one() {
+        assert_eq!(w14a08_tile_block_span(0), 1);
+        assert_eq!(w14a08_tile_block_span(1), 2);
+        assert_eq!(w14a08_tile_block_span(31), 2);
+        assert_eq!(w14a08_tile_block_span(32), 2);
+        assert_eq!(w14a08_tile_block_span(33), 3);
+        assert_eq!(w14a08_tile_block_span(1024), 33);
+    }
+
+    #[test]
+    fn camera_window_is_half_open_and_uses_the_block_counts() {
+        let window = w14a08_camera_tile_window(640.0, 480.0, 32, 32);
+        assert_eq!(window.x_start, -639);
+        assert_eq!(window.x_end, 641);
+        assert_eq!(window.y_start, -479);
+        assert_eq!(window.y_end, 481);
+
+        let single_block = w14a08_camera_tile_window(1.0, 1.0, 0, 0);
+        assert_eq!(single_block.x_start, 0);
+        assert_eq!(single_block.x_end, 1);
+        assert_eq!(single_block.y_start, 0);
+        assert_eq!(single_block.y_end, 1);
+    }
+
+    // -- Tile-buffer walk ----------------------------------------------------
+
+    fn sample_tile_header() -> W14a08TileMapHeader {
+        W14a08TileMapHeader {
+            column_offset: 2,
+            row_offset: 3,
+            row_width: 10,
+            row_limit: 8,
+        }
+    }
+
+    #[test]
+    fn tile_cursor_seed_row_advance_and_cell_address_agree() {
+        let header = sample_tile_header();
+        let seed = w14a08_tile_cursor_seed(0x1000, &header);
+        assert_eq!(seed, 0x1000 + (10 * 3 + 2) * 2);
+        assert_eq!(w14a08_tile_row_advance(&header), 20);
+        assert_eq!(w14a08_tile_cell_address(0x1000, &header, 0, 0), seed);
+        assert_eq!(w14a08_tile_cell_address(0x1000, &header, 1, 1), seed + 22);
+        assert_eq!(
+            w14a08_tile_cell_address(0x1000, &header, 2, 3),
+            seed + 2 * 20 + 3 * 2
+        );
+    }
+
+    #[test]
+    fn tile_cells_respect_both_header_bounds() {
+        let header = sample_tile_header();
+        assert!(w14a08_tile_cell_visible(&header, 0, 0));
+        // row 3 + 4 = 7 < 8 and column 2 + 7 = 9 < 10.
+        assert!(w14a08_tile_cell_visible(&header, 4, 7));
+        // row 3 + 5 = 8 is the exclusive limit.
+        assert!(!w14a08_tile_cell_visible(&header, 5, 0));
+        // column 2 + 8 = 10 is the exclusive limit.
+        assert!(!w14a08_tile_cell_visible(&header, 0, 8));
+    }
+
+    #[test]
+    fn tile_walk_follows_the_recovered_row_and_column_breaks() {
+        let header = sample_tile_header();
+        assert_eq!(
+            w14a08_tile_walk(&header, 32, 32),
+            vec![(0, 0), (0, 1), (1, 0), (1, 1)]
+        );
+
+        // The second row starts at the exclusive limit and is skipped, but
+        // its row cursor still advances.
+        let first_row_only = W14a08TileMapHeader {
+            row_limit: 4,
+            ..header
+        };
+        assert_eq!(
+            w14a08_tile_walk(&first_row_only, 32, 32),
+            vec![(0, 0), (0, 1)]
+        );
+
+        // The second column is at the exclusive width limit and ends the
+        // column loop for every row.
+        let narrow = W14a08TileMapHeader {
+            column_offset: 9,
+            ..header
+        };
+        assert_eq!(w14a08_tile_walk(&narrow, 32, 32), vec![(0, 0), (1, 0)]);
+
+        // A negative map dimension produces a non-positive block count.
+        assert!(w14a08_tile_walk(&header, 32, i32::MIN).is_empty());
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave14/agent09.rs
+// ===========================================================================
+// Wave 14 translation batch 09 (staging).
+//
+// Window: `680000..681fff`.
+//
+// The window is the terrain/minimap scroll block of the 1.23.10 client, plus
+// the small intrusive tree/hash containers that the band cache uses.  Fifteen
+// rows carry a recoverable contract and are translated below; the remaining
+// candidate rows are thunks, `noreturn` assertion tails, or mid-function
+// fragments and are listed under [Skipped rows](#skipped-rows).
+//
+// Everything here is a free helper over values, slices and indices.  Nothing
+// touches `World`, `SimUnit`, the renderer or the client, and no state is
+// added to save/replay.
+//
+// ## Recovered layouts
+//
+// | location | layout |
+// |----------|--------|
+// | intrusive tree node | `+0x00` parent, `+0x04` left, `+0x08` right, `+0x0c` colour byte (`0` = black), `+0x10` `u16` key, `+0x14` dword-array pointer, `+0x18` element count (`-1` entries are empty slots) |
+// | tree header | `+0x00` root, `+0x04` leftmost in-order node, `+0x08` rightmost in-order node |
+// | hash header | `+0x00` bucket count, `+0x04` bucket-array pointer, `+0x08` element count, `+0x0c` maximum load factor (`1.0`, i.e. dword `3f800000`) |
+// | hash chain node | `+0x00` next node, `+0x04` key dword, `+0x08` value |
+// | terrain context | pointer `f063cc ^ 10fae560`: `+0xe0` tile column, `+0xe2` tile row, `+0xe4` width in tiles, `+0xe6` height in tiles, `+0xec` water variant flags (low three bits) |
+// | scroll state | `fe5b88` x, `fe5b8c` y, `fe5b80` previous x, `fe5b84` previous y, `fe5b78` cached left column, `fe5b7c` cached top row, `fe5b4c` x limit, `fe5b50` y limit, `fe5af4`/`fe5af8` parallax wrap |
+// | parallax layers | five dwords at `fe5b0c` (x) and `fe5b20` (y); speeds at `f06500` |
+// | tile id table | base `11d3020`, `+0x14`, stride `0x1a` `u16` words |
+//
+// Bare hex names abbreviate image globals; the low bytes are the exact
+// offsets.
+//
+// ## Skipped rows
+//
+// * `FUN_00680290` - once-guard around an opaque constructor plus a cleanup
+//   callback; the returned object at `fe5c08` has no visible fields.
+// * `FUN_006803a0` - start-up path with `unaff_EDI/ESI/EBX` register inputs
+//   that reads opaque globals and ends in non-returning calls; no value
+//   contract survives.
+// * `FUN_006804be` - one-byte empty `ret`.
+// * `FUN_00680742` - mid-function fragment over `in_EAX/in_ECX/unaff_ESI/
+//   unaff_EBX` and the x87 `2^52` integer-conversion constants; no
+//   self-contained signature.
+// * `FUN_0068090b` - one-byte do-nothing infinite loop.
+// * `FUN_006809df` - fragment writing through `unaff_EDI/in_EAX` and then
+//   calling two opaque routines.
+// * `FUN_00680a90` - `DECOMPILE_FAILED` (decompiler timeout).
+// * `FUN_00680c30` - recursive tree destructor whose recursive and fallthrough
+//   arms both end in the non-returning range-check handler; no observable
+//   result.
+// * `FUN_00680cb0` - SEH unwind fragment over `unaff_EBP` frame slots.
+// * `FUN_00680d21` - one-byte empty `ret`.
+// * `FUN_00680da0` - ten-byte tail call to the non-returning handler.
+// * `FUN_00680df0` - bounds assertion over decrypted context dwords; both
+//   arms end in the non-returning handler, so no value survives.
+// * `FUN_00680f90` - single tail call to the non-returning handler.
+// * `FUN_006811c0` - ten-byte tail call to the non-returning handler (the band
+//   filler invoked by the two scroll routines).
+// * `FUN_006811eb` - mid-function block over `unaff_EBP` stack arguments;
+//   only a width range check remains.
+// * `FUN_00681360` - five back-to-back calls into the texture layer with no
+//   visible arguments or results.
+// * `FUN_006819af` - second copy of the tile-id band loop with an unrecovered
+//   `unaff_EBP` frame; its shared lookup/flag arithmetic is translated with
+//   the sibling at `0x006819c5`.
+// * `FUN_00681d90` - non-returning handler call only.
+
+// ---------------------------------------------------------------------------
+// Intrusive tree: in-order successor and insert search
+// ---------------------------------------------------------------------------
+
+/// `0x00680190`: in-order successor in the intrusive tree used by the band
+/// cache destructor.
+///
+/// The destructor starts at the header's leftmost node and advances until it
+/// reaches the header again; each visit releases the node's `+0x14` dword
+/// array and zeroes the `+0x18` count before the successor step.  This helper
+/// models the step itself: with a right child the successor is that subtree's
+/// leftmost node, otherwise the walk climbs until the current node is not its
+/// parent's right child and returns that parent.  `None` is the header, i.e.
+/// the end of the traversal (the retail body compares against the header
+/// pointer and rewrites the rightmost node's successor to the header).
+pub fn w14a09_inorder_successor(
+    left: &[Option<usize>],
+    right: &[Option<usize>],
+    parent: &[Option<usize>],
+    node: usize,
+) -> Option<usize> {
+    if let Some(right_node) = right[node] {
+        let mut current = right_node;
+        while let Some(next) = left[current] {
+            current = next;
+        }
+        return Some(current);
+    }
+
+    let mut current = node;
+    let mut up = parent[current];
+    while let Some(parent_node) = up {
+        if right[parent_node] != Some(current) {
+            return Some(parent_node);
+        }
+        current = parent_node;
+        up = parent[parent_node];
+    }
+    None
+}
+
+/// Which link of the returned node the insert search selected.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum W14a09InsertHint {
+    /// The key already exists in the returned node.
+    AtNode,
+    /// The key belongs in the returned node's left child link.
+    LeftChild,
+    /// The key belongs in the returned node's right child link.
+    RightChild,
+}
+
+/// `0x00680cd0`: unique-insert search over the intrusive tree.
+///
+/// The body walks the tree comparing the caller's `u16` key with the node key
+/// at `+0x10`: strictly smaller keys descend left, equal and larger keys
+/// descend right.  When the last visited node's key is `<=` the wanted key the
+/// result is that node with [`W14a09InsertHint::AtNode`] on equality or
+/// [`W14a09InsertHint::RightChild`] when the key is strictly larger.  When the
+/// last node's key is larger, the inlined predecessor walk decides between
+/// [`W14a09InsertHint::AtNode`] (the predecessor's key already equals or
+/// exceeds the wanted key, so the predecessor is the lower bound) and
+/// [`W14a09InsertHint::LeftChild`].  A node equal to `leftmost` skips the
+/// predecessor check, exactly as the retail body's `header->left` comparison
+/// does.
+///
+/// `keys`, `left`, `right` and `parent` describe the same nodes; `root` is the
+/// header's `+0x00` link.  `None` is returned only for an empty tree, where the
+/// retail body returns the header and its left link.
+pub fn w14a09_find_insert_position(
+    keys: &[u16],
+    left: &[Option<usize>],
+    right: &[Option<usize>],
+    parent: &[Option<usize>],
+    leftmost: usize,
+    root: Option<usize>,
+    key: u16,
+) -> Option<(usize, W14a09InsertHint)> {
+    let mut where_node = None;
+    if let Some(mut node) = root {
+        loop {
+            where_node = Some(node);
+            let next = if key < keys[node] {
+                left[node]
+            } else {
+                right[node]
+            };
+            match next {
+                Some(child) => node = child,
+                None => break,
+            }
+        }
+
+        let leaf = where_node.expect("root is some");
+        let leaf_key = keys[leaf];
+        if leaf_key <= key {
+            let hint = if leaf_key < key {
+                W14a09InsertHint::RightChild
+            } else {
+                W14a09InsertHint::AtNode
+            };
+            return Some((leaf, hint));
+        }
+    }
+
+    let node = where_node?;
+    if node != leftmost
+        && let Some(pred) = w14a09_inorder_predecessor(left, right, parent, node)
+        && key <= keys[pred]
+    {
+        return Some((pred, W14a09InsertHint::AtNode));
+    }
+    Some((node, W14a09InsertHint::LeftChild))
+}
+
+/// In-order predecessor, the inlined `_Prev` walk of `0x00680cd0`.
+///
+/// `None` means "no predecessor" (the header's rightmost link in the retail
+/// body); the caller only uses the result when the node is not the leftmost
+/// one, where a predecessor always exists.
+fn w14a09_inorder_predecessor(
+    left: &[Option<usize>],
+    right: &[Option<usize>],
+    parent: &[Option<usize>],
+    node: usize,
+) -> Option<usize> {
+    if let Some(left_node) = left[node] {
+        let mut current = left_node;
+        while let Some(next) = right[current] {
+            current = next;
+        }
+        return Some(current);
+    }
+
+    let mut current = node;
+    let mut up = parent[current];
+    while let Some(parent_node) = up {
+        if right[parent_node] == Some(current) {
+            return Some(parent_node);
+        }
+        current = parent_node;
+        up = parent[parent_node];
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
+// Hash header and checked field
+// ---------------------------------------------------------------------------
+
+/// Bucket count written by the lazy initialiser of `0x00680210`.
+pub const W14A09_HASH_INITIAL_BUCKETS: u32 = 8;
+
+/// Maximum load factor written at header `+0x0c` (`1.0f`).
+pub const W14A09_HASH_LOAD_FACTOR: f32 = 1.0;
+
+/// Byte offset of the value inside one hash chain node.
+pub const W14A09_HASH_VALUE_OFFSET: usize = 8;
+
+/// First hash multiplier (`-0x7a143595` as an unsigned dword).
+pub const W14A09_HASH_MULTIPLIER_1: u32 = 0x85eb_ca6b;
+
+/// Second hash multiplier (`-0x3d4d51cb` as an unsigned dword).
+pub const W14A09_HASH_MULTIPLIER_2: u32 = 0xc2b2_ae35;
+
+/// `0x00680210`: initial contents of the four-dword hash header.
+///
+/// The retail body is a thread-local once-guard: when the guard says the
+/// object at `fe5bf4` is uninitialised it writes `8` at `+0x00`, `0` at
+/// `+0x04` and `+0x08`, `0x3f800000` (`1.0f`) at `+0x0c`, registers the
+/// object's cleanup callback and returns its address.  The guard and the
+/// callback registration are not modelled; the initial field values are.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct W14a09HashHeader {
+    /// `+0x00`: bucket count; the lookup masks with `bucket_count - 1`.
+    pub bucket_count: u32,
+    /// `+0x04`: bucket-array pointer, zero until the first insertion.
+    pub buckets: u32,
+    /// `+0x08`: element count.
+    pub elements: u32,
+    /// `+0x0c`: maximum load factor (`1.0`).
+    pub load_factor: f32,
+}
+
+/// `0x00680210`: the header values installed by the lazy initialiser.
+pub fn w14a09_hash_header_init() -> W14a09HashHeader {
+    W14a09HashHeader {
+        bucket_count: W14A09_HASH_INITIAL_BUCKETS,
+        buckets: 0,
+        elements: 0,
+        load_factor: W14A09_HASH_LOAD_FACTOR,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Checked field read
+// ---------------------------------------------------------------------------
+
+/// Value returned by the `+0x18` getter when the field is unset.
+pub const W14A09_INVALID_FIELD: i32 = -1;
+
+/// `0x00680330`: read the signed dword at `this + 0x18`.
+///
+/// The retail body checks the field against `-1` and, when it matches, calls
+/// the non-returning handler; otherwise it copies the field to the caller's
+/// output.  The helper returns `None` for that sentinel and the value
+/// otherwise, leaving the load to the caller.
+pub fn w14a09_checked_field(value: i32) -> Option<i32> {
+    if value == W14A09_INVALID_FIELD {
+        None
+    } else {
+        Some(value)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Hash bucket lookup
+// ---------------------------------------------------------------------------
+
+/// `0x006806a0`: the two-round hash of one lookup key.
+///
+/// Both rounds fold the high half into the low half before multiplying, and
+/// the final fold is masked with `bucket_count - 1` by the caller.  The
+/// multipliers are recovered dwords and the shift counts are `16`, `13` and
+/// `16`.
+pub fn w14a09_hash_key(key: u32) -> u32 {
+    let mut value = (key >> 16) ^ key;
+    value = value.wrapping_mul(W14A09_HASH_MULTIPLIER_1);
+    value = (value >> 13) ^ value;
+    value = value.wrapping_mul(W14A09_HASH_MULTIPLIER_2);
+    (value >> 16) ^ value
+}
+
+/// `0x006806a0`: bucket index for `key` in a `bucket_count`-bucket table.
+///
+/// The retail body requires a non-null bucket array and masks with
+/// `*piVar2 - 1`, i.e. the bucket count is a power of two (eight in the
+/// initialiser above).  A zero bucket count is not representable in the
+/// retail body either.
+pub fn w14a09_hash_bucket_index(key: u32, bucket_count: u32) -> usize {
+    (w14a09_hash_key(key) & bucket_count.wrapping_sub(1)) as usize
+}
+
+/// `0x006806a0`: follow one bucket chain to the node whose key matches.
+///
+/// `head` is the bucket's first node, `next[i]` is the node's `+0x00` link and
+/// `keys[i]` its `+0x04` dword.  The match returns the node index; the value
+/// lives at `node + 8`.  A miss (the retail body reaches a null `next` and
+/// calls the non-returning handler) is `None`.
+pub fn w14a09_hash_find(
+    keys: &[u32],
+    next: &[Option<usize>],
+    head: Option<usize>,
+    key: u32,
+) -> Option<usize> {
+    let mut current = head;
+    while let Some(node) = current {
+        if keys[node] == key {
+            return Some(node);
+        }
+        current = next[node];
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
+// Presence scan and selection predicate
+// ---------------------------------------------------------------------------
+
+/// `0x00680a00`: linear membership over the dword vector at `fe5ba0`
+/// (`fe5ba4` elements).
+///
+/// The retail body walks `piVar3` from the begin pointer to
+/// `begin + count` and stops on the first equal dword; the boolean it keeps is
+/// inverted later, so this helper returns the plain "found" answer.
+pub fn w14a09_contains_i32(values: &[i32], wanted: i32) -> bool {
+    values.contains(&wanted)
+}
+
+/// `0x00680a00`: the compound visibility predicate around the presence scan.
+///
+/// `present` is [`w14a09_contains_i32`]'s result.  The body then tests two
+/// option bytes: with `fe5b28` non-zero and the out-of-window query reporting
+/// true it returns `true` immediately; with `fe5b2c` non-zero it queries again
+/// and returns `!query || present`; otherwise it returns `present`.  `probe` is
+/// the query and keeps the retail body's lazy evaluation, including the second
+/// call on the `fe5b2c` path.
+pub fn w14a09_selection_predicate<F: FnMut() -> bool>(
+    present: bool,
+    primary_flag: bool,
+    secondary_flag: bool,
+    mut probe: F,
+) -> bool {
+    if primary_flag && probe() {
+        return true;
+    }
+    if secondary_flag {
+        return !probe() || present;
+    }
+    present
+}
+
+// ---------------------------------------------------------------------------
+// Water/noise texture variant
+// ---------------------------------------------------------------------------
+
+/// Eight-entry selector indexed by the low three bits of terrain `+0xec`.
+pub const W14A09_WATER_VARIANTS: [u8; 8] = [0, 2, 2, 1, 0, 2, 0, 0];
+
+/// Texture pair installed by the water initialiser at `0x006813a0`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum W14a09WaterTextures {
+    /// Both normal-water maps (`effect/water_normal_2.dds.grp` and
+    /// `effect/water_normal_1.dds.grp`).
+    Water,
+    /// The noise map (`effect/noise.dds`).
+    Noise,
+    /// No texture load for this variant (selector value `2`).
+    None,
+}
+
+/// `0x006813a0`: choose the water texture set for the map's variant flags.
+///
+/// The selector is `(*(u16 *)(context + 0xec)) & 7` and the recovered table is
+/// [`W14A09_WATER_VARIANTS`].  A table value of `0` loads the two normal water
+/// maps, `1` loads the noise map and `2` loads nothing.  The surrounding body
+/// also creates the two surface banks and fills the `0x400`/`0x40`-entry id
+/// arrays with `-1`; only the variant decision is modelled here.
+pub fn w14a09_water_texture_variant(terrain_flags: u16) -> W14a09WaterTextures {
+    match W14A09_WATER_VARIANTS[(terrain_flags & 7) as usize] {
+        0 => W14a09WaterTextures::Water,
+        1 => W14a09WaterTextures::Noise,
+        _ => W14a09WaterTextures::None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tile flag validation scan
+// ---------------------------------------------------------------------------
+
+/// `0x006815b0`: per-tile bitmask predicate of the terrain validation loop.
+///
+/// For a tile reported special by the out-of-window per-tile predicate the
+/// low byte must contain every bit of `all_bits` (`(all_bits & !low_byte) ==
+/// 0`).  For every other tile at least one bit of `any_bits` must be present
+/// (`(any_bits & flags) != 0`).  The masks are the two globals read by the
+/// body (`119f7c0` and `11a4578`).
+pub fn w14a09_tile_flags_ok(flags: u32, special: bool, all_bits: u32, any_bits: u32) -> bool {
+    if special {
+        (all_bits & !(flags & 0xff)) == 0
+    } else {
+        (any_bits & flags) != 0
+    }
+}
+
+/// `0x006815b0`: scan the whole `width * height` tile array and return the
+/// first failing tile index.
+///
+/// The retail loop runs the recovered tile count down to zero and fails on
+/// the first tile that violates [`w14a09_tile_flags_ok`]; the column counter
+/// it maintains wraps at the map width but is not read again inside the
+/// visible body.  `None` means every tile passed (the retail body returns
+/// without reaching the non-returning handler).
+pub fn w14a09_scan_tile_flags(
+    tiles: &[u32],
+    special: &[bool],
+    all_bits: u32,
+    any_bits: u32,
+) -> Option<usize> {
+    for (index, (&flags, &is_special)) in tiles.iter().zip(special.iter()).enumerate() {
+        if !w14a09_tile_flags_ok(flags, is_special, all_bits, any_bits) {
+            return Some(index);
+        }
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
+// Pixel extents and visible row count
+// ---------------------------------------------------------------------------
+
+/// Tile-to-pixel shift recovered from the map-size setup.
+pub const W14A09_TILE_SHIFT: u32 = 5;
+
+/// `0x00681750`: the two pixel extents of the tile map.
+///
+/// The body sign-extends the 16-bit tile counts at context `+0xe4`/`+0xe6`
+/// and shifts each left by five (32 pixels per tile) before storing them at
+/// `fe5b58`, `fe5b5a`, `fe5b5c` and `fe5b60`.  Tiles counts above `0x7fff`
+/// therefore produce negative extents, matching the retail sign extension.
+pub fn w14a09_tile_extent_to_pixels(width_tiles: u16, height_tiles: u16) -> (i32, i32) {
+    (
+        ((width_tiles as i16 as i32) << W14A09_TILE_SHIFT),
+        ((height_tiles as i16 as i32) << W14A09_TILE_SHIFT),
+    )
+}
+
+/// `0x00681900`: number of 32-pixel rows covered by `screen_px`, plus one.
+///
+/// The body computes
+/// `((screen_px + 31 + (((screen_px + 31) >> 31) & 31)) >> 5) + 1`, the signed
+/// ceiling division by 32 with one extra row, and then runs a bounds assertion
+/// that only ends in the non-returning handler.  Only the recovered count is
+/// modelled; it is also the loop bound used by the band refresh at
+/// `0x00681ad0` and `0x00681e70`.
+pub fn w14a09_visible_rows(screen_px: i32) -> i32 {
+    let biased = screen_px.wrapping_add(0x1f);
+    ((biased.wrapping_add((biased >> 31) & 0x1f)) >> 5).wrapping_add(1)
+}
+
+// ---------------------------------------------------------------------------
+// Tile id lookup and flag update
+// ---------------------------------------------------------------------------
+
+/// `u16` stride of one entry group in the tile id table.
+pub const W14A09_TILE_LOOKUP_STRIDE: usize = 0x1a;
+
+/// Word index of the table's `+0x14` byte bias.
+pub const W14A09_TILE_LOOKUP_BIAS: usize = 0x14 / 2;
+
+/// Bit 30 of the parallel flag dword, raised when the out-of-window coverage
+/// query at `983b60` reports non-zero.
+pub const W14A09_TILE_EXTENT_BIT: u32 = 0x4000_0000;
+
+/// Mask that clears the extent bit before it is rewritten.
+pub const W14A09_TILE_EXTENT_CLEAR: u32 = 0xbfff_ffff;
+
+/// Mask applied to the destination id during the "did it change" test.
+pub const W14A09_TILE_COMPARE_MASK: u32 = 0x7fff;
+
+/// `0x006819c5`: look one tile id up in the `0x1a`-stride table at `11d3020`.
+///
+/// The word index is `10 + ((tile >> 4 & 0x7ff) * 0x1a + (tile & 0xf))`: the
+/// body adds the table's `+0x14` byte bias and scales the two-part index by
+/// two.  `table` must therefore cover `10 + 0x7ff * 0x1a + 0xf` words.
+pub fn w14a09_lookup_tile_id(table: &[u16], tile: u16) -> u16 {
+    let index = ((tile as usize >> 4) & 0x7ff) * W14A09_TILE_LOOKUP_STRIDE + (tile as usize & 0xf);
+    table[W14A09_TILE_LOOKUP_BIAS + index]
+}
+
+/// Result of one tile-id band step.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct W14a09TileIdUpdate {
+    /// Whether the looked-up id differs from the destination's low 15 bits.
+    pub changed: bool,
+    /// The looked-up id, to be stored into the parallel `u16` array.
+    pub id: u16,
+    /// Updated flag dword for the parallel `u32` array.
+    pub flags: u32,
+}
+
+/// `0x006819c5`: compare and apply one tile id from the lookup table.
+///
+/// The looked-up id is compared with the destination's low 15 bits
+/// (`*dst & 0x7fff`).  On a match nothing is written.  Otherwise the id is
+/// stored into the `u16` array, bit 30 of the separate flag dword is cleared
+/// and re-raised only when the out-of-window coverage query reports true, and
+/// the caller refreshes the tile through the band call that follows.  The
+/// flag dword's other bits, including its own low 16 bits, are preserved.
+pub fn w14a09_update_tile_id(
+    flags: u32,
+    destination: u16,
+    new_id: u16,
+    has_extent: bool,
+) -> W14a09TileIdUpdate {
+    if new_id == (u32::from(destination) & W14A09_TILE_COMPARE_MASK) as u16 {
+        return W14a09TileIdUpdate {
+            changed: false,
+            id: new_id,
+            flags,
+        };
+    }
+
+    let mut updated = flags & W14A09_TILE_EXTENT_CLEAR;
+    if has_extent {
+        updated |= W14A09_TILE_EXTENT_BIT;
+    }
+    W14a09TileIdUpdate {
+        changed: true,
+        id: new_id,
+        flags: updated,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Scroll state and band bookkeeping
+// ---------------------------------------------------------------------------
+
+/// Number of parallax layers advanced by every scroll routine.
+pub const W14A09_LAYER_COUNT: usize = 5;
+
+/// The recovered scroll globals.
+///
+/// `x`/`y` are `fe5b88`/`fe5b8c`, the previous request is `fe5b80`/`fe5b84`,
+/// the tile coordinates are context `+0xe0`/`+0xe2` and the cached band origin
+/// is `fe5b78`/`fe5b7c`.  Offsets are in map pixels.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct W14a09ScrollState {
+    /// `fe5b88`: current horizontal offset in map pixels.
+    pub x: i32,
+    /// `fe5b8c`: current vertical offset in map pixels.
+    pub y: i32,
+    /// `fe5b80`: horizontal offset of the previous update.
+    pub prev_x: i32,
+    /// `fe5b84`: vertical offset of the previous update.
+    pub prev_y: i32,
+    /// Context `+0xe0`: current tile column (`x >> 5`).
+    pub tile_x: u16,
+    /// Context `+0xe2`: current tile row (`y >> 5`).
+    pub tile_y: u16,
+    /// `fe5b78`: leftmost tile column of the cached band.
+    pub last_tile_x: u16,
+    /// `fe5b7c`: topmost tile row of the cached band.
+    pub last_tile_y: u16,
+}
+
+/// The five parallax layer offsets stored at `fe5b0c`/`fe5b20`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct W14a09Parallax {
+    /// Horizontal offsets, one per layer.
+    pub offset_x: [i32; W14A09_LAYER_COUNT],
+    /// Vertical offsets, one per layer.
+    pub offset_y: [i32; W14A09_LAYER_COUNT],
+}
+
+/// Outcome of an absolute scroll request.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct W14a09ScrollResult {
+    /// Whether the clamped position moved (the layer offsets were advanced).
+    pub scrolled: bool,
+    /// Whether the tile coordinate crossed out of the cached band.
+    pub tile_changed: bool,
+    /// Rows the retail body would hand to the band filler (`0` when the tile
+    /// coordinate stayed inside the cached band).
+    pub refresh_rows: i32,
+}
+
+/// `0x00681ad0`: clamp an absolute scroll request and advance the parallax.
+///
+/// The request is clamped to `[0, limit_x]`/`[0, limit_y]` (the limit itself is
+/// reachable, as in the retail `limit <= value` upper test), then converted to
+/// tile coordinates with an arithmetic `>> 5`.  When the clamped position
+/// differs from the previous one the five layer offsets advance by
+/// `(velocity * (previous - new) + offset) % wrap`, using the previous request
+/// stored in the state.  The tile-band refresh that follows in the retail body
+/// calls the non-returning filler at `6811c0`; its row count is returned
+/// instead.
+///
+/// The two leading out-of-window guards (the `7744b0`/`7490d0` pair) are the
+/// caller's responsibility; `wrap_x`/`wrap_y` must be non-zero because the
+/// retail body divides by them directly.
+#[allow(clippy::too_many_arguments)]
+pub fn w14a09_scroll_to(
+    state: &mut W14a09ScrollState,
+    layers: &mut W14a09Parallax,
+    target_x: i32,
+    target_y: i32,
+    limit_x: i32,
+    limit_y: i32,
+    velocity_x: &[i32; W14A09_LAYER_COUNT],
+    velocity_y: &[i32; W14A09_LAYER_COUNT],
+    wrap_x: i32,
+    wrap_y: i32,
+    viewport_height_px: i32,
+) -> W14a09ScrollResult {
+    let x = if target_x < 0 {
+        0
+    } else if target_x >= limit_x {
+        limit_x
+    } else {
+        target_x
+    };
+    let y = if target_y < 0 {
+        0
+    } else if target_y >= limit_y {
+        limit_y
+    } else {
+        target_y
+    };
+
+    state.tile_x = (x >> 5) as u16;
+    state.x = x;
+    state.tile_y = (y >> 5) as u16;
+    state.y = y;
+
+    if x == state.prev_x && y == state.prev_y {
+        return W14a09ScrollResult::default();
+    }
+
+    let delta_x = state.prev_x - x;
+    let delta_y = state.prev_y - y;
+    for layer in 0..W14A09_LAYER_COUNT {
+        layers.offset_x[layer] = (velocity_x[layer] * delta_x + layers.offset_x[layer]) % wrap_x;
+        layers.offset_y[layer] = (velocity_y[layer] * delta_y + layers.offset_y[layer]) % wrap_y;
+    }
+
+    state.prev_x = x;
+    state.prev_y = y;
+
+    let tile_changed = state.tile_x != state.last_tile_x || state.tile_y != state.last_tile_y;
+    if tile_changed {
+        state.last_tile_y = state.tile_y;
+        state.last_tile_x = state.tile_x;
+    }
+
+    W14a09ScrollResult {
+        scrolled: true,
+        tile_changed,
+        refresh_rows: if tile_changed {
+            w14a09_visible_rows(viewport_height_px)
+        } else {
+            0
+        },
+    }
+}
+
+/// `0x00681cc0`: recompute the vertical scroll limit.
+///
+/// The body adds the map height in pixels (`fe5b60`) to the converted
+/// viewport/screen term (`fe5b64`) and subtracts the current screen height
+/// (`iVar1` from the out-of-window query), storing the wrapped unsigned result
+/// at `fe5b50` before the non-returning tail.  The two value-producing calls
+/// themselves are not modelled.
+pub fn w14a09_vertical_scroll_limit(map_height_px: u32, viewport_px: u32, current_px: u32) -> u32 {
+    map_height_px
+        .wrapping_add(viewport_px)
+        .wrapping_sub(current_px)
+}
+
+/// Outcome of a relative vertical scroll.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct W14a09VerticalScroll {
+    /// Whether the position moved (the layer offsets were advanced).
+    pub scrolled: bool,
+    /// Rows the retail body would hand to the band filler.
+    pub rows_to_refresh: i32,
+}
+
+/// `0x00681e70`: scroll down by `delta_px` scaled through the frame factor.
+///
+/// The body clamps the scale to at least `1.0`, divides the requested pixel
+/// delta by it with a truncating float-to-int conversion, adds the result to
+/// the vertical offset and, when the limit is crossed, folds the overshoot
+/// back into the effective delta before clamping.  Moving the position updates
+/// the five layer offsets by `offset - velocity * delta`, adding the wrap value
+/// once when the result is negative.  Rows between the cached band origin and
+/// the new tile row are refreshed by the non-returning filler at `6811c0`;
+/// their count is returned and the band origin is advanced.
+pub fn w14a09_scroll_down(
+    state: &mut W14a09ScrollState,
+    layers: &mut W14a09Parallax,
+    delta_px: i32,
+    limit_y: i32,
+    velocity_y: &[i32; W14A09_LAYER_COUNT],
+    wrap_y: i32,
+    factor: f32,
+) -> W14a09VerticalScroll {
+    let scale = if factor <= 1.0 { 1.0 } else { factor };
+    let mut delta = (delta_px as f32 / scale) as i32;
+
+    state.y = state.y.wrapping_add(delta);
+    if limit_y < state.y {
+        delta += limit_y - state.y;
+        state.y = limit_y;
+    }
+    state.tile_y = ((state.y as u32) >> 5) as u16;
+
+    if state.prev_y == state.y {
+        return W14a09VerticalScroll::default();
+    }
+    state.prev_y = state.y;
+
+    for (layer, &velocity) in velocity_y.iter().enumerate() {
+        let mut value = layers.offset_y[layer] - velocity * delta;
+        if value < 0 {
+            value += wrap_y;
+        }
+        layers.offset_y[layer] = value;
+    }
+
+    if state.last_tile_y != state.tile_y {
+        let rows = i32::from(state.tile_y) - i32::from(state.last_tile_y);
+        state.last_tile_y = state.tile_y;
+        return W14a09VerticalScroll {
+            scrolled: true,
+            rows_to_refresh: rows,
+        };
+    }
+    W14a09VerticalScroll {
+        scrolled: true,
+        rows_to_refresh: 0,
+    }
+}
+
+/// Outcome of a relative horizontal scroll.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct W14a09HorizontalScroll {
+    /// Whether the position moved (the layer offsets were advanced).
+    pub scrolled: bool,
+    /// Columns the retail body would hand to the band filler.
+    pub columns_to_refresh: i32,
+}
+
+/// `0x00681ff0`: scroll left by `delta_px` scaled through the frame factor.
+///
+/// The mirror of the vertical routine: the scaled delta is subtracted from the
+/// horizontal offset, an underflow at zero is folded back into the effective
+/// delta before clamping, and the five layer offsets advance by
+/// `offset + velocity * delta`, subtracting the wrap value once when the result
+/// is larger.  When the tile column leaves the cached band the body walks the
+/// band origin down to the new column through the non-returning filler at
+/// `680df0`; the column count is returned and the origin is moved.
+pub fn w14a09_scroll_left(
+    state: &mut W14a09ScrollState,
+    layers: &mut W14a09Parallax,
+    delta_px: i32,
+    velocity_x: &[i32; W14A09_LAYER_COUNT],
+    wrap_x: i32,
+    factor: f32,
+) -> W14a09HorizontalScroll {
+    let scale = if factor <= 1.0 { 1.0 } else { factor };
+    let mut delta = (delta_px as f32 / scale) as i32;
+
+    state.x = state.x.wrapping_sub(delta);
+    if state.x < 0 {
+        delta += state.x;
+        state.x = 0;
+    }
+    state.tile_x = ((state.x as u32) >> 5) as u16;
+
+    if state.prev_x == state.x {
+        return W14a09HorizontalScroll::default();
+    }
+    state.prev_x = state.x;
+
+    for (layer, &velocity) in velocity_x.iter().enumerate() {
+        let mut value = layers.offset_x[layer] + velocity * delta;
+        if wrap_x < value {
+            value -= wrap_x;
+        }
+        layers.offset_x[layer] = value;
+    }
+
+    if state.last_tile_x != state.tile_x {
+        let columns = i32::from(state.last_tile_x) - i32::from(state.tile_x);
+        state.last_tile_x = state.tile_x;
+        return W14a09HorizontalScroll {
+            scrolled: true,
+            columns_to_refresh: columns,
+        };
+    }
+    W14a09HorizontalScroll {
+        scrolled: true,
+        columns_to_refresh: 0,
+    }
+}
+
+#[cfg(test)]
+mod tests_wave14_agent09 {
+    use super::*;
+    use std::cell::Cell;
+
+    // -- 0x00680190 --------------------------------------------------------
+
+    /// `(keys, left, right, parent)` for the seven-node fixture tree.
+    type W14a09TreeFixture = (
+        [u16; 7],
+        [Option<usize>; 7],
+        [Option<usize>; 7],
+        [Option<usize>; 7],
+    );
+
+    /// A seven-node tree: root `50`, `30` with `20`/`40`, `70` with `60`/`80`.
+    fn sample_tree() -> W14a09TreeFixture {
+        let keys = [50, 30, 70, 20, 40, 60, 80];
+        let left = [Some(1), Some(3), Some(5), None, None, None, None];
+        let right = [Some(2), Some(4), Some(6), None, None, None, None];
+        let parent = [None, Some(0), Some(0), Some(1), Some(1), Some(2), Some(2)];
+        (keys, left, right, parent)
+    }
+
+    #[test]
+    fn successor_walks_the_whole_tree_in_order() {
+        let (_, left, right, parent) = sample_tree();
+        let order = [3usize, 1, 4, 0, 5, 2, 6];
+
+        for pair in order.windows(2) {
+            assert_eq!(
+                w14a09_inorder_successor(&left, &right, &parent, pair[0]),
+                Some(pair[1]),
+            );
+        }
+        assert_eq!(
+            w14a09_inorder_successor(&left, &right, &parent, order[6]),
+            None,
+        );
+    }
+
+    #[test]
+    fn successor_starts_at_the_right_subtrees_leftmost_node() {
+        let (_, left, right, parent) = sample_tree();
+        // 50 -> right child 70 -> left child 60.
+        assert_eq!(w14a09_inorder_successor(&left, &right, &parent, 0), Some(5),);
+        // 40 has no right child, so it climbs back to 50.
+        assert_eq!(w14a09_inorder_successor(&left, &right, &parent, 4), Some(0),);
+    }
+
+    // -- 0x00680cd0 --------------------------------------------------------
+
+    #[test]
+    fn insert_search_selects_the_node_or_the_child_link() {
+        let (keys, left, right, parent) = sample_tree();
+        let find =
+            |key| w14a09_find_insert_position(&keys, &left, &right, &parent, 3, Some(0), key);
+
+        assert_eq!(find(50), Some((0, W14a09InsertHint::AtNode)));
+        assert_eq!(find(30), Some((1, W14a09InsertHint::AtNode)));
+        assert_eq!(find(20), Some((3, W14a09InsertHint::AtNode)));
+        assert_eq!(find(80), Some((6, W14a09InsertHint::AtNode)));
+        // Below the leftmost node: insert into its left link.
+        assert_eq!(find(10), Some((3, W14a09InsertHint::LeftChild)));
+        assert_eq!(find(35), Some((4, W14a09InsertHint::LeftChild)));
+        assert_eq!(find(45), Some((4, W14a09InsertHint::RightChild)));
+        assert_eq!(find(65), Some((5, W14a09InsertHint::RightChild)));
+        assert_eq!(find(75), Some((6, W14a09InsertHint::LeftChild)));
+        assert_eq!(find(90), Some((6, W14a09InsertHint::RightChild)));
+        assert_eq!(find(55), Some((5, W14a09InsertHint::LeftChild)));
+        // An empty tree is the header case and has no slice representation.
+        assert_eq!(
+            w14a09_find_insert_position(&keys, &left, &right, &parent, 3, None, 42),
+            None,
+        );
+    }
+
+    #[test]
+    fn insert_search_finds_a_duplicate_through_the_predecessor() {
+        // 30 -> right 50 -> left 40.  Looking up 30 descends to 40 and the
+        // predecessor walk returns the duplicate at 30.
+        let keys = [30u16, 50, 40];
+        let left = [None, Some(2), None];
+        let right = [Some(1), None, None];
+        let parent = [None, Some(0), Some(1)];
+
+        assert_eq!(
+            w14a09_find_insert_position(&keys, &left, &right, &parent, 0, Some(0), 30),
+            Some((0, W14a09InsertHint::AtNode)),
+        );
+        assert_eq!(
+            w14a09_find_insert_position(&keys, &left, &right, &parent, 0, Some(0), 35),
+            Some((2, W14a09InsertHint::LeftChild)),
+        );
+        assert_eq!(
+            w14a09_find_insert_position(&keys, &left, &right, &parent, 0, Some(0), 45),
+            Some((2, W14a09InsertHint::RightChild)),
+        );
+    }
+
+    // -- 0x00680210 --------------------------------------------------------
+
+    #[test]
+    fn hash_header_matches_the_initialiser_words() {
+        let header = w14a09_hash_header_init();
+        assert_eq!(header.bucket_count, 8);
+        assert_eq!(header.buckets, 0);
+        assert_eq!(header.elements, 0);
+        assert_eq!(header.load_factor, 1.0);
+        assert_eq!(header.load_factor.to_bits(), 0x3f80_0000);
+    }
+
+    // -- 0x00680330 --------------------------------------------------------
+
+    #[test]
+    fn checked_field_rejects_the_all_ones_sentinel() {
+        assert_eq!(w14a09_checked_field(0), Some(0));
+        assert_eq!(w14a09_checked_field(-1), None);
+        assert_eq!(w14a09_checked_field(0x7fff_ffff), Some(0x7fff_ffff));
+        assert_eq!(w14a09_checked_field(i32::MIN), Some(i32::MIN));
+    }
+
+    // -- 0x006806a0 --------------------------------------------------------
+
+    #[test]
+    fn hash_key_matches_the_two_recovered_mixing_rounds() {
+        assert_eq!(w14a09_hash_key(0), 0);
+        assert_eq!(w14a09_hash_key(1), 0x514e_28b7);
+        assert_eq!(w14a09_hash_key(2), 0x30f4_c306);
+        assert_eq!(w14a09_hash_key(0x10), 0x5525_53bc);
+        assert_eq!(w14a09_hash_key(0x1234_5678), 0xe37c_d1bc);
+        assert_eq!(w14a09_hash_key(0xffff_ffff), 0x81f1_6f39);
+    }
+
+    #[test]
+    fn hash_bucket_masks_with_the_bucket_count() {
+        assert_eq!(w14a09_hash_bucket_index(0x1234_5678, 16), 12);
+        assert_eq!(w14a09_hash_bucket_index(0x1234_5678, 32), 28);
+        // One bucket degenerates to the zero mask.
+        assert_eq!(w14a09_hash_bucket_index(0xffff_ffff, 1), 0);
+    }
+
+    #[test]
+    fn hash_find_walks_the_bucket_chain_to_the_matching_key() {
+        let keys = [7u32, 9, 11];
+        let next = [Some(1), Some(2), None];
+
+        assert_eq!(w14a09_hash_find(&keys, &next, Some(0), 7), Some(0));
+        assert_eq!(w14a09_hash_find(&keys, &next, Some(0), 11), Some(2));
+        assert_eq!(w14a09_hash_find(&keys, &next, Some(0), 13), None);
+        assert_eq!(w14a09_hash_find(&keys, &next, None, 7), None);
+        assert_eq!(W14A09_HASH_VALUE_OFFSET, 8);
+    }
+
+    // -- 0x00680a00 --------------------------------------------------------
+
+    #[test]
+    fn presence_scan_compares_signed_dwords() {
+        let values = [-2, -1, 0, 0x7fff_ffff];
+        assert!(w14a09_contains_i32(&values, -1));
+        assert!(w14a09_contains_i32(&values, 0x7fff_ffff));
+        assert!(!w14a09_contains_i32(&values, 1));
+        assert!(!w14a09_contains_i32(&[], 0));
+    }
+
+    #[test]
+    fn selection_predicate_follows_the_two_option_bytes() {
+        // Neither option byte set: the plain presence answer.
+        assert!(w14a09_selection_predicate(true, false, false, || {
+            panic!("the query must not run")
+        }));
+        assert!(!w14a09_selection_predicate(false, false, false, || {
+            panic!("the query must not run")
+        }));
+
+        // Primary byte set: a true query wins, a false one falls through.
+        assert!(w14a09_selection_predicate(false, true, false, || true));
+        assert!(w14a09_selection_predicate(true, true, false, || false));
+        assert!(!w14a09_selection_predicate(false, true, false, || false));
+
+        // Secondary byte set: a false query exposes the presence answer.
+        assert!(!w14a09_selection_predicate(false, false, true, || true));
+        assert!(w14a09_selection_predicate(false, false, true, || false));
+        assert!(w14a09_selection_predicate(true, false, true, || true));
+    }
+
+    #[test]
+    fn selection_predicate_queries_lazily_and_twice_on_the_secondary_path() {
+        let calls = Cell::new(0);
+        let predicate = w14a09_selection_predicate(false, true, true, || {
+            calls.set(calls.get() + 1);
+            false
+        });
+        // The primary query missed, so the secondary path runs and its false
+        // query exposes the (absent) presence answer as true.
+        assert!(predicate);
+        assert_eq!(calls.get(), 2);
+
+        let calls = Cell::new(0);
+        let predicate = w14a09_selection_predicate(false, true, false, || {
+            calls.set(calls.get() + 1);
+            true
+        });
+        assert!(predicate);
+        assert_eq!(calls.get(), 1);
+    }
+
+    // -- 0x006813a0 --------------------------------------------------------
+
+    #[test]
+    fn water_variant_uses_the_low_three_bits() {
+        for flags in [0u16, 4, 6, 7, 8, 0x0100, 0x0104] {
+            assert_eq!(
+                w14a09_water_texture_variant(flags),
+                W14a09WaterTextures::Water,
+                "flags {flags:#06x}",
+            );
+        }
+        assert_eq!(w14a09_water_texture_variant(3), W14a09WaterTextures::Noise,);
+        assert_eq!(
+            w14a09_water_texture_variant(0x0103),
+            W14a09WaterTextures::Noise,
+        );
+        for flags in [1u16, 2, 5, 9, 0x0101] {
+            assert_eq!(
+                w14a09_water_texture_variant(flags),
+                W14a09WaterTextures::None,
+                "flags {flags:#06x}",
+            );
+        }
+        assert_eq!(W14A09_WATER_VARIANTS, [0, 2, 2, 1, 0, 2, 0, 0]);
+    }
+
+    // -- 0x006815b0 --------------------------------------------------------
+
+    #[test]
+    fn tile_flags_require_all_bits_for_special_tiles() {
+        let all = 0x0000_00f0;
+        let any = 0x8000_0000;
+
+        assert!(w14a09_tile_flags_ok(0x0000_00f0, true, all, any));
+        // Bit 0x10 missing.
+        assert!(!w14a09_tile_flags_ok(0x0000_00e0, true, all, any));
+        // Bits above the low byte do not satisfy the special test.
+        assert!(!w14a09_tile_flags_ok(0xffff_ff0f, true, all, any));
+
+        assert!(w14a09_tile_flags_ok(0x8000_0001, false, all, any));
+        assert!(!w14a09_tile_flags_ok(0x0000_00f0, false, all, any));
+    }
+
+    #[test]
+    fn scan_reports_the_first_failing_tile() {
+        let all = 0x0000_00ff;
+        let any = 0x4000_0000;
+        let tiles = [0x4000_0000, 0x0000_0000, 0x4000_0000];
+        let special = [false, false, false];
+        assert_eq!(w14a09_scan_tile_flags(&tiles, &special, all, any), Some(1));
+
+        let tiles = [0x4000_0000, 0x4000_0000];
+        assert_eq!(
+            w14a09_scan_tile_flags(&tiles, &special[..2], all, any),
+            None
+        );
+
+        // Empty map: the retail counter starts at zero and returns at once.
+        assert_eq!(w14a09_scan_tile_flags(&[], &[], all, any), None,);
+
+        // A special tile with an incomplete mask fails in the other arm.
+        let tiles = [0x0000_0003];
+        let special = [true];
+        assert_eq!(
+            w14a09_scan_tile_flags(&tiles, &special, 0x0000_000f, any),
+            Some(0),
+        );
+    }
+
+    // -- 0x00681750 --------------------------------------------------------
+
+    #[test]
+    fn tile_extents_shift_by_five_and_sign_extend() {
+        assert_eq!(w14a09_tile_extent_to_pixels(0, 0), (0, 0));
+        assert_eq!(w14a09_tile_extent_to_pixels(1, 1), (32, 32));
+        assert_eq!(w14a09_tile_extent_to_pixels(64, 32), (2048, 1024));
+        assert_eq!(
+            w14a09_tile_extent_to_pixels(0x7fff, 0x8000),
+            (0x0f_ffe0, -0x10_0000),
+        );
+        assert_eq!(W14A09_TILE_SHIFT, 5);
+    }
+
+    // -- 0x00681900 --------------------------------------------------------
+
+    #[test]
+    fn visible_rows_rounds_up_after_adding_one_row() {
+        assert_eq!(w14a09_visible_rows(0), 1);
+        assert_eq!(w14a09_visible_rows(1), 2);
+        assert_eq!(w14a09_visible_rows(31), 2);
+        assert_eq!(w14a09_visible_rows(32), 2);
+        assert_eq!(w14a09_visible_rows(33), 3);
+        assert_eq!(w14a09_visible_rows(64), 3);
+        assert_eq!(w14a09_visible_rows(-1), 1);
+        assert_eq!(w14a09_visible_rows(-32), 1);
+        assert_eq!(w14a09_visible_rows(-64), 0);
+    }
+
+    // -- 0x006819c5 --------------------------------------------------------
+
+    #[test]
+    fn tile_lookup_uses_the_recovered_stride_and_bias() {
+        let mut table = vec![0u16; W14A09_TILE_LOOKUP_BIAS + 0x7ff * 0x1a + 0xf + 1];
+        table[10] = 0x1234;
+        table[11] = 0x2345;
+        table[36] = 0x3456;
+        table[25] = 0x4567;
+        table[10 + 0x7ff * 0x1a + 0xf] = 0x5678;
+
+        assert_eq!(w14a09_lookup_tile_id(&table, 0), 0x1234);
+        assert_eq!(w14a09_lookup_tile_id(&table, 1), 0x2345);
+        assert_eq!(w14a09_lookup_tile_id(&table, 0x10), 0x3456);
+        assert_eq!(w14a09_lookup_tile_id(&table, 0xf), 0x4567);
+        // Bit 15 is outside the 11-bit group and the low nibble stays.
+        assert_eq!(w14a09_lookup_tile_id(&table, 0x8001), 0x2345);
+        assert_eq!(w14a09_lookup_tile_id(&table, 0xffff), 0x5678);
+    }
+
+    #[test]
+    fn tile_update_compares_only_the_low_fifteen_bits() {
+        let update = w14a09_update_tile_id(0x8000_0001, 0x8001, 1, true);
+        assert!(!update.changed);
+        assert_eq!(update.flags, 0x8000_0001);
+        assert_eq!(update.id, 1);
+
+        let update = w14a09_update_tile_id(0x8000_0001, 0x8001, 2, false);
+        assert!(update.changed);
+        assert_eq!(update.id, 2);
+        // Only bit 30 is rewritten; the low half is not the id.
+        assert_eq!(update.flags, 0x8000_0001);
+
+        let update = w14a09_update_tile_id(0x4000_0007, 0, 3, true);
+        assert!(update.changed);
+        assert_eq!(update.flags, 0x4000_0007);
+    }
+
+    // -- 0x00681ad0 --------------------------------------------------------
+
+    fn scroll_state() -> W14a09ScrollState {
+        W14a09ScrollState {
+            x: 0,
+            y: 0,
+            prev_x: 200,
+            prev_y: 200,
+            tile_x: 0,
+            tile_y: 0,
+            last_tile_x: 0,
+            last_tile_y: 0,
+        }
+    }
+
+    #[test]
+    fn scroll_to_clamps_converts_and_advances_the_five_layers() {
+        let mut state = scroll_state();
+        let mut layers = W14a09Parallax::default();
+        let velocity = [1, 2, 3, 4, 5];
+
+        let result = w14a09_scroll_to(
+            &mut state,
+            &mut layers,
+            100,
+            100,
+            640,
+            480,
+            &velocity,
+            &velocity,
+            97,
+            89,
+            64,
+        );
+
+        assert!(result.scrolled);
+        assert!(result.tile_changed);
+        assert_eq!(result.refresh_rows, 3);
+        assert_eq!((state.x, state.y), (100, 100));
+        assert_eq!((state.tile_x, state.tile_y), (3, 3));
+        assert_eq!((state.prev_x, state.prev_y), (100, 100));
+        assert_eq!((state.last_tile_x, state.last_tile_y), (3, 3));
+        assert_eq!(layers.offset_x, [3, 6, 9, 12, 15]);
+        assert_eq!(layers.offset_y, [11, 22, 33, 44, 55]);
+    }
+
+    #[test]
+    fn scroll_to_clamps_both_limits_and_keeps_the_previous_request() {
+        let mut state = scroll_state();
+        let mut layers = W14a09Parallax::default();
+        let velocity = [0, 0, 0, 0, 0];
+
+        let result = w14a09_scroll_to(
+            &mut state,
+            &mut layers,
+            10_000,
+            -10,
+            640,
+            480,
+            &velocity,
+            &velocity,
+            97,
+            89,
+            64,
+        );
+        assert_eq!((state.x, state.y), (640, 0));
+        assert_eq!((state.tile_x, state.tile_y), (20, 0));
+        assert!(result.tile_changed);
+    }
+
+    #[test]
+    fn scroll_to_returns_early_when_the_position_did_not_move() {
+        let mut state = scroll_state();
+        state.prev_x = 3;
+        state.prev_y = 3;
+        state.last_tile_x = 3;
+        state.last_tile_y = 3;
+
+        let mut layers = W14a09Parallax {
+            offset_x: [1, 2, 3, 4, 5],
+            offset_y: [1, 2, 3, 4, 5],
+        };
+        let velocity = [9, 9, 9, 9, 9];
+        let result = w14a09_scroll_to(
+            &mut state,
+            &mut layers,
+            3,
+            3,
+            640,
+            480,
+            &velocity,
+            &velocity,
+            97,
+            89,
+            64,
+        );
+
+        assert!(!result.scrolled);
+        assert!(!result.tile_changed);
+        assert_eq!(result.refresh_rows, 0);
+        assert_eq!(layers.offset_x, [1, 2, 3, 4, 5]);
+        assert_eq!(layers.offset_y, [1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn scroll_to_reports_an_in_band_tile_move_without_rows() {
+        let mut state = scroll_state();
+        state.prev_x = 100;
+        state.prev_y = 100;
+        state.last_tile_x = 2;
+        state.last_tile_y = 3;
+        let mut layers = W14a09Parallax::default();
+        let velocity = [0, 0, 0, 0, 0];
+
+        let result = w14a09_scroll_to(
+            &mut state,
+            &mut layers,
+            110,
+            100,
+            640,
+            480,
+            &velocity,
+            &velocity,
+            97,
+            89,
+            64,
+        );
+        assert!(result.scrolled);
+        assert!(result.tile_changed);
+        assert_eq!((state.tile_x, state.tile_y), (3, 3));
+        assert_eq!(state.last_tile_x, 3);
+    }
+
+    // -- 0x00681cc0 --------------------------------------------------------
+
+    #[test]
+    fn vertical_limit_wraps_like_the_unsigned_body() {
+        assert_eq!(w14a09_vertical_scroll_limit(1024, 32, 64), 992);
+        assert_eq!(w14a09_vertical_scroll_limit(0, 0, 1), u32::MAX);
+        assert_eq!(w14a09_vertical_scroll_limit(u32::MAX, 2, 0), 1,);
+    }
+
+    // -- 0x00681e70 --------------------------------------------------------
+
+    #[test]
+    fn scroll_down_scales_the_delta_and_moves_the_layers() {
+        let mut state = W14a09ScrollState {
+            y: 100,
+            prev_y: 100,
+            tile_y: 3,
+            last_tile_y: 3,
+            ..W14a09ScrollState::default()
+        };
+        let mut layers = W14a09Parallax {
+            offset_y: [10, 20, 30, 40, 50],
+            ..W14a09Parallax::default()
+        };
+
+        let result =
+            w14a09_scroll_down(&mut state, &mut layers, 4, 1000, &[1, 2, 3, 4, 5], 89, 1.0);
+
+        assert!(result.scrolled);
+        assert_eq!(result.rows_to_refresh, 0);
+        assert_eq!(state.y, 104);
+        assert_eq!(state.prev_y, 104);
+        assert_eq!(state.tile_y, 3);
+        assert_eq!(layers.offset_y, [6, 12, 18, 24, 30]);
+    }
+
+    #[test]
+    fn scroll_down_folds_the_clamped_overshoot_into_the_delta() {
+        let mut state = W14a09ScrollState {
+            y: 995,
+            prev_y: 995,
+            tile_y: 31,
+            last_tile_y: 3,
+            ..W14a09ScrollState::default()
+        };
+        let mut layers = W14a09Parallax {
+            offset_y: [10, 20, 30, 40, 50],
+            ..W14a09Parallax::default()
+        };
+
+        let result =
+            w14a09_scroll_down(&mut state, &mut layers, 64, 1000, &[1, 2, 3, 4, 5], 89, 1.0);
+
+        assert_eq!(state.y, 1000);
+        assert_eq!(state.tile_y, 31);
+        // The effective delta is 5 after the overshoot is folded back.
+        assert_eq!(layers.offset_y, [5, 10, 15, 20, 25]);
+        assert_eq!(result.rows_to_refresh, 28);
+    }
+
+    #[test]
+    fn scroll_down_adds_the_wrap_value_only_once_and_honours_the_factor() {
+        let mut state = W14a09ScrollState {
+            y: 0,
+            prev_y: 0,
+            tile_y: 0,
+            last_tile_y: 0,
+            ..W14a09ScrollState::default()
+        };
+        let mut layers = W14a09Parallax {
+            offset_y: [10, 20, 30, 40, 50],
+            ..W14a09Parallax::default()
+        };
+
+        // factor 2.0 halves a 64-pixel request to 32.
+        let result =
+            w14a09_scroll_down(&mut state, &mut layers, 64, 1000, &[1, 2, 3, 4, 5], 89, 2.0);
+        assert_eq!(state.y, 32);
+        // One wrap add per layer; the last layer stays negative because the
+        // retail body adds the wrap value only once.
+        assert_eq!(layers.offset_y, [67, 45, 23, 1, -21]);
+        assert_eq!(result.rows_to_refresh, 1);
+
+        // factor below one is clamped to one.
+        let mut state = W14a09ScrollState::default();
+        let mut layers = W14a09Parallax::default();
+        w14a09_scroll_down(&mut state, &mut layers, 64, 1000, &[0; 5], 89, 0.25);
+        assert_eq!(state.y, 64);
+    }
+
+    #[test]
+    fn scroll_down_reports_no_movement_for_a_zero_delta() {
+        let mut state = W14a09ScrollState {
+            y: 10,
+            prev_y: 10,
+            ..W14a09ScrollState::default()
+        };
+        let mut layers = W14a09Parallax {
+            offset_y: [1, 2, 3, 4, 5],
+            ..W14a09Parallax::default()
+        };
+        let result = w14a09_scroll_down(&mut state, &mut layers, 0, 1000, &[1; 5], 89, 1.0);
+        assert!(!result.scrolled);
+        assert_eq!(layers.offset_y, [1, 2, 3, 4, 5]);
+    }
+
+    // -- 0x00681ff0 --------------------------------------------------------
+
+    #[test]
+    fn scroll_left_clamps_at_zero_and_wraps_the_layers() {
+        let mut state = W14a09ScrollState {
+            x: 300,
+            prev_x: 300,
+            tile_x: 9,
+            last_tile_x: 9,
+            ..W14a09ScrollState::default()
+        };
+        let mut layers = W14a09Parallax {
+            offset_x: [10, 20, 30, 40, 50],
+            ..W14a09Parallax::default()
+        };
+
+        let result = w14a09_scroll_left(&mut state, &mut layers, 20, &[1, 2, 3, 4, 5], 97, 1.0);
+
+        assert!(result.scrolled);
+        assert_eq!(result.columns_to_refresh, 1);
+        assert_eq!(state.x, 280);
+        assert_eq!(state.tile_x, 8);
+        assert_eq!(state.last_tile_x, 8);
+        assert_eq!(layers.offset_x, [30, 60, 90, 23, 53]);
+    }
+
+    #[test]
+    fn scroll_left_folds_the_underflow_into_the_delta() {
+        let mut state = W14a09ScrollState {
+            x: 5,
+            prev_x: 5,
+            tile_x: 0,
+            last_tile_x: 9,
+            ..W14a09ScrollState::default()
+        };
+        let mut layers = W14a09Parallax::default();
+
+        let result = w14a09_scroll_left(&mut state, &mut layers, 20, &[1; 5], 97, 1.0);
+
+        assert_eq!(state.x, 0);
+        assert_eq!(state.tile_x, 0);
+        assert_eq!(result.columns_to_refresh, 9);
+        assert_eq!(layers.offset_x, [5, 5, 5, 5, 5]);
+    }
+
+    #[test]
+    fn scroll_left_reports_no_movement_when_the_position_is_unchanged() {
+        let mut state = W14a09ScrollState {
+            x: 0,
+            prev_x: 0,
+            ..W14a09ScrollState::default()
+        };
+        let mut layers = W14a09Parallax {
+            offset_x: [7, 8, 9, 10, 11],
+            ..W14a09Parallax::default()
+        };
+        let result = w14a09_scroll_left(&mut state, &mut layers, 0, &[1; 5], 97, 1.0);
+        assert!(!result.scrolled);
+        assert_eq!(result.columns_to_refresh, 0);
+        assert_eq!(layers.offset_x, [7, 8, 9, 10, 11]);
+    }
+
+    #[test]
+    fn scroll_left_scales_a_large_factor_down_to_one() {
+        let mut state = W14a09ScrollState {
+            x: 100,
+            prev_x: 100,
+            ..W14a09ScrollState::default()
+        };
+        let mut layers = W14a09Parallax::default();
+        w14a09_scroll_left(&mut state, &mut layers, 10, &[0; 5], 97, 0.5);
+        assert_eq!(state.x, 90);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave14/agent10.rs
+// ===========================================================================
+// Wave 14 translation batch 10 (staging).
+//
+// Window: `0x00682000..0x00683fff`.
+//
+// This slice of the retail executable is mostly MSVC C++ runtime glue: the
+// Battle.net chat-dialog wrappers, vftable copy constructors, RTTI getters,
+// stack-cookie epilogues and `unaff_*` catch blocks.  The recoverable
+// routines are the map-panorama scroll pair (`0x00682140` and `0x006822c0`),
+// the Registry-ID copy and `Characters\` path append used by the profile
+// loader (`0x00682540`, `0x00682960`, `0x00682e20`), the dword slot-array
+// growth policy (`0x00682410`), and the Battle.net chat-dialog glue
+// (`0x00683540`, `0x00683760`, `0x00683d80`, `0x00683e40`, `0x00683ff0`).
+//
+// ## Recovered layouts
+//
+// Panorama state (`0x00682140`, `0x006822c0`; corroborated by the recentre
+// routine `FUN_00681ad0`):
+//
+// | global | type | role |
+// |---|---|---|
+// | `0x00fe5b88` | `i32` | horizontal scroll in map pixels |
+// | `0x00fe5b8c` | `i32` | vertical scroll in map pixels |
+// | `0x00fe5b4c` | `i32` | horizontal ceiling |
+// | `0x00fe5b80` / `0x00fe5b84` | `i32` | last applied scroll per axis |
+// | `0x00fe5b78` / `0x00fe5b7c` | `u16` | last reported tile column / row |
+// | `0x00fe5af4` / `0x00fe5af8` | `i32` | wrap width / height in pixels |
+// | `0x00fe5afc..=0x00fe5b0c` | five `i32` | x-layer offsets |
+// | `0x00fe5b10..=0x00fe5b20` | five `i32` | y-layer offsets |
+// | `0x00f064f0..=0x00f06500` | five `i32` | per-layer scroll speed |
+//
+// The shipped loops walk the five layer dwords from the *highest* address
+// downwards, so index 0 is `0x00fe5b0c` / `0x00fe5b20` and index 4 is
+// `0x00fe5afc` / `0x00fe5b10`.  The tile index is written into the view
+// record at `+0xe0` (column) or `+0xe2` (row); that record is reached through
+// the obfuscated pointer `0x00f063cc ^ 0x10fae560` and lies outside this
+// batch, so the translations return the tile instead of storing it.
+//
+// Chat-dialog record initialised by `0x00683ff0`:
+//
+// | offset | field |
+// |---|---|---|
+// | `+0x00` | text pointer, set to the inline buffer at `+0x0c` |
+// | `+0x04` | text length, cleared |
+// | `+0x08` | capacity word `0x8000_000f` (flag | 15) |
+// | `+0x0c` | 16-byte inline text, first byte cleared |
+// | `+0x1c` | four colour dwords, copied from `0x00f3ca88..=0x00f3ca94` |
+// | `+0x2c` | marker byte, cleared |
+//
+// The text widget state shared by `0x00683540` and `0x00683e40` is also
+// visible: `0x011cb5e4` is the text mode (`0x11` in both label paths),
+// `0x011cb5ec` holds the `(x, y)` pair as two little-endian `i16`s,
+// `0x011cb5f0` the `(right, bottom)` pair and `0x011cb5fc` a cleared byte.
+//
+// ## Translation notes
+//
+// * `FUN_007490d0(0)` gates both scroll routines; the caller supplies its
+//   result as `ui_blocked`, and `FUN_0060f8f0()` as `scale` (clamped up to
+//   `1.0` exactly as the shipped code does).
+// * The three candidates that only re-enter an address outside their own
+//   body (`FUN_00682580`, `FUN_00683080`, `FUN_00683ff0`) or that wrap
+//   `FUN_00683ff0` plus `FUN_00683810` add no recovered arithmetic and are
+//   not translated.
+// * The `Characters\` append (`0x00682960`, `0x00682e20`) is the complete
+//   recovered string operation; the trailing `sprintf` of `0x00682960`
+//   reads its format at `0x00d3ea7c` (outside the body) and the global
+//   string assignment at the tail of `0x00682e20` is not modelled, so both
+//   take the already-filled buffer from the caller.
+// * Every other row in the window is an unwind/catch block (`unaff_EBP`,
+//   `in_EAX`, `in_CF`/`in_ZF`), a stack-cookie tail, a vftable copy
+//   constructor, a six-byte RTTI pointer getter, or a record scan whose
+//   only tail action is a discarded allocator query.  Those are listed in
+//   the batch report.
+//
+// Nothing here touches `World`, `SimUnit`, the renderer or the client.
+
+// ---------------------------------------------------------------------------
+// 0x00682140 / 0x006822c0 - map panorama scroll
+// ---------------------------------------------------------------------------
+
+/// Recovered panorama state shared by `0x00682140` (scroll right) and
+/// `0x006822c0` (scroll up).  Fields are grouped per axis so one record can
+/// serve both routines.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct W14a10Panorama {
+    /// `0x00fe5b88`: horizontal scroll in map pixels.
+    pub x: i32,
+    /// `0x00fe5b4c`: horizontal ceiling in map pixels.
+    pub x_limit: i32,
+    /// `0x00fe5b80`: last `x` the five x layers were moved for.
+    pub x_applied: i32,
+    /// `0x00fe5b78`: last reported tile column.
+    pub x_reported: u16,
+    /// `0x00fe5b8c`: vertical scroll in map pixels.
+    pub y: i32,
+    /// `0x00fe5b84`: last `y` the five y layers were moved for.
+    pub y_applied: i32,
+    /// `0x00fe5b7c`: last reported tile row.
+    pub y_reported: u16,
+    /// `0x00fe5af4`: map width in pixels (x-layer wrap).
+    pub width: i32,
+    /// `0x00fe5af8`: map height in pixels (y-layer wrap).
+    pub height: i32,
+    /// `0x00fe5afc..=0x00fe5b0c`: five x-layer offsets, index 0 highest.
+    pub x_layers: [i32; 5],
+    /// `0x00fe5b10..=0x00fe5b20`: five y-layer offsets, index 0 highest.
+    pub y_layers: [i32; 5],
+    /// `0x00f064f0..=0x00f06500`: per-layer speed, index 0 highest.
+    pub speeds: [i32; 5],
+}
+
+/// Outcome of one panorama scroll step.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct W14a10ScrollStep {
+    /// The tile index the shipped routine writes to `+0xe0` / `+0xe2`.
+    pub tile: u16,
+    /// The shipped routine's return value: `true` when the layers moved.
+    pub moved: bool,
+    /// Rows whose redraw `0x006822c0` requests, in call order (highest
+    /// first).  Always empty for `0x00682140`.
+    pub redraw_rows: Vec<u16>,
+}
+
+/// `0x00682140`: advances the horizontal panorama by `amount` scaled pixels,
+/// clamps it to `x_limit`, moves the five x layers by `speed * delta` and
+/// wraps them by `width`.  Returns `None` when `ui_blocked` mirrors the
+/// non-zero result of `FUN_007490d0(0)`.
+///
+/// The shipped body ends with
+/// `if (x_reported != tile && x_reported < tile) FUN_0060f870();`; that call
+/// only reads the screen-width global and its result is discarded, so the
+/// reported column is left untouched.
+pub fn w14a10_panorama_scroll_right(
+    state: &mut W14a10Panorama,
+    amount: i32,
+    ui_blocked: bool,
+    scale: f32,
+) -> Option<W14a10ScrollStep> {
+    if ui_blocked {
+        return None;
+    }
+    let mut delta = w14a10_scroll_delta(amount, scale);
+    state.x = state.x.wrapping_add(delta);
+    if state.x_limit < state.x {
+        delta = delta.wrapping_add(state.x_limit.wrapping_sub(state.x));
+        state.x = state.x_limit;
+    }
+    let tile = (state.x >> 5) as u16;
+    let moved = state.x_applied != state.x;
+    if moved {
+        state.x_applied = state.x;
+        for (layer, speed) in state.x_layers.iter_mut().zip(state.speeds.iter().copied()) {
+            let next = layer.wrapping_sub(speed.wrapping_mul(delta));
+            *layer = if next < 0 {
+                next.wrapping_add(state.width)
+            } else {
+                next
+            };
+        }
+    }
+    Some(W14a10ScrollStep {
+        tile,
+        moved,
+        redraw_rows: Vec::new(),
+    })
+}
+
+/// `0x006822c0`: retreats the vertical panorama by `amount` scaled pixels,
+/// clamps it at zero, moves the five y layers by `speed * delta`, wraps them
+/// by `height`, and lowers the reported tile row to the new tile.  Returns
+/// `None` when `ui_blocked` mirrors the non-zero result of `FUN_007490d0(0)`.
+///
+/// When the new tile is below the reported row, the shipped loop decrements
+/// `y_reported` once per row and calls `FUN_006811c0(tile_base + (stride *
+/// row + column) * 2, column, row)` after each decrement.  The rows are
+/// returned in `redraw_rows` in that order; the caller owns `tile_base`,
+/// `stride` and `column` (the view record is outside this batch).
+pub fn w14a10_panorama_scroll_down(
+    state: &mut W14a10Panorama,
+    amount: i32,
+    ui_blocked: bool,
+    scale: f32,
+) -> Option<W14a10ScrollStep> {
+    if ui_blocked {
+        return None;
+    }
+    let mut delta = w14a10_scroll_delta(amount, scale);
+    state.y = state.y.wrapping_sub(delta);
+    if state.y < 0 {
+        delta = delta.wrapping_add(state.y);
+        state.y = 0;
+    }
+    let tile = (state.y >> 5) as u16;
+    let mut redraw_rows = Vec::new();
+    let moved = state.y_applied != state.y;
+    if moved {
+        state.y_applied = state.y;
+        for (layer, speed) in state.y_layers.iter_mut().zip(state.speeds.iter().copied()) {
+            let next = layer.wrapping_add(speed.wrapping_mul(delta));
+            *layer = if state.height < next {
+                next.wrapping_sub(state.height)
+            } else {
+                next
+            };
+        }
+        let mut row = state.y_reported;
+        while tile < row {
+            row -= 1;
+            redraw_rows.push(row);
+        }
+        state.y_reported = row;
+    }
+    Some(W14a10ScrollStep {
+        tile,
+        moved,
+        redraw_rows,
+    })
+}
+
+/// The pixel delta common to both scroll routines: `FUN_0060f8f0()` value
+/// (`scale`) is raised to `1.0` when it is not above it, then `amount` is
+/// divided by it and truncated toward zero.
+fn w14a10_scroll_delta(amount: i32, scale: f32) -> i32 {
+    let scale = if scale <= 1.0 { 1.0 } else { scale };
+    (amount as f32 / scale) as i32
+}
+
+// ---------------------------------------------------------------------------
+// 0x00682410 - dword slot array growth
+// ---------------------------------------------------------------------------
+
+/// Result of [`w14a10_slot_array_grow`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum W14a10Resize {
+    /// The requested length already matches the used slots.
+    Unchanged,
+    /// New slots were appended and filled with `0xffff_ffff`.
+    Grown,
+    /// The shipped shrink branch calls an unresolved helper and does not
+    /// even update the used-slot word; it is not modelled.
+    ShrinkUnsupported,
+}
+
+/// Recovered dword array layout of `0x00682410`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct W14a10SlotArray {
+    /// `in_ECX[1]`: used slots.
+    pub len: u32,
+    /// `in_ECX[2]`: capacity in the low 31 bits; the top bit is the shipped
+    /// flag and is preserved when the capacity is raised.
+    pub capacity: u32,
+    /// The slot storage (`in_ECX[0]` is its base pointer).
+    pub slots: Vec<u32>,
+}
+
+/// `0x00682410`: grows the dword slot array to `wanted` entries.  When the
+/// current capacity is too small it becomes
+/// `max(capacity + capacity / 2, wanted)`; the high capacity bit is kept.
+/// Each appended slot is set to `0xffff_ffff` and the used-slot word is
+/// updated.  The shrink branch is not recoverable (the shipped call passes a
+/// zero length to an unresolved helper and leaves `len` untouched).
+pub fn w14a10_slot_array_grow(array: &mut W14a10SlotArray, wanted: u32) -> W14a10Resize {
+    if wanted < array.len {
+        return W14a10Resize::ShrinkUnsupported;
+    }
+    if wanted == array.len {
+        return W14a10Resize::Unchanged;
+    }
+    let capacity = array.capacity & 0x7fff_ffff;
+    if capacity < wanted {
+        let grown = (capacity >> 1).wrapping_add(capacity);
+        let target = grown.max(wanted);
+        array.capacity = (array.capacity & 0x8000_0000) | (target & 0x7fff_ffff);
+    }
+    array.slots.resize(wanted as usize, u32::MAX);
+    array.len = wanted;
+    W14a10Resize::Grown
+}
+
+// ---------------------------------------------------------------------------
+// 0x00682540 - Registry ID copy into a retail record
+// ---------------------------------------------------------------------------
+
+/// Copy budget of `0x00682540` (`0x5f` bytes).
+pub const W14A10_NAME_COPY_BUDGET: usize = 0x5f;
+
+/// `0x00682540`: copies at most `0x5f` bytes of a NUL-terminated Registry ID
+/// into a destination buffer; the routine is called with the retail record's
+/// second name field (`record + 0x70`) as destination.  No terminator is
+/// appended when the source is at least that long (`memmove` with the
+/// `min(strlen, 0x5f)` count).  Returns the copied byte count, or `None` when
+/// `dest` is shorter than the copy.
+pub fn w14a10_copy_record_name(dest: &mut [u8], name: &[u8]) -> Option<usize> {
+    let count = name.len().min(W14A10_NAME_COPY_BUDGET);
+    if dest.len() < count {
+        return None;
+    }
+    dest[..count].copy_from_slice(&name[..count]);
+    Some(count)
+}
+
+// ---------------------------------------------------------------------------
+// 0x00682960 / 0x00682e20 - "Characters\" path append
+// ---------------------------------------------------------------------------
+
+/// The literal appended by both path routines (`0x0b` bytes).
+const W14A10_CHARACTERS_DIR: &[u8] = b"Characters\\";
+/// `0x104`-byte path buffers used by the shipped routines.
+const W14A10_PATH_CAPACITY: usize = 0x104;
+/// Last writable byte of a `0x104`-byte path buffer.
+const W14A10_PATH_LAST: usize = 0x103;
+
+/// Appends `Characters\` to a path of `len` bytes inside `buf`, clipping the
+/// result to `0x103` bytes (the shipped `min(0x103, len + 0x0b)` count).
+/// Returns the new length, or `None` when the source length is already
+/// `0x104` (the shipped routine skips the append) or `buf` cannot hold the
+/// clipped path.
+fn w14a10_append_characters_into(buf: &mut [u8], len: usize) -> Option<usize> {
+    if len >= W14A10_PATH_CAPACITY {
+        return None;
+    }
+    let target = (len + W14A10_CHARACTERS_DIR.len()).min(W14A10_PATH_LAST);
+    if buf.len() < target {
+        return None;
+    }
+    let count = target - len;
+    buf[len..target].copy_from_slice(&W14A10_CHARACTERS_DIR[..count]);
+    Some(target)
+}
+
+/// `0x00682960`: appends `Characters\` to the current directory already
+/// placed in a `0x104`-byte buffer by `FUN_0092a4f0`, clipping at `0x103`
+/// bytes.  This is the recovered string operation only: the trailing
+/// `sprintf` uses the format at `0x00d3ea7c` and a `.spc`/`.mpc` suffix
+/// selected by `0x0119f7bc`, neither of which is visible in the body.
+pub fn w14a10_append_characters_dir(buf: &mut [u8], len: usize) -> Option<usize> {
+    w14a10_append_characters_into(buf, len)
+}
+
+/// `0x00682e20`: reads the NUL-terminated directory from the `0x104`-byte
+/// buffer, appends `Characters\` with the same `0x103` clip, and returns the
+/// resulting length (the shipped tail then assigns that length to the global
+/// path string, which is not modelled).  Returns `None` when the buffer holds
+/// no terminator within `0x104` bytes or is too short for the clipped path.
+pub fn w14a10_characters_dir_length(buf: &mut [u8]) -> Option<usize> {
+    let len = buf
+        .iter()
+        .take(W14A10_PATH_CAPACITY)
+        .position(|&byte| byte == 0)?;
+    w14a10_append_characters_into(buf, len)
+}
+
+// ---------------------------------------------------------------------------
+// 0x00683540 / 0x00683e40 - text widget clip rectangle
+// ---------------------------------------------------------------------------
+
+/// Text mode written to `0x011cb5e4` by the label paths.
+pub const W14A10_TEXT_MODE: u32 = 0x11;
+/// Fifth `FUN_0097b5d0` argument for the normal label state (`0x4d`).
+pub const W14A10_LABEL_ACCENT_NORMAL: u32 = 0x4d;
+/// Fifth `FUN_0097b5d0` argument when bit 29 of the style word is set
+/// (`0x35`).
+pub const W14A10_LABEL_ACCENT_PRESSED: u32 = 0x35;
+/// Label copy budget of `0x00683e40` into its 256-byte local (`0xff`).
+pub const W14A10_LABEL_BUDGET: usize = 0xff;
+
+/// The text clip rectangle stored at `0x011cb5ec` (`x`, `y`) and
+/// `0x011cb5f0` (`right`, `bottom`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct W14a10TextClip {
+    pub x: i16,
+    pub y: i16,
+    pub right: i16,
+    pub bottom: i16,
+}
+
+/// `0x00683540`: installs the text clip from two packed dword pairs
+/// (`param_3` into `0x011cb5ec`, `param_4` into `0x011cb5f0`), clears
+/// `0x011cb5fc` and returns the visible text length: the terminator scan
+/// result `text_len` clamped to the record byte capacity.  The temporary
+/// clear of `0x00f38810`, the global string assignment and the terminal
+/// stack-cookie check are not modelled.
+pub fn w14a10_text_payload(
+    packed_origin: u32,
+    packed_corner: u32,
+    text_len: u32,
+    capacity: u32,
+) -> (W14a10TextClip, u32) {
+    (
+        W14a10TextClip {
+            x: packed_origin as u16 as i16,
+            y: (packed_origin >> 16) as u16 as i16,
+            right: packed_corner as u16 as i16,
+            bottom: (packed_corner >> 16) as u16 as i16,
+        },
+        text_len.min(capacity),
+    )
+}
+
+/// Recovered label layout of the list-item path in `0x00683e40`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct W14a10ListItemLabel {
+    /// Text clip: the rectangle's top-left is offset by `dx`/`dy`, the
+    /// right/bottom pair is unchanged.
+    pub clip: W14a10TextClip,
+    /// Inclusive frame width passed to `FUN_0097b5d0`:
+    /// `(right - left) + 1`.
+    pub frame_width: i32,
+    /// The `0x4d`/`0x35` argument selected by bit 29 of the item style word.
+    pub accent: u32,
+    /// Label copy budget into the 256-byte local: `min(len, 0xff)`.
+    pub budget: usize,
+}
+
+/// `0x00683e40`: recovered non-drawing core of the list-item label path.
+/// The style word at `this + 0x30` supplies bit 29 (`pressed`); the label
+/// rectangle is `[left, top, right, bottom]` with the text origin moved by
+/// `dx`/`dy`, the frame width is inclusive, and the label is copied with a
+/// `0xff` byte budget and text mode `0x11`.  The two palette globals, the
+/// sprite call and the thrown string are outside the recovered body.
+pub fn w14a10_list_item_label(
+    rect: [i16; 4],
+    dx: i16,
+    dy: i16,
+    label_len: usize,
+    pressed: bool,
+) -> W14a10ListItemLabel {
+    W14a10ListItemLabel {
+        clip: W14a10TextClip {
+            x: rect[0].wrapping_add(dx),
+            y: rect[1].wrapping_add(dy),
+            right: rect[2],
+            bottom: rect[3],
+        },
+        frame_width: rect[2] as i32 - rect[0] as i32 + 1,
+        accent: if pressed {
+            W14A10_LABEL_ACCENT_PRESSED
+        } else {
+            W14A10_LABEL_ACCENT_NORMAL
+        },
+        budget: label_len.min(W14A10_LABEL_BUDGET),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 0x00683760 - chat list insertion/selection sync
+// ---------------------------------------------------------------------------
+
+/// The six list-control operations used by `0x00683760`, with the meaning
+/// recovered from the calls: lookup by message id (`FUN_009791b0` with
+/// type `0x10`), list reset (`FUN_0097a1f0(this, 0)`), unread-counter store
+/// (`FUN_00964f90`), selection (`FUN_0097a320`), row count
+/// (`FUN_00979cc0`) and scroll-to-row (`FUN_0097a370`).
+pub trait W14a10ChatList {
+    /// Index of `message` in the list, or `None` when absent.
+    fn find(&mut self, message: u32) -> Option<u8>;
+    /// Clear the list before a retry.
+    fn reset(&mut self);
+    /// Store the new unread count.
+    fn set_counter(&mut self, value: u8);
+    /// Select `index` (`-1` when the retry also failed) at `stamp`.
+    fn select(&mut self, index: i8, stamp: u32);
+    /// Number of rows in the list.
+    fn row_count(&mut self) -> u8;
+    /// Scroll so `index` is visible.
+    fn ensure_visible(&mut self, index: u8);
+}
+
+/// `0x00683760`: inserts a chat message into the dialog list.  The message
+/// id is looked up in the list; when it is missing the list is reset, the
+/// lookup is retried and the unread counter at `this + 0x67` is decremented
+/// (with wrapping) and stored.  The found index is selected with the current
+/// tick (`FUN_00a902b0`).  When the list's two scroll words (`+0x54` and
+/// `+0x58`, passed as `flat`) were equal before the update, the last row is
+/// scrolled into view.
+pub fn w14a10_chat_message_sync<L: W14a10ChatList>(
+    list: &mut L,
+    message: u32,
+    unread: &mut u8,
+    stamp: u32,
+    flat: bool,
+) {
+    let mut index = list.find(message);
+    if index.is_none() {
+        list.reset();
+        index = list.find(message);
+        if *unread != 0 {
+            *unread = unread.wrapping_sub(1);
+            list.set_counter(*unread);
+        }
+    }
+    list.select(index.map_or(-1, |index| index as i8), stamp);
+    if flat {
+        let count = list.row_count();
+        if count != 0 {
+            list.ensure_visible(count - 1);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 0x00683d80 - chat dialog callback dispatch
+// ---------------------------------------------------------------------------
+
+/// Event type handled by the chat callback (`0x0e`).
+pub const W14A10_CHAT_EVENT: u16 = 0x0e;
+
+/// What the caller of `0x00683d80` must do for the recovered actions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum W14a10ChatAction {
+    /// Action 0: run the four open helpers, then increment the depth byte at
+    /// `0x0117ee64`.  Returns 1.
+    Opened { depth: u8 },
+    /// Action 1: close the dialog, clear the modal handle `0x01165cfc`, and
+    /// return 1.
+    Close,
+    /// Action 2 with `depth != 1`: subtract two from the depth byte and run
+    /// `FUN_0074af70`.  Returns 1.
+    Popped { depth: u8 },
+    /// Action 2 with `depth == 1`: subtract one from the depth byte and run
+    /// `FUN_00973630`.  Returns 1.
+    ClosedLast { depth: u8 },
+    /// Any other event/action: forward to `FUN_0071ef40` and return its
+    /// result.
+    Forward,
+}
+
+impl W14a10ChatAction {
+    /// The shipped routine returns 1 for every translated arm; `Forward`
+    /// returns the default handler's value instead.
+    pub fn handled(self) -> bool {
+        !matches!(self, W14a10ChatAction::Forward)
+    }
+}
+
+/// `0x00683d80`: chat-dialog callback decision.  The record's low `i16` at
+/// `+0x10` (`param_2[4]`) is the event type and `param_2[0]` the action
+/// code.  Only event `0x0e` has recovered arms; everything else is forwarded
+/// to `FUN_0071ef40`.  The depth byte at `0x0117ee64` is `u8` and its
+/// arithmetic wraps (the shipped code uses a signed `char`).
+pub fn w14a10_chat_dialog_event(event: u16, action: i32, depth: &mut u8) -> W14a10ChatAction {
+    if event != W14A10_CHAT_EVENT {
+        return W14a10ChatAction::Forward;
+    }
+    match action {
+        0 => {
+            *depth = depth.wrapping_add(1);
+            W14a10ChatAction::Opened { depth: *depth }
+        }
+        1 => W14a10ChatAction::Close,
+        2 => {
+            if depth.wrapping_sub(1) != 0 {
+                *depth = depth.wrapping_sub(2);
+                W14a10ChatAction::Popped { depth: *depth }
+            } else {
+                *depth = depth.wrapping_sub(1);
+                W14a10ChatAction::ClosedLast { depth: *depth }
+            }
+        }
+        _ => W14a10ChatAction::Forward,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 0x00683ff0 - chat record initialisation
+// ---------------------------------------------------------------------------
+
+/// Capacity word installed in the record's inline text (`0x8000_000f`).
+pub const W14A10_SSO_CAPACITY: u32 = 0x8000_000f;
+/// Message kind that takes the append arm of `0x00683ff0`.
+pub const W14A10_CHAT_MESSAGE_KIND: u32 = 5;
+
+/// The inline text header installed at `+0x00..+0x0c` of the chat record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct W14a10SsoText {
+    /// `+0x04`: current byte length.
+    pub len: u32,
+    /// `+0x08`: capacity word, with the `0x8000_0000` flag preserved.
+    pub capacity: u32,
+    /// `+0x0c`: inline buffer; the shipped code clears its first byte.
+    pub inline: [u8; 16],
+}
+
+impl W14a10SsoText {
+    /// The empty inline text as installed by the routine.
+    pub const fn new() -> Self {
+        W14a10SsoText {
+            len: 0,
+            capacity: W14A10_SSO_CAPACITY,
+            inline: [0; 16],
+        }
+    }
+}
+
+impl Default for W14a10SsoText {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// The record built by `0x00683ff0` before the two-way branch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct W14a10ChatInit {
+    /// Inline text header at `+0x00`.
+    pub text: W14a10SsoText,
+    /// Four dwords copied from `0x00f3ca88..=0x00f3ca94` into `+0x1c`.
+    pub colors: [u32; 4],
+    /// Byte at `+0x2c`, cleared.
+    pub marker: u8,
+}
+
+/// Follow-up selected by the message kind in `0x00683ff0`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum W14a10ChatInitNext {
+    /// Kind 5 with subtype 0: `FUN_00713d60(handle, stamp, 0, record,
+    /// record + 7)` followed by `FUN_00684570`.
+    Append { handle: u32, stamp: u32 },
+    /// Any other kind: `FUN_00538810(record[0xa9])` reserves that many bytes.
+    Reserve { bytes: u32 },
+}
+
+/// `0x00683ff0`: initialises the inline text header (`len = 0`, capacity
+/// `0x8000_000f`, pointer to the inline buffer), copies the four colour
+/// dwords and clears the `+0x2c` marker.  Kind 5 with subtype 0 takes the
+/// chat-append arm with the record's handle (`+0x2a0`) and the tick obtained
+/// from `FUN_007eea60`; every other kind reserves the byte count stored at
+/// `+0x2a4` (`param_2[0xa9]`).
+pub fn w14a10_chat_init(
+    kind: u32,
+    subtype: u32,
+    handle: u32,
+    reserve_bytes: u32,
+    stamp: u32,
+    colors: [u32; 4],
+) -> (W14a10ChatInit, W14a10ChatInitNext) {
+    let init = W14a10ChatInit {
+        text: W14a10SsoText::new(),
+        colors,
+        marker: 0,
+    };
+    let next = if kind == W14A10_CHAT_MESSAGE_KIND && subtype == 0 {
+        W14a10ChatInitNext::Append { handle, stamp }
+    } else {
+        W14a10ChatInitNext::Reserve {
+            bytes: reserve_bytes,
+        }
+    };
+    (init, next)
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests_wave14_agent10 {
+    use super::*;
+    use std::collections::VecDeque;
+
+    fn panorama() -> W14a10Panorama {
+        W14a10Panorama {
+            x: 0,
+            x_limit: 0x1000,
+            x_applied: 0,
+            x_reported: 0,
+            y: 0x800,
+            y_applied: 0x800,
+            y_reported: 64,
+            width: 0x400,
+            height: 0x800,
+            x_layers: [0; 5],
+            y_layers: [0; 5],
+            speeds: [1, 2, 4, 8, 16],
+        }
+    }
+
+    #[test]
+    fn scroll_right_moves_layers_and_wraps_by_width() {
+        let mut state = panorama();
+        let step = w14a10_panorama_scroll_right(&mut state, 64, false, 1.0).expect("step");
+        assert_eq!(step.tile, 2);
+        assert!(step.moved);
+        assert!(step.redraw_rows.is_empty());
+        assert_eq!(state.x, 64);
+        assert_eq!(state.x_applied, 64);
+        assert_eq!(state.x_layers, [960, 896, 768, 512, 0]);
+
+        let step = w14a10_panorama_scroll_right(&mut state, 0, false, 1.0).expect("step");
+        assert_eq!(step.tile, 2);
+        assert!(!step.moved);
+        assert_eq!(state.x_layers, [960, 896, 768, 512, 0]);
+
+        assert_eq!(
+            w14a10_panorama_scroll_right(&mut state, 64, true, 1.0),
+            None
+        );
+        assert_eq!(state.x, 64);
+    }
+
+    #[test]
+    fn scroll_right_scales_and_clamps_delta() {
+        let mut state = panorama();
+        let step = w14a10_panorama_scroll_right(&mut state, 100, false, 2.0).expect("step");
+        assert_eq!(state.x, 50);
+        assert_eq!(step.tile, 1);
+
+        let mut state = panorama();
+        w14a10_panorama_scroll_right(&mut state, 100, false, 0.25).expect("step");
+        assert_eq!(state.x, 100);
+
+        let mut state = panorama();
+        state.x = 0xff0;
+        state.x_applied = 0xff0;
+        let step = w14a10_panorama_scroll_right(&mut state, 0x40, false, 1.0).expect("step");
+        assert_eq!(state.x, 0x1000);
+        assert_eq!(step.tile, 0x80);
+        // delta 0x40 is clipped by 0x30, so 0x10 pixels still move the layers.
+        assert_eq!(state.x_layers, [1008, 992, 960, 896, 768]);
+    }
+
+    #[test]
+    fn scroll_down_clamps_at_zero_and_redraws_rows() {
+        let mut state = panorama();
+        let step = w14a10_panorama_scroll_down(&mut state, 64, false, 1.0).expect("step");
+        assert_eq!(state.y, 0x7c0);
+        assert_eq!(step.tile, 62);
+        assert!(step.moved);
+        assert_eq!(step.redraw_rows, vec![63, 62]);
+        assert_eq!(state.y_reported, 62);
+        assert_eq!(state.y_layers, [64, 128, 256, 512, 1024]);
+
+        let mut state = panorama();
+        state.y = 0x20;
+        state.y_applied = 0x20;
+        let step = w14a10_panorama_scroll_down(&mut state, 0x40, false, 1.0).expect("step");
+        assert_eq!(state.y, 0);
+        assert_eq!(step.tile, 0);
+        // delta 0x40 is clipped by 0x20, so 0x20 pixels still move the layers.
+        assert_eq!(state.y_layers, [32, 64, 128, 256, 512]);
+
+        let mut state = panorama();
+        state.y_reported = 10;
+        let step = w14a10_panorama_scroll_down(&mut state, 64, false, 1.0).expect("step");
+        assert_eq!(step.tile, 62);
+        assert_eq!(state.y_reported, 10);
+        assert!(step.redraw_rows.is_empty());
+    }
+
+    #[test]
+    fn scroll_down_wraps_layers_by_height() {
+        let mut state = panorama();
+        state.height = 0x300;
+        state.speeds = [1, 2, 4, 8, 64];
+        w14a10_panorama_scroll_down(&mut state, 64, false, 1.0).expect("step");
+        // The shipped wrap subtracts the extent exactly once, even when the
+        // moved offset is still above it (0x1000 - 0x300 = 0xd00).
+        assert_eq!(state.y_layers, [64, 128, 256, 512, 0xd00]);
+    }
+
+    #[test]
+    fn slot_array_grows_with_one_and_a_half_policy() {
+        let mut array = W14a10SlotArray {
+            len: 2,
+            capacity: 0x8000_0004,
+            slots: vec![10, 20],
+        };
+        assert_eq!(w14a10_slot_array_grow(&mut array, 5), W14a10Resize::Grown);
+        assert_eq!(array.len, 5);
+        assert_eq!(array.capacity, 0x8000_0006);
+        assert_eq!(array.slots, vec![10, 20, u32::MAX, u32::MAX, u32::MAX]);
+
+        assert_eq!(
+            w14a10_slot_array_grow(&mut array, 5),
+            W14a10Resize::Unchanged
+        );
+        assert_eq!(
+            w14a10_slot_array_grow(&mut array, 4),
+            W14a10Resize::ShrinkUnsupported
+        );
+        assert_eq!(array.len, 5);
+
+        let mut array = W14a10SlotArray {
+            len: 2,
+            capacity: 0x8000_0004,
+            slots: vec![1, 2],
+        };
+        assert_eq!(w14a10_slot_array_grow(&mut array, 10), W14a10Resize::Grown);
+        assert_eq!(array.capacity, 0x8000_000a);
+        assert_eq!(array.slots.len(), 10);
+
+        let mut array = W14a10SlotArray {
+            len: 2,
+            capacity: 0x8000_0010,
+            slots: vec![1, 2],
+        };
+        assert_eq!(w14a10_slot_array_grow(&mut array, 6), W14a10Resize::Grown);
+        assert_eq!(array.capacity, 0x8000_0010);
+    }
+
+    #[test]
+    fn record_name_copy_is_clipped_at_0x5f() {
+        let name = [b'n'; W14A10_NAME_COPY_BUDGET + 5];
+        let mut dest = [0u8; W14A10_NAME_COPY_BUDGET];
+        assert_eq!(
+            w14a10_copy_record_name(&mut dest, &name),
+            Some(W14A10_NAME_COPY_BUDGET)
+        );
+        assert!(dest.iter().all(|&byte| byte == b'n'));
+
+        let mut dest = [0u8; 4];
+        assert_eq!(w14a10_copy_record_name(&mut dest, b"abc"), Some(3));
+        assert_eq!(&dest[..3], b"abc");
+        assert_eq!(dest[3], 0);
+
+        assert_eq!(w14a10_copy_record_name(&mut [], b""), Some(0));
+        assert_eq!(w14a10_copy_record_name(&mut [0u8; 2], b"abc"), None);
+    }
+
+    #[test]
+    fn characters_append_clips_at_0x103() {
+        let mut buf = [0u8; W14A10_PATH_CAPACITY];
+        assert_eq!(w14a10_append_characters_dir(&mut buf, 0), Some(0x0b));
+        assert_eq!(&buf[..0x0b], b"Characters\\");
+        assert_eq!(buf[0x0b], 0);
+
+        let mut buf = [b'x'; W14A10_PATH_CAPACITY];
+        assert_eq!(w14a10_append_characters_dir(&mut buf, 0xf8), Some(0x103));
+        assert_eq!(&buf[0xf8..0x103], b"Characters\\");
+
+        let mut buf = [b'x'; W14A10_PATH_CAPACITY];
+        assert_eq!(w14a10_append_characters_dir(&mut buf, 0x103), Some(0x103));
+        assert!(buf.iter().all(|&byte| byte == b'x'));
+
+        assert_eq!(w14a10_append_characters_dir(&mut buf, 0x104), None);
+        assert_eq!(w14a10_append_characters_dir(&mut [0u8; 4], 0), None);
+    }
+
+    #[test]
+    fn characters_dir_length_reads_the_c_string() {
+        let mut buf = [0u8; W14A10_PATH_CAPACITY];
+        buf[..4].copy_from_slice(b"dir\0");
+        assert_eq!(w14a10_characters_dir_length(&mut buf), Some(0x0e));
+        assert_eq!(&buf[3..0x0e], b"Characters\\");
+
+        let mut full = [b'a'; W14A10_PATH_CAPACITY];
+        assert_eq!(w14a10_characters_dir_length(&mut full), None);
+
+        let mut short = [b'a'; 8];
+        assert_eq!(w14a10_characters_dir_length(&mut short), None);
+    }
+
+    #[test]
+    fn text_payload_unpacks_the_packed_pairs() {
+        let (clip, len) = w14a10_text_payload(0x0064_00c8, 0x0190_012c, 300, 255);
+        assert_eq!(
+            clip,
+            W14a10TextClip {
+                x: 200,
+                y: 100,
+                right: 300,
+                bottom: 400,
+            }
+        );
+        assert_eq!(len, 255);
+
+        let (clip, len) = w14a10_text_payload(0xffff_fffe, 0x0001_ffff, 10, 0);
+        assert_eq!(
+            clip,
+            W14a10TextClip {
+                x: -2,
+                y: -1,
+                right: -1,
+                bottom: 1,
+            }
+        );
+        assert_eq!(len, 0);
+    }
+
+    #[test]
+    fn list_item_label_offsets_and_budget() {
+        let label = w14a10_list_item_label([10, 20, 110, 40], 3, 4, 300, false);
+        assert_eq!(
+            label.clip,
+            W14a10TextClip {
+                x: 13,
+                y: 24,
+                right: 110,
+                bottom: 40,
+            }
+        );
+        assert_eq!(label.accent, W14A10_LABEL_ACCENT_NORMAL);
+        assert_eq!(label.budget, W14A10_LABEL_BUDGET);
+        assert_eq!(label.frame_width, 101);
+
+        let label = w14a10_list_item_label([10, 20, 110, 40], 0, 0, 255, true);
+        assert_eq!(label.accent, W14A10_LABEL_ACCENT_PRESSED);
+        assert_eq!(label.budget, 255);
+        assert_eq!(W14A10_TEXT_MODE, 0x11);
+
+        let label = w14a10_list_item_label([0x7fff, 0, 0, 0], 1, -1, 0, false);
+        assert_eq!(label.clip.x, -32768);
+        assert_eq!(label.clip.y, -1);
+    }
+
+    struct MockList {
+        lookups: VecDeque<Option<u8>>,
+        calls: Vec<&'static str>,
+        selected: Option<(i8, u32)>,
+        counter: Option<u8>,
+        visible: Option<u8>,
+        rows: u8,
+    }
+
+    impl MockList {
+        fn new(lookups: impl IntoIterator<Item = Option<u8>>, rows: u8) -> Self {
+            MockList {
+                lookups: lookups.into_iter().collect(),
+                calls: Vec::new(),
+                selected: None,
+                counter: None,
+                visible: None,
+                rows,
+            }
+        }
+    }
+
+    impl W14a10ChatList for MockList {
+        fn find(&mut self, _message: u32) -> Option<u8> {
+            self.calls.push("find");
+            self.lookups.pop_front().flatten()
+        }
+
+        fn reset(&mut self) {
+            self.calls.push("reset");
+        }
+
+        fn set_counter(&mut self, value: u8) {
+            self.calls.push("counter");
+            self.counter = Some(value);
+        }
+
+        fn select(&mut self, index: i8, stamp: u32) {
+            self.calls.push("select");
+            self.selected = Some((index, stamp));
+        }
+
+        fn row_count(&mut self) -> u8 {
+            self.calls.push("rows");
+            self.rows
+        }
+
+        fn ensure_visible(&mut self, index: u8) {
+            self.calls.push("visible");
+            self.visible = Some(index);
+        }
+    }
+
+    #[test]
+    fn chat_sync_selects_an_existing_message() {
+        let mut list = MockList::new([Some(3)], 7);
+        let mut unread = 5u8;
+        w14a10_chat_message_sync(&mut list, 0xabc, &mut unread, 100, true);
+        assert_eq!(list.calls, ["find", "select", "rows", "visible"]);
+        assert_eq!(list.selected, Some((3, 100)));
+        assert_eq!(list.visible, Some(6));
+        assert_eq!(unread, 5);
+        assert_eq!(list.counter, None);
+    }
+
+    #[test]
+    fn chat_sync_resets_and_retries_a_missing_message() {
+        let mut list = MockList::new([None, Some(1)], 4);
+        let mut unread = 2u8;
+        w14a10_chat_message_sync(&mut list, 0xabc, &mut unread, 7, false);
+        assert_eq!(list.calls, ["find", "reset", "find", "counter", "select"]);
+        assert_eq!(unread, 1);
+        assert_eq!(list.counter, Some(1));
+        assert_eq!(list.selected, Some((1, 7)));
+        assert_eq!(list.visible, None);
+    }
+
+    #[test]
+    fn chat_sync_keeps_zero_unread_and_selects_minus_one() {
+        let mut list = MockList::new([None, None], 0);
+        let mut unread = 0u8;
+        w14a10_chat_message_sync(&mut list, 0xabc, &mut unread, 9, true);
+        assert_eq!(list.calls, ["find", "reset", "find", "select", "rows"]);
+        assert_eq!(unread, 0);
+        assert_eq!(list.counter, None);
+        assert_eq!(list.selected, Some((-1, 9)));
+        assert_eq!(list.visible, None);
+    }
+
+    #[test]
+    fn chat_dialog_actions_wrap_the_depth_byte() {
+        let mut depth = 0u8;
+        assert_eq!(
+            w14a10_chat_dialog_event(13, 0, &mut depth),
+            W14a10ChatAction::Forward
+        );
+        assert_eq!(depth, 0);
+        assert!(!W14a10ChatAction::Forward.handled());
+
+        assert_eq!(
+            w14a10_chat_dialog_event(W14A10_CHAT_EVENT, 0, &mut depth),
+            W14a10ChatAction::Opened { depth: 1 }
+        );
+        assert!(W14a10ChatAction::Opened { depth: 1 }.handled());
+
+        assert_eq!(
+            w14a10_chat_dialog_event(W14A10_CHAT_EVENT, 1, &mut depth),
+            W14a10ChatAction::Close
+        );
+        assert_eq!(depth, 1);
+
+        assert_eq!(
+            w14a10_chat_dialog_event(W14A10_CHAT_EVENT, 2, &mut depth),
+            W14a10ChatAction::ClosedLast { depth: 0 }
+        );
+
+        let mut depth = 3u8;
+        assert_eq!(
+            w14a10_chat_dialog_event(W14A10_CHAT_EVENT, 2, &mut depth),
+            W14a10ChatAction::Popped { depth: 1 }
+        );
+
+        let mut depth = 0u8;
+        assert_eq!(
+            w14a10_chat_dialog_event(W14A10_CHAT_EVENT, 2, &mut depth),
+            W14a10ChatAction::Popped { depth: 254 }
+        );
+
+        assert_eq!(
+            w14a10_chat_dialog_event(W14A10_CHAT_EVENT, 3, &mut depth),
+            W14a10ChatAction::Forward
+        );
+    }
+
+    #[test]
+    fn chat_init_builds_the_inline_text_and_selects_the_follow_up() {
+        let (init, next) = w14a10_chat_init(5, 0, 0x1234, 77, 900, [1, 2, 3, 4]);
+        assert_eq!(init.text.len, 0);
+        assert_eq!(init.text.capacity, W14A10_SSO_CAPACITY);
+        assert_eq!(init.text.inline, [0u8; 16]);
+        assert_eq!(init.colors, [1, 2, 3, 4]);
+        assert_eq!(init.marker, 0);
+        assert_eq!(
+            next,
+            W14a10ChatInitNext::Append {
+                handle: 0x1234,
+                stamp: 900,
+            }
+        );
+        assert_eq!(W14a10SsoText::default(), W14a10SsoText::new());
+
+        let (_, next) = w14a10_chat_init(5, 1, 0, 77, 900, [0; 4]);
+        assert_eq!(next, W14a10ChatInitNext::Reserve { bytes: 77 });
+
+        let (_, next) = w14a10_chat_init(4, 0, 0, 12, 900, [0; 4]);
+        assert_eq!(next, W14a10ChatInitNext::Reserve { bytes: 12 });
+    }
+}

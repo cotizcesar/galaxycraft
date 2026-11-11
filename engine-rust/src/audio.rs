@@ -1039,3 +1039,1904 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 }
+
+// ===========================================================================
+// Merged from src/wave14/agent06.rs
+// ===========================================================================
+// Wave 14 translation batch 06 (staging).
+//
+// Window: `0067a000..=0067bfff`.  The window is the mixer core of the
+// retail sound system: the per-thread sound object that owns 128
+// DirectSound voices, the voice-handle generation scheme, the small
+// `Master`/`Music`/`Sfx` group buffers, and the "WolfeLimiter" dynamics
+// processor that scales mixed sample blocks.
+//
+// ## Recovered layout
+//
+// The sound object (returned by the per-thread getter `FUN_006289e0`) is:
+//
+// | offset | shape | meaning |
+// |---|---|---|
+// | `+0x00` | `u32` | DirectSound device interface |
+// | `+0x04` | `u32` | `Master` group buffer |
+// | `+0x08` | `u32` | `Music` group buffer |
+// | `+0x0c` | `u32` | `Sfx` group buffer |
+// | `+0x10` | 128 x `0x18` | voice table, indexed by the low 16 bits of a handle |
+//
+// One voice record is:
+//
+// | offset | shape | meaning |
+// |---|---|---|
+// | `+0x00` | `u32` | DirectSound buffer interface |
+// | `+0x04` | `u16` | generation, part of the packed handle |
+// | `+0x06` | `u8` | query/play state byte (non-zero suppresses "finished") |
+// | `+0x07` | `u8` | in-use marker scanned by the allocator |
+// | `+0x08` | `u32` | pending sound descriptor token when buffer creation is deferred |
+// | `+0x0c` | `u32` | pending handle, `0xffff` when unused |
+// | `+0x10` | `f32` | volume |
+// | `+0x14` | `f32` | pan |
+//
+// A handle is `(generation << 16) | index`; generation `0` is never valid.
+// Releasing a voice advances the generation (`0` becomes `1`, `0xffff`
+// wraps to `0`) so stale handles no longer match.
+//
+// ## Limiter layout
+//
+// The "WolfeLimiter" object stores its running envelope state at `+0x04`
+// (consumed by `FUN_00679a40`, outside this window) and its configuration
+// and derived gains at `+0x44..=0x88`.  Values are decibels converted with
+// `10^(db/20)` and one-pole coefficients `exp(-2 / (ms * rate * 0.001))`.
+// The field-by-field table is on [`W14a06Limiter`].
+//
+// ## Translation notes
+//
+// * Backend calls into the DirectSound wrappers (`FUN_00984xxx`,
+//   `FUN_00985xxx`) are abstracted exactly as in the wave 13 batches:
+//   query results enter as [`W14a06BackendQuery`], create calls as
+//   [`W14a06PlayProbe`], and release helpers return the handles the caller
+//   still has to release.  No platform call is executed here.
+// * The release rows return the released buffer handle (or the whole
+//   matching record) instead of the retail `bool`; `Some`/a non-zero value
+//   is the retail `true`.
+// * `FUN_0067bd50` indexes the three group buffers without a bounds check
+//   in retail; the translation reports `None` for an out-of-range group.
+//
+// Skipped rows, and why:
+//
+// * `FUN_0067a020`, `FUN_0067a110`, `FUN_0067a1d0`: C++ initialiser /
+//   destructor bodies whose tails build a `0x84`-byte exception object and
+//   end in the non-returning throw helper.  Their resource-release prefix
+//   is the same sequence already translated for `FUN_0067bb30`.
+// * `FUN_0067a164`, `FUN_0067b405`: mid-instruction fragments reading
+//   `unaff_EBP`/`unaff_ESI`/`unaff_EDI`; `FUN_0067b405` begins with the
+//   byte pair `e6 ff` (`out 0xff, al`) and overlaps `FUN_0067b3c0`.
+// * `FUN_0067a410`: scalar deleting destructor; a base-destructor call and
+//   an operator delete with no arithmetic or state to reproduce.
+// * `FUN_0067a440`, `FUN_0067bff0`: SEH frame constructors that copy
+//   `std::string` temporaries and install vtables from opaque descriptors.
+// * `FUN_0067a705`, `FUN_0067a79b`: six-byte catch-all stubs returning the
+//   address of a handler label, not functions.
+// * `FUN_0067a810`, `FUN_0067b860`: SEH frame prologues that end in the
+//   non-returning frame installer.
+// * `FUN_0067aa00`: device construction with eight opaque wrapper calls,
+//   a copied `WAVEFORMAT` block at `d3e620`, and a non-returning tail; the
+//   visible layout it writes is already covered by the channel helpers.
+// * `FUN_0067b060`: notification callback whose only effect is a device
+//   query and a conditional seek through opaque wrappers; every path
+//   returns `0`.
+//
+// Nothing here is wired into `World`, `SimUnit`, the renderer or the
+// client, and no save/replay state is introduced.
+
+// The playback rows mirror their cdecl signatures (descriptor, volume, pan,
+// allocated handle, backend results); splitting them into structs would hide
+// the recovered argument order.
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/// Number of voice records in the sound object (retail `0x80`).
+pub const W14A06_MAX_CHANNELS: usize = 0x80;
+/// Byte stride of one voice record (retail `0x18`).
+pub const W14A06_CHANNEL_STRIDE: usize = 0x18;
+/// Offset of voice slot `0` inside the sound object.
+pub const W14A06_CHANNEL_TABLE_OFFSET: usize = 0x10;
+/// Handle value written when allocation or lookup fails.
+pub const W14A06_INVALID_HANDLE: u32 = 0xffff;
+/// Backend codes treated as "the buffer handle is no longer alive"
+/// (`0x24` and `0x0b` in the three voice query rows).
+pub const W14A06_DEAD_BUFFER_CODES: [u32; 2] = [0x24, 0x0b];
+/// `FUN_00984eb0` result that defers buffer creation.
+pub const W14A06_DEFERRED_CREATE_STATUS: u32 = 0x36;
+/// Number of group buffers (`Master`, `Music`, `Sfx`).
+pub const W14A06_GROUP_COUNT: usize = 3;
+
+// ---------------------------------------------------------------------------
+// Recovered records
+// ---------------------------------------------------------------------------
+
+/// One 24-byte voice record of the sound object.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct W14a06Channel {
+    /// `+0x00`: DirectSound buffer interface.
+    pub buffer: u32,
+    /// `+0x04`: handle generation.
+    pub generation: u16,
+    /// `+0x06`: query/play state byte.
+    pub flags_06: u8,
+    /// `+0x07`: in-use marker used by the allocator.
+    pub valid: bool,
+    /// `+0x08`: pending sound descriptor token (deferred creation).
+    pub data: u32,
+    /// `+0x0c`: pending packed handle.
+    pub pending: u32,
+    /// `+0x10`: volume.
+    pub volume: f32,
+    /// `+0x14`: pan.
+    pub pan: f32,
+}
+
+impl W14a06Channel {
+    /// The record as `FUN_00679c50` initialises it: blank buffer, generation
+    /// `0`, both flag bytes clear, and the pending field set to `0xffff`.
+    pub fn cleared() -> Self {
+        Self {
+            pending: W14A06_INVALID_HANDLE,
+            ..Self::default()
+        }
+    }
+}
+
+/// The three group buffers plus the device, at `+0x00..=0x0c` of the sound
+/// object.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct W14a06Sound {
+    /// `+0x00`: DirectSound device.
+    pub device: u32,
+    /// `+0x04`, `+0x08`, `+0x0c`: `Master`, `Music`, `Sfx`.
+    pub groups: [u32; W14A06_GROUP_COUNT],
+}
+
+/// Result of a buffer query.
+///
+/// The retail rows call `FUN_00985020`, `FUN_00984fe0` or `FUN_009850c0`
+/// wrappers; a return code of `0x24` or `0x0b` means the wrapper could not
+/// resolve the buffer object and the voice is recycled.  Any other code
+/// leaves a value (a status byte or a dword) to interpret.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum W14a06BackendQuery<T> {
+    /// The call succeeded and produced this value.
+    Value(T),
+    /// The buffer object was already gone.
+    Dead,
+}
+
+impl<T> W14a06BackendQuery<T> {
+    /// Classify a raw wrapper result using the shared `0x24`/`0x0b` test.
+    pub fn from_status(code: u32, value: T) -> Self {
+        if code == W14A06_DEAD_BUFFER_CODES[0] || code == W14A06_DEAD_BUFFER_CODES[1] {
+            Self::Dead
+        } else {
+            Self::Value(value)
+        }
+    }
+}
+
+/// A voice record that was matched by a packed handle and released.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct W14a06ChannelRelease {
+    /// Index of the matched voice in the table.
+    pub index: usize,
+    /// Buffer handle that the caller must release (may be `0`).
+    pub buffer: u32,
+}
+
+/// One decoded sound descriptor, as used by `FUN_0067b0a0` and
+/// `FUN_0067bc60` (fields `+0x00`, `+0x04`, `+0x08`, `+0x0c`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct W14a06SoundData {
+    /// `+0x00`: source/parser object.
+    pub source: u32,
+    /// `+0x04`: prepared state (zero until `FUN_0067bc60` succeeds).
+    pub prepared: u32,
+    /// `+0x08`: decoded sample buffer.
+    pub samples: u32,
+    /// `+0x0c`: group index (`0` Master, `1` Music, `2` Sfx).
+    pub group: u32,
+}
+
+/// Backend results consumed by `FUN_0067bc60`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct W14a06PrepareProbe {
+    /// Result of `FUN_00984a10(source, &parsed, 0, 0, 0)`.
+    pub parse_status: u32,
+    /// The `parsed` value that call wrote.
+    pub parsed: u32,
+    /// Result of `FUN_009849c0(source, &allocated, 1)`.
+    pub alloc_status: u32,
+    /// The `allocated` value that call wrote.
+    pub allocated: u32,
+}
+
+/// Backend results consumed by `FUN_0067b0a0`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct W14a06PlayProbe {
+    /// Results of the `FUN_0067bc60` preparation step.
+    pub prepare: W14a06PrepareProbe,
+    /// Result of `FUN_00984eb0(device, -1, source, loop, voice)`.
+    pub create_status: u32,
+    /// The buffer interface that call stored in the voice record.
+    pub created_buffer: u32,
+}
+
+/// Outcome of the three "start a voice" rows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum W14a06PlayResult {
+    /// The sound object has no device yet (`*this == 0`).
+    NoDevice,
+    /// Bad index/generation, or a create call failed.
+    InvalidHandle,
+    /// Creation returned a hard error while a buffer already existed.
+    Failed,
+    /// Parameters were stored and buffer creation is deferred.
+    Deferred {
+        /// Matched voice slot.
+        index: usize,
+    },
+    /// The voice was filled in; the caller still issues the group, volume,
+    /// pan and `FUN_0067bbf0(0)` calls described by the record.
+    Started {
+        /// Matched voice slot.
+        index: usize,
+        /// Group buffer the retail body selects (`sound.groups[data.group]`).
+        group: u32,
+    },
+}
+
+/// Descriptor used by `FUN_0067b240`: a one-shot sample.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct W14a06Sample {
+    /// `+0x00`: sample data handed to `FUN_00984eb0`.
+    pub samples: u32,
+    /// `+0x04`: group index.
+    pub group: u32,
+    /// `+0x08`: packed handle written by the row.
+    pub handle: u32,
+}
+
+/// Descriptor used by `FUN_0067b300`: a streamed sample.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct W14a06StreamData {
+    /// `+0x00`: reserved source word.
+    pub field_00: u32,
+    /// `+0x04`: reserved second word.
+    pub field_04: u32,
+    /// `+0x08`: sample data handed to `FUN_00984eb0`.
+    pub samples: u32,
+    /// `+0x0c`: group index.
+    pub group: u32,
+    /// `+0x10`: packed handle written by the row.
+    pub handle: u32,
+}
+
+/// The record released by `FUN_0067bb00`: `{ buffer, ?, handle }`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct W14a06Voice {
+    /// `+0x00`: buffer interface.
+    pub buffer: u32,
+    /// `+0x04`: unused by the row.
+    pub reserved: u32,
+    /// `+0x08`: packed handle.
+    pub handle: u32,
+}
+
+/// Handles reported by `FUN_0067bb00`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct W14a06VoiceRelease {
+    /// Matched voice record, if the handle was still live.
+    pub handle: Option<W14a06ChannelRelease>,
+    /// Buffer interface the caller must release.
+    pub buffer: u32,
+}
+
+/// The record released by `FUN_0067bb30`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct W14a06Stream {
+    /// `+0x00`: buffer interface.
+    pub buffer: u32,
+    /// `+0x04`: unused by the row.
+    pub field_04: u32,
+    /// `+0x08`: owned sample memory.
+    pub memory: u32,
+    /// `+0x0c`: unused by the row.
+    pub field_0c: u32,
+    /// `+0x10`: packed handle.
+    pub handle: u32,
+    /// `+0x14`: owned text/data pointer.
+    pub text: u32,
+    /// `+0x18`: length of the `text` allocation, `0` when absent.
+    pub text_len: u32,
+}
+
+/// Handles reported by `FUN_0067bb30`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct W14a06StreamRelease {
+    /// Matched voice record, if the handle was still live.
+    pub handle: Option<W14a06ChannelRelease>,
+    /// Text/data block to free, with its length.
+    pub text: Option<(u32, u32)>,
+    /// Sample memory the caller must release.
+    pub buffer: u32,
+}
+
+/// Handles reported by `FUN_0067a2e0`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct W14a06CloseActions {
+    /// `Master`, `Music` and `Sfx` buffers in release order.
+    pub groups: [u32; W14A06_GROUP_COUNT],
+    /// Limiter object released after the groups (may be `0`).
+    pub limiter: u32,
+    /// Device released last.
+    pub device: u32,
+}
+
+// ---------------------------------------------------------------------------
+// Voice table
+// ---------------------------------------------------------------------------
+
+/// Advance a voice generation.
+///
+/// Shared by `FUN_0067a340` and `FUN_0067a3c0`: `0` becomes `1`, all other
+/// values increment modulo 65536 (`0xffff` wraps to `0`).
+pub fn w14a06_next_generation(generation: u16) -> u16 {
+    if generation == 0 {
+        1
+    } else {
+        generation.wrapping_add(1)
+    }
+}
+
+/// `0x0067a3c0`: release the voice record at `channel`.
+///
+/// The retail body releases `channel->buffer` through `FUN_00985120`, clears
+/// the flag word and the pending token, advances the generation and stores
+/// `0xffff` in the pending handle.  Volume and pan are deliberately left
+/// untouched.  Returns the buffer handle the caller must release.
+pub fn w14a06_release_channel(channel: &mut W14a06Channel) -> u32 {
+    let buffer = channel.buffer;
+    channel.buffer = 0;
+    channel.generation = w14a06_next_generation(channel.generation);
+    channel.flags_06 = 0;
+    channel.valid = false;
+    channel.data = 0;
+    channel.pending = W14A06_INVALID_HANDLE;
+    buffer
+}
+
+/// `0x0067a340`: release the voice selected by a packed handle.
+///
+/// The index is the low 16 bits and the generation the high 16 bits.  An
+/// index of `0x80` or more, generation `0`, or a generation mismatch leaves
+/// the table untouched and returns `None` (the retail `false`).
+pub fn w14a06_release_channel_handle(
+    channels: &mut [W14a06Channel],
+    handle: u32,
+) -> Option<W14a06ChannelRelease> {
+    let index = (handle & 0xffff) as usize;
+    let generation = (handle >> 16) as u16;
+    if index >= W14A06_MAX_CHANNELS || generation == 0 {
+        return None;
+    }
+    let channel = channels.get_mut(index)?;
+    if channel.generation != generation {
+        return None;
+    }
+    let buffer = w14a06_release_channel(channel);
+    Some(W14a06ChannelRelease { index, buffer })
+}
+
+/// `0x0067a9c0`: resolve a packed handle to a voice table index.
+///
+/// The row returns a pointer to the voice record, or null; the translation
+/// returns the index.  Only the index and generation are checked, not the
+/// in-use marker.
+pub fn w14a06_find_channel(channels: &[W14a06Channel], handle: u32) -> Option<usize> {
+    let index = (handle & 0xffff) as usize;
+    let generation = (handle >> 16) as u16;
+    if index >= W14A06_MAX_CHANNELS || generation == 0 {
+        return None;
+    }
+    let channel = channels.get(index)?;
+    if channel.generation == generation {
+        Some(index)
+    } else {
+        None
+    }
+}
+
+/// `0x0067acc0`: the voice has a deferred sound descriptor.
+pub fn w14a06_channel_has_data(channel: &W14a06Channel) -> bool {
+    channel.data != 0
+}
+
+// ---------------------------------------------------------------------------
+// Voice state queries
+// ---------------------------------------------------------------------------
+
+/// `0x0067ac20`: has the voice finished?
+///
+/// A bad handle counts as finished.  A set `+0x06` byte means the voice is
+/// still owned by its caller.  With no live buffer the answer is "no
+/// deferred descriptor left"; otherwise a dead buffer query recycles the
+/// voice and reports finished, and a live status byte is inverted.
+pub fn w14a06_channel_is_finished(
+    channels: &mut [W14a06Channel],
+    handle: u32,
+    query: W14a06BackendQuery<bool>,
+) -> bool {
+    let Some(index) = w14a06_find_channel(channels, handle) else {
+        return true;
+    };
+    let channel = &mut channels[index];
+    if channel.flags_06 != 0 {
+        return false;
+    }
+    if channel.buffer == 0 {
+        return channel.data == 0;
+    }
+    match query {
+        W14a06BackendQuery::Value(playing) => !playing,
+        W14a06BackendQuery::Dead => {
+            channel.buffer = 0;
+            w14a06_release_channel(channel);
+            true
+        }
+    }
+}
+
+/// `0x0067acd0`: is the voice still playing or still pending?
+///
+/// A bad handle answers `false`.  Without a live buffer the deferred
+/// descriptor flag is returned; otherwise a dead buffer query recycles the
+/// voice and answers `false`, and a live status byte is returned unchanged.
+pub fn w14a06_channel_is_playing(
+    channels: &mut [W14a06Channel],
+    handle: u32,
+    query: W14a06BackendQuery<bool>,
+) -> bool {
+    let Some(index) = w14a06_find_channel(channels, handle) else {
+        return false;
+    };
+    let channel = &mut channels[index];
+    if channel.buffer == 0 {
+        return channel.data != 0;
+    }
+    match query {
+        W14a06BackendQuery::Value(playing) => playing,
+        W14a06BackendQuery::Dead => {
+            channel.buffer = 0;
+            w14a06_release_channel(channel);
+            false
+        }
+    }
+}
+
+/// `0x0067a7c0`: run a dword query against a voice's buffer.
+///
+/// With no buffer the row answers `0` without calling the backend.  A dead
+/// buffer query clears the buffer field, recycles the voice and answers `0`;
+/// any other result is returned as-is.
+pub fn w14a06_channel_query(channel: &mut W14a06Channel, query: W14a06BackendQuery<u32>) -> u32 {
+    if channel.buffer == 0 {
+        return 0;
+    }
+    match query {
+        W14a06BackendQuery::Value(value) => value,
+        W14a06BackendQuery::Dead => {
+            channel.buffer = 0;
+            w14a06_release_channel(channel);
+            0
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Voice parameter setters
+// ---------------------------------------------------------------------------
+
+/// `0x0067bb80`: set the pan of the voice selected by `handle`.
+///
+/// A voice with a deferred descriptor stores the value in the record and
+/// succeeds without a backend call.  Otherwise the live buffer is updated
+/// through `FUN_00985090`; `backend_ok` carries that call's success.  A bad
+/// handle or an absent buffer answers `false`.
+pub fn w14a06_set_channel_pan(
+    channels: &mut [W14a06Channel],
+    handle: u32,
+    pan: f32,
+    backend_ok: bool,
+) -> bool {
+    let Some(index) = w14a06_find_channel(channels, handle) else {
+        return false;
+    };
+    let channel = &mut channels[index];
+    if channel.data != 0 {
+        channel.pan = pan;
+        true
+    } else if channel.buffer != 0 {
+        backend_ok
+    } else {
+        false
+    }
+}
+
+/// `0x0067bce0`: set the volume of the voice selected by `handle`.
+///
+/// Mirror of the pan row; the deferred branch writes `+0x10` and the live
+/// branch reports `FUN_009850f0(buffer, volume) == 0` through `backend_ok`.
+pub fn w14a06_set_channel_volume(
+    channels: &mut [W14a06Channel],
+    handle: u32,
+    volume: f32,
+    backend_ok: bool,
+) -> bool {
+    let Some(index) = w14a06_find_channel(channels, handle) else {
+        return false;
+    };
+    let channel = &mut channels[index];
+    if channel.data != 0 {
+        channel.volume = volume;
+        true
+    } else if channel.buffer != 0 {
+        backend_ok
+    } else {
+        false
+    }
+}
+
+/// `0x0067bd50`: set the volume of one of the three group buffers.
+///
+/// The retail body indexes `this[group + 1]` without a bounds check; the
+/// translation reports `None` when the device is absent or the group index
+/// is not `0..=2`.  `Some((buffer, volume))` is the `FUN_009851b0` call the
+/// caller still has to make.
+pub fn w14a06_set_group_volume(
+    device: u32,
+    groups: &[u32; W14A06_GROUP_COUNT],
+    group: usize,
+    volume: f32,
+) -> Option<(u32, f32)> {
+    if device == 0 || group >= W14A06_GROUP_COUNT {
+        return None;
+    }
+    Some((groups[group], volume))
+}
+
+// ---------------------------------------------------------------------------
+// Destructor fragments
+// ---------------------------------------------------------------------------
+
+/// `0x0067bb00`: release a voice record `{ buffer, ?, handle }`.
+///
+/// The packed handle is released first, then the buffer interface.  Both
+/// handles are reported; the record's buffer field is cleared.
+pub fn w14a06_release_voice(
+    voice: &mut W14a06Voice,
+    channels: &mut [W14a06Channel],
+) -> W14a06VoiceRelease {
+    let handle = w14a06_release_channel_handle(channels, voice.handle);
+    let buffer = voice.buffer;
+    voice.buffer = 0;
+    W14a06VoiceRelease { handle, buffer }
+}
+
+/// `0x0067bb30`: release a stream record `{ buffer, ?, memory, ?, handle, text, len }`.
+///
+/// Order: release the packed handle; if there is owned sample memory, free
+/// the text block when its length is non-zero (the retail body also writes
+/// a zero byte through the text pointer), then release and clear the sample
+/// memory.  Everything is reported to the caller.
+pub fn w14a06_release_stream(
+    stream: &mut W14a06Stream,
+    channels: &mut [W14a06Channel],
+) -> W14a06StreamRelease {
+    let handle = w14a06_release_channel_handle(channels, stream.handle);
+    let mut text = None;
+    let mut buffer = 0;
+    if stream.memory != 0 {
+        if stream.text_len != 0 {
+            text = Some((stream.text, stream.text_len));
+            stream.text_len = 0;
+        }
+        buffer = stream.memory;
+        stream.memory = 0;
+    }
+    W14a06StreamRelease {
+        handle,
+        text,
+        buffer,
+    }
+}
+
+/// `0x0067a2e0`: close the sound object.
+///
+/// When a device is present the row releases `Master`, `Music`, `Sfx`, then
+/// the global limiter, then the device, clearing every field.  The three
+/// group handles, the limiter and the device are returned in release order.
+pub fn w14a06_close_sound(
+    group_handles: &mut [u32; W14A06_GROUP_COUNT + 1],
+    limiter: &mut u32,
+) -> Option<W14a06CloseActions> {
+    if group_handles[0] == 0 {
+        return None;
+    }
+    let mut groups = [0u32; W14A06_GROUP_COUNT];
+    for index in 0..W14A06_GROUP_COUNT {
+        groups[index] = group_handles[index + 1];
+        group_handles[index + 1] = 0;
+    }
+    let limiter_handle = *limiter;
+    *limiter = 0;
+    let device = group_handles[0];
+    group_handles[0] = 0;
+    Some(W14a06CloseActions {
+        groups,
+        limiter: limiter_handle,
+        device,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Playback start
+// ---------------------------------------------------------------------------
+
+/// `0x0067bbf0`: start (or re-start) the voice at `channel`.
+///
+/// The retail body queries the buffer status: a dead buffer recycles the
+/// voice; a playing buffer is re-started with `FUN_009850c0(buffer, flags)`
+/// and the call's success is the result; an idle buffer just clears the
+/// `+0x06` byte.  `play_status` is the `FUN_009850c0` result.
+pub fn w14a06_channel_play(
+    channel: &mut W14a06Channel,
+    flags: u32,
+    query: W14a06BackendQuery<bool>,
+    play_status: u32,
+) -> bool {
+    let _ = flags;
+    if channel.buffer == 0 {
+        return false;
+    }
+    match query {
+        W14a06BackendQuery::Dead => {
+            channel.buffer = 0;
+            w14a06_release_channel(channel);
+        }
+        W14a06BackendQuery::Value(true) => return play_status == 0,
+        W14a06BackendQuery::Value(false) => {}
+    }
+    channel.flags_06 = 0;
+    true
+}
+
+/// `0x0067bc60`: ensure a sound descriptor has a decoded buffer.
+///
+/// The row only parses when `prepared` is zero.  A failing parse returns
+/// `false`; success forces group `2` (`Sfx`) and a zero sample pointer,
+/// then asks the allocator only when the parser produced no pointer.  The
+/// row reports `true` even when the allocator itself fails (the prepared
+/// field is then left at zero).
+pub fn w14a06_stream_prepare(data: &mut W14a06SoundData, probe: W14a06PrepareProbe) -> bool {
+    if data.prepared != 0 {
+        return true;
+    }
+    if probe.parse_status != 0 {
+        return false;
+    }
+    data.group = 2;
+    data.samples = 0;
+    if probe.parsed == 0 && data.prepared == 0 {
+        data.prepared = probe.allocated;
+        if probe.alloc_status != 0 {
+            data.prepared = 0;
+        }
+    }
+    true
+}
+
+/// `0x0067b0a0`: play a decoded descriptor on the voice named by `handle`.
+///
+/// The generation is validated before anything else.  The descriptor is
+/// prepared, the voice's pending fields are reset, and buffer creation is
+/// attempted with loop flag `1`.  A `0x36` result (or a missing buffer)
+/// stores the descriptor token, volume, handle and pan for a later retry;
+/// any other non-zero result fails; success leaves the group/volume/pan
+/// calls to the caller.  The row then calls `FUN_0067bbf0(0)` (translated
+/// separately), clamps the generation to at least `1` and marks the voice
+/// in use.
+#[allow(clippy::too_many_arguments)]
+pub fn w14a06_play_on_channel(
+    sound: &W14a06Sound,
+    channels: &mut [W14a06Channel],
+    data: &mut W14a06SoundData,
+    data_token: u32,
+    handle: u32,
+    volume: f32,
+    pan: f32,
+    probe: W14a06PlayProbe,
+) -> W14a06PlayResult {
+    let index = (handle & 0xffff) as usize;
+    let generation = (handle >> 16) as u16;
+    if index >= W14A06_MAX_CHANNELS || generation == 0 {
+        return W14a06PlayResult::InvalidHandle;
+    }
+    let Some(channel) = channels.get_mut(index) else {
+        return W14a06PlayResult::InvalidHandle;
+    };
+    if channel.generation != generation {
+        return W14a06PlayResult::InvalidHandle;
+    }
+    let _ = w14a06_stream_prepare(data, probe.prepare);
+    channel.data = 0;
+    channel.pending = W14A06_INVALID_HANDLE;
+    channel.volume = 0.0;
+    channel.pan = 0.0;
+    channel.valid = false;
+    channel.buffer = probe.created_buffer;
+    if probe.create_status == W14A06_DEFERRED_CREATE_STATUS || channel.buffer == 0 {
+        channel.data = data_token;
+        channel.volume = volume;
+        channel.pending = handle;
+        channel.pan = pan;
+    } else if probe.create_status != 0 {
+        return W14a06PlayResult::Failed;
+    }
+    channel.generation = channel.generation.max(1);
+    channel.valid = true;
+    if channel.data != 0 {
+        W14a06PlayResult::Deferred { index }
+    } else {
+        let group = sound.groups.get(data.group as usize).copied().unwrap_or(0);
+        W14a06PlayResult::Started { index, group }
+    }
+}
+
+/// `0x0067b1e0`: allocate a voice and play a descriptor.
+///
+/// The retail body returns `0xffff` immediately when the sound object has no
+/// device, otherwise it allocates a packed handle with `FUN_00679d40` and
+/// forwards to `FUN_0067b0a0`.  The allocated handle is an input here.
+#[allow(clippy::too_many_arguments)]
+pub fn w14a06_play_sound(
+    sound: &W14a06Sound,
+    channels: &mut [W14a06Channel],
+    data: &mut W14a06SoundData,
+    data_token: u32,
+    volume: f32,
+    pan: f32,
+    allocated: u32,
+    probe: W14a06PlayProbe,
+) -> W14a06PlayResult {
+    if sound.device == 0 {
+        return W14a06PlayResult::NoDevice;
+    }
+    w14a06_play_on_channel(
+        sound, channels, data, data_token, allocated, volume, pan, probe,
+    )
+}
+
+/// `0x0067b240`: allocate and start a one-shot sample descriptor.
+///
+/// The row stores the allocated handle at descriptor `+0x08`, validates it,
+/// creates the buffer with loop flag `0`, and on success applies the group,
+/// volume and pan calls and marks the voice in use.  Returns the retail
+/// `bool`.
+#[allow(clippy::too_many_arguments)]
+pub fn w14a06_play_sample(
+    sound: &W14a06Sound,
+    channels: &mut [W14a06Channel],
+    sample: &mut W14a06Sample,
+    volume: f32,
+    pan: f32,
+    allocated: u32,
+    create_status: u32,
+    created_buffer: u32,
+) -> bool {
+    if sound.device == 0 {
+        return false;
+    }
+    sample.handle = allocated;
+    let Some(index) = w14a06_find_channel(channels, allocated) else {
+        return false;
+    };
+    if create_status != 0 {
+        return false;
+    }
+    let channel = &mut channels[index];
+    channel.buffer = created_buffer;
+    channel.volume = volume;
+    channel.pan = pan;
+    channel.generation = channel.generation.max(1);
+    channel.valid = true;
+    true
+}
+
+/// `0x0067b300`: allocate and start a streamed sample descriptor.
+///
+/// Same shape as `FUN_0067b240` but the handle is stored at descriptor
+/// `+0x10`, the sample data comes from `+0x08`, the group index from
+/// `+0x0c`, and buffer creation uses loop flag `1`.
+#[allow(clippy::too_many_arguments)]
+pub fn w14a06_play_stream(
+    sound: &W14a06Sound,
+    channels: &mut [W14a06Channel],
+    stream: &mut W14a06StreamData,
+    volume: f32,
+    pan: f32,
+    allocated: u32,
+    create_status: u32,
+    created_buffer: u32,
+) -> bool {
+    if sound.device == 0 {
+        return false;
+    }
+    stream.handle = allocated;
+    let Some(index) = w14a06_find_channel(channels, allocated) else {
+        return false;
+    };
+    if create_status != 0 {
+        return false;
+    }
+    let channel = &mut channels[index];
+    channel.buffer = created_buffer;
+    channel.volume = volume;
+    channel.pan = pan;
+    channel.generation = channel.generation.max(1);
+    channel.valid = true;
+    true
+}
+
+// ---------------------------------------------------------------------------
+// Small interface helpers
+// ---------------------------------------------------------------------------
+
+/// `0x0067a6a0`: map a virtual `create` result to an interface status.
+///
+/// The retail body calls `(*(*this + 4))(arg2, arg3)`, stores the result in
+/// `*param_4` and returns `0x16` when it is non-zero, `0` otherwise.  The
+/// callee's result is the input here; the tuple is `(status, stored value)`.
+pub fn w14a06_map_create_result(created: u32) -> (u32, u32) {
+    (if created != 0 { 0x16 } else { 0 }, created)
+}
+
+/// `0x0067a730`: verify a virtual setter by reading the value back.
+///
+/// The retail body writes `wanted` through vtable slot `+8`, reads it back
+/// through slot `+4`, and returns `0x14` when the read-back differs from
+/// `wanted`, `0` when it matches.
+pub fn w14a06_verify_set_value(readback: u32, wanted: u32) -> u32 {
+    if readback == wanted { 0 } else { 0x14 }
+}
+
+// ---------------------------------------------------------------------------
+// WolfeLimiter
+// ---------------------------------------------------------------------------
+
+/// Section and key names read by `FUN_0067ad50`.
+pub const W14A06_LIMITER_SECTION: &str = "WolfeLimiter";
+/// Release-time key (`paramReleaseMs`, length `0x0e`).
+pub const W14A06_LIMITER_RELEASE_KEY: &str = "paramReleaseMs";
+/// ARC-enable key (`paramUseARC`, length `0x0b`).
+pub const W14A06_LIMITER_ARC_KEY: &str = "paramUseARC";
+
+/// `0x0067ad50`: reload the two limiter settings exposed in the config file.
+///
+/// The retail body reads `paramReleaseMs` (default: the current `+0x64`
+/// value) and `paramUseARC` (default: the current `+0x68` byte) from the
+/// `WolfeLimiter` section, in that order.  The two lookups are abstracted as
+/// caller-supplied closures.
+pub fn w14a06_limiter_read_config<F, G>(
+    release_ms: i32,
+    use_arc: bool,
+    read_int: F,
+    read_bool: G,
+) -> (i32, bool)
+where
+    F: FnOnce(&str, &str, i32) -> i32,
+    G: FnOnce(&str, &str, bool) -> bool,
+{
+    let release = read_int(
+        W14A06_LIMITER_SECTION,
+        W14A06_LIMITER_RELEASE_KEY,
+        release_ms,
+    );
+    let arc = read_bool(W14A06_LIMITER_SECTION, W14A06_LIMITER_ARC_KEY, use_arc);
+    (release, arc)
+}
+
+/// The "WolfeLimiter" object.
+///
+/// The running envelope (`+0x04..=0x40`) is driven by `FUN_00679a40`, which
+/// lies before this window; the fields below record everything the setup and
+/// block-scaling rows read or write.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct W14a06Limiter {
+    /// `+0x00`: word before the envelope state (not touched here).
+    pub reserved_00: u32,
+    /// `+0x04`: envelope state base (not touched here).
+    pub reserved_04: u32,
+    /// `+0x08`: release one-pole coefficient.
+    pub release_coefficient: f32,
+    /// `+0x0c`: cached `release_ms`.
+    pub release_ms_cache: i32,
+    /// `+0x10`: cached sample rate.
+    pub sample_rate_cache: i32,
+    /// `+0x14`: current envelope gain (driven outside this window).
+    pub envelope_state: f32,
+    /// `+0x18`: second one-pole coefficient.
+    pub second_coefficient: f32,
+    /// `+0x1c`: cached `second_ms`.
+    pub second_ms_cache: i32,
+    /// `+0x20`: cached sample rate for the second coefficient.
+    pub second_rate_cache: i32,
+    /// `+0x24`: third one-pole coefficient.
+    pub third_coefficient: f32,
+    /// `+0x28`: cached `third_ms`.
+    pub third_ms_cache: i32,
+    /// `+0x2c`: copy of the `paramUseARC` byte.
+    pub use_arc_copy: u8,
+    /// `+0x2d..+0x2f`: padding.
+    pub reserved_2d: [u8; 3],
+    /// `+0x30`: envelope limit (driven outside this window).
+    pub reserved_30: f32,
+    /// `+0x34`: `10^(threshold_db/20)`.
+    pub threshold_gain: f32,
+    /// `+0x38`: `param_80` as `f32`.
+    pub param_80_f32: f32,
+    /// `+0x3c`: `param_84` as `f32`.
+    pub param_84_f32: f32,
+    /// `+0x40`: `(param_84 - param_80) / (rate * ramp_ms * 0.001)`.
+    pub ramp_per_sample: f32,
+    /// `+0x44`: `10^((threshold_db - offset_db)/20)`, lower knee.
+    pub lower_knee_gain: f32,
+    /// `+0x48`: `10^(threshold_db/20)`, upper knee.
+    pub upper_knee_gain: f32,
+    /// `+0x4c`: `threshold_db - offset_db`.
+    pub threshold_minus_offset: f32,
+    /// `+0x50`: copy of `threshold_db`.
+    pub threshold_db_copy: f32,
+    /// `+0x54`: `0 < offset_db`.
+    pub enabled: bool,
+    /// `+0x55..+0x57`: padding.
+    pub reserved_55: [u8; 3],
+    /// `+0x58`: `10^(makeup_db/20)`.
+    pub makeup_gain: f32,
+    /// `+0x5c`: `makeup_db != 0`.
+    pub makeup_present: bool,
+    /// `+0x5d..+0x5f`: padding.
+    pub reserved_5d: [u8; 3],
+    /// `+0x60`: another `10^(threshold_db/20)` copy.
+    pub threshold_gain_copy: f32,
+    /// `+0x64`: `paramReleaseMs`.
+    pub release_ms: i32,
+    /// `+0x68`: `paramUseARC`.
+    pub use_arc: bool,
+    /// `+0x69..+0x6b`: padding.
+    pub reserved_69: [u8; 3],
+    /// `+0x6c`: threshold in decibels.
+    pub threshold_db: f32,
+    /// `+0x70`: makeup gain in decibels.
+    pub makeup_db: f32,
+    /// `+0x74`: knee offset in decibels.
+    pub offset_db: f32,
+    /// `+0x78`: third time constant in milliseconds.
+    pub third_ms: i32,
+    /// `+0x7c`: second time constant in milliseconds.
+    pub second_ms: i32,
+    /// `+0x80`: ramp start value.
+    pub param_80: i32,
+    /// `+0x84`: ramp end value.
+    pub param_84: i32,
+    /// `+0x88`: ramp duration in milliseconds.
+    pub ramp_ms: i32,
+}
+
+/// One-pole coefficient `exp(-2 / (ms * rate * 0.001))`, or `0` when the
+/// time constant is not positive.
+fn w14a06_decay_coefficient(milliseconds: i32, sample_rate: i32) -> f32 {
+    if milliseconds < 1 {
+        0.0
+    } else {
+        (-2.0f32 / (milliseconds as f32 * sample_rate as f32 * 0.001)).exp()
+    }
+}
+
+/// `10^(db/20)`.
+fn w14a06_db_to_gain(db: f32) -> f32 {
+    10.0f32.powf(db / 20.0)
+}
+
+/// `0x0067bd80`: recompute the limiter's derived coefficients and gains.
+///
+/// The two cached time constants (`+0x0c`/`+0x10` and `+0x1c`/`+0x20`) are
+/// only recomputed when their inputs change; the third coefficient is
+/// recomputed whenever `third_ms` changes.  The decibel gains are always
+/// refreshed.  `sample_rate` is the `FUN_0067bd80` argument.
+pub fn w14a06_limiter_update(limiter: &mut W14a06Limiter, sample_rate: i32) {
+    if limiter.release_ms_cache != limiter.release_ms || limiter.sample_rate_cache != sample_rate {
+        limiter.release_ms_cache = limiter.release_ms;
+        limiter.sample_rate_cache = sample_rate;
+        limiter.release_coefficient = w14a06_decay_coefficient(limiter.release_ms, sample_rate);
+    }
+    limiter.use_arc_copy = limiter.use_arc as u8;
+    limiter.threshold_gain = w14a06_db_to_gain(limiter.threshold_db);
+    limiter.param_80_f32 = limiter.param_80 as f32;
+    limiter.param_84_f32 = limiter.param_84 as f32;
+    limiter.ramp_per_sample = (limiter.param_84 - limiter.param_80) as f32
+        / (limiter.ramp_ms as f32 * sample_rate as f32 * 0.001);
+    if limiter.second_ms_cache != limiter.second_ms || limiter.second_rate_cache != sample_rate {
+        limiter.second_ms_cache = limiter.second_ms;
+        limiter.second_rate_cache = sample_rate;
+        limiter.second_coefficient = w14a06_decay_coefficient(limiter.second_ms, sample_rate);
+    }
+    if limiter.third_ms_cache != limiter.third_ms {
+        limiter.third_ms_cache = limiter.third_ms;
+        limiter.third_coefficient = w14a06_decay_coefficient(limiter.third_ms, sample_rate);
+    }
+    limiter.threshold_db_copy = limiter.threshold_db;
+    limiter.enabled = 0.0 < limiter.offset_db;
+    limiter.threshold_minus_offset = limiter.threshold_db - limiter.offset_db;
+    limiter.upper_knee_gain = w14a06_db_to_gain(limiter.threshold_db);
+    limiter.lower_knee_gain = w14a06_db_to_gain(limiter.threshold_minus_offset);
+    limiter.threshold_gain_copy = limiter.upper_knee_gain;
+    limiter.makeup_present = limiter.makeup_db != 0.0;
+    limiter.makeup_gain = w14a06_db_to_gain(limiter.makeup_db);
+}
+
+/// `0x0067b3c0`: choose the gain for one mixed block and whether the source
+/// must be copied first.
+///
+/// Three arms, in retail order:
+///
+/// * ARC enabled (`enabled`) and `gain` strictly between the two knees:
+///   `10^(((20*log10(g) - (threshold - offset)) / offset) *
+///   (threshold - 20*log10(g)) / 20) * makeup`.
+/// * `gain` above the threshold knee: `10^((threshold - 20*log10(g))/20) *
+///   makeup`.
+/// * otherwise the makeup gain alone, and the source is copied when
+///   `makeup_db == 0` (the retail `+0x5c` byte is clear).
+pub fn w14a06_limiter_block_factor(limiter: &W14a06Limiter, gain: f32) -> (f32, bool) {
+    if limiter.enabled && gain > limiter.lower_knee_gain && gain < limiter.upper_knee_gain {
+        let decibels = 20.0 * gain.log10();
+        let exponent = ((decibels - limiter.threshold_minus_offset) / limiter.offset_db)
+            * (limiter.threshold_db - decibels)
+            / 20.0;
+        (10.0f32.powf(exponent) * limiter.makeup_gain, false)
+    } else if gain > limiter.threshold_gain_copy {
+        let exponent = (limiter.threshold_db - 20.0 * gain.log10()) / 20.0;
+        (10.0f32.powf(exponent) * limiter.makeup_gain, false)
+    } else {
+        (limiter.makeup_gain, !limiter.makeup_present)
+    }
+}
+
+/// `0x0067b3c0`: scale `blocks` sample blocks through the limiter.
+///
+/// `gains` supplies the value `FUN_00679a40` would return for each block
+/// (that routine owns the envelope and lies outside the window).  `count` is
+/// the number of `f32` samples per block; the retail body requires the two
+/// caller count arguments to be equal, which this single parameter encodes.
+/// Returns the number of blocks processed, or `None` when the row's null /
+/// zero-count guards reject the call or the slices are too short.
+pub fn w14a06_limiter_process(
+    limiter: &W14a06Limiter,
+    gains: &[f32],
+    src: &[f32],
+    dst: &mut [f32],
+    count: usize,
+    blocks: usize,
+) -> Option<usize> {
+    if blocks == 0 || gains.len() < blocks {
+        return None;
+    }
+    let total = count.checked_mul(blocks)?;
+    if src.len() < total || dst.len() < total {
+        return None;
+    }
+    for (block, &gain) in gains.iter().take(blocks).enumerate() {
+        let (factor, copy_first) = w14a06_limiter_block_factor(limiter, gain);
+        let start = block * count;
+        let end = start + count;
+        if copy_first {
+            dst[start..end].copy_from_slice(&src[start..end]);
+        }
+        for sample in &mut dst[start..end] {
+            *sample *= factor;
+        }
+    }
+    Some(blocks)
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests_wave14_agent06 {
+    use super::*;
+
+    fn approx(left: f32, right: f32) -> bool {
+        (left - right).abs() <= 1e-5 * right.abs().max(1.0)
+    }
+
+    fn table() -> Vec<W14a06Channel> {
+        vec![W14a06Channel::cleared(); W14A06_MAX_CHANNELS]
+    }
+
+    fn channel_at(generation: u16, buffer: u32) -> W14a06Channel {
+        W14a06Channel {
+            buffer,
+            generation,
+            ..W14a06Channel::cleared()
+        }
+    }
+
+    #[test]
+    fn channel_constructor_layout_is_the_retail_initialiser() {
+        let channel = W14a06Channel::cleared();
+        assert_eq!(channel.buffer, 0);
+        assert_eq!(channel.generation, 0);
+        assert_eq!(channel.flags_06, 0);
+        assert!(!channel.valid);
+        assert_eq!(channel.data, 0);
+        assert_eq!(channel.pending, W14A06_INVALID_HANDLE);
+        assert_eq!(channel.volume, 0.0);
+        assert_eq!(channel.pan, 0.0);
+        assert_eq!(W14A06_CHANNEL_STRIDE, 0x18);
+        assert_eq!(W14A06_CHANNEL_TABLE_OFFSET, 0x10);
+    }
+
+    #[test]
+    fn release_channel_advances_generation_and_clears_pending() {
+        let mut channel = W14a06Channel {
+            buffer: 0x1234,
+            generation: 7,
+            flags_06: 3,
+            valid: true,
+            data: 0x5678,
+            pending: 0x0007_0002,
+            volume: 0.25,
+            pan: -0.5,
+        };
+        assert_eq!(w14a06_release_channel(&mut channel), 0x1234);
+        assert_eq!(channel.buffer, 0);
+        assert_eq!(channel.generation, 8);
+        assert_eq!(channel.flags_06, 0);
+        assert!(!channel.valid);
+        assert_eq!(channel.data, 0);
+        assert_eq!(channel.pending, W14A06_INVALID_HANDLE);
+        assert_eq!(channel.volume, 0.25);
+        assert_eq!(channel.pan, -0.5);
+
+        assert_eq!(w14a06_next_generation(0), 1);
+        assert_eq!(w14a06_next_generation(1), 2);
+        assert_eq!(w14a06_next_generation(0xffff), 0);
+        assert_eq!(w14a06_next_generation(0xfffe), 0xffff);
+    }
+
+    #[test]
+    fn release_handle_checks_index_generation_and_zero_generation() {
+        let mut channels = table();
+        channels[3] = channel_at(7, 0xabc);
+        let handle = (7u32 << 16) | 3;
+        let released = w14a06_release_channel_handle(&mut channels, handle).unwrap();
+        assert_eq!(released.index, 3);
+        assert_eq!(released.buffer, 0xabc);
+        assert_eq!(channels[3].generation, 8);
+        assert_eq!(channels[3].buffer, 0);
+
+        assert!(w14a06_release_channel_handle(&mut channels, handle).is_none());
+        assert!(w14a06_release_channel_handle(&mut channels, 0x0007_0080).is_none());
+        assert!(w14a06_release_channel_handle(&mut channels, 0x0000_0003).is_none());
+        assert!(w14a06_release_channel_handle(&mut channels, 0x0009_0003).is_none());
+    }
+
+    #[test]
+    fn find_channel_ignores_the_in_use_marker() {
+        let mut channels = table();
+        channels[5] = channel_at(0x20, 0);
+        assert!(!channels[5].valid);
+        assert_eq!(w14a06_find_channel(&channels, 0x0020_0005), Some(5));
+        assert_eq!(w14a06_find_channel(&channels, 0x0021_0005), None);
+        assert_eq!(w14a06_find_channel(&channels, 0x0020_0006), None);
+        assert_eq!(w14a06_find_channel(&channels, 0x0000_0005), None);
+        assert_eq!(w14a06_find_channel(&channels, 0x0020_0080), None);
+        assert!(w14a06_channel_has_data(&W14a06Channel {
+            data: 1,
+            ..W14a06Channel::cleared()
+        }));
+    }
+
+    #[test]
+    fn finished_query_covers_flag_buffer_and_backend_arms() {
+        let mut channels = table();
+        let handle = (4u32 << 16) | 1;
+        channels[1] = channel_at(4, 0);
+        // Live handle, no buffer, no pending data: finished.
+        assert!(w14a06_channel_is_finished(
+            &mut channels,
+            handle,
+            W14a06BackendQuery::Value(false)
+        ));
+        channels[1].data = 9;
+        assert!(!w14a06_channel_is_finished(
+            &mut channels,
+            handle,
+            W14a06BackendQuery::Value(false)
+        ));
+        // The +0x06 byte short-circuits every other arm.
+        channels[1].flags_06 = 1;
+        assert!(!w14a06_channel_is_finished(
+            &mut channels,
+            handle,
+            W14a06BackendQuery::Dead
+        ));
+        channels[1].flags_06 = 0;
+        channels[1].buffer = 0x55;
+        assert!(w14a06_channel_is_finished(
+            &mut channels,
+            handle,
+            W14a06BackendQuery::Value(false)
+        ));
+        assert!(!w14a06_channel_is_finished(
+            &mut channels,
+            handle,
+            W14a06BackendQuery::Value(true)
+        ));
+        assert!(w14a06_channel_is_finished(
+            &mut channels,
+            handle,
+            W14a06BackendQuery::Dead
+        ));
+        assert_eq!(channels[1].buffer, 0);
+        assert_eq!(channels[1].generation, 5);
+        // Bad handle answers finished.
+        assert!(w14a06_channel_is_finished(
+            &mut channels,
+            0xffff_ffff,
+            W14a06BackendQuery::Value(true)
+        ));
+    }
+
+    #[test]
+    fn playing_query_returns_status_and_recycles_dead_buffers() {
+        let mut channels = table();
+        let handle = (9u32 << 16) | 2;
+        channels[2] = channel_at(9, 0);
+        channels[2].data = 0x77;
+        assert!(w14a06_channel_is_playing(
+            &mut channels,
+            handle,
+            W14a06BackendQuery::Value(false)
+        ));
+        channels[2].data = 0;
+        channels[2].buffer = 0x99;
+        assert!(w14a06_channel_is_playing(
+            &mut channels,
+            handle,
+            W14a06BackendQuery::Value(true)
+        ));
+        assert!(!w14a06_channel_is_playing(
+            &mut channels,
+            handle,
+            W14a06BackendQuery::Value(false)
+        ));
+        assert!(!w14a06_channel_is_playing(
+            &mut channels,
+            handle,
+            W14a06BackendQuery::Dead
+        ));
+        assert_eq!(channels[2].buffer, 0);
+        assert_eq!(channels[2].generation, 10);
+        assert!(!w14a06_channel_is_playing(
+            &mut channels,
+            0x0009_007f + 1,
+            W14a06BackendQuery::Value(true)
+        ));
+    }
+
+    #[test]
+    fn dword_query_returns_value_or_recycles() {
+        let mut channel = channel_at(3, 0x44);
+        assert_eq!(
+            w14a06_channel_query(&mut channel, W14a06BackendQuery::Value(0x1234)),
+            0x1234
+        );
+        channel.buffer = 0;
+        assert_eq!(
+            w14a06_channel_query(&mut channel, W14a06BackendQuery::Value(0x1234)),
+            0
+        );
+        channel.buffer = 0x44;
+        assert_eq!(
+            w14a06_channel_query(&mut channel, W14a06BackendQuery::Dead),
+            0
+        );
+        assert_eq!(channel.buffer, 0);
+        assert_eq!(channel.generation, 4);
+        assert!(matches!(
+            W14a06BackendQuery::<u8>::from_status(0x24, 1),
+            W14a06BackendQuery::Dead
+        ));
+        assert!(matches!(
+            W14a06BackendQuery::<u8>::from_status(0x0b, 1),
+            W14a06BackendQuery::Dead
+        ));
+        assert!(matches!(
+            W14a06BackendQuery::<u8>::from_status(0, 1),
+            W14a06BackendQuery::Value(1)
+        ));
+    }
+
+    #[test]
+    fn pan_and_volume_setters_choose_deferred_or_live_path() {
+        let mut channels = table();
+        let handle = (6u32 << 16) | 4;
+        channels[4] = channel_at(6, 0);
+        assert!(!w14a06_set_channel_pan(&mut channels, handle, 0.5, true));
+        assert!(!w14a06_set_channel_volume(&mut channels, handle, 0.5, true));
+        channels[4].buffer = 0x12;
+        assert!(w14a06_set_channel_pan(&mut channels, handle, 0.5, true));
+        assert!(!w14a06_set_channel_pan(&mut channels, handle, 0.5, false));
+        assert!(w14a06_set_channel_volume(&mut channels, handle, 0.25, true));
+        assert!(!w14a06_set_channel_volume(
+            &mut channels,
+            handle,
+            0.25,
+            false
+        ));
+        channels[4].data = 0x88;
+        assert!(w14a06_set_channel_pan(&mut channels, handle, -0.75, false));
+        assert_eq!(channels[4].pan, -0.75);
+        assert!(w14a06_set_channel_volume(
+            &mut channels,
+            handle,
+            0.625,
+            false
+        ));
+        assert_eq!(channels[4].volume, 0.625);
+        assert!(!w14a06_set_channel_pan(
+            &mut channels,
+            0x0006_0005,
+            1.0,
+            true
+        ));
+    }
+
+    #[test]
+    fn group_volume_targets_the_recovered_offsets() {
+        let groups = [0x11u32, 0x22, 0x33];
+        assert_eq!(
+            w14a06_set_group_volume(0x99, &groups, 0, 0.5),
+            Some((0x11, 0.5))
+        );
+        assert_eq!(
+            w14a06_set_group_volume(0x99, &groups, 2, 1.0),
+            Some((0x33, 1.0))
+        );
+        assert_eq!(w14a06_set_group_volume(0, &groups, 1, 1.0), None);
+        assert_eq!(w14a06_set_group_volume(0x99, &groups, 3, 1.0), None);
+    }
+
+    #[test]
+    fn voice_and_stream_release_report_handles_in_order() {
+        let mut channels = table();
+        channels[7] = channel_at(2, 0x2000);
+        let mut voice = W14a06Voice {
+            buffer: 0x3000,
+            reserved: 0,
+            handle: (2u32 << 16) | 7,
+        };
+        let released = w14a06_release_voice(&mut voice, &mut channels);
+        assert_eq!(released.buffer, 0x3000);
+        assert_eq!(released.handle.unwrap().index, 7);
+        assert_eq!(released.handle.unwrap().buffer, 0x2000);
+        assert_eq!(voice.buffer, 0);
+        assert_eq!(channels[7].generation, 3);
+
+        channels[8] = channel_at(5, 0x4000);
+        let mut stream = W14a06Stream {
+            buffer: 0x5000,
+            memory: 0x6000,
+            handle: (5u32 << 16) | 8,
+            text: 0x7000,
+            text_len: 0x40,
+            ..W14a06Stream::default()
+        };
+        let released = w14a06_release_stream(&mut stream, &mut channels);
+        assert_eq!(released.buffer, 0x6000);
+        assert_eq!(released.text, Some((0x7000, 0x40)));
+        assert_eq!(released.handle.unwrap().index, 8);
+        assert_eq!(stream.memory, 0);
+        assert_eq!(stream.text_len, 0);
+        assert_eq!(stream.text, 0x7000);
+    }
+
+    #[test]
+    fn close_sound_releases_groups_limiter_then_device() {
+        let mut handles = [0x10u32, 0x20, 0x30, 0x40];
+        let mut limiter = 0x50u32;
+        let actions = w14a06_close_sound(&mut handles, &mut limiter).unwrap();
+        assert_eq!(actions.groups, [0x20, 0x30, 0x40]);
+        assert_eq!(actions.limiter, 0x50);
+        assert_eq!(actions.device, 0x10);
+        assert_eq!(handles, [0, 0, 0, 0]);
+        assert_eq!(limiter, 0);
+        assert!(w14a06_close_sound(&mut handles, &mut limiter).is_none());
+    }
+
+    #[test]
+    fn channel_play_maps_every_query_arm() {
+        let mut channel = channel_at(1, 0);
+        assert!(!w14a06_channel_play(
+            &mut channel,
+            0,
+            W14a06BackendQuery::Value(true),
+            0
+        ));
+        channel.buffer = 0x10;
+        assert!(w14a06_channel_play(
+            &mut channel,
+            0,
+            W14a06BackendQuery::Value(true),
+            0
+        ));
+        assert!(!w14a06_channel_play(
+            &mut channel,
+            7,
+            W14a06BackendQuery::Value(true),
+            1
+        ));
+        channel.flags_06 = 1;
+        assert!(w14a06_channel_play(
+            &mut channel,
+            0,
+            W14a06BackendQuery::Value(false),
+            0
+        ));
+        assert_eq!(channel.flags_06, 0);
+        channel.buffer = 0x20;
+        channel.flags_06 = 1;
+        assert!(w14a06_channel_play(
+            &mut channel,
+            0,
+            W14a06BackendQuery::Dead,
+            0
+        ));
+        assert_eq!(channel.buffer, 0);
+        assert_eq!(channel.generation, 2);
+    }
+
+    #[test]
+    fn stream_prepare_parses_once_and_keeps_failed_allocation_zero() {
+        let mut data = W14a06SoundData {
+            source: 0x10,
+            ..W14a06SoundData::default()
+        };
+        let probe = W14a06PrepareProbe {
+            parse_status: 1,
+            parsed: 0x55,
+            alloc_status: 0,
+            allocated: 0x66,
+        };
+        assert!(!w14a06_stream_prepare(&mut data, probe));
+        assert_eq!(data.prepared, 0);
+        let probe = W14a06PrepareProbe {
+            parse_status: 0,
+            parsed: 0,
+            alloc_status: 1,
+            allocated: 0x66,
+        };
+        assert!(w14a06_stream_prepare(&mut data, probe));
+        assert_eq!(data.prepared, 0);
+        assert_eq!(data.group, 2);
+        assert_eq!(data.samples, 0);
+        data.prepared = 0x77;
+        let probe = W14a06PrepareProbe {
+            parse_status: 9,
+            parsed: 9,
+            alloc_status: 9,
+            allocated: 9,
+        };
+        assert!(w14a06_stream_prepare(&mut data, probe));
+        assert_eq!(data.prepared, 0x77);
+    }
+
+    #[test]
+    fn play_on_channel_starts_or_defers_a_voice() {
+        let sound = W14a06Sound {
+            device: 0x99,
+            groups: [0x11, 0x22, 0x33],
+        };
+        let mut channels = table();
+        channels[3] = channel_at(6, 0);
+        let mut data = W14a06SoundData {
+            source: 0x10,
+            prepared: 1,
+            samples: 0x100,
+            group: 1,
+        };
+        let probe = W14a06PlayProbe {
+            prepare: W14a06PrepareProbe::default(),
+            create_status: 0,
+            created_buffer: 0xabc,
+        };
+        let result = w14a06_play_on_channel(
+            &sound,
+            &mut channels,
+            &mut data,
+            0xdead,
+            (6u32 << 16) | 3,
+            0.5,
+            -0.25,
+            probe,
+        );
+        assert_eq!(
+            result,
+            W14a06PlayResult::Started {
+                index: 3,
+                group: 0x22
+            }
+        );
+        // The immediate path applies volume and pan to the buffer only; the
+        // record fields stay at the zeroes the row wrote before the create.
+        assert_eq!(channels[3].buffer, 0xabc);
+        assert_eq!(channels[3].volume, 0.0);
+        assert_eq!(channels[3].pan, 0.0);
+        assert!(channels[3].valid);
+        assert_eq!(channels[3].data, 0);
+
+        let deferred = W14a06PlayProbe {
+            create_status: W14A06_DEFERRED_CREATE_STATUS,
+            created_buffer: 0,
+            ..W14a06PlayProbe::default()
+        };
+        let result = w14a06_play_on_channel(
+            &sound,
+            &mut channels,
+            &mut data,
+            0xbeef,
+            (6u32 << 16) | 3,
+            0.25,
+            0.75,
+            deferred,
+        );
+        assert_eq!(result, W14a06PlayResult::Deferred { index: 3 });
+        assert_eq!(channels[3].data, 0xbeef);
+        assert_eq!(channels[3].pending, (6u32 << 16) | 3);
+        assert_eq!(channels[3].volume, 0.25);
+        assert_eq!(channels[3].pan, 0.75);
+
+        let failed = W14a06PlayProbe {
+            create_status: 5,
+            created_buffer: 0x55,
+            ..W14a06PlayProbe::default()
+        };
+        assert_eq!(
+            w14a06_play_on_channel(
+                &sound,
+                &mut channels,
+                &mut data,
+                0,
+                (6u32 << 16) | 3,
+                1.0,
+                0.0,
+                failed,
+            ),
+            W14a06PlayResult::Failed
+        );
+        assert_eq!(
+            w14a06_play_on_channel(
+                &sound,
+                &mut channels,
+                &mut data,
+                0,
+                0x0005_0003,
+                1.0,
+                0.0,
+                failed,
+            ),
+            W14a06PlayResult::InvalidHandle
+        );
+    }
+
+    #[test]
+    fn play_sound_requires_a_device_then_forwards() {
+        let mut channels = table();
+        channels[1] = channel_at(2, 0);
+        let mut data = W14a06SoundData {
+            prepared: 1,
+            group: 2,
+            ..W14a06SoundData::default()
+        };
+        let no_device = W14a06Sound::default();
+        assert_eq!(
+            w14a06_play_sound(
+                &no_device,
+                &mut channels,
+                &mut data,
+                1,
+                0.0,
+                0.0,
+                0x0002_0001,
+                W14a06PlayProbe::default()
+            ),
+            W14a06PlayResult::NoDevice
+        );
+        let sound = W14a06Sound {
+            device: 5,
+            groups: [1, 2, 3],
+        };
+        assert_eq!(
+            w14a06_play_sound(
+                &sound,
+                &mut channels,
+                &mut data,
+                1,
+                0.5,
+                0.0,
+                0x0002_0001,
+                W14a06PlayProbe {
+                    create_status: 0,
+                    created_buffer: 0x80,
+                    ..W14a06PlayProbe::default()
+                }
+            ),
+            W14a06PlayResult::Started { index: 1, group: 3 }
+        );
+        assert_eq!(channels[1].buffer, 0x80);
+    }
+
+    #[test]
+    fn sample_and_stream_play_validate_handle_and_expose_records() {
+        let sound = W14a06Sound {
+            device: 1,
+            groups: [0, 0, 0],
+        };
+        let mut channels = table();
+        channels[2] = channel_at(3, 0);
+        let mut sample = W14a06Sample {
+            samples: 0x4000,
+            group: 1,
+            handle: 0,
+        };
+        assert!(w14a06_play_sample(
+            &sound,
+            &mut channels,
+            &mut sample,
+            0.5,
+            -0.5,
+            (3u32 << 16) | 2,
+            0,
+            0x9000
+        ));
+        assert_eq!(sample.handle, (3u32 << 16) | 2);
+        assert_eq!(channels[2].buffer, 0x9000);
+        assert_eq!(channels[2].volume, 0.5);
+        assert_eq!(channels[2].pan, -0.5);
+        assert!(channels[2].valid);
+        let mut sample2 = W14a06Sample {
+            samples: 1,
+            group: 0,
+            handle: 0,
+        };
+        assert!(!w14a06_play_sample(
+            &sound,
+            &mut channels,
+            &mut sample2,
+            1.0,
+            0.0,
+            (4u32 << 16) | 2,
+            1,
+            0x9000
+        ));
+        assert!(!w14a06_play_sample(
+            &W14a06Sound::default(),
+            &mut channels,
+            &mut sample2,
+            1.0,
+            0.0,
+            (3u32 << 16) | 2,
+            0,
+            0x9000
+        ));
+
+        let mut stream = W14a06StreamData {
+            samples: 0x5000,
+            group: 2,
+            ..W14a06StreamData::default()
+        };
+        assert!(w14a06_play_stream(
+            &sound,
+            &mut channels,
+            &mut stream,
+            0.75,
+            0.25,
+            (3u32 << 16) | 2,
+            0,
+            0xa000
+        ));
+        assert_eq!(stream.handle, (3u32 << 16) | 2);
+        assert_eq!(channels[2].buffer, 0xa000);
+        assert_eq!(channels[2].volume, 0.75);
+        assert_eq!(channels[2].pan, 0.25);
+    }
+
+    #[test]
+    fn interface_result_mappings_use_the_recovered_codes() {
+        assert_eq!(w14a06_map_create_result(0), (0, 0));
+        assert_eq!(w14a06_map_create_result(7), (0x16, 7));
+        assert_eq!(w14a06_verify_set_value(5, 5), 0);
+        assert_eq!(w14a06_verify_set_value(5, 6), 0x14);
+        assert_eq!(w14a06_verify_set_value(0, 0), 0);
+    }
+
+    #[test]
+    fn limiter_config_reads_release_then_arc_with_defaults() {
+        let mut calls: Vec<(String, String, i32)> = Vec::new();
+        let (release, arc) = w14a06_limiter_read_config(
+            40,
+            true,
+            |section, key, default| {
+                calls.push((section.to_string(), key.to_string(), default));
+                55
+            },
+            |section, key, default| {
+                assert_eq!(section, "WolfeLimiter");
+                assert_eq!(key, "paramUseARC");
+                assert!(default);
+                false
+            },
+        );
+        assert_eq!(release, 55);
+        assert!(!arc);
+        assert_eq!(
+            calls,
+            vec![("WolfeLimiter".to_string(), "paramReleaseMs".to_string(), 40)]
+        );
+        let (release, arc) =
+            w14a06_limiter_read_config(12, false, |_, _, default| default, |_, _, default| default);
+        assert_eq!((release, arc), (12, false));
+        assert_eq!(W14A06_LIMITER_RELEASE_KEY.len(), 0x0e);
+        assert_eq!(W14A06_LIMITER_ARC_KEY.len(), 0x0b);
+        assert_eq!(W14A06_LIMITER_SECTION.len(), 0x0c);
+    }
+
+    #[test]
+    fn limiter_update_recomputes_coefficients_and_gains() {
+        let mut limiter = W14a06Limiter {
+            release_ms: 100,
+            second_ms: 50,
+            third_ms: 200,
+            threshold_db: 0.0,
+            offset_db: 6.0,
+            makeup_db: 10.0,
+            param_80: 0,
+            param_84: 100,
+            ramp_ms: 10,
+            ..W14a06Limiter::default()
+        };
+        w14a06_limiter_update(&mut limiter, 1000);
+        assert!(approx(limiter.release_coefficient, (-0.02f32).exp()));
+        assert!(approx(limiter.second_coefficient, (-0.04f32).exp()));
+        assert!(approx(limiter.third_coefficient, (-0.01f32).exp()));
+        assert_eq!(limiter.release_ms_cache, 100);
+        assert_eq!(limiter.sample_rate_cache, 1000);
+        assert_eq!(limiter.use_arc_copy, 0);
+        assert!(approx(limiter.threshold_gain, 1.0));
+        assert_eq!(limiter.param_80_f32, 0.0);
+        assert_eq!(limiter.param_84_f32, 100.0);
+        assert!(approx(limiter.ramp_per_sample, 100.0 / 10.0));
+        assert!(limiter.enabled);
+        assert!(approx(limiter.threshold_minus_offset, -6.0));
+        assert!(approx(limiter.upper_knee_gain, 1.0));
+        assert!(approx(limiter.lower_knee_gain, 10f32.powf(-0.3)));
+        assert!(approx(limiter.threshold_gain_copy, 1.0));
+        assert!(limiter.makeup_present);
+        assert!(approx(limiter.makeup_gain, 10f32.powf(0.5)));
+        assert!(approx(limiter.threshold_db_copy, 0.0));
+
+        // Unchanged caches keep the coefficients identical.
+        let release_before = limiter.release_coefficient;
+        limiter.release_ms = 100;
+        w14a06_limiter_update(&mut limiter, 1000);
+        assert_eq!(limiter.release_coefficient, release_before);
+
+        // A negative time constant yields zero.
+        limiter.release_ms = 0;
+        w14a06_limiter_update(&mut limiter, 1000);
+        assert_eq!(limiter.release_coefficient, 0.0);
+
+        // Disabled ARC when the offset is not positive.
+        limiter.offset_db = 0.0;
+        limiter.makeup_db = 0.0;
+        w14a06_limiter_update(&mut limiter, 22050);
+        assert!(!limiter.enabled);
+        assert!(!limiter.makeup_present);
+        assert!(approx(limiter.makeup_gain, 1.0));
+        assert_eq!(limiter.use_arc_copy, 0);
+    }
+
+    #[test]
+    fn limiter_block_factor_uses_arc_knee_and_makeup_arms() {
+        let mut limiter = W14a06Limiter {
+            threshold_db: 0.0,
+            offset_db: 6.0,
+            makeup_db: 10.0,
+            ..W14a06Limiter::default()
+        };
+        w14a06_limiter_update(&mut limiter, 1000);
+        // Below the lower knee: makeup only and no copy (makeup present).
+        let (factor, copy) = w14a06_limiter_block_factor(&limiter, 0.25);
+        assert!(approx(factor, limiter.makeup_gain));
+        assert!(!copy);
+        // Above the upper knee: hard threshold gain.
+        let (factor, copy) = w14a06_limiter_block_factor(&limiter, 4.0);
+        let expected = 10f32.powf((0.0 - 20.0 * 4.0f32.log10()) / 20.0) * limiter.makeup_gain;
+        assert!(approx(factor, expected));
+        assert!(!copy);
+        // Between the knees: ARC formula.
+        let gain = 0.75;
+        let (factor, copy) = w14a06_limiter_block_factor(&limiter, gain);
+        let db = 20.0 * gain.log10();
+        let exponent = ((db - limiter.threshold_minus_offset) / limiter.offset_db)
+            * (limiter.threshold_db - db)
+            / 20.0;
+        assert!(approx(factor, 10f32.powf(exponent) * limiter.makeup_gain));
+        assert!(!copy);
+
+        // With no makeup gain the below-knee path requests a copy.
+        limiter.makeup_db = 0.0;
+        w14a06_limiter_update(&mut limiter, 1000);
+        let (factor, copy) = w14a06_limiter_block_factor(&limiter, 0.25);
+        assert!(approx(factor, 1.0));
+        assert!(copy);
+    }
+
+    #[test]
+    fn limiter_process_scales_each_block_with_its_gain() {
+        let mut limiter = W14a06Limiter {
+            threshold_db: 0.0,
+            offset_db: 6.0,
+            makeup_db: 0.0,
+            ..W14a06Limiter::default()
+        };
+        w14a06_limiter_update(&mut limiter, 1000);
+        let src = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+        // The hard-threshold arm scales the destination in place (the retail
+        // caller feeds an already mixed block); prefill it with the source.
+        let mut dst = src;
+        // First block: gain 0.25 -> copy + unity; second: gain 4.0 -> hard knee.
+        let processed =
+            w14a06_limiter_process(&limiter, &[0.25, 4.0], &src, &mut dst, 3, 2).unwrap();
+        assert_eq!(processed, 2);
+        assert_eq!(&dst[0..3], &[1.0, 2.0, 3.0]);
+        let hard = 10f32.powf((0.0 - 20.0 * 4.0f32.log10()) / 20.0);
+        assert!(approx(dst[3], 4.0 * hard));
+        assert!(approx(dst[4], 5.0 * hard));
+        assert!(approx(dst[5], 6.0 * hard));
+
+        // Guard: zero blocks, too few gains, short slices.
+        assert_eq!(
+            w14a06_limiter_process(&limiter, &[], &src, &mut dst, 3, 0),
+            None
+        );
+        assert_eq!(
+            w14a06_limiter_process(&limiter, &[1.0], &src, &mut dst, 3, 2),
+            None
+        );
+        assert_eq!(
+            w14a06_limiter_process(&limiter, &[1.0, 1.0], &src[..5], &mut dst, 3, 2),
+            None
+        );
+    }
+}

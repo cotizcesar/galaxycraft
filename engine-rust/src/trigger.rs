@@ -3629,3 +3629,1000 @@ mod tests_wave13_agent05 {
         );
     }
 }
+
+// ===========================================================================
+// Merged from src/wave14/agent05.rs
+// ===========================================================================
+// Wave 14 translation batch 05 (window `0x00678000..0x00679fff`).
+//
+// StarCraft 1.23.10 text-trigger support code: character predicates,
+// line-break skipping, the nested localisation lookup, the trigger level
+// smoother, and the 128-entry slot/generation table plus its red-black
+// tree helpers.
+//
+// ## Recovered layouts
+//
+// MSVC `_Tree_node` (`0x20` bytes; the outer maps use `0x24` because a
+// nested tree object is embedded behind the value):
+//
+// | offset | contents |
+// |---|---|
+// | `+0x00` | left child |
+// | `+0x04` | parent |
+// | `+0x08` | right child |
+// | `+0x0c` | colour, `1` = black, `0` = red |
+// | `+0x0d` | nil flag, `1` for the sentinel/header |
+// | `+0x10` | key |
+//
+// The owning tree object is `{ header: *mut Node, size: usize }`; the
+// header's `parent` is the root, its `left`/`right` are the extrema.
+// The model below uses node `0` as the nil sentinel and node `1` as the
+// header, so links are plain arena indices.
+//
+// Slot record (`0x18` bytes, 128 records starting at container `+0x10`):
+//
+// | offset | contents |
+// |---|---|
+// | `+0x00` | payload pointer (freed by `w14a05_slot_release_by_key`) |
+// | `+0x04` | `u16` generation / reference count |
+// | `+0x06` | `u16` reserved (the high byte is the in-use flag read at `+0x07`) |
+// | `+0x08` | `u32` key (the object pointer passed to the release routine) |
+// | `+0x0c` | `u32` stamp, reset to `0xffff` |
+// | `+0x10` | `u32` untouched by these routines |
+// | `+0x14` | `u32` untouched by these routines |
+//
+// Handle values are `(generation << 16) | index`; `0xffff` is the invalid
+// sentinel returned when no slot is free.
+
+/// Number of slots in the trigger string table.
+pub const W14A05_SLOT_COUNT: usize = 0x80;
+/// Byte stride of one slot record.
+pub const W14A05_SLOT_STRIDE: usize = 0x18;
+/// Value written by the allocator when no slot is available.
+pub const W14A05_SLOT_INVALID: u32 = 0xffff;
+/// Stamp value `0x00679c50` and the release routine write at `+0x0c`.
+pub const W14A05_SLOT_STAMP: u32 = 0xffff;
+
+/// Arena index of the red-black nil sentinel.
+pub const W14A05_RB_NIL: usize = 0;
+/// Arena index of the red-black header node.
+pub const W14A05_RB_HEADER: usize = 1;
+
+/// One MSVC `_Tree_node` as used by the 1.23.10 trigger maps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct W14A05RbNode {
+    /// `+0x00`
+    pub left: usize,
+    /// `+0x04`
+    pub parent: usize,
+    /// `+0x08`
+    pub right: usize,
+    /// `+0x0c`: `true` is black, `false` is red.
+    pub black: bool,
+    /// `+0x0d`
+    pub nil: bool,
+    /// `+0x10`
+    pub key: u32,
+}
+
+/// A red-black tree over an index arena.  Node `0` is nil and node `1` is
+/// the header, matching the retail layout described above.
+#[derive(Clone, Debug)]
+pub struct W14A05RbTree {
+    /// Arena; `nodes[0]` is nil and `nodes[1]` is the header.
+    pub nodes: Vec<W14A05RbNode>,
+    /// `+0x04` of the owning tree object.
+    pub size: usize,
+}
+
+impl W14A05RbTree {
+    /// Creates the empty tree shape the retail constructor produces:
+    /// a self-linked nil sentinel and a self-linked header.
+    pub fn w14a05_new() -> Self {
+        Self {
+            nodes: vec![
+                w14a05_new_sentinel(W14A05_RB_NIL),
+                w14a05_new_sentinel(W14A05_RB_HEADER),
+            ],
+            size: 0,
+        }
+    }
+
+    /// Root node index (the header itself when the tree is empty).
+    pub fn w14a05_root(&self) -> usize {
+        self.nodes[W14A05_RB_HEADER].parent
+    }
+
+    /// Whether `node` is the nil sentinel.
+    pub fn w14a05_is_nil(&self, node: usize) -> bool {
+        self.nodes[node].nil
+    }
+}
+
+/// One slot record of the trigger string table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct W14A05Slot {
+    /// `+0x00`: payload pointer in retail; cleared when the model frees it.
+    pub data: u32,
+    /// `+0x04`: generation / reference count.
+    pub generation: u16,
+    /// `+0x06`: reserved word; its high byte is the in-use flag.
+    pub reserved: u16,
+    /// `+0x07`: non-zero when the slot is live.
+    pub in_use: u8,
+    /// `+0x08`: key passed to the release routine.
+    pub key: u32,
+    /// `+0x0c`: stamp, normally `0xffff`.
+    pub stamp: u32,
+    /// `+0x10`: not touched by the recovered routines.
+    pub field_10: u32,
+    /// `+0x14`: not touched by the recovered routines.
+    pub field_14: u32,
+}
+
+impl Default for W14A05Slot {
+    fn default() -> Self {
+        let mut slot = Self {
+            data: 0,
+            generation: 0,
+            reserved: 0,
+            in_use: 0,
+            key: 0,
+            stamp: 0,
+            field_10: 0,
+            field_14: 0,
+        };
+        w14a05_reset_slot(&mut slot);
+        slot
+    }
+}
+
+/// The trigger string table: an installed flag followed by 128 `0x18`-byte
+/// records (the model stores the record array directly).
+#[derive(Clone, Debug)]
+pub struct W14A05SlotTable {
+    /// `+0x00`: non-zero once the container is installed.  The retail
+    /// constructor clears it and a later initialiser sets it.
+    pub installed: bool,
+    /// Records at container `+0x10`, stride `0x18`.
+    pub slots: [W14A05Slot; W14A05_SLOT_COUNT],
+}
+
+impl W14A05SlotTable {
+    /// Allocates the table in the constructor state: every slot defaulted,
+    /// installation flag clear.
+    pub fn w14a05_new() -> Self {
+        Self {
+            installed: false,
+            slots: [W14A05Slot::default(); W14A05_SLOT_COUNT],
+        }
+    }
+}
+
+/// A packed slot handle returned by the allocator.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct W14A05SlotHandle {
+    /// Slot index in `0..0x80`.
+    pub index: u8,
+    /// Generation copied from the slot.
+    pub generation: u16,
+}
+
+impl W14A05SlotHandle {
+    /// The retail packed representation `(generation << 16) | index`.
+    pub fn w14a05_packed(self) -> u32 {
+        (u32::from(self.generation) << 16) | u32::from(self.index)
+    }
+}
+
+/// One row of the nested localisation map.  The retail container is a
+/// `map<language, map<key, value>>` with a case-insensitive comparator.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct W14A05LocalizedRow<'a> {
+    /// First-level key (the language name).
+    pub language: &'a [u8],
+    /// Second-level key.
+    pub key: &'a [u8],
+    /// Stored C string.
+    pub value: &'a [u8],
+}
+
+/// The trigger level smoother object.  Offsets are the ones read by
+/// `w14a05_level_track`.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct W14A05LevelSmoother {
+    /// `+0x00`: smoothed level.
+    pub level: f32,
+    /// `+0x04`: smoothing coefficient.
+    pub coefficient: f32,
+    /// `+0x08`: integer copy of the current value.
+    pub count: i32,
+    /// `+0x0c`: rate used by the exponential update.
+    pub rate: i32,
+    /// `+0x10`: tracked target.
+    pub target: f32,
+    /// `+0x14`: gain used while the target is below `+0x30`.
+    pub rise_gain: f32,
+    /// `+0x18`: not read by the recovered routines.
+    pub field_18: f32,
+    /// `+0x1c`: not read by the recovered routines.
+    pub field_1c: f32,
+    /// `+0x20`: gain used while the target is at or above `+0x30`.
+    pub fall_gain: f32,
+    /// `+0x24`: not read by the recovered routines.
+    pub field_24: f32,
+    /// `+0x28`: enables the whole update.
+    pub enabled: bool,
+    /// `+0x2c`: current integral step value.
+    pub current: f32,
+    /// `+0x30`: rise/fall threshold.
+    pub threshold: f32,
+    /// `+0x34`: lower clamp for `current`.
+    pub floor: f32,
+    /// `+0x38`: upper clamp for `current`.
+    pub ceiling: f32,
+    /// `+0x3c`: step applied to `current`.
+    pub step: f32,
+}
+
+/// `0x00678cc0`: true for the two characters the text-trigger reader treats
+/// as comment leaders, `';'` and `'#'`.
+pub fn w14a05_is_comment_lead(c: u8) -> bool {
+    c == b';' || c == b'#'
+}
+
+/// `0x00678ce0`: true when the string starts with the three-character
+/// heredoc/comment marker `"<<<"`.  The retail routine reads three bytes
+/// unconditionally; the slice form returns `false` for a shorter input.
+pub fn w14a05_starts_heredoc(text: &[u8]) -> bool {
+    text.len() >= 3 && text[0] == b'<' && text[1] == b'<' && text[2] == b'<'
+}
+
+/// `0x00678d10`: true for the two line-break characters, CR and LF.
+pub fn w14a05_is_line_break(c: u8) -> bool {
+    c == b'\n' || c == b'\r'
+}
+
+/// `0x00678d30`: true for space, tab, CR and LF.  This is the exact set the
+/// tokenizer collapses, not the full C `isspace` set.
+pub fn w14a05_is_space(c: u8) -> bool {
+    c == b' ' || c == b'\t' || c == b'\r' || c == b'\n'
+}
+
+/// `0x00679130`: advances a cursor past a line break.  A CR immediately
+/// followed by LF consumes both bytes; every other position (including a
+/// lone CR or LF) consumes one.  A cursor already at the end is left there.
+pub fn w14a05_skip_line_break(text: &[u8], position: usize) -> usize {
+    if position >= text.len() {
+        return position;
+    }
+    if text[position] == b'\r' && text.get(position + 1) == Some(&b'\n') {
+        position + 2
+    } else {
+        position + 1
+    }
+}
+
+/// `0x00679210`: constructs one red-black sentinel/header node.  The retail
+/// routine allocates `0x20` bytes and writes self-referencing
+/// left/parent/right links plus the byte pair `0x01,0x01` at `+0x0c`
+/// (black, nil).  `index` is the arena slot the node will occupy.
+pub fn w14a05_new_sentinel(index: usize) -> W14A05RbNode {
+    W14A05RbNode {
+        left: index,
+        parent: index,
+        right: index,
+        black: true,
+        nil: true,
+        key: 0,
+    }
+}
+
+/// `0x00679340`: destroys the subtree rooted at `start` and returns the
+/// arena slots in the retail free order.  The loop frees a node only after
+/// its right subtree, then continues down the left spine; the resulting
+/// order is right subtree, node, left subtree.
+pub fn w14a05_destroy_subtree(tree: &mut W14A05RbTree, start: usize) -> Vec<usize> {
+    let mut freed = Vec::new();
+    // (node, expanded): expanded means "its right subtree is done, free it".
+    let mut stack = vec![(start, false)];
+    while let Some((node, expanded)) = stack.pop() {
+        if tree.nodes[node].nil {
+            continue;
+        }
+        if expanded {
+            freed.push(node);
+            // Model the allocator free by turning the slot into a sentinel.
+            tree.nodes[node] = w14a05_new_sentinel(node);
+            continue;
+        }
+        let left = tree.nodes[node].left;
+        let right = tree.nodes[node].right;
+        if left != W14A05_RB_NIL {
+            stack.push((left, false));
+        }
+        stack.push((node, true));
+        if right != W14A05_RB_NIL {
+            stack.push((right, false));
+        }
+    }
+    freed
+}
+
+/// `0x006796a0`: MSVC `_Tree::_Lrotate`.  Rotates `x` left around its right
+/// child.  Returns `false` without changing anything when `x` has no right
+/// child (the retail routine would dereference the nil sentinel).
+pub fn w14a05_rotate_left(tree: &mut W14A05RbTree, x: usize) -> bool {
+    let y = tree.nodes[x].right;
+    if y == W14A05_RB_NIL {
+        return false;
+    }
+    let beta = tree.nodes[y].left;
+    tree.nodes[x].right = beta;
+    if beta != W14A05_RB_NIL {
+        tree.nodes[beta].parent = x;
+    }
+    let parent = tree.nodes[x].parent;
+    debug_assert!(parent != W14A05_RB_NIL);
+    tree.nodes[y].parent = parent;
+    if tree.nodes[W14A05_RB_HEADER].parent == x {
+        tree.nodes[W14A05_RB_HEADER].parent = y;
+    } else if tree.nodes[parent].left == x {
+        tree.nodes[parent].left = y;
+    } else {
+        tree.nodes[parent].right = y;
+    }
+    tree.nodes[y].left = x;
+    tree.nodes[x].parent = y;
+    true
+}
+
+/// `0x00679700`: MSVC `_Tree::_Rrotate`.  Rotates `x` right around its left
+/// child.  Returns `false` without changing anything when `x` has no left
+/// child.
+pub fn w14a05_rotate_right(tree: &mut W14A05RbTree, x: usize) -> bool {
+    let y = tree.nodes[x].left;
+    if y == W14A05_RB_NIL {
+        return false;
+    }
+    let beta = tree.nodes[y].right;
+    tree.nodes[x].left = beta;
+    if beta != W14A05_RB_NIL {
+        tree.nodes[beta].parent = x;
+    }
+    let parent = tree.nodes[x].parent;
+    debug_assert!(parent != W14A05_RB_NIL);
+    tree.nodes[y].parent = parent;
+    if tree.nodes[W14A05_RB_HEADER].parent == x {
+        tree.nodes[W14A05_RB_HEADER].parent = y;
+    } else if tree.nodes[parent].right == x {
+        tree.nodes[parent].right = y;
+    } else {
+        tree.nodes[parent].left = y;
+    }
+    tree.nodes[y].right = x;
+    tree.nodes[x].parent = y;
+    true
+}
+
+/// `0x00679760`: clears a whole red-black tree.  Every node reachable from
+/// the header's root is destroyed in `w14a05_destroy_subtree` order, then
+/// the header is reset to the empty state and the size becomes zero.
+pub fn w14a05_tree_clear(tree: &mut W14A05RbTree) -> Vec<usize> {
+    let root = tree.nodes[W14A05_RB_HEADER].parent;
+    let freed = w14a05_destroy_subtree(tree, root);
+    let header = W14A05_RB_HEADER;
+    tree.nodes[header].left = header;
+    tree.nodes[header].parent = header;
+    tree.nodes[header].right = header;
+    tree.size = 0;
+    freed
+}
+
+/// `0x006799f0`: MSVC `_Tree::find`.  Performs the lower-bound walk used by
+/// `6770a0` and accepts the candidate only when `key` is neither less than
+/// nor greater than the candidate's key.  `less` supplies the map's
+/// case-insensitive ordering; `None` means the header/end node was reached.
+pub fn w14a05_tree_find<F>(tree: &W14A05RbTree, key: u32, less: F) -> Option<usize>
+where
+    F: Fn(u32, u32) -> bool,
+{
+    let header = W14A05_RB_HEADER;
+    let mut best = header;
+    let mut node = tree.nodes[header].parent;
+    while !tree.nodes[node].nil {
+        if less(tree.nodes[node].key, key) {
+            node = tree.nodes[node].right;
+        } else {
+            best = node;
+            node = tree.nodes[node].left;
+        }
+    }
+    if best != header && !less(key, tree.nodes[best].key) {
+        Some(best)
+    } else {
+        None
+    }
+}
+
+/// `0x00678ae0`: nested localisation lookup.  The retail routine searches a
+/// first-level map keyed by the active language id, then a second-level map
+/// keyed by `key`, and constructs the output string from the value pointer
+/// at the inner node's `+0x1c`.  A missing language/key or a miss falls back
+/// to `fallback`.  Keys compare ASCII-case-insensitively (the comparator at
+/// `677890`); the ordered tree is modelled as the supplied row table.
+pub fn w14a05_localized_value(
+    rows: &[W14A05LocalizedRow<'_>],
+    language: Option<&[u8]>,
+    key: Option<&[u8]>,
+    fallback: &[u8],
+) -> Vec<u8> {
+    let (Some(language), Some(key)) = (language, key) else {
+        return fallback.to_vec();
+    };
+    for row in rows {
+        if w14a05_ci_eq(row.language, language) && w14a05_ci_eq(row.key, key) {
+            return row.value.to_vec();
+        }
+    }
+    fallback.to_vec()
+}
+
+/// `0x00679a40`: updates the trigger level smoother from an array of
+/// floating-point samples and returns the new `level`.
+///
+/// `count` is the retail byte-sized sample count; like the original loop it
+/// is treated as at least one sample.  When the sample slice is empty the
+/// routine returns the unchanged level (the retail caller always passes a
+/// valid pointer).  The exponential update is
+/// `exp(-2.0 / (count * rate * 0.001))`, evaluated like the original double
+/// `exp` and rounded back to `f32`.
+pub fn w14a05_level_track(smoother: &mut W14A05LevelSmoother, samples: &[f32], count: u8) -> f32 {
+    let used = if samples.is_empty() {
+        0
+    } else {
+        usize::from(count).max(1).min(samples.len())
+    };
+    let magnitude = samples[..used]
+        .iter()
+        .fold(0.0f32, |magnitude, sample| magnitude.max(sample.abs()));
+
+    if smoother.enabled {
+        if magnitude < smoother.target {
+            let target = smoother.rise_gain * (smoother.target - magnitude) + magnitude;
+            smoother.target = target.max(0.0);
+        } else {
+            smoother.target = smoother.fall_gain * (smoother.target - magnitude) + magnitude;
+        }
+
+        if smoother.target > smoother.threshold {
+            let mut current = smoother.current + smoother.step;
+            if current > smoother.ceiling {
+                current = smoother.ceiling;
+            }
+            smoother.current = current;
+        } else {
+            let mut current = smoother.current - smoother.step;
+            if current < smoother.floor {
+                current = smoother.floor;
+            }
+            smoother.current = current;
+        }
+
+        let truncated = smoother.current.trunc() as i32;
+        if truncated != smoother.count {
+            smoother.count = truncated;
+            if truncated > 0 {
+                let divisor = (smoother.rate as f32) * (truncated as f32) * 0.001;
+                smoother.coefficient = (-2.0f32 / divisor).exp();
+            }
+        }
+    }
+
+    if magnitude < smoother.level {
+        let level = (smoother.level - magnitude) * smoother.coefficient + magnitude;
+        smoother.level = if level < 0.0 { 0.0 } else { level };
+        smoother.level
+    } else {
+        smoother.level = magnitude;
+        magnitude
+    }
+}
+
+/// `0x00679c50`: resets one slot record to its constructor state.  The six
+/// dwords become `0, 0, 0, 0xffff, 0, 0`; the in-use flag at `+0x07` is part
+/// of the cleared second dword.
+pub fn w14a05_reset_slot(slot: &mut W14A05Slot) {
+    slot.data = 0;
+    slot.generation = 0;
+    slot.reserved = 0;
+    slot.in_use = 0;
+    slot.key = 0;
+    slot.stamp = W14A05_SLOT_STAMP;
+    slot.field_10 = 0;
+    slot.field_14 = 0;
+}
+
+/// `0x00679d40`: finds the first free slot, bumps its generation to at least
+/// one, and returns the packed `(generation << 16) | index` handle.  Returns
+/// `None` for the retail `0xffff` sentinel when the table is not installed
+/// or all 128 slots are live.  The routine only requires the slot record to
+/// exist; it does not inspect the payload pointer.
+pub fn w14a05_slot_allocate(table: &mut W14A05SlotTable) -> Option<W14A05SlotHandle> {
+    if !table.installed {
+        return None;
+    }
+    for (index, slot) in table.slots.iter_mut().enumerate() {
+        if slot.in_use == 0 {
+            if slot.generation < 2 {
+                slot.generation = 1;
+            }
+            return Some(W14A05SlotHandle {
+                index: index as u8,
+                generation: slot.generation,
+            });
+        }
+    }
+    None
+}
+
+/// `0x00679db0`: releases every live slot whose `+0x08` key equals `key`.
+/// Each match frees the payload, clears the key, zeroes the reserved word
+/// (including the in-use flag), writes the `0xffff` stamp, and advances
+/// the generation with 16-bit wraparound.  The retail routine returns void;
+/// the returned count of cleared slots is a model convenience.  Its trailing
+/// out-of-window teardown call (`679e60`) is not modelled.
+pub fn w14a05_slot_release_by_key(table: &mut W14A05SlotTable, key: u32) -> usize {
+    if !table.installed {
+        return 0;
+    }
+    let mut released = 0;
+    for slot in &mut table.slots {
+        if slot.in_use != 0 && slot.key == key {
+            // Retail frees the payload without clearing the dangling field;
+            // the model clears it as part of the free.
+            slot.data = 0;
+            slot.key = 0;
+            slot.reserved = 0;
+            slot.in_use = 0;
+            slot.stamp = W14A05_SLOT_STAMP;
+            slot.generation = slot.generation.wrapping_add(1);
+            released += 1;
+        }
+    }
+    released
+}
+
+/// ASCII case-insensitive byte-string equality, matching the comparator at
+/// `677890` (only `A..=Z` are folded).
+fn w14a05_ci_eq(left: &[u8], right: &[u8]) -> bool {
+    left.len() == right.len()
+        && left
+            .iter()
+            .zip(right.iter())
+            .all(|(a, b)| a.eq_ignore_ascii_case(b))
+}
+
+#[cfg(test)]
+mod tests_wave14_agent05 {
+    use super::*;
+
+    fn w14a05_node(key: u32, parent: usize, left: usize, right: usize) -> W14A05RbNode {
+        W14A05RbNode {
+            left,
+            parent,
+            right,
+            black: true,
+            nil: false,
+            key,
+        }
+    }
+
+    /// Tree used by the rotation/clear tests:
+    ///
+    /// ```text
+    ///        2 (20)
+    ///       /      \
+    ///   3 (10)    4 (30)
+    ///             /
+    ///          5 (25)
+    /// ```
+    fn w14a05_sample_tree() -> W14A05RbTree {
+        let mut tree = W14A05RbTree::w14a05_new();
+        tree.nodes.push(w14a05_node(20, W14A05_RB_HEADER, 3, 4));
+        tree.nodes
+            .push(w14a05_node(10, 2, W14A05_RB_NIL, W14A05_RB_NIL));
+        tree.nodes.push(w14a05_node(30, 2, 5, W14A05_RB_NIL));
+        tree.nodes
+            .push(w14a05_node(25, 4, W14A05_RB_NIL, W14A05_RB_NIL));
+        tree.nodes[W14A05_RB_HEADER].parent = 2;
+        tree.nodes[W14A05_RB_HEADER].left = 3;
+        tree.nodes[W14A05_RB_HEADER].right = 5;
+        tree.size = 4;
+        tree
+    }
+
+    #[test]
+    fn character_predicates_match_the_recovered_constants() {
+        assert!(w14a05_is_comment_lead(b';'));
+        assert!(w14a05_is_comment_lead(b'#'));
+        assert!(!w14a05_is_comment_lead(b'/'));
+        assert!(!w14a05_is_comment_lead(0));
+
+        assert!(w14a05_starts_heredoc(b"<<<"));
+        assert!(w14a05_starts_heredoc(b"<<<x"));
+        assert!(!w14a05_starts_heredoc(b"<<"));
+        assert!(!w14a05_starts_heredoc(b"<<x"));
+        assert!(!w14a05_starts_heredoc(b""));
+
+        assert!(w14a05_is_line_break(b'\n'));
+        assert!(w14a05_is_line_break(b'\r'));
+        assert!(!w14a05_is_line_break(b' '));
+        assert!(!w14a05_is_line_break(0));
+
+        assert!(w14a05_is_space(b' '));
+        assert!(w14a05_is_space(b'\t'));
+        assert!(w14a05_is_space(b'\r'));
+        assert!(w14a05_is_space(b'\n'));
+        assert!(!w14a05_is_space(0));
+        assert!(!w14a05_is_space(b';'));
+    }
+
+    #[test]
+    fn skip_line_break_consumes_crlf_as_one_break() {
+        let text = b"a\r\nb\nc";
+        assert_eq!(w14a05_skip_line_break(text, 0), 1);
+        assert_eq!(w14a05_skip_line_break(text, 1), 3);
+        assert_eq!(w14a05_skip_line_break(text, 3), 4);
+        assert_eq!(w14a05_skip_line_break(text, 4), 5);
+        assert_eq!(w14a05_skip_line_break(text, 5), 6);
+        assert_eq!(w14a05_skip_line_break(text, 6), 6);
+
+        let lone_cr = b"\rX";
+        assert_eq!(w14a05_skip_line_break(lone_cr, 0), 1);
+    }
+
+    #[test]
+    fn sentinel_node_links_to_itself() {
+        let node = w14a05_new_sentinel(7);
+        assert_eq!(node.left, 7);
+        assert_eq!(node.parent, 7);
+        assert_eq!(node.right, 7);
+        assert!(node.black);
+        assert!(node.nil);
+        assert_eq!(node.key, 0);
+    }
+
+    #[test]
+    fn left_and_right_rotations_relink_parents_and_root() {
+        let mut tree = w14a05_sample_tree();
+
+        assert!(w14a05_rotate_left(&mut tree, 2));
+        assert_eq!(tree.w14a05_root(), 4);
+        assert_eq!(tree.nodes[W14A05_RB_HEADER].parent, 4);
+        assert_eq!(tree.nodes[4].parent, W14A05_RB_HEADER);
+        assert_eq!(tree.nodes[4].left, 2);
+        assert_eq!(tree.nodes[2].parent, 4);
+        // Node 4's former left child (node 5) moves to node 2.
+        assert_eq!(tree.nodes[2].right, 5);
+        assert_eq!(tree.nodes[5].parent, 2);
+
+        // The right rotation must put everything back.
+        assert!(w14a05_rotate_right(&mut tree, 4));
+        assert_eq!(tree.nodes[W14A05_RB_HEADER].parent, 2);
+        assert_eq!(tree.nodes[2].parent, W14A05_RB_HEADER);
+        assert_eq!(tree.nodes[2].right, 4);
+        assert_eq!(tree.nodes[4].parent, 2);
+        assert_eq!(tree.nodes[4].left, 5);
+        assert_eq!(tree.nodes[5].parent, 4);
+
+        // A missing child is reported instead of touching the nil sentinel.
+        assert!(!w14a05_rotate_left(&mut tree, 5));
+        assert!(!w14a05_rotate_right(&mut tree, 5));
+        assert!(tree.w14a05_is_nil(W14A05_RB_NIL));
+        assert!(!tree.w14a05_is_nil(2));
+    }
+
+    #[test]
+    fn destroy_subtree_uses_the_retail_free_order() {
+        let mut tree = w14a05_sample_tree();
+        let freed = w14a05_destroy_subtree(&mut tree, 2);
+        // Right subtree first (node 4 before its left child 5), then the
+        // root, then the left subtree.
+        assert_eq!(freed, vec![4, 5, 2, 3]);
+        for node in [2, 3, 4, 5] {
+            assert!(tree.nodes[node].nil);
+            assert_eq!(tree.nodes[node].left, node);
+            assert_eq!(tree.nodes[node].parent, node);
+            assert_eq!(tree.nodes[node].right, node);
+        }
+    }
+
+    #[test]
+    fn clear_tree_destroys_every_node_and_resets_the_header() {
+        let mut tree = w14a05_sample_tree();
+        let freed = w14a05_tree_clear(&mut tree);
+        assert_eq!(freed, vec![4, 5, 2, 3]);
+        assert_eq!(tree.size, 0);
+        assert_eq!(tree.nodes[W14A05_RB_HEADER].parent, W14A05_RB_HEADER);
+        assert_eq!(tree.nodes[W14A05_RB_HEADER].left, W14A05_RB_HEADER);
+        assert_eq!(tree.nodes[W14A05_RB_HEADER].right, W14A05_RB_HEADER);
+
+        // Clearing an already empty tree is a no-op.
+        assert!(w14a05_tree_clear(&mut tree).is_empty());
+    }
+
+    #[test]
+    fn tree_find_returns_the_exact_key_only() {
+        let mut tree = W14A05RbTree::w14a05_new();
+        tree.nodes.push(w14a05_node(20, W14A05_RB_HEADER, 3, 4));
+        tree.nodes
+            .push(w14a05_node(10, 2, W14A05_RB_NIL, W14A05_RB_NIL));
+        tree.nodes
+            .push(w14a05_node(30, 2, W14A05_RB_NIL, W14A05_RB_NIL));
+        tree.nodes[W14A05_RB_HEADER].parent = 2;
+        tree.nodes[W14A05_RB_HEADER].left = 3;
+        tree.nodes[W14A05_RB_HEADER].right = 4;
+        tree.size = 3;
+
+        let less = |a: u32, b: u32| a < b;
+        assert_eq!(w14a05_tree_find(&tree, 20, less), Some(2));
+        assert_eq!(w14a05_tree_find(&tree, 10, less), Some(3));
+        assert_eq!(w14a05_tree_find(&tree, 30, less), Some(4));
+        assert_eq!(w14a05_tree_find(&tree, 25, less), None);
+        assert_eq!(w14a05_tree_find(&tree, 5, less), None);
+        assert_eq!(w14a05_tree_find(&tree, 35, less), None);
+
+        let empty = W14A05RbTree::w14a05_new();
+        assert_eq!(w14a05_tree_find(&empty, 20, less), None);
+    }
+
+    #[test]
+    fn localized_lookup_prefers_the_nested_value_and_falls_back() {
+        let rows = [
+            W14A05LocalizedRow {
+                language: b"enUS",
+                key: b"Trigger",
+                value: b"Trigger",
+            },
+            W14A05LocalizedRow {
+                language: b"frFR",
+                key: b"Trigger",
+                value: b"Declencheur",
+            },
+        ];
+        assert_eq!(
+            w14a05_localized_value(&rows, Some(b"ENus"), Some(b"trigger"), b"?"),
+            b"Trigger".to_vec()
+        );
+        assert_eq!(
+            w14a05_localized_value(&rows, Some(b"frfr"), Some(b"TRIGGER"), b"?"),
+            b"Declencheur".to_vec()
+        );
+        assert_eq!(
+            w14a05_localized_value(&rows, Some(b"deDE"), Some(b"Trigger"), b"?"),
+            b"?".to_vec()
+        );
+        assert_eq!(
+            w14a05_localized_value(&rows, Some(b"enUS"), Some(b"Missing"), b"?"),
+            b"?".to_vec()
+        );
+        assert_eq!(
+            w14a05_localized_value(&rows, None, Some(b"Trigger"), b"?"),
+            b"?".to_vec()
+        );
+        assert_eq!(
+            w14a05_localized_value(&rows, Some(b"enUS"), None, b"?"),
+            b"?".to_vec()
+        );
+    }
+
+    #[test]
+    fn level_smoother_disabled_tracks_the_largest_magnitude() {
+        let mut smoother = W14A05LevelSmoother {
+            level: 10.0,
+            coefficient: 0.5,
+            current: 7.0,
+            enabled: false,
+            ..W14A05LevelSmoother::default()
+        };
+        assert_eq!(
+            w14a05_level_track(&mut smoother, &[-2.0, 4.0, -1.0], 3),
+            7.0
+        );
+        assert_eq!(smoother.level, 7.0);
+        assert_eq!(smoother.current, 7.0);
+    }
+
+    #[test]
+    fn level_smoother_rise_clamps_and_recomputes_the_coefficient() {
+        let mut smoother = W14A05LevelSmoother {
+            level: 10.0,
+            coefficient: 1.0,
+            count: 0,
+            rate: 100,
+            target: 10.0,
+            rise_gain: 0.5,
+            enabled: true,
+            current: 5.0,
+            threshold: 5.0,
+            floor: 0.0,
+            ceiling: 6.0,
+            step: 2.0,
+            ..W14A05LevelSmoother::default()
+        };
+        let level = w14a05_level_track(&mut smoother, &[2.0], 1);
+        assert_eq!(smoother.target, 6.0);
+        assert_eq!(smoother.current, 6.0);
+        assert_eq!(smoother.count, 6);
+        let expected_coefficient = (-2.0f32 / (6.0 * 100.0 * 0.001)).exp();
+        assert!((smoother.coefficient - expected_coefficient).abs() < 1e-6);
+        let expected_level = (10.0 - 2.0) * expected_coefficient + 2.0;
+        assert!((level - expected_level).abs() < 1e-5);
+        assert!((smoother.level - expected_level).abs() < 1e-5);
+    }
+
+    #[test]
+    fn level_smoother_fall_clamps_to_the_floor() {
+        let mut smoother = W14A05LevelSmoother {
+            level: 10.0,
+            coefficient: 1.0,
+            count: 0,
+            rate: 100,
+            target: 1.0,
+            fall_gain: 0.5,
+            enabled: true,
+            current: 5.0,
+            threshold: 5.0,
+            floor: 4.0,
+            ceiling: 9.0,
+            step: 2.0,
+            ..W14A05LevelSmoother::default()
+        };
+        let level = w14a05_level_track(&mut smoother, &[3.0], 1);
+        assert_eq!(smoother.target, 2.0);
+        assert_eq!(smoother.current, 4.0);
+        assert_eq!(smoother.count, 4);
+        let expected_coefficient = (-2.0f32 / (4.0 * 100.0 * 0.001)).exp();
+        let expected_level = (10.0 - 3.0) * expected_coefficient + 3.0;
+        assert!((level - expected_level).abs() < 1e-5);
+    }
+
+    #[test]
+    fn level_smoother_keeps_the_coefficient_when_the_count_does_not_change() {
+        let mut smoother = W14A05LevelSmoother {
+            level: 2.0,
+            coefficient: 0.25,
+            count: 6,
+            rate: 100,
+            target: 10.0,
+            rise_gain: 0.5,
+            enabled: true,
+            current: 6.0,
+            threshold: 5.0,
+            floor: 0.0,
+            ceiling: 6.0,
+            step: 2.0,
+            ..W14A05LevelSmoother::default()
+        };
+        w14a05_level_track(&mut smoother, &[2.0], 1);
+        assert_eq!(smoother.count, 6);
+        assert_eq!(smoother.coefficient, 0.25);
+    }
+
+    #[test]
+    fn reset_slot_writes_the_six_recovered_dwords() {
+        let mut slot = W14A05Slot {
+            data: 0xdead_beef,
+            generation: 9,
+            reserved: 0xffff,
+            in_use: 1,
+            key: 0x1234_5678,
+            stamp: 0,
+            field_10: 7,
+            field_14: 8,
+        };
+        w14a05_reset_slot(&mut slot);
+        assert_eq!(slot.data, 0);
+        assert_eq!(slot.generation, 0);
+        assert_eq!(slot.reserved, 0);
+        assert_eq!(slot.in_use, 0);
+        assert_eq!(slot.key, 0);
+        assert_eq!(slot.stamp, W14A05_SLOT_STAMP);
+        assert_eq!(slot.field_10, 0);
+        assert_eq!(slot.field_14, 0);
+        assert_eq!(slot, W14A05Slot::default());
+    }
+
+    #[test]
+    fn slot_allocate_returns_packed_generations() {
+        let mut table = W14A05SlotTable::w14a05_new();
+        assert_eq!(w14a05_slot_allocate(&mut table), None);
+
+        table.installed = true;
+        let first = w14a05_slot_allocate(&mut table).unwrap();
+        assert_eq!(
+            first,
+            W14A05SlotHandle {
+                index: 0,
+                generation: 1
+            }
+        );
+        assert_eq!(first.w14a05_packed(), 0x0001_0000);
+
+        table.slots[0].in_use = 1;
+        table.slots[1].generation = 0xffff;
+        let second = w14a05_slot_allocate(&mut table).unwrap();
+        assert_eq!(second.index, 1);
+        assert_eq!(second.generation, 0xffff);
+        assert_eq!(second.w14a05_packed(), 0xffff_0001);
+
+        // A zero generation is raised to one.
+        table.slots[1].in_use = 1;
+        table.slots[2].generation = 0;
+        assert_eq!(w14a05_slot_allocate(&mut table).unwrap().generation, 1);
+
+        for slot in &mut table.slots {
+            slot.in_use = 1;
+        }
+        assert_eq!(w14a05_slot_allocate(&mut table), None);
+        assert_eq!(W14A05_SLOT_COUNT, 0x80);
+        assert_eq!(W14A05_SLOT_STRIDE, 0x18);
+        assert_eq!(W14A05_SLOT_INVALID, 0xffff);
+    }
+
+    #[test]
+    fn slot_release_clears_all_matching_keys_and_bumps_generations() {
+        let mut table = W14A05SlotTable::w14a05_new();
+        assert_eq!(w14a05_slot_release_by_key(&mut table, 7), 0);
+
+        table.installed = true;
+        table.slots[0] = W14A05Slot {
+            data: 0x1111,
+            generation: 5,
+            reserved: 0,
+            in_use: 1,
+            key: 7,
+            stamp: 0,
+            field_10: 9,
+            field_14: 11,
+        };
+        table.slots[1] = W14A05Slot {
+            data: 0x2222,
+            generation: 1,
+            reserved: 0,
+            in_use: 1,
+            key: 7,
+            stamp: 0,
+            field_10: 3,
+            field_14: 4,
+        };
+        table.slots[2] = W14A05Slot {
+            data: 0x3333,
+            generation: 2,
+            reserved: 0,
+            in_use: 1,
+            key: 8,
+            stamp: 0,
+            field_10: 5,
+            field_14: 6,
+        };
+
+        assert_eq!(w14a05_slot_release_by_key(&mut table, 7), 2);
+        assert_eq!(table.slots[0].data, 0);
+        assert_eq!(table.slots[0].generation, 6);
+        assert_eq!(table.slots[0].key, 0);
+        assert_eq!(table.slots[0].in_use, 0);
+        assert_eq!(table.slots[0].stamp, W14A05_SLOT_STAMP);
+        assert_eq!(table.slots[0].field_10, 9);
+        assert_eq!(table.slots[0].field_14, 11);
+
+        assert_eq!(table.slots[1].generation, 2);
+        assert_eq!(table.slots[1].key, 0);
+
+        assert_eq!(table.slots[2].generation, 2);
+        assert_eq!(table.slots[2].key, 8);
+        assert_eq!(table.slots[2].in_use, 1);
+        assert_eq!(table.slots[2].data, 0x3333);
+    }
+}

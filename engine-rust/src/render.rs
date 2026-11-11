@@ -3922,3 +3922,1335 @@ mod tests_wave13_agent01 {
         assert!(!retained.base_live);
     }
 }
+
+// ===========================================================================
+// Merged from src/wave14/agent03.rs
+// ===========================================================================
+// Wave 14 translation batch 03.
+//
+// Window `00674000..00675fff`: the `WritableBufferTextureFactory`
+// surface/render-queue helpers, the `blz` red-black map routines they use,
+// and the TinyXML2 `XMLPrinter`/`XMLVisitor` destructors.
+//
+// ## Recovered layouts (patch 1.23.10)
+//
+// Surface object (`0x006744c0` constructor):
+//
+// | offset | type | meaning |
+// |---|---|---|
+// | `+0x00` | `u32` | width |
+// | `+0x04` | `u32` | height |
+// | `+0x08` | `u32` | format/aux field stored by the constructor |
+// | `+0x0c` | `0x10` bytes | embedded context constructed by `FUN_00a892d0` |
+// | `+0x1c` | `u8` | surface-created flag |
+// | `+0x20` | `u32` | render mode (`0x006746e0`) |
+// | `+0x24` | list | rect queue header: next, prev, count |
+// | `+0x30` | `std::vector<u32>` | pixel buffer (begin, size, capacity) |
+// | `+0x3c` | `u8` | dirty flag |
+//
+// A queue node is 24 bytes: `next`, `prev`, then a four-dword rect
+// `{x, y, width, height}`. The map value embedded in a tree node starts at
+// node `+0x18`; its `+0x00` dword is a tag, `+0x08` is a surface pointer and
+// `+0x0c` is a mark byte.
+//
+// The map is the old MSVC/Dinkumware red-black tree layout:
+// node `+0x00` parent, `+0x04` left, `+0x08` right, `+0x0c` colour
+// (`0` red, non-zero black), `+0x10` key.first, `+0x14` key.second. Keys are
+// ordered by `(key.second, key.first)`. The header is the map object
+// `+0x14`; header `+0x00` is the root, `+0x04` the leftmost node and `+0x08`
+// the rightmost node.
+//
+// The TinyXML2 printer owns two `std::string`-like blocks at `+0x08`
+// (inline storage `+0x0c`) and `+0xd0` (inline storage `+0xd4`). Its visitor
+// base vtable is `0x00d3e2c4`, the printer vtable `0x00d3e2ec`; the deleting
+// destructor frees `0xf0` bytes. `WritableBufferTextureFactory` uses the
+// vtables `0x00d3e268` / `0x00d3e284` and the `IBrowserTextureFactoryV1`
+// vtable is `0x00d3e24c`.
+//
+// ## Skipped rows
+//
+// | rows | reason |
+// |---|---|
+// | `FUN_00674000`, `FUN_00674020`, `FUN_00674430`, `FUN_00674440`, `FUN_00674ab2`, `FUN_006759d0` | thin forwarding wrappers around opaque callees; the wrapper has no recoverable value-level result |
+// | `FUN_00674050`, `FUN_0067440a`, `FUN_00675020`, `FUN_006759a9`, `FUN_00675e8f` | exception-unwind funclets; both visible paths end in non-returning cleanup |
+// | `FUN_00674236`, `FUN_006750ab` | mid-function fragments over `unaff_*`/`in_*` registers with no recoverable arguments |
+// | `FUN_0067424f`, `FUN_0067426b` | overlapping instructions, an unrecovered jump table and `WARNING: Control flow encountered bad instruction data` |
+// | `FUN_00674be0` | map `operator[]` body: allocates a 0x40-byte surface and a 0x28-byte node, then delegates the red-black link/rebalance to the opaque `FUN_00597290`; only the search half (`006752f0`) is translated |
+// | `FUN_00674d50` | map erase destroys the mapped surface but delegates node unlink/rebalance to the opaque `FUN_00596fa0`; the whole operation is not recoverable without inventing the reassembly |
+// | `FUN_00674e60` | one-byte non-returning runtime trap |
+// | `FUN_00675150` | tree-copy body mixes the subtree clone with allocator/timestamp writes and non-returning cleanup |
+// | `FUN_00675530`, `FUN_00675610`, `FUN_00675780`, `FUN_00675890`, `FUN_00675900`, `FUN_006759f0`, `FUN_00675af0`, `FUN_00675ee0`, `FUN_00675fe0`, `FUN_00675ff4` | `std::string` construction/exception fragments, caller-frame stack slots and non-returning cleanup; no standalone pure result |
+// | `FUN_006755e0` | three opaque sequencing calls; no recoverable value |
+// | `FUN_00675bd8`, `FUN_00675c47`, `FUN_00675d04`, `FUN_00675d5e`, `FUN_00675e05`, `FUN_00675e44` | vector-growth/append blocks that share `unaff_EBX`/`unaff_EBP` registers and caller-owned temporaries |
+// | `thunk_FUN_00674236` | two-byte thunk |
+//
+// Rows not listed in the tables above are translated in this file.
+
+// ===========================================================================
+// Small string/state helpers
+// ===========================================================================
+
+/// `0x00674460`: return the first index `>= from` whose byte equals
+/// `wanted`, or `None` when `from` is at/after the end.
+///
+/// The shipped body walks the `blz::string` buffer (`this[0]` = data,
+/// `this[1]` = length) and returns `0xffffffff` on failure.
+pub fn w14a03_find_char(buffer: &[u8], from: usize, wanted: u8) -> Option<usize> {
+    let mut index = from;
+    loop {
+        if index >= buffer.len() {
+            return None;
+        }
+        if buffer[index] == wanted {
+            return Some(index);
+        }
+        index += 1;
+    }
+}
+
+/// `0x00674e40`: store two dwords at object offsets `+0x50` and `+0x54`.
+///
+/// The translated helper takes the dword view of the object (22 dwords cover
+/// `0x00..0x58`). It returns `false` instead of reading past a short slice.
+pub fn w14a03_write_fields_50_54(state: &mut [u32], first: u32, second: u32) -> bool {
+    if state.len() < 22 {
+        return false;
+    }
+    state[0x50 / 4] = first;
+    state[0x54 / 4] = second;
+    true
+}
+
+/// `0x00675770`: read the byte at object offset `+0x4d`.
+///
+/// The shipped code has no bounds check; this version returns `None` for a
+/// slice that does not contain the field.
+pub fn w14a03_byte_4d(state: &[u8]) -> Option<u8> {
+    state.get(0x4d).copied()
+}
+
+// ===========================================================================
+// WritableBufferTextureFactory surface
+// ===========================================================================
+
+/// A rect record stored in the surface queue (`{x, y, width, height}`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct W14a03Rect {
+    /// `+0x00`: left edge.
+    pub x: u32,
+    /// `+0x04`: top edge.
+    pub y: u32,
+    /// `+0x08`: width; a zero width is skipped by the flush.
+    pub width: u32,
+    /// `+0x0c`: height; a zero height is skipped by the flush.
+    pub height: u32,
+}
+
+/// The surface object created by `0x006744c0`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct W14a03Surface {
+    /// `+0x00`: width in pixels.
+    pub width: u32,
+    /// `+0x04`: height in pixels.
+    pub height: u32,
+    /// `+0x08`: format/aux value handed to the blitter.
+    pub field_08: u32,
+    /// `+0x1c`: set once the opaque surface-creation call succeeded.
+    pub initialized: bool,
+    /// `+0x20`: render mode; `1` selects source alpha in the blitter calls.
+    pub mode: u32,
+    /// `+0x24`: queued rects in list order.
+    pub rects: Vec<W14a03Rect>,
+    /// `+0x30`: zero-filled `width * height` dword buffer.
+    pub pixels: Vec<u32>,
+    /// `+0x3c`: dirty flag.
+    pub dirty: bool,
+}
+
+/// The six-dword blit-source descriptor written by `0x00674670`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct W14a03BlitDescriptor {
+    /// `+0x00`: destination/source X (always zero in the recovered path).
+    pub x: u32,
+    /// `+0x04`: destination/source Y (always zero in the recovered path).
+    pub y: u32,
+    /// `+0x08`: surface width.
+    pub width: u32,
+    /// `+0x0c`: surface height.
+    pub height: u32,
+    /// `+0x10`: whether the `+0x30` pixel vector has a buffer.
+    pub pixels_available: bool,
+    /// `+0x14`: row stride, copied from the width.
+    pub stride: u32,
+}
+
+/// One rect presented by `0x006745e0`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct W14a03PresentCall {
+    /// Rect passed as the second argument.
+    pub rect: W14a03Rect,
+    /// Blend mode constant pushed by the shipped code (`0x16`).
+    pub blend_mode: u32,
+    /// Colour vector loaded from `DAT_00f3ca88` (four `1.0f` values).
+    pub color: [f32; 4],
+    /// Trailing flag argument (zero).
+    pub flags: u32,
+}
+
+/// One full-surface clear/draw request issued by `0x006746e0`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct W14a03ClearCall {
+    /// Surface `+0x08` value forwarded to the draw call.
+    pub field_08: u32,
+    /// `mode == 1`.
+    pub use_source_alpha: bool,
+    /// Trailing flag argument (zero).
+    pub flags: u32,
+}
+
+/// One queued blit produced by the flush at `0x00674730`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct W14a03BlitCall {
+    /// Rect X.
+    pub x: u32,
+    /// Rect Y.
+    pub y: u32,
+    /// Rect width (`> 0`).
+    pub width: u32,
+    /// Rect height (`> 0`).
+    pub height: u32,
+    /// Dword index into the pixel vector: `y * surface.width + x`.
+    pub source_index: u32,
+    /// Destination stride in pixels (surface width).
+    pub pitch: u32,
+    /// Surface `+0x08` value.
+    pub field_08: u32,
+    /// `mode == 1`.
+    pub use_source_alpha: bool,
+    /// Trailing flag argument (zero).
+    pub flags: u32,
+}
+
+/// Result of the flush decision at `0x00674730`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct W14a03FlushPlan {
+    /// The shipped body calls the surface constructor at `+0x0c` first.
+    pub create_surface: bool,
+    /// State of the `+0x1c` flag after the call.
+    pub initialized: bool,
+    /// Blits in queue order (zero-sized rects omitted).
+    pub blits: Vec<W14a03BlitCall>,
+    /// The `+0x3c` dirty byte is cleared on every path.
+    pub cleared_dirty: bool,
+}
+
+/// `0x006744c0`: construct the surface header and resize the pixel vector to
+/// `width * height` zeroed dwords.
+///
+/// The embedded context at `+0x0c` is constructed by the opaque
+/// `FUN_00a892d0`; that object is not modelled. The size multiply is a
+/// 32-bit wrapping multiply, matching the shipped `imul`.
+pub fn w14a03_surface_new(width: u32, height: u32, field_08: u32, mode: u32) -> W14a03Surface {
+    let count = width.wrapping_mul(height) as usize;
+    W14a03Surface {
+        width,
+        height,
+        field_08,
+        initialized: false,
+        mode,
+        rects: Vec::new(),
+        pixels: vec![0; count],
+        dirty: false,
+    }
+}
+
+/// `0x00674630`: append a four-dword rect to the surface queue.
+///
+/// The shipped helper allocates a 24-byte node and links it at the tail of
+/// the `+0x24` header; returns the zero-based position of the new record.
+pub fn w14a03_surface_push_rect(surface: &mut W14a03Surface, rect: W14a03Rect) -> usize {
+    let index = surface.rects.len();
+    surface.rects.push(rect);
+    index
+}
+
+/// `0x00674670`: build the six-dword blit descriptor from the surface and
+/// set the `+0x3c` dirty flag.
+///
+/// The shipped code stores the raw `+0x30` buffer pointer in slot `+0x10`;
+/// this version records only whether that vector has a buffer.
+pub fn w14a03_blit_descriptor(surface: &mut W14a03Surface) -> W14a03BlitDescriptor {
+    surface.dirty = true;
+    W14a03BlitDescriptor {
+        x: 0,
+        y: 0,
+        width: surface.width,
+        height: surface.height,
+        pixels_available: !surface.pixels.is_empty(),
+        stride: surface.width,
+    }
+}
+
+/// `0x006745e0`: present one rect when the surface-created flag is set.
+///
+/// The recovered call uses blend mode `0x16`, a colour vector of four `1.0f`
+/// values read from `DAT_00f3ca88`, and a trailing zero. The opaque context
+/// lock at `+0x0c` is not modelled.
+pub fn w14a03_present_call(surface: &W14a03Surface, rect: W14a03Rect) -> Option<W14a03PresentCall> {
+    if !surface.initialized {
+        return None;
+    }
+    Some(W14a03PresentCall {
+        rect,
+        blend_mode: 0x16,
+        color: [1.0; 4],
+        flags: 0,
+    })
+}
+
+/// `0x006746e0`: store the render mode and, when the opaque readiness check
+/// succeeds, issue the full-surface clear/draw call.
+///
+/// The caller supplies the result of `FUN_0067acc0` as `render_ready`.
+pub fn w14a03_set_surface_mode(
+    surface: &mut W14a03Surface,
+    mode: u32,
+    render_ready: bool,
+) -> Option<W14a03ClearCall> {
+    surface.mode = mode;
+    if !render_ready {
+        return None;
+    }
+    Some(W14a03ClearCall {
+        field_08: surface.field_08,
+        use_source_alpha: mode == 1,
+        flags: 0,
+    })
+}
+
+/// `0x00674730`: flush the queued rects.
+///
+/// An empty queue only clears the dirty byte. Otherwise the shipped body
+/// creates the surface when `+0x1c` is clear, checks readiness through
+/// `FUN_0067acc0`, emits one blit per non-empty rect and finally clears the
+/// queue and the dirty byte. `render_ready` models both opaque readiness
+/// results; a failed readiness leaves the queue intact.
+pub fn w14a03_flush_surface(surface: &mut W14a03Surface, render_ready: bool) -> W14a03FlushPlan {
+    let mut plan = W14a03FlushPlan::default();
+    if surface.rects.is_empty() {
+        surface.dirty = false;
+        plan.cleared_dirty = true;
+        return plan;
+    }
+    if !surface.initialized {
+        plan.create_surface = true;
+    }
+    if !render_ready {
+        surface.dirty = false;
+        plan.cleared_dirty = true;
+        return plan;
+    }
+    surface.initialized = true;
+    let width = surface.width;
+    for rect in &surface.rects {
+        if rect.width == 0 || rect.height == 0 {
+            continue;
+        }
+        let source_index = rect.y.wrapping_mul(width).wrapping_add(rect.x);
+        plan.blits.push(W14a03BlitCall {
+            x: rect.x,
+            y: rect.y,
+            width: rect.width,
+            height: rect.height,
+            source_index,
+            pitch: width,
+            field_08: surface.field_08,
+            use_source_alpha: surface.mode == 1,
+            flags: 0,
+        });
+    }
+    surface.rects.clear();
+    surface.dirty = false;
+    plan.initialized = true;
+    plan.cleared_dirty = true;
+    plan
+}
+
+// ===========================================================================
+// blz map tree helpers
+// ===========================================================================
+
+/// One key of the map; comparison is `(second, first)`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct W14a03MapKey {
+    /// Node `+0x10`.
+    pub first: u32,
+    /// Node `+0x14`; the primary comparison field.
+    pub second: u32,
+}
+
+/// One red-black tree node.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct W14a03MapNode {
+    /// `+0x00`: parent (`None` for the root).
+    pub parent: Option<usize>,
+    /// `+0x04`: left child.
+    pub left: Option<usize>,
+    /// `+0x08`: right child.
+    pub right: Option<usize>,
+    /// `+0x0c`: colour; `true` is black.
+    pub is_black: bool,
+    /// `+0x10..+0x18`: key.
+    pub key: W14a03MapKey,
+    /// `+0x18`: first dword of the mapped value.
+    pub value_tag: u32,
+    /// `+0x20`: mapped surface index.
+    pub surface: Option<usize>,
+    /// `+0x24`: value mark byte.
+    pub marked: bool,
+}
+
+/// The map object with the header at `+0x14`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct W14a03MapTree {
+    /// Nodes addressed by index (the shipped code uses pointers).
+    pub nodes: Vec<W14a03MapNode>,
+    /// Header `+0x00`: tree root.
+    pub root: Option<usize>,
+    /// Header `+0x04`: leftmost node.
+    pub leftmost: Option<usize>,
+    /// Header `+0x08`: rightmost node.
+    pub rightmost: Option<usize>,
+    /// Map object `+0x5c`: insertion/update counter.
+    pub counter_5c: u32,
+    /// Map object `+0x58`: stored mode used by the bulk update.
+    pub field_58: u32,
+}
+
+/// Which link the insertion helper at `0x006752f0` selected.
+///
+/// The shipped helper returns a pointer to the link to fill, or null. The
+/// caller at `00674be0` interprets the null link as "key already present"
+/// and updates the returned node in place.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum W14a03InsertLink {
+    /// The shipped helper returned null: the node already carries the key.
+    #[default]
+    Existing,
+    /// Attach as the node's right child.
+    Right,
+    /// Attach at `header + 0x04` (the new leftmost node).
+    HeaderLeft,
+}
+
+/// Result of the insertion search at `0x006752f0`.
+///
+/// `node == None` means the header sentinel.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct W14a03InsertHint {
+    /// Node selected by the search.
+    pub node: Option<usize>,
+    /// Link to fill.
+    pub link: W14a03InsertLink,
+}
+
+/// One entry selected by the bulk mode update at `0x006751d0`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct W14a03ModeTarget {
+    /// Node index in `W14a03MapTree::nodes`.
+    pub entry: usize,
+    /// Mapped surface index.
+    pub surface: usize,
+}
+
+/// `0x006753f0`: first node whose key is not less than `key`.
+///
+/// This is the shipped `_Lbound` walk; a missing result is the header
+/// sentinel, represented here as `None`.
+pub fn w14a03_tree_lower_bound(tree: &W14a03MapTree, key: W14a03MapKey) -> Option<usize> {
+    let mut current = tree.root?;
+    let mut candidate = None;
+    loop {
+        let node = &tree.nodes[current];
+        if w14a03_key_less(&node.key, &key) {
+            match node.right {
+                Some(right) => current = right,
+                None => break,
+            }
+        } else {
+            candidate = Some(current);
+            match node.left {
+                Some(left) => current = left,
+                None => break,
+            }
+        }
+    }
+    candidate
+}
+
+/// `0x00674f00`: successor step used while marking every map entry.
+///
+/// The shipped pointer version is the standard in-order successor of the old
+/// MSVC tree iterator; `None` stands for the header sentinel.
+pub fn w14a03_tree_successor(tree: &W14a03MapTree, node: usize) -> Option<usize> {
+    if let Some(right) = tree.nodes[node].right {
+        let mut current = right;
+        while let Some(left) = tree.nodes[current].left {
+            current = left;
+        }
+        return Some(current);
+    }
+    let mut current = node;
+    let mut parent = tree.nodes[current].parent?;
+    while tree.nodes[current].parent == Some(parent) && tree.nodes[parent].right == Some(current) {
+        current = parent;
+        parent = tree.nodes[current].parent?;
+    }
+    Some(parent)
+}
+
+/// `0x00674f00`: set the mark byte at value `+0x0c` (node `+0x24`) on every
+/// entry, walking in order from the header's leftmost node. Returns the
+/// number of entries marked.
+pub fn w14a03_tree_mark_all(tree: &mut W14a03MapTree) -> usize {
+    let mut current = tree.leftmost;
+    let mut count = 0;
+    while let Some(index) = current {
+        tree.nodes[index].marked = true;
+        count += 1;
+        current = w14a03_tree_successor(tree, index);
+    }
+    count
+}
+
+/// `0x00675280`: clone one subtree into a fresh arena.
+///
+/// The shipped `_Copy_node` helper allocates the new node, copies the value
+/// and colour, then recursively copies the left and right children. The
+/// returned index is the clone root.
+pub fn w14a03_tree_clone_subtree(
+    tree: &mut W14a03MapTree,
+    source: Option<usize>,
+    parent: Option<usize>,
+) -> Option<usize> {
+    let source = source?;
+    let original = tree.nodes[source].clone();
+    let index = tree.nodes.len();
+    tree.nodes.push(W14a03MapNode {
+        parent,
+        left: None,
+        right: None,
+        is_black: original.is_black,
+        key: original.key,
+        value_tag: original.value_tag,
+        surface: original.surface,
+        marked: original.marked,
+    });
+    let left = w14a03_tree_clone_subtree(tree, original.left, Some(index));
+    let right = w14a03_tree_clone_subtree(tree, original.right, Some(index));
+    tree.nodes[index].left = left;
+    tree.nodes[index].right = right;
+    Some(index)
+}
+
+/// `0x006752f0`: locate the insertion link for `key`.
+///
+/// The shipped `_Find` walk records the last visited node and whether the
+/// final step went left. A right step either selects the node's right link
+/// (key greater than the node) or reports the existing node (key equal to
+/// it). A left step off the leftmost node selects the header's left link;
+/// otherwise the predecessor is returned. The original red/left cycle check
+/// (`node.parent.parent == node`) can only fire for a malformed tree and is
+/// not modelled.
+pub fn w14a03_tree_insert_hint(tree: &W14a03MapTree, key: W14a03MapKey) -> W14a03InsertHint {
+    let Some(root) = tree.root else {
+        return W14a03InsertHint {
+            node: None,
+            link: W14a03InsertLink::HeaderLeft,
+        };
+    };
+    let mut current = root;
+    let mut last;
+    let mut went_left;
+    loop {
+        last = current;
+        let node = &tree.nodes[current];
+        if w14a03_key_less(&key, &node.key) {
+            went_left = true;
+            match node.left {
+                Some(left) => current = left,
+                None => break,
+            }
+        } else {
+            went_left = false;
+            match node.right {
+                Some(right) => current = right,
+                None => break,
+            }
+        }
+    }
+    if !went_left {
+        let node = &tree.nodes[last];
+        return W14a03InsertHint {
+            node: Some(last),
+            link: if w14a03_key_less(&node.key, &key) {
+                W14a03InsertLink::Right
+            } else {
+                W14a03InsertLink::Existing
+            },
+        };
+    }
+    if tree.leftmost == Some(last) {
+        return W14a03InsertHint {
+            node: None,
+            link: W14a03InsertLink::HeaderLeft,
+        };
+    }
+    let predecessor = w14a03_tree_predecessor(tree, last);
+    match predecessor {
+        Some(index) if w14a03_key_less(&tree.nodes[index].key, &key) => W14a03InsertHint {
+            node: None,
+            link: W14a03InsertLink::HeaderLeft,
+        },
+        Some(index) => W14a03InsertHint {
+            node: Some(index),
+            link: W14a03InsertLink::Existing,
+        },
+        None => W14a03InsertHint {
+            node: None,
+            link: W14a03InsertLink::HeaderLeft,
+        },
+    }
+}
+
+/// Predecessor step used by `0x006752f0`'s insertion search.
+fn w14a03_tree_predecessor(tree: &W14a03MapTree, node: usize) -> Option<usize> {
+    if let Some(left) = tree.nodes[node].left {
+        let mut current = left;
+        while let Some(right) = tree.nodes[current].right {
+            current = right;
+        }
+        return Some(current);
+    }
+    let mut current = node;
+    let mut parent = tree.nodes[current].parent?;
+    while tree.nodes[parent].left == Some(current) {
+        current = parent;
+        parent = tree.nodes[current].parent?;
+    }
+    Some(parent)
+}
+
+/// `0x00674f50`: bump the map counter, take the lower-bound entry and append
+/// `rect` to its mapped surface queue. Returns whether a surface was reached.
+///
+/// The shipped body does not check key equality: the lower-bound node is used
+/// directly. A null mapped surface is skipped here instead of dereferenced.
+pub fn w14a03_tree_append_rect(
+    tree: &mut W14a03MapTree,
+    key: W14a03MapKey,
+    rect: W14a03Rect,
+    surfaces: &mut [W14a03Surface],
+) -> bool {
+    tree.counter_5c = tree.counter_5c.wrapping_add(1);
+    let Some(entry) = w14a03_tree_lower_bound(tree, key) else {
+        return false;
+    };
+    let Some(surface) = tree.nodes[entry].surface else {
+        return false;
+    };
+    if let Some(target) = surfaces.get_mut(surface) {
+        w14a03_surface_push_rect(target, rect);
+        true
+    } else {
+        false
+    }
+}
+
+/// `0x00674fc0`: return the lower-bound entry's pixel buffer.
+///
+/// The shipped body calls `0x00674670` on the mapped surface and returns
+/// descriptor slot `+0x10` (the buffer pointer), or zero when the entry or
+/// surface is missing.
+pub fn w14a03_tree_entry_pixels<'a>(
+    tree: &W14a03MapTree,
+    key: W14a03MapKey,
+    surfaces: &'a [W14a03Surface],
+) -> Option<&'a [u32]> {
+    let entry = w14a03_tree_lower_bound(tree, key)?;
+    let surface = tree.nodes[entry].surface?;
+    let pixels = &surfaces.get(surface)?.pixels;
+    if pixels.is_empty() {
+        None
+    } else {
+        Some(pixels)
+    }
+}
+
+/// `0x006751d0`: store `mode` at map `+0x58` and enumerate every entry's
+/// mapped surface in tree order.
+///
+/// Each returned target is the call site of `0x006746e0` in the shipped loop;
+/// the caller applies `w14a03_set_surface_mode` to it.
+pub fn w14a03_tree_set_mode_all(tree: &mut W14a03MapTree, mode: u32) -> Vec<W14a03ModeTarget> {
+    tree.field_58 = mode;
+    let mut targets = Vec::new();
+    let mut current = tree.leftmost;
+    while let Some(index) = current {
+        if let Some(surface) = tree.nodes[index].surface {
+            targets.push(W14a03ModeTarget {
+                entry: index,
+                surface,
+            });
+        }
+        current = w14a03_tree_successor(tree, index);
+    }
+    targets
+}
+
+/// `0x00675230`: return the lower-bound entry's mapped surface index.
+///
+/// The shipped body calls the flush at `0x00674730` on that surface when the
+/// entry exists; the caller performs the flush with
+/// [`w14a03_flush_surface`].
+pub fn w14a03_tree_flush_target(tree: &W14a03MapTree, key: W14a03MapKey) -> Option<usize> {
+    let entry = w14a03_tree_lower_bound(tree, key)?;
+    tree.nodes[entry].surface
+}
+
+/// Compare two map keys in the shipped `(second, first)` order.
+fn w14a03_key_less(left: &W14a03MapKey, right: &W14a03MapKey) -> bool {
+    (left.second, left.first) < (right.second, right.first)
+}
+
+// ===========================================================================
+// TinyXML2 and factory vtables / destructors
+// ===========================================================================
+
+/// `0x00674960`: install the `IBrowserTextureFactoryV1` vtable.
+pub fn w14a03_install_browser_texture_factory_vtable(vtable: &mut u32) {
+    *vtable = 0x00d3_e24c;
+}
+
+/// `0x00674ac0`: scalar deleting destructor of the object built by
+/// `0x00674960`.
+///
+/// The body stores the `0x00d3e24c` vtable and calls `operator delete(this, 4)`
+/// when bit 0 of the flag byte is set.
+pub fn w14a03_browser_factory_delete_plan(flags: u8) -> W14a03DeletePlan {
+    W14a03DeletePlan {
+        final_vtable: 0x00d3_e24c,
+        delete_self: flags & 1 != 0,
+        delete_size: 4,
+    }
+}
+
+/// `0x00675490`: install the `tinyxml2::XMLVisitor` vtable.
+pub fn w14a03_install_xml_visitor_vtable(vtable: &mut u32) {
+    *vtable = 0x00d3_e2c4;
+}
+
+/// `0x00675500`: scalar deleting destructor of `tinyxml2::XMLVisitor`.
+pub fn w14a03_xml_visitor_delete_plan(vtable: &mut u32, flags: u8) -> W14a03DeletePlan {
+    *vtable = 0x00d3_e2c4;
+    W14a03DeletePlan {
+        final_vtable: *vtable,
+        delete_self: flags & 1 != 0,
+        delete_size: 4,
+    }
+}
+
+/// Result of a scalar deleting destructor.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct W14a03DeletePlan {
+    /// Vtable left in `+0x00`.
+    pub final_vtable: u32,
+    /// Whether `operator delete(this, delete_size)` runs.
+    pub delete_self: bool,
+    /// Allocation size passed to `operator delete`.
+    pub delete_size: usize,
+}
+
+/// One of the two `std::string`-like blocks owned by the XML printer.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum W14a03XmlBlock {
+    /// Buffer points at the inline storage, so the destructor does not free.
+    #[default]
+    Inline,
+    /// Buffer points at a heap allocation released by the destructor.
+    Heap(Vec<u8>),
+}
+
+/// The two owned blocks of `tinyxml2::XMLPrinter`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct W14a03XmlPrinterState {
+    /// `+0x00`: vtable.
+    pub vtable: u32,
+    /// `+0x08`: block whose inline storage is `+0x0c`.
+    pub block_08: W14a03XmlBlock,
+    /// `+0xd0`: block whose inline storage is `+0xd4`.
+    pub block_d0: W14a03XmlBlock,
+}
+
+/// Result of the XML printer deleting destructor at `0x006754a0`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct W14a03XmlPrinterTeardown {
+    /// Object offsets whose heap block was released, in release order.
+    pub released_offsets: Vec<u16>,
+    /// Vtable left in `+0x00`.
+    pub final_vtable: u32,
+    /// Whether `operator delete(this, 0xf0)` runs.
+    pub delete_self: bool,
+    /// Allocation size passed to `operator delete`.
+    pub delete_size: usize,
+}
+
+/// `0x00675450`: non-deleting `tinyxml2::XMLPrinter` destructor.
+///
+/// The body stores the printer vtable `0x00d3e2ec`, frees the `+0xd0` block
+/// when it is not the `+0xd4` inline buffer, frees the `+0x08` block when it
+/// is not the `+0x0c` inline buffer, then stores the visitor vtable
+/// `0x00d3e2c4`. Returns the released object offsets in order.
+pub fn w14a03_xml_printer_destroy(state: &mut W14a03XmlPrinterState) -> Vec<u16> {
+    state.vtable = 0x00d3_e2ec;
+    let mut released = Vec::new();
+    if matches!(state.block_d0, W14a03XmlBlock::Heap(_)) {
+        state.block_d0 = W14a03XmlBlock::Inline;
+        released.push(0xd0);
+    }
+    if matches!(state.block_08, W14a03XmlBlock::Heap(_)) {
+        state.block_08 = W14a03XmlBlock::Inline;
+        released.push(0x08);
+    }
+    state.vtable = 0x00d3_e2c4;
+    released
+}
+
+/// `0x006754a0`: scalar deleting destructor of `tinyxml2::XMLPrinter`.
+///
+/// Runs the destructor above and, when bit 0 of `flags` is set, frees the
+/// `0xf0`-byte object itself.
+pub fn w14a03_xml_printer_delete(
+    state: &mut W14a03XmlPrinterState,
+    flags: u8,
+) -> W14a03XmlPrinterTeardown {
+    let released_offsets = w14a03_xml_printer_destroy(state);
+    W14a03XmlPrinterTeardown {
+        released_offsets,
+        final_vtable: state.vtable,
+        delete_self: flags & 1 != 0,
+        delete_size: 0xf0,
+    }
+}
+
+/// `0x00674970`: non-deleting `WritableBufferTextureFactory` destructor.
+///
+/// The body installs vtables `0x00d3e268` / `0x00d3e284`, releases the two
+/// singly-linked node lists at `+0x28` and `+0x14` (each node's `+0x04`
+/// payload first, then the node), calls the base destructor at `+0x04`, and
+/// leaves the `0x00d3e24c` vtable in `+0x00`.
+pub fn w14a03_writable_factory_destroy(state: &mut W14a03FactoryState) -> W14a03FactoryTeardown {
+    state.vtable_0 = 0x00d3_e268;
+    state.vtable_4 = 0x00d3_e284;
+    let released_28 = core::mem::take(&mut state.list_28);
+    let released_14 = core::mem::take(&mut state.list_14);
+    state.vtable_0 = 0x00d3_e24c;
+    W14a03FactoryTeardown {
+        released_28,
+        released_14,
+        calls_base_destructor_at_04: true,
+        final_vtable_0: state.vtable_0,
+    }
+}
+
+/// `0x00674af0`: sibling `WritableBufferTextureFactory` destructor.
+///
+/// The shipped body is byte-for-byte the same teardown as
+/// [`w14a03_writable_factory_destroy`], reached through a different class
+/// vtable slot.
+pub fn w14a03_writable_factory_destroy_sibling(
+    state: &mut W14a03FactoryState,
+) -> W14a03FactoryTeardown {
+    w14a03_writable_factory_destroy(state)
+}
+
+/// Two intrusive lists owned by the writable texture factory.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct W14a03FactoryState {
+    /// `+0x00`: primary vtable.
+    pub vtable_0: u32,
+    /// `+0x04`: secondary vtable.
+    pub vtable_4: u32,
+    /// `+0x14`: second list, head to tail.
+    pub list_14: Vec<u32>,
+    /// `+0x28`: first list, head to tail.
+    pub list_28: Vec<u32>,
+}
+
+/// Result of the writable-factory teardown.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct W14a03FactoryTeardown {
+    /// Payloads released from the `+0x28` list, head to tail.
+    pub released_28: Vec<u32>,
+    /// Payloads released from the `+0x14` list, head to tail.
+    pub released_14: Vec<u32>,
+    /// The base destructor at `+0x04` runs after both lists are drained.
+    pub calls_base_destructor_at_04: bool,
+    /// Vtable left in `+0x00`.
+    pub final_vtable_0: u32,
+}
+
+// ===========================================================================
+// Tests
+// ===========================================================================
+
+#[cfg(test)]
+mod tests_wave14_agent03 {
+    use super::*;
+
+    fn key(first: u32, second: u32) -> W14a03MapKey {
+        W14a03MapKey { first, second }
+    }
+
+    fn tree7() -> W14a03MapTree {
+        let mut nodes: Vec<W14a03MapNode> = (0..7)
+            .map(|i| W14a03MapNode {
+                key: key(i, i),
+                is_black: true,
+                ..W14a03MapNode::default()
+            })
+            .collect();
+        nodes[3].left = Some(1);
+        nodes[3].right = Some(5);
+        nodes[1].parent = Some(3);
+        nodes[1].left = Some(0);
+        nodes[1].right = Some(2);
+        nodes[5].parent = Some(3);
+        nodes[5].left = Some(4);
+        nodes[5].right = Some(6);
+        nodes[0].parent = Some(1);
+        nodes[2].parent = Some(1);
+        nodes[4].parent = Some(5);
+        nodes[6].parent = Some(5);
+        W14a03MapTree {
+            nodes,
+            root: Some(3),
+            leftmost: Some(0),
+            rightmost: Some(6),
+            ..W14a03MapTree::default()
+        }
+    }
+
+    #[test]
+    fn find_char_matches_the_shipped_scan() {
+        let bytes = b"abca";
+        assert_eq!(w14a03_find_char(bytes, 0, b'a'), Some(0));
+        assert_eq!(w14a03_find_char(bytes, 1, b'a'), Some(3));
+        assert_eq!(w14a03_find_char(bytes, 4, b'a'), None);
+        assert_eq!(w14a03_find_char(bytes, 5, b'a'), None);
+        assert_eq!(w14a03_find_char(b"", 0, b'a'), None);
+        assert_eq!(w14a03_find_char(bytes, 2, b'z'), None);
+    }
+
+    #[test]
+    fn field_helpers_cover_offsets_and_short_slices() {
+        let mut state = [0u32; 22];
+        assert!(w14a03_write_fields_50_54(&mut state, 11, 22));
+        assert_eq!(state[0x14], 11);
+        assert_eq!(state[0x15], 22);
+        assert!(!w14a03_write_fields_50_54(&mut state[..21], 1, 2));
+
+        let mut bytes = [0u8; 0x50];
+        bytes[0x4d] = 0x7e;
+        assert_eq!(w14a03_byte_4d(&bytes), Some(0x7e));
+        assert_eq!(w14a03_byte_4d(&bytes[..0x4d]), None);
+    }
+
+    #[test]
+    fn surface_constructor_zeroes_width_times_height() {
+        let surface = w14a03_surface_new(4, 3, 7, 1);
+        assert_eq!(surface.width, 4);
+        assert_eq!(surface.height, 3);
+        assert_eq!(surface.field_08, 7);
+        assert_eq!(surface.mode, 1);
+        assert!(!surface.initialized);
+        assert!(!surface.dirty);
+        assert_eq!(surface.pixels, vec![0; 12]);
+
+        let empty = w14a03_surface_new(0, 9, 0, 0);
+        assert!(empty.pixels.is_empty());
+        assert_eq!(u32::MAX.wrapping_mul(2), 0xffff_fffe);
+    }
+
+    #[test]
+    fn surface_queue_and_descriptor_round_trip() {
+        let mut surface = w14a03_surface_new(4, 3, 9, 1);
+        let rect = W14a03Rect {
+            x: 1,
+            y: 2,
+            width: 2,
+            height: 1,
+        };
+        assert_eq!(w14a03_surface_push_rect(&mut surface, rect), 0);
+        assert_eq!(w14a03_surface_push_rect(&mut surface, rect), 1);
+        assert_eq!(surface.rects.len(), 2);
+
+        let descriptor = w14a03_blit_descriptor(&mut surface);
+        assert!(surface.dirty);
+        assert_eq!(descriptor.x, 0);
+        assert_eq!(descriptor.y, 0);
+        assert_eq!(descriptor.width, 4);
+        assert_eq!(descriptor.height, 3);
+        assert!(descriptor.pixels_available);
+        assert_eq!(descriptor.stride, 4);
+    }
+
+    #[test]
+    fn present_call_requires_the_created_flag() {
+        let rect = W14a03Rect {
+            x: 1,
+            y: 2,
+            width: 3,
+            height: 4,
+        };
+        let mut surface = w14a03_surface_new(8, 8, 0, 0);
+        assert_eq!(w14a03_present_call(&surface, rect), None);
+        surface.initialized = true;
+        let call = w14a03_present_call(&surface, rect).unwrap();
+        assert_eq!(call.rect, rect);
+        assert_eq!(call.blend_mode, 0x16);
+        assert_eq!(call.color, [1.0; 4]);
+        assert_eq!(call.flags, 0);
+    }
+
+    #[test]
+    fn set_surface_mode_draws_only_when_ready() {
+        let mut surface = w14a03_surface_new(2, 2, 7, 0);
+        assert_eq!(w14a03_set_surface_mode(&mut surface, 2, false), None);
+        assert_eq!(surface.mode, 2);
+        let call = w14a03_set_surface_mode(&mut surface, 1, true).unwrap();
+        assert_eq!(call.field_08, 7);
+        assert!(call.use_source_alpha);
+        assert_eq!(call.flags, 0);
+        let call = w14a03_set_surface_mode(&mut surface, 2, true).unwrap();
+        assert!(!call.use_source_alpha);
+    }
+
+    #[test]
+    fn flush_plan_emits_nonempty_rects_and_clears_the_queue() {
+        let mut surface = w14a03_surface_new(4, 4, 3, 1);
+        w14a03_surface_push_rect(
+            &mut surface,
+            W14a03Rect {
+                x: 1,
+                y: 1,
+                width: 2,
+                height: 2,
+            },
+        );
+        w14a03_surface_push_rect(
+            &mut surface,
+            W14a03Rect {
+                x: 3,
+                y: 3,
+                width: 0,
+                height: 2,
+            },
+        );
+        let plan = w14a03_flush_surface(&mut surface, true);
+        assert!(plan.create_surface);
+        assert!(plan.initialized);
+        assert!(plan.cleared_dirty);
+        assert_eq!(plan.blits.len(), 1);
+        let blit = plan.blits[0];
+        assert_eq!(blit.source_index, 5);
+        assert_eq!(blit.pitch, 4);
+        assert_eq!(blit.field_08, 3);
+        assert!(blit.use_source_alpha);
+        assert_eq!(blit.flags, 0);
+        assert!(surface.rects.is_empty());
+        assert!(!surface.dirty);
+
+        let empty_plan = w14a03_flush_surface(&mut surface, true);
+        assert!(!empty_plan.create_surface);
+        assert!(empty_plan.blits.is_empty());
+        assert!(empty_plan.cleared_dirty);
+    }
+
+    #[test]
+    fn failed_flush_keeps_the_queue_and_clears_dirty() {
+        let mut surface = w14a03_surface_new(2, 2, 0, 0);
+        surface.initialized = true;
+        surface.dirty = true;
+        w14a03_surface_push_rect(
+            &mut surface,
+            W14a03Rect {
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+            },
+        );
+        let plan = w14a03_flush_surface(&mut surface, false);
+        assert!(!plan.create_surface);
+        assert!(!plan.initialized);
+        assert!(plan.blits.is_empty());
+        assert!(plan.cleared_dirty);
+        assert_eq!(surface.rects.len(), 1);
+        assert!(!surface.dirty);
+    }
+
+    #[test]
+    fn lower_bound_uses_second_then_first_order() {
+        let tree = tree7();
+        assert_eq!(w14a03_tree_lower_bound(&tree, key(3, 3)), Some(3));
+        assert_eq!(w14a03_tree_lower_bound(&tree, key(2, 3)), Some(3));
+        assert_eq!(w14a03_tree_lower_bound(&tree, key(4, 3)), Some(4));
+        assert_eq!(w14a03_tree_lower_bound(&tree, key(0, 0)), Some(0));
+        assert_eq!(w14a03_tree_lower_bound(&tree, key(0, 7)), None);
+        assert_eq!(
+            w14a03_tree_lower_bound(&W14a03MapTree::default(), key(1, 1)),
+            None
+        );
+    }
+
+    #[test]
+    fn insert_hint_selects_the_recovered_links() {
+        let tree = tree7();
+        assert_eq!(
+            w14a03_tree_insert_hint(&W14a03MapTree::default(), key(1, 1)).link,
+            W14a03InsertLink::HeaderLeft
+        );
+        assert_eq!(
+            w14a03_tree_insert_hint(&tree, key(0, 0)),
+            W14a03InsertHint {
+                node: Some(0),
+                link: W14a03InsertLink::Existing
+            }
+        );
+        let single = W14a03MapTree {
+            nodes: vec![W14a03MapNode {
+                key: key(1, 1),
+                is_black: true,
+                ..W14a03MapNode::default()
+            }],
+            root: Some(0),
+            leftmost: Some(0),
+            rightmost: Some(0),
+            ..W14a03MapTree::default()
+        };
+        assert_eq!(
+            w14a03_tree_insert_hint(&single, key(0, 1)),
+            W14a03InsertHint {
+                node: None,
+                link: W14a03InsertLink::HeaderLeft
+            }
+        );
+        assert_eq!(
+            w14a03_tree_insert_hint(&tree, key(7, 7)),
+            W14a03InsertHint {
+                node: Some(6),
+                link: W14a03InsertLink::Right
+            }
+        );
+        assert_eq!(
+            w14a03_tree_insert_hint(&tree, key(2, 2)),
+            W14a03InsertHint {
+                node: Some(2),
+                link: W14a03InsertLink::Existing
+            }
+        );
+        assert_eq!(
+            w14a03_tree_insert_hint(&tree, key(3, 2)),
+            W14a03InsertHint {
+                node: Some(2),
+                link: W14a03InsertLink::Right
+            }
+        );
+        assert_eq!(
+            w14a03_tree_insert_hint(&tree, key(2, 1)),
+            W14a03InsertHint {
+                node: None,
+                link: W14a03InsertLink::HeaderLeft
+            }
+        );
+    }
+
+    #[test]
+    fn mark_all_walks_every_entry_in_order() {
+        let mut tree = tree7();
+        assert_eq!(w14a03_tree_mark_all(&mut tree), 7);
+        assert!(tree.nodes.iter().all(|node| node.marked));
+        let mut empty = W14a03MapTree::default();
+        assert_eq!(w14a03_tree_mark_all(&mut empty), 0);
+    }
+
+    #[test]
+    fn clone_subtree_copies_links_and_values() {
+        let mut tree = tree7();
+        tree.nodes[2].surface = Some(5);
+        tree.nodes[2].marked = true;
+        let clone = w14a03_tree_clone_subtree(&mut tree, Some(3), None).unwrap();
+        assert_eq!(clone, 7);
+        assert_eq!(tree.nodes.len(), 14);
+        assert_eq!(tree.nodes[clone].key, key(3, 3));
+        assert_eq!(tree.nodes[clone].parent, None);
+        let left = tree.nodes[clone].left.unwrap();
+        let right = tree.nodes[clone].right.unwrap();
+        assert_eq!(tree.nodes[left].key, key(1, 1));
+        assert_eq!(tree.nodes[right].key, key(5, 5));
+        assert_eq!(tree.nodes[left].parent, Some(clone));
+        // Source subtree is unchanged.
+        assert_eq!(tree.nodes[3].key, key(3, 3));
+        assert_eq!(tree.nodes[3].parent, None);
+
+        let mut leaf = W14a03MapTree::default();
+        assert_eq!(w14a03_tree_clone_subtree(&mut leaf, None, None), None);
+        assert_eq!(leaf.nodes.len(), 0);
+    }
+
+    #[test]
+    fn map_operations_use_the_lower_bound_entry() {
+        let mut tree = tree7();
+        tree.nodes[2].surface = Some(0);
+        tree.nodes[3].surface = Some(1);
+        tree.nodes[5].surface = Some(2);
+        let mut surfaces = vec![
+            w14a03_surface_new(2, 2, 1, 0),
+            w14a03_surface_new(3, 3, 2, 0),
+            w14a03_surface_new(4, 4, 3, 0),
+        ];
+        let rect = W14a03Rect {
+            x: 1,
+            y: 1,
+            width: 1,
+            height: 1,
+        };
+
+        // Exact key -> node 2's surface.
+        assert!(w14a03_tree_append_rect(
+            &mut tree,
+            key(2, 2),
+            rect,
+            &mut surfaces
+        ));
+        assert_eq!(tree.counter_5c, 1);
+        assert_eq!(surfaces[0].rects, vec![rect]);
+
+        // Missing key between nodes 2 and 3 -> lower bound node 3's surface.
+        assert!(w14a03_tree_append_rect(
+            &mut tree,
+            key(2, 3),
+            rect,
+            &mut surfaces
+        ));
+        assert_eq!(tree.counter_5c, 2);
+        assert_eq!(surfaces[1].rects, vec![rect]);
+
+        assert_eq!(
+            w14a03_tree_entry_pixels(&tree, key(2, 2), &surfaces).map(<[u32]>::len),
+            Some(4)
+        );
+        assert_eq!(
+            w14a03_tree_entry_pixels(&tree, key(2, 3), &surfaces).map(<[u32]>::len),
+            Some(9)
+        );
+        assert_eq!(w14a03_tree_entry_pixels(&tree, key(0, 7), &surfaces), None);
+        assert_eq!(w14a03_tree_flush_target(&tree, key(3, 3)), Some(1));
+        assert_eq!(w14a03_tree_flush_target(&tree, key(5, 5)), Some(2));
+        assert_eq!(w14a03_tree_flush_target(&tree, key(4, 4)), None);
+        assert_eq!(w14a03_tree_flush_target(&tree, key(0, 7)), None);
+    }
+
+    #[test]
+    fn bulk_mode_update_returns_entries_in_tree_order() {
+        let mut tree = tree7();
+        for (entry, surface) in [(0usize, 4usize), (2, 1), (4, 3), (6, 2)] {
+            tree.nodes[entry].surface = Some(surface);
+        }
+        let targets = w14a03_tree_set_mode_all(&mut tree, 7);
+        assert_eq!(tree.field_58, 7);
+        let entries: Vec<usize> = targets.iter().map(|target| target.entry).collect();
+        assert_eq!(entries, vec![0, 2, 4, 6]);
+        let surfaces: Vec<usize> = targets.iter().map(|target| target.surface).collect();
+        assert_eq!(surfaces, vec![4, 1, 3, 2]);
+    }
+
+    #[test]
+    fn xml_printer_teardown_releases_heap_blocks_in_order() {
+        let mut state = W14a03XmlPrinterState {
+            vtable: 0,
+            block_08: W14a03XmlBlock::Heap(vec![1, 2, 3]),
+            block_d0: W14a03XmlBlock::Heap(vec![4, 5]),
+        };
+        let released = w14a03_xml_printer_destroy(&mut state);
+        assert_eq!(released, vec![0xd0, 0x08]);
+        assert_eq!(state.block_08, W14a03XmlBlock::Inline);
+        assert_eq!(state.block_d0, W14a03XmlBlock::Inline);
+        assert_eq!(state.vtable, 0x00d3_e2c4);
+
+        let mut inline_state = W14a03XmlPrinterState::default();
+        assert!(w14a03_xml_printer_destroy(&mut inline_state).is_empty());
+
+        let mut deleting = W14a03XmlPrinterState {
+            vtable: 0,
+            block_08: W14a03XmlBlock::Heap(vec![1]),
+            block_d0: W14a03XmlBlock::Inline,
+        };
+        let plan = w14a03_xml_printer_delete(&mut deleting, 1);
+        assert_eq!(plan.released_offsets, vec![0x08]);
+        assert_eq!(plan.final_vtable, 0x00d3_e2c4);
+        assert!(plan.delete_self);
+        assert_eq!(plan.delete_size, 0xf0);
+        assert!(!w14a03_xml_printer_delete(&mut deleting, 0).delete_self);
+    }
+
+    #[test]
+    fn visitor_and_browser_vtables_and_delete_plans() {
+        let mut vtable = 0u32;
+        w14a03_install_xml_visitor_vtable(&mut vtable);
+        assert_eq!(vtable, 0x00d3_e2c4);
+        let plan = w14a03_xml_visitor_delete_plan(&mut vtable, 1);
+        assert_eq!(vtable, 0x00d3_e2c4);
+        assert!(plan.delete_self);
+        assert_eq!(plan.delete_size, 4);
+        assert!(!w14a03_xml_visitor_delete_plan(&mut vtable, 0).delete_self);
+
+        let mut browser = 0u32;
+        w14a03_install_browser_texture_factory_vtable(&mut browser);
+        assert_eq!(browser, 0x00d3_e24c);
+        let plan = w14a03_browser_factory_delete_plan(1);
+        assert_eq!(plan.final_vtable, 0x00d3_e24c);
+        assert!(plan.delete_self);
+        assert_eq!(plan.delete_size, 4);
+        assert!(!w14a03_browser_factory_delete_plan(0).delete_self);
+    }
+
+    #[test]
+    fn factory_teardown_drains_both_lists() {
+        let mut state = W14a03FactoryState {
+            vtable_0: 0,
+            vtable_4: 0,
+            list_14: vec![10, 11],
+            list_28: vec![20, 21, 22],
+        };
+        let plan = w14a03_writable_factory_destroy(&mut state);
+        assert_eq!(plan.released_28, vec![20, 21, 22]);
+        assert_eq!(plan.released_14, vec![10, 11]);
+        assert!(plan.calls_base_destructor_at_04);
+        assert_eq!(plan.final_vtable_0, 0x00d3_e24c);
+        assert_eq!(state.vtable_4, 0x00d3_e284);
+        assert!(state.list_14.is_empty());
+        assert!(state.list_28.is_empty());
+
+        let mut sibling = W14a03FactoryState {
+            vtable_0: 0,
+            vtable_4: 0,
+            list_14: vec![7],
+            list_28: Vec::new(),
+        };
+        let plan = w14a03_writable_factory_destroy_sibling(&mut sibling);
+        assert_eq!(plan.released_14, vec![7]);
+        assert!(plan.released_28.is_empty());
+    }
+}
