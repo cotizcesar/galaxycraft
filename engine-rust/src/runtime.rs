@@ -34775,3 +34775,924 @@ mod tests_wave18_agent08 {
         assert_eq!(w18a08_get_turn_packets(|_| false), Err("GetTurnPackets"));
     }
 }
+
+// ===========================================================================
+// Merged from src/wave19/agent06.rs
+// ===========================================================================
+// Wave 19 translation batch 06: small container / refcount / stream helpers
+// (queue, module `runtime.rs`).  Unresolved callees are closure parameters.
+
+/// `0x00534f70`: releases a range of 8-byte shared-pointer slots.  Each slot
+/// holds an optional control block `(use_count, weak_count)`; the use count is
+/// decremented and, when the old value was 1, `dispose(i)` runs (vtable +8)
+/// and the weak count is decremented; when that old value was 1, `destroy(i)`
+/// runs (vtable +0xc).
+pub fn w19a06_release_range(
+    ctrls: &mut [Option<(i32, i32)>],
+    mut dispose: impl FnMut(usize),
+    mut destroy: impl FnMut(usize),
+) {
+    for (i, slot) in ctrls.iter_mut().enumerate() {
+        if let Some((use_c, weak_c)) = slot {
+            let old = *use_c;
+            *use_c = use_c.wrapping_sub(1);
+            if old == 1 {
+                dispose(i);
+                let old_w = *weak_c;
+                *weak_c = weak_c.wrapping_sub(1);
+                if old_w == 1 {
+                    destroy(i);
+                }
+            }
+        }
+    }
+}
+
+/// `0x0053edb0`: mixes the words at +0x20/+0x24/+0x28 (murmur3 finalizer
+/// constants) with `inner`, the result of the opaque hash call over words
+/// 0 and 1 (`FUN_00c62800(w0, w1, 0)`).
+pub fn w19a06_hash_key(w8: u32, w9: u32, w10: u32, inner: u32) -> u32 {
+    const C1: u32 = 0x85eb_ca6b; // -0x7a143595
+    const C2: u32 = 0xc2b2_ae35; // -0x3d4d51cb
+    const C3: u32 = 0x8565_5c6a; // -0x7a9aa396
+    let mut a = ((w10 >> 16) ^ w10).wrapping_mul(C1);
+    a = ((a >> 13) ^ a).wrapping_mul(C2);
+    let mut b = ((w9 >> 16) ^ w9).wrapping_mul(C1);
+    b = (b >> 13) ^ b;
+    let mut d = ((w8 >> 16) ^ w8).wrapping_mul(C1);
+    d = ((d >> 13) ^ d).wrapping_mul(C2);
+    let x = ((b.wrapping_mul(C2) & 0xffff_7fff) ^ (a >> 1)) >> 14;
+    let y = (a & 0x3fff_ffff) ^ (d >> 16) ^ d;
+    b.wrapping_mul(C3) ^ ((inner ^ x) >> 1) ^ (y & 0x7fff_ffff)
+}
+
+/// `0x0053f3a0`: walks a singly linked chain (first word of each node is the
+/// next pointer) looking for a node whose key (ptr +4, len +8) equals `key`
+/// byte for byte and whose sub-record at +0x20 satisfies `sub_eq`.  Returns
+/// the link that points at the match (`None` = the starting link `param_1`,
+/// `Some(i)` = the next-link inside node `i`), or the last link when the
+/// chain ends.
+pub fn w19a06_find_link<'a>(
+    head: Option<usize>,
+    key: &[u8],
+    next: impl Fn(usize) -> Option<usize>,
+    node_key: impl Fn(usize) -> &'a [u8],
+    mut sub_eq: impl FnMut(usize) -> bool,
+) -> Option<usize> {
+    let mut link: Option<usize> = None;
+    let mut cur = head;
+    while let Some(n) = cur {
+        // memcmp over the shorter length, then length difference
+        if node_key(n) == key && sub_eq(n) {
+            return link;
+        }
+        link = Some(n);
+        cur = next(n);
+    }
+    link
+}
+
+/// `0x0053f470`: releases the buffer at +0xc through `free` (when non-null)
+/// and zeroes the pointer (+0xc) and the length (+0x10).
+pub fn w19a06_clear_buffer(ptr: &mut u32, len: &mut u32, free: impl FnOnce(u32)) {
+    if *ptr != 0 {
+        free(*ptr);
+    }
+    *len = 0;
+    *ptr = 0;
+}
+
+/// `0x0053f540`: bucket-count check of a hash table `{buckets, table_ptr,
+/// size, max_load: f32}`.  `count` is the result of the opaque size call
+/// (`FUN_00c86e10`).  Returns the power-of-two (>= 8) bucket count wanted and
+/// whether the table is already fine (`true` = early return; `false` = the
+/// original calls the non-returning rehash routine).
+pub fn w19a06_check_buckets(
+    buckets: u32,
+    table_ptr: u32,
+    size: u32,
+    max_load: f32,
+    count: u32,
+    requested: u32,
+) -> (u32, bool) {
+    // DAT_00d33180 is { 0.0, 4294967296.0 }, indexed by the sign bit
+    let adj = |v: u32| {
+        if (v as i32) < 0 {
+            4_294_967_296.0_f64
+        } else {
+            0.0
+        }
+    };
+    let lhs = ((size as i32 as f64) + adj(size)) as f32;
+    let rhs = (((count as i32 as f64) + adj(count)) as f32) * max_load;
+    let mut want = count.wrapping_add(1);
+    if lhs <= rhs {
+        want = count;
+    }
+    if want < requested {
+        want = requested;
+    }
+    let mut n: u32 = 8;
+    if want > 8 {
+        loop {
+            n = n.wrapping_mul(2);
+            if n >= want {
+                break;
+            }
+        }
+    }
+    (n, n == buckets && table_ptr != 0)
+}
+
+/// `0x0053f900`: initialises a six-word record: `[1]=a`, `[2]=b`, `[0]=0`,
+/// `[3]=c`, `[4]=0`, `[5]=0x20000`.
+pub fn w19a06_init_record(rec: &mut [u32; 6], a: u32, b: u32, c: u32) {
+    rec[1] = a;
+    rec[2] = b;
+    rec[0] = 0;
+    rec[3] = c;
+    rec[4] = 0;
+    rec[5] = 0x20000;
+}
+
+/// `0x0053fa50`: equality of two records `{str, w1, w2, sub(+0xc), w4}`.
+/// `sub_eq` is the opaque comparison of the sub-records (`FUN_0061f4b0`);
+/// `str_cmp` is the opaque string comparison tail call, used only when both
+/// strings are present (its result is taken as the answer).  Two absent
+/// strings are equal, exactly one absent is unequal.
+pub fn w19a06_record_eq(
+    a: (Option<&str>, u32, u32, u32),
+    b: (Option<&str>, u32, u32, u32),
+    sub_eq: impl FnOnce() -> bool,
+    str_cmp: impl FnOnce(&str, &str) -> bool,
+) -> bool {
+    if a.1 != b.1 || a.2 != b.2 || !sub_eq() || a.3 != b.3 {
+        return false;
+    }
+    match (a.0, b.0) {
+        (None, None) => true,
+        (Some(x), Some(y)) => str_cmp(x, y),
+        _ => false,
+    }
+}
+
+/// `0x00549640`: move-constructs the 6-word (0x18 byte) elements of `src`
+/// into `dst`: words 0/1 and the low 31 bits of word 2 move over (source
+/// words 0/1 cleared, source word 2 keeps only its top bit), words 3..5 are
+/// copied.  An element whose word 2 has the top bit set aborts in the
+/// original (`Err(index)`).  Returns the number of words written.
+pub fn w19a06_move_range(src: &mut [u32], dst: &mut [u32]) -> Result<usize, usize> {
+    let n = src.len() / 6;
+    for i in 0..n {
+        let s = i * 6;
+        let d = i * 6;
+        dst[d] = 0;
+        dst[d + 1] = 0;
+        dst[d + 2] = 0;
+        if (src[s + 2] as i32) < 0 {
+            return Err(i);
+        }
+        dst[d] = src[s];
+        dst[d + 1] = src[s + 1];
+        dst[d + 2] = src[s + 2] & 0x7fff_ffff;
+        src[s + 2] &= 0x8000_0000;
+        src[s] = 0;
+        src[s + 1] = 0;
+        dst[d + 3] = src[s + 3];
+        dst[d + 4] = src[s + 4];
+        dst[d + 5] = src[s + 5];
+    }
+    Ok(n * 6)
+}
+
+/// `0x00549950`: ensures 8 bytes are readable at `pos`.  `read(offset, len)`
+/// is the stream vtable +4 call returning bytes read.  Returns `Ok(pos)` or
+/// `Err("Premature end of stream")`.
+pub fn w19a06_require_eight(
+    pos: u32,
+    mut read: impl FnMut(u32, u32) -> u32,
+) -> Result<u32, &'static str> {
+    let mut got = read(pos, 8);
+    while got & 7 != 0 {
+        let r = read(got.wrapping_add(pos), 8u32.wrapping_sub(got));
+        if r == 0 {
+            return Err("Premature end of stream");
+        }
+        got = got.wrapping_add(r);
+    }
+    if got > 7 {
+        Ok(pos)
+    } else {
+        Err("Premature end of stream")
+    }
+}
+
+/// `0x00549ac0`: move-constructs a 3-word `{ptr, aux, len|flag}` handle:
+/// `dst` takes words 0/1 and the low 31 bits of word 2; the source keeps only
+/// the top bit of word 2 and has words 0/1 cleared.  A source with the top
+/// bit set aborts in the original (`Err`, `dst` left zeroed).
+pub fn w19a06_move_handle3(dst: &mut [u32; 3], src: &mut [u32; 3]) -> Result<(), ()> {
+    *dst = [0; 3];
+    if (src[2] as i32) < 0 {
+        return Err(());
+    }
+    dst[0] = src[0];
+    dst[1] = src[1];
+    dst[2] = src[2] & 0x7fff_ffff;
+    src[2] &= 0x8000_0000;
+    src[0] = 0;
+    src[1] = 0;
+    Ok(())
+}
+
+/// `0x00549cd0`: like the 3-word move above, then copies words 3..5 as well
+/// (6-word record).  On abort only `dst[1]` is (re)zeroed.
+pub fn w19a06_move_handle6(dst: &mut [u32; 6], src: &mut [u32; 6]) -> Result<(), ()> {
+    *dst = [0; 6];
+    if (src[2] as i32) < 0 {
+        dst[1] = 0;
+        return Err(());
+    }
+    dst[0] = src[0];
+    dst[1] = src[1];
+    dst[2] = src[2] & 0x7fff_ffff;
+    src[2] &= 0x8000_0000;
+    src[0] = 0;
+    src[1] = 0;
+    dst[3] = src[3];
+    dst[4] = src[4];
+    dst[5] = src[5];
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests_wave19_agent06 {
+    use super::*;
+
+    #[test]
+    fn release_counts() {
+        let mut c = [Some((1, 1)), Some((2, 1)), None, Some((1, 2))];
+        let (mut d, mut x) = (vec![], vec![]);
+        w19a06_release_range(&mut c, |i| d.push(i), |i| x.push(i));
+        assert_eq!(d, vec![0, 3]);
+        assert_eq!(x, vec![0]);
+        assert_eq!(c[1], Some((1, 1)));
+        assert_eq!(c[3], Some((0, 1)));
+    }
+
+    #[test]
+    fn hash_zero_and_dependence() {
+        assert_eq!(w19a06_hash_key(0, 0, 0, 0), 0);
+        assert_eq!(w19a06_hash_key(0, 0, 0, 4), 2);
+        assert_ne!(w19a06_hash_key(1, 0, 0, 0), w19a06_hash_key(2, 0, 0, 0));
+        assert_eq!(
+            w19a06_hash_key(1, 2, 3, 4) >> 31,
+            w19a06_hash_key(1, 2, 3, 4) >> 31
+        );
+    }
+
+    #[test]
+    fn find_link_chain() {
+        let keys: [&[u8]; 3] = [b"aa", b"bb", b"cc"];
+        let nx = |i: usize| if i < 2 { Some(i + 1) } else { None };
+        let r = w19a06_find_link(Some(0), b"bb", nx, |i| keys[i], |_| true);
+        assert_eq!(r, Some(0));
+        let r = w19a06_find_link(Some(0), b"aa", nx, |i| keys[i], |_| true);
+        assert_eq!(r, None);
+        let r = w19a06_find_link(Some(0), b"zz", nx, |i| keys[i], |_| true);
+        assert_eq!(r, Some(2));
+        let r = w19a06_find_link(Some(0), b"bb", nx, |i| keys[i], |_| false);
+        assert_eq!(r, Some(2));
+        assert_eq!(
+            w19a06_find_link(None, b"a", nx, |i| keys[i], |_| true),
+            None
+        );
+    }
+
+    #[test]
+    fn clear_buffer() {
+        let (mut p, mut l, mut freed) = (5u32, 9u32, 0);
+        w19a06_clear_buffer(&mut p, &mut l, |v| freed = v);
+        assert_eq!((p, l, freed), (0, 0, 5));
+        let mut called = false;
+        w19a06_clear_buffer(&mut p, &mut l, |_| called = true);
+        assert!(!called);
+    }
+
+    #[test]
+    fn buckets() {
+        assert_eq!(w19a06_check_buckets(8, 1, 1, 1.0, 4, 0), (8, true));
+        assert_eq!(w19a06_check_buckets(8, 0, 1, 1.0, 4, 0), (8, false));
+        // size above load: count+1 = 9 -> 16
+        assert_eq!(w19a06_check_buckets(8, 1, 10, 1.0, 8, 0), (16, false));
+        assert_eq!(w19a06_check_buckets(8, 1, 1, 1.0, 4, 100), (128, false));
+    }
+
+    #[test]
+    fn init_and_eq() {
+        let mut r = [9; 6];
+        w19a06_init_record(&mut r, 1, 2, 3);
+        assert_eq!(r, [0, 1, 2, 3, 0, 0x20000]);
+        let a = (None, 1, 2, 4);
+        assert!(w19a06_record_eq(a, a, || true, |_, _| false));
+        assert!(!w19a06_record_eq(a, (None, 1, 2, 5), || true, |_, _| true));
+        assert!(!w19a06_record_eq(a, a, || false, |_, _| true));
+        assert!(!w19a06_record_eq(
+            a,
+            (Some("x"), 1, 2, 4),
+            || true,
+            |_, _| true
+        ));
+        let s = (Some("x"), 1, 2, 4);
+        assert!(w19a06_record_eq(s, s, || true, |p, q| p == q));
+    }
+
+    #[test]
+    fn move_range_and_handles() {
+        let mut s = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+        let mut d = [0; 12];
+        assert_eq!(w19a06_move_range(&mut s, &mut d), Ok(12));
+        assert_eq!(d, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+        assert_eq!(&s[..3], &[0, 0, 0]);
+        let mut s = [1, 2, 0x8000_0000, 0, 0, 0];
+        let mut d = [0; 6];
+        assert_eq!(w19a06_move_range(&mut s, &mut d), Err(0));
+
+        let mut s3 = [1, 2, 7];
+        let mut d3 = [9; 3];
+        assert!(w19a06_move_handle3(&mut d3, &mut s3).is_ok());
+        assert_eq!((d3, s3), ([1, 2, 7], [0, 0, 0]));
+        let mut bad = [1, 2, 0x8000_0001];
+        assert!(w19a06_move_handle3(&mut d3, &mut bad).is_err());
+        assert_eq!(d3, [0; 3]);
+
+        let mut s6 = [1, 2, 3, 4, 5, 6];
+        let mut d6 = [0; 6];
+        assert!(w19a06_move_handle6(&mut d6, &mut s6).is_ok());
+        assert_eq!(d6, [1, 2, 3, 4, 5, 6]);
+        assert_eq!(s6[..3], [0, 0, 0]);
+        let mut bad6 = [1, 2, 0x8000_0000, 0, 0, 0];
+        assert!(w19a06_move_handle6(&mut d6, &mut bad6).is_err());
+    }
+
+    #[test]
+    fn require_eight() {
+        assert_eq!(w19a06_require_eight(100, |_, _| 8), Ok(100));
+        assert!(w19a06_require_eight(100, |_, _| 0).is_err());
+        let mut calls = vec![];
+        let mut seq = vec![4u32, 4].into_iter();
+        let r = w19a06_require_eight(10, |o, l| {
+            calls.push((o, l));
+            seq.next().unwrap()
+        });
+        assert_eq!(r, Ok(10));
+        assert_eq!(calls, vec![(10, 8), (14, 4)]);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave19/agent07.rs
+// ===========================================================================
+// Wave 19 translation batch 07: scalar-deleting-destructor glue and tiny helpers.
+//
+// Unresolved callees are closures.  The `flag & 1` pattern is the MSVC
+// "scalar deleting destructor" delete bit.
+
+fn w19a07_delete_bit(flags: u8) -> bool {
+    flags & 1 != 0
+}
+
+/// `0x0054b320`: deleting-destructor wrapper with no member teardown; calls
+/// `free` only when bit 0 of `flags` is set.  Returns whether it freed.
+pub fn w19a07_dtor_free_only(flags: u8, mut free: impl FnMut()) -> bool {
+    let d = w19a07_delete_bit(flags);
+    if d {
+        free();
+    }
+    d
+}
+
+/// `0x0054b340`: runs one base teardown, then frees when bit 0 is set.
+pub fn w19a07_dtor_one_base_a(
+    flags: u8,
+    mut base_dtor: impl FnMut(),
+    mut free: impl FnMut(),
+) -> bool {
+    base_dtor();
+    w19a07_dtor_free_only(flags, &mut free)
+}
+
+/// `0x0054b370`: runs one base teardown, then frees when bit 0 is set.
+pub fn w19a07_dtor_one_base_b(
+    flags: u8,
+    mut base_dtor: impl FnMut(),
+    mut free: impl FnMut(),
+) -> bool {
+    base_dtor();
+    w19a07_dtor_free_only(flags, &mut free)
+}
+
+/// `0x0054b3a3`: runs one base teardown, then frees when bit 0 is set (the
+/// flag byte sits at `[ebp+8]` of the parent frame).
+pub fn w19a07_dtor_one_base_c(
+    flags: u8,
+    mut base_dtor: impl FnMut(),
+    mut free: impl FnMut(),
+) -> bool {
+    base_dtor();
+    w19a07_dtor_free_only(flags, &mut free)
+}
+
+/// `0x0054b420`: runs one base teardown, then frees when bit 0 is set.
+pub fn w19a07_dtor_one_base_d(
+    flags: u8,
+    mut base_dtor: impl FnMut(),
+    mut free: impl FnMut(),
+) -> bool {
+    base_dtor();
+    w19a07_dtor_free_only(flags, &mut free)
+}
+
+/// `0x0054a030`: member teardown.  Frees the buffer at `this+0x34` when
+/// non-null (`buffer`), then runs four member destructors in order.
+pub fn w19a07_member_teardown(
+    buffer: u32,
+    mut free_buffer: impl FnMut(u32),
+    steps: &mut [&mut dyn FnMut()],
+) {
+    if buffer != 0 {
+        free_buffer(buffer);
+    }
+    for s in steps.iter_mut() {
+        s();
+    }
+}
+
+/// `0x0054b3d0`: same member teardown as the routine at 0x0054a030, then the
+/// delete bit of `flags` frees the object.  Returns whether it freed.
+pub fn w19a07_member_teardown_deleting(
+    flags: u8,
+    buffer: u32,
+    free_buffer: impl FnMut(u32),
+    steps: &mut [&mut dyn FnMut()],
+    mut free: impl FnMut(),
+) -> bool {
+    w19a07_member_teardown(buffer, free_buffer, steps);
+    w19a07_dtor_free_only(flags, &mut free)
+}
+
+/// `0x0054a070`: length of a NUL-terminated string (bytes before the first
+/// NUL, or the whole slice when none); the original forwards it onward.
+pub fn w19a07_cstr_len(s: &[u8]) -> usize {
+    s.iter().position(|&b| b == 0).unwrap_or(s.len())
+}
+
+/// `0x0054b530`: forwarder that calls the shared worker with two leading
+/// zero arguments.
+pub fn w19a07_forward_zero_zero<R>(
+    a: u32,
+    b: u32,
+    worker: impl FnOnce(u32, u32, u32, u32) -> R,
+) -> R {
+    worker(0, 0, a, b)
+}
+
+#[cfg(test)]
+mod tests_wave19_agent07 {
+    use super::*;
+
+    #[test]
+    fn delete_bit_only() {
+        let mut n = 0;
+        assert!(w19a07_dtor_free_only(1, || n += 1));
+        assert!(!w19a07_dtor_free_only(2, || n += 1));
+        assert!(w19a07_dtor_free_only(3, || n += 1));
+        assert_eq!(n, 2);
+    }
+
+    #[test]
+    fn one_base_variants() {
+        let mut log = Vec::new();
+        let r = std::cell::RefCell::new(&mut log);
+        assert!(w19a07_dtor_one_base_a(
+            1,
+            || r.borrow_mut().push('b'),
+            || r.borrow_mut().push('f')
+        ));
+        assert!(!w19a07_dtor_one_base_b(
+            0,
+            || r.borrow_mut().push('b'),
+            || r.borrow_mut().push('f')
+        ));
+        assert!(w19a07_dtor_one_base_c(
+            1,
+            || r.borrow_mut().push('b'),
+            || r.borrow_mut().push('f')
+        ));
+        assert!(!w19a07_dtor_one_base_d(
+            0,
+            || r.borrow_mut().push('b'),
+            || r.borrow_mut().push('f')
+        ));
+        let _ = r.into_inner();
+        assert_eq!(log, vec!['b', 'f', 'b', 'b', 'f', 'b']);
+    }
+
+    #[test]
+    fn member_teardown_order() {
+        let log = std::cell::RefCell::new(Vec::new());
+        let mut a = || log.borrow_mut().push(1);
+        let mut b = || log.borrow_mut().push(2);
+        w19a07_member_teardown(0, |_| log.borrow_mut().push(99), &mut [&mut a, &mut b]);
+        assert_eq!(*log.borrow(), vec![1, 2]);
+        log.borrow_mut().clear();
+        let mut a = || log.borrow_mut().push(1);
+        let freed = w19a07_member_teardown_deleting(
+            1,
+            0x10,
+            |p| log.borrow_mut().push(p as i32),
+            &mut [&mut a],
+            || log.borrow_mut().push(-1),
+        );
+        assert!(freed);
+        assert_eq!(*log.borrow(), vec![0x10, 1, -1]);
+    }
+
+    #[test]
+    fn strlen_and_forward() {
+        assert_eq!(w19a07_cstr_len(b"abc\0def"), 3);
+        assert_eq!(w19a07_cstr_len(b"\0"), 0);
+        assert_eq!(w19a07_cstr_len(b"xy"), 2);
+        assert_eq!(
+            w19a07_forward_zero_zero(5, 6, |a, b, c, d| [a, b, c, d]),
+            [0, 0, 5, 6]
+        );
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave19/agent08.rs
+// ===========================================================================
+// Wave 19 agent 08: small string/vector/vtable helpers.
+
+/// Vftable address stored by `0x005504a0` (`*param_1 = &vftable`).
+pub const W19A08_VFTABLE_00F02C0C: u32 = 0x00f0_2c0c;
+
+/// `0x005504a0`: stores the fixed vftable pointer into the object's first dword.
+pub fn w19a08_set_vftable(obj: &mut u32) {
+    *obj = W19A08_VFTABLE_00F02C0C;
+}
+
+/// `0x00552560`: bounded string copy.  Returns the full source length; when
+/// `dst_cap != 0` copies `min(len, dst_cap - 1)` bytes into `dst`.
+pub fn w19a08_copy_bounded(dst: &mut [u8], src: &[u8], dst_cap: usize) -> usize {
+    let len = src.iter().position(|&b| b == 0).unwrap_or(src.len());
+    if dst_cap != 0 {
+        let n = len.min(dst_cap - 1).min(dst.len());
+        dst[..n].copy_from_slice(&src[..n]);
+    }
+    len
+}
+
+/// Shared growth rule of `0x00554110` and `0x00554210`: the capacity word's
+/// low 31 bits are the capacity; returns `Some(new_word)` when a reallocation
+/// to `max(cap + cap/2, wanted)` is needed (high bit preserved), else `None`.
+pub fn w19a08_grow_word(word: u32, wanted: u32) -> Option<u32> {
+    let cap = word & 0x7fff_ffff;
+    if cap >= wanted {
+        return None;
+    }
+    let mut new_cap = ((word >> 1) & 0x3fff_ffff).wrapping_add(cap);
+    if new_cap < wanted {
+        new_cap = wanted;
+    }
+    Some(((word ^ new_cap) & 0x7fff_ffff) ^ word)
+}
+
+/// `0x00554110`: reserve helper for the capacity word at offset 8.
+pub fn w19a08_reserve_a(word: u32, wanted: u32) -> Option<u32> {
+    w19a08_grow_word(word, wanted)
+}
+
+/// `0x00554210`: identical reserve helper (second instantiation).
+pub fn w19a08_reserve_b(word: u32, wanted: u32) -> Option<u32> {
+    w19a08_grow_word(word, wanted)
+}
+
+/// `0x005543c0`: truncates a byte string to `new_len`.  `Err(())` when
+/// `new_len > len` (the original calls the out-of-range handler; note the
+/// check is `len <= new_len`, so `new_len == len` is also handed to it only
+/// for the equal case below returning early).
+pub fn w19a08_truncate(buf: &mut [u8], len: &mut usize, new_len: usize) -> Result<(), ()> {
+    if *len <= new_len {
+        return Err(());
+    }
+    buf[new_len] = 0;
+    *len = new_len;
+    Ok(())
+}
+
+/// `0x00555140`: sets the thread-context vftable; returns true when the
+/// object must be freed (`flags & 1`).
+pub fn w19a08_ctx_dtor_a(obj: &mut u32, vftable: u32, flags: u8) -> bool {
+    *obj = vftable;
+    flags & 1 != 0
+}
+
+/// `0x00555170`: same as the other thread-context destructor.
+pub fn w19a08_ctx_dtor_b(obj: &mut u32, vftable: u32, flags: u8) -> bool {
+    *obj = vftable;
+    flags & 1 != 0
+}
+
+/// Result of `0x005555b0`.
+#[derive(Debug, PartialEq, Eq)]
+pub enum W19a08Push {
+    Pushed,
+    /// Reallocation required; new capacity word.
+    Grow(u32),
+}
+
+/// `0x005555b0`: pushes `value` (taken from `src_idx`, which may alias an
+/// element of the vector itself) onto a vector of u32 whose capacity word
+/// is `cap_word`.  The source slot is zeroed (move semantics).  When the
+/// vector is full, returns the grown capacity word instead.
+pub fn w19a08_push_move(
+    items: &mut Vec<u32>,
+    cap_word: u32,
+    src_idx: Option<usize>,
+    external: &mut u32,
+) -> W19a08Push {
+    let cap = cap_word & 0x7fff_ffff;
+    if items.len() as u32 == cap && cap < cap.wrapping_add(1) {
+        let extra = (cap_word >> 1) & 0x3fff_ffff;
+        let add = if cap < cap + extra { extra } else { 1 };
+        return W19a08Push::Grow(cap_word ^ (((cap + add) ^ cap_word) & 0x7fff_ffff));
+    }
+    let v = match src_idx {
+        Some(i) if i < items.len() => std::mem::take(&mut items[i]),
+        _ => std::mem::take(external),
+    };
+    items.push(v);
+    W19a08Push::Pushed
+}
+
+#[cfg(test)]
+mod tests_wave19_agent08 {
+    use super::*;
+
+    #[test]
+    fn vtable_and_dtors() {
+        let mut o = 0;
+        w19a08_set_vftable(&mut o);
+        assert_eq!(o, 0x00f0_2c0c);
+        assert!(w19a08_ctx_dtor_a(&mut o, 7, 1));
+        assert!(!w19a08_ctx_dtor_b(&mut o, 7, 2));
+    }
+
+    #[test]
+    fn bounded_copy() {
+        let mut d = [9u8; 8];
+        assert_eq!(w19a08_copy_bounded(&mut d, b"hello\0", 4), 5);
+        assert_eq!(&d[..3], b"hel");
+        assert_eq!(w19a08_copy_bounded(&mut d, b"hi\0", 0), 2);
+    }
+
+    #[test]
+    fn grow() {
+        assert_eq!(w19a08_reserve_a(0x8000_0010, 8), None);
+        assert_eq!(w19a08_reserve_b(0x10, 17), Some(0x18));
+        assert_eq!(w19a08_reserve_a(0x8000_0010, 100), Some(0x8000_0064));
+    }
+
+    #[test]
+    fn truncate() {
+        let mut b = *b"abcdef";
+        let mut l = 6;
+        assert!(w19a08_truncate(&mut b, &mut l, 6).is_err());
+        assert!(w19a08_truncate(&mut b, &mut l, 2).is_ok());
+        assert_eq!((l, b[2]), (2, 0));
+    }
+
+    #[test]
+    fn push_move() {
+        let mut v = vec![5, 6];
+        let mut e = 7;
+        assert_eq!(
+            w19a08_push_move(&mut v, 4, Some(0), &mut e),
+            W19a08Push::Pushed
+        );
+        assert_eq!(v, vec![0, 6, 5]);
+        assert_eq!(
+            w19a08_push_move(&mut v, 4, None, &mut e),
+            W19a08Push::Pushed
+        );
+        assert_eq!((v[3], e), (7, 0));
+        assert_eq!(
+            w19a08_push_move(&mut v, 4, None, &mut e),
+            W19a08Push::Grow(6)
+        );
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave19/agent09.rs
+// ===========================================================================
+// Wave 19 agent 09: MSVC `num_put` digit generators and small list walkers.
+
+/// Writes `value` in `radix_bits`-wide digits backwards from `end`
+/// (do-while: at least one digit); returns the new start index.
+fn w19a09_fill_backwards(buf: &mut [u8], end: usize, mut value: u64, shift: u32) -> usize {
+    let mask = (1u64 << shift) - 1;
+    let mut p = end;
+    loop {
+        p -= 1;
+        buf[p] = (value & mask) as u8 + b'0';
+        value >>= shift;
+        if value == 0 {
+            return p;
+        }
+    }
+}
+
+/// `0x00555950`: 64-bit value (lo at +0x18, hi at +0x1c) as binary digits
+/// written backwards from `end` (= +0x20 field); returns the start index.
+pub fn w19a09_put_binary64(buf: &mut [u8], end: usize, value: u64) -> usize {
+    w19a09_fill_backwards(buf, end, value, 1)
+}
+
+/// `0x005559d0`: 32-bit value (+0x14) as octal digits ending at `end`
+/// (+0x18 field); returns the start index.
+pub fn w19a09_put_octal32(buf: &mut [u8], end: usize, value: u32) -> usize {
+    w19a09_fill_backwards(buf, end, u64::from(value), 3)
+}
+
+/// `0x00555a40`: 64-bit value as octal digits ending at `end`; returns the
+/// start index.
+pub fn w19a09_put_octal64(buf: &mut [u8], end: usize, value: u64) -> usize {
+    w19a09_fill_backwards(buf, end, value, 3)
+}
+
+/// `0x00555ba0`: 32-bit value as hex digits ending at `end`; the digit set
+/// is lowercase when the format flag char is `'x'`, else uppercase.
+pub fn w19a09_put_hex32(buf: &mut [u8], end: usize, value: u32, spec: u8) -> usize {
+    let table: &[u8; 16] = if spec == b'x' {
+        b"0123456789abcdef"
+    } else {
+        b"0123456789ABCDEF"
+    };
+    let mut v = value;
+    let mut p = end;
+    loop {
+        p -= 1;
+        buf[p] = table[(v & 0xf) as usize];
+        v >>= 4;
+        if v == 0 {
+            return p;
+        }
+    }
+}
+
+/// `0x005562d0`: renders `value` as decimal right-aligned in a `width`-byte
+/// scratch buffer (two digits per step via the "00..99" pair table) and
+/// returns those `width` bytes (the original copies them to the output).
+/// Returns `None` when the digits do not fit.
+pub fn w19a09_put_decimal_u32(mut value: u32, width: usize) -> Option<Vec<u8>> {
+    const PAIRS: &[u8; 200] = b"0001020304050607080910111213141516171819\
+2021222324252627282930313233343536373839\
+4041424344454647484950515253545556575859\
+6061626364656667686970717273747576777879\
+8081828384858687888990919293949596979899";
+    let mut buf = vec![0u8; width];
+    let mut p = width;
+    while value > 99 {
+        let i = (value % 100) as usize * 2;
+        if p < 2 {
+            return None;
+        }
+        p -= 2;
+        buf[p] = PAIRS[i];
+        buf[p + 1] = PAIRS[i + 1];
+        value /= 100;
+    }
+    if value < 10 {
+        if p < 1 {
+            return None;
+        }
+        p -= 1;
+        buf[p] = value as u8 + b'0';
+    } else {
+        if p < 2 {
+            return None;
+        }
+        p -= 2;
+        buf[p] = PAIRS[value as usize * 2];
+        buf[p + 1] = PAIRS[value as usize * 2 + 1];
+    }
+    Some(buf)
+}
+
+/// `0x00556090`: clears the byte at `*dst`.
+pub fn w19a09_clear_byte(dst: &mut u8) {
+    *dst = 0;
+}
+
+/// `0x00579110`: walks the singly linked list whose head is the pointer at
+/// `owner + 0x20` (next link at node `+4`), invoking `visit` on each node.
+pub fn w19a09_visit_list(head: u32, mut next: impl FnMut(u32) -> u32, mut visit: impl FnMut(u32)) {
+    let mut node = head;
+    while node != 0 {
+        visit(node);
+        node = next(node);
+    }
+}
+
+/// `0x005790c0`: for each bucket `0..count` (count is the u16 at +0xe6 of
+/// the decoded global), walks the bucket list (next at `+4`) and, per
+/// bucket node, its child list (head at `+0x20`, next at `+4`), calling
+/// `visit` on every child.
+pub fn w19a09_visit_all(
+    count: u16,
+    bucket_head: impl Fn(usize) -> u32,
+    next: impl Fn(u32) -> u32,
+    child_head: impl Fn(u32) -> u32,
+    mut visit: impl FnMut(u32),
+) {
+    for i in 0..usize::from(count) {
+        let mut b = bucket_head(i);
+        while b != 0 {
+            let mut c = child_head(b);
+            while c != 0 {
+                visit(c);
+                c = next(c);
+            }
+            b = next(b);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests_wave19_agent09 {
+    use super::*;
+
+    #[test]
+    fn digits_bases() {
+        let mut b = [b'?'; 70];
+        let s = w19a09_put_binary64(&mut b, 70, 0);
+        assert_eq!(&b[s..70], b"0");
+        let s = w19a09_put_binary64(&mut b, 70, 0x1_0000_0005);
+        assert_eq!(&b[s..70], b"100000000000000000000000000000101");
+        let s = w19a09_put_binary64(&mut b, 70, u64::MAX);
+        assert_eq!(70 - s, 64);
+        let s = w19a09_put_octal32(&mut b, 70, 0o755);
+        assert_eq!(&b[s..70], b"755");
+        let s = w19a09_put_octal64(&mut b, 70, 1 << 33);
+        assert_eq!(&b[s..70], b"100000000000");
+    }
+
+    #[test]
+    fn hex_case() {
+        let mut b = [0u8; 16];
+        let s = w19a09_put_hex32(&mut b, 16, 0xBEEF, b'x');
+        assert_eq!(&b[s..16], b"beef");
+        let s = w19a09_put_hex32(&mut b, 16, 0xBEEF, b'X');
+        assert_eq!(&b[s..16], b"BEEF");
+        let s = w19a09_put_hex32(&mut b, 16, 0, b'x');
+        assert_eq!(&b[s..16], b"0");
+    }
+
+    #[test]
+    fn decimal() {
+        assert_eq!(w19a09_put_decimal_u32(0, 1).unwrap(), b"0");
+        assert_eq!(w19a09_put_decimal_u32(7, 3).unwrap(), b"\0\x007");
+        assert_eq!(w19a09_put_decimal_u32(42, 2).unwrap(), b"42");
+        assert_eq!(w19a09_put_decimal_u32(100, 3).unwrap(), b"100");
+        assert_eq!(w19a09_put_decimal_u32(u32::MAX, 10).unwrap(), b"4294967295");
+        assert!(w19a09_put_decimal_u32(1000, 3).is_none());
+        let mut c = 5u8;
+        w19a09_clear_byte(&mut c);
+        assert_eq!(c, 0);
+    }
+
+    #[test]
+    fn lists() {
+        // nodes 1->2->3, child lists: 1:{10->11}, 2:{}, 3:{12}
+        let next = |n: u32| match n {
+            1 => 2,
+            2 => 3,
+            10 => 11,
+            _ => 0,
+        };
+        let child = |n: u32| match n {
+            1 => 10,
+            3 => 12,
+            _ => 0,
+        };
+        let mut seen = vec![];
+        w19a09_visit_list(10, next, |n| seen.push(n));
+        assert_eq!(seen, [10, 11]);
+        let mut seen = vec![];
+        w19a09_visit_all(2, |i| [1, 3][i], next, child, |n| seen.push(n));
+        assert_eq!(seen, [10, 11, 12, 12]);
+    }
+}
