@@ -179,3 +179,11 @@ introsort helpers, line clipping (Cohen-Sutherland), LAN packet helpers,
 slot/pool index conversions.  No rules-core counterpart; the helpers stay
 auditable reference code.  Battle.net / Storm network-session rows were
 skipped.
+
+## Wave 25 (2026-11-11, triage queue, tiers 2-3, 59 agents)
+
++223 exact ledger functions (ledger 3964 -> 4187) in `client.rs` and
+`runtime.rs`: STL vector/string/hash/tree plans, fmt dynamic width/precision,
+Mersenne-Twister seeding, CRC32 (table passed in), deque slot math, scalar
+deleting-destructor wrappers.  No rules-core counterpart.  Battle.net rows
+(spi_lan, matchmaking, cloud/webui) were skipped.

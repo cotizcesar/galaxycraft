@@ -66000,3 +66000,1334 @@ mod tests_wave24_agent07 {
         assert_eq!(w24a07_skip_section(&d[..10], 0), None);
     }
 }
+
+// ===========================================================================
+// Merged from src/wave25/agent01.rs
+// ===========================================================================
+// Wave 25 translation batch 01: handle-lookup wrapper thunks.
+//
+// Each wrapper resolves a handle through a lookup callback that returns
+// `0` on success, then forwards to a worker only on success.
+
+/// `0x00984a80`: looks up `handle`; on success invokes the object's
+/// virtual slot at offset `0x14` with argument `1`.  Returns whether the
+/// call was made.
+pub fn w25a01_lookup_call_slot14(
+    handle: u32,
+    lookup: impl FnOnce(u32) -> Result<u32, i32>,
+    call_slot14: impl FnOnce(u32, u32),
+) -> bool {
+    match lookup(handle) {
+        Ok(obj) => {
+            call_slot14(obj, 1);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// `0x00984eb0`: if the lookup of `handle` returns 0, forwards the four
+/// remaining arguments to the worker.
+pub fn w25a01_lookup_forward4(
+    handle: u32,
+    args: [u32; 4],
+    lookup: impl FnOnce(u32) -> i32,
+    worker: impl FnOnce(u32, u32, u32, u32),
+) -> bool {
+    if lookup(handle) == 0 {
+        worker(args[0], args[1], args[2], args[3]);
+        true
+    } else {
+        false
+    }
+}
+
+/// `0x00985060`: if the lookup of `handle` returns 0, calls the worker
+/// with `arg`.
+pub fn w25a01_lookup_forward1(
+    handle: u32,
+    arg: u32,
+    lookup: impl FnOnce(u32) -> i32,
+    worker: impl FnOnce(u32),
+) -> bool {
+    if lookup(handle) == 0 {
+        worker(arg);
+        true
+    } else {
+        false
+    }
+}
+
+/// `0x00985090`: if the lookup of `handle` returns 0, calls the worker
+/// with `(arg, 1)`.
+pub fn w25a01_lookup_forward_true(
+    handle: u32,
+    arg: u32,
+    lookup: impl FnOnce(u32) -> i32,
+    worker: impl FnOnce(u32, u32),
+) -> bool {
+    if lookup(handle) == 0 {
+        worker(arg, 1);
+        true
+    } else {
+        false
+    }
+}
+
+/// `0x009850f0`: if the lookup of `handle` returns 0, calls the worker
+/// with `(arg, 0)`.
+pub fn w25a01_lookup_forward_false(
+    handle: u32,
+    arg: u32,
+    lookup: impl FnOnce(u32) -> i32,
+    worker: impl FnOnce(u32, u32),
+) -> bool {
+    if lookup(handle) == 0 {
+        worker(arg, 0);
+        true
+    } else {
+        false
+    }
+}
+
+#[cfg(test)]
+mod tests_wave25_agent01 {
+    use super::*;
+
+    #[test]
+    fn slot14_only_on_success() {
+        let mut got = None;
+        assert!(w25a01_lookup_call_slot14(
+            7,
+            |_| Ok(42),
+            |o, a| got = Some((o, a))
+        ));
+        assert_eq!(got, Some((42, 1)));
+        let mut called = false;
+        assert!(!w25a01_lookup_call_slot14(
+            7,
+            |_| Err(-1),
+            |_, _| called = true
+        ));
+        assert!(!called);
+    }
+
+    #[test]
+    fn forwards() {
+        let mut v = vec![];
+        assert!(w25a01_lookup_forward4(
+            1,
+            [1, 2, 3, 4],
+            |_| 0,
+            |a, b, c, d| v.push(a + b + c + d)
+        ));
+        assert!(!w25a01_lookup_forward4(
+            1,
+            [1, 2, 3, 4],
+            |_| 5,
+            |_, _, _, _| v.push(0)
+        ));
+        assert!(w25a01_lookup_forward1(1, 9, |_| 0, |a| v.push(a)));
+        assert!(w25a01_lookup_forward_true(
+            1,
+            3,
+            |_| 0,
+            |a, b| v.push(a * 10 + b)
+        ));
+        assert!(w25a01_lookup_forward_false(
+            1,
+            3,
+            |_| 0,
+            |a, b| v.push(a * 10 + b)
+        ));
+        assert!(!w25a01_lookup_forward_false(1, 3, |_| 1, |_, _| v.push(99)));
+        assert_eq!(v, vec![10, 9, 31, 30]);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave25/agent03.rs
+// ===========================================================================
+// Wave 25 translation batch 03.
+//
+// Hash-table helpers of the retail unordered containers (murmur3 finalizer
+// bucket selection).  Bucket model: `buckets[i]` is the chain of entries.
+
+/// Bucket hash shared by both routines (inlined in `0x007fe730` and
+/// `0x00808980`): murmur3 `fmix32` with a final mask by `bucket_count - 1`.
+pub fn w25a03_hash_mix(key: u32) -> u32 {
+    let mut h = (key >> 16 ^ key).wrapping_mul(0x85eb_ca6b);
+    h = (h >> 13 ^ h).wrapping_mul(0xc2b2_ae35);
+    h >> 16 ^ h
+}
+
+/// Bucket index for `key`; `None` when the table has no buckets (retail
+/// calls a non-returning allocator/throw helper in that case).
+pub fn w25a03_bucket_index(key: u32, bucket_count: usize) -> Option<usize> {
+    if bucket_count == 0 {
+        return None;
+    }
+    Some((w25a03_hash_mix(key) as usize) & (bucket_count - 1))
+}
+
+/// `0x007fe730`: for every key of the source set, finds its entry in the
+/// destination table and overwrites the entry value with `value`.  Returns
+/// `Err(key)` for the first key not present (retail hits a non-returning
+/// helper there) or `Err(u32::MAX)` style never; empty table yields `Err`.
+pub fn w25a03_set_all(
+    buckets: &mut [Vec<(u32, u32)>],
+    source_keys: &[u32],
+    value: u32,
+) -> Result<(), u32> {
+    for &k in source_keys {
+        let idx = w25a03_bucket_index(k, buckets.len()).ok_or(k)?;
+        match buckets[idx].iter_mut().find(|e| e.0 == k) {
+            Some(e) => e.1 = value,
+            None => return Err(k),
+        }
+    }
+    Ok(())
+}
+
+/// `0x00808980`: checks every key of a range (elements are 32 bytes wide,
+/// key first) against the table; `Err(key)` for the first missing one.
+pub fn w25a03_check_all(buckets: &[Vec<u32>], keys: &[u32]) -> Result<(), u32> {
+    for &k in keys {
+        let idx = w25a03_bucket_index(k, buckets.len()).ok_or(k)?;
+        if !buckets[idx].contains(&k) {
+            return Err(k);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests_wave25_agent03 {
+    use super::*;
+
+    #[test]
+    fn hash_and_index() {
+        assert_eq!(w25a03_hash_mix(0), 0);
+        assert_eq!(w25a03_bucket_index(5, 0), None);
+        let i = w25a03_bucket_index(12345, 8).unwrap();
+        assert!(i < 8);
+    }
+
+    #[test]
+    fn set_all_updates_and_fails() {
+        let mut b: Vec<Vec<(u32, u32)>> = vec![Vec::new(); 8];
+        for k in [1u32, 2, 3] {
+            let i = w25a03_bucket_index(k, 8).unwrap();
+            b[i].push((k, 0));
+        }
+        assert_eq!(w25a03_set_all(&mut b, &[1, 3], 9), Ok(()));
+        let i = w25a03_bucket_index(3, 8).unwrap();
+        assert_eq!(b[i][0].1, 9);
+        assert_eq!(w25a03_set_all(&mut b, &[1, 77], 1), Err(77));
+        assert_eq!(w25a03_set_all(&mut [], &[1], 1), Err(1));
+    }
+
+    #[test]
+    fn check_all_reports_missing() {
+        let mut b: Vec<Vec<u32>> = vec![Vec::new(); 4];
+        let i = w25a03_bucket_index(10, 4).unwrap();
+        b[i].push(10);
+        assert_eq!(w25a03_check_all(&b, &[10]), Ok(()));
+        assert_eq!(w25a03_check_all(&b, &[10, 11]), Err(11));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave25/agent04.rs
+// ===========================================================================
+// Wave 25 translation batch 04.
+//
+// Most of this queue is MSVC exception funclets and STL tree/hash walks
+// that never return; only the pure arithmetic of three routines is kept.
+
+/// Mixer used by the engine's integer hash (`std::hash<uint>` finalizer):
+/// two xor-shift/multiply rounds and a final xor-shift.
+pub fn w25a04_mix_hash(key: u32) -> u32 {
+    let a = (key >> 16 ^ key).wrapping_mul(0x85eb_ca6b);
+    let b = (a >> 13 ^ a).wrapping_mul(0xc2b2_ae35);
+    b >> 16 ^ b
+}
+
+/// Bucket slot for `key` in a table with `bucket_count` buckets (power of
+/// two).  `None` when the table has no bucket storage (the retail code
+/// aborts there).
+pub fn w25a04_bucket_index(key: u32, bucket_count: u32) -> Option<u32> {
+    if bucket_count == 0 {
+        return None;
+    }
+    Some(w25a04_mix_hash(key) & bucket_count.wrapping_sub(1))
+}
+
+/// Shared body of two id-registration routines: post-increments the global
+/// counter `*counter`, hashes the *new* value and requires it to be present
+/// in `contains`; on success the three callbacks run in order and the old
+/// counter value is returned.  `None` mirrors the abort path (the counter is
+/// still advanced).
+fn w25a04_register_id(
+    counter: &mut u32,
+    bucket_count: u32,
+    contains: impl Fn(u32, u32) -> bool,
+    mut steps: impl FnMut(),
+) -> Option<u32> {
+    let old = *counter;
+    *counter = old.wrapping_add(1);
+    let slot = w25a04_bucket_index(*counter, bucket_count)?;
+    if !contains(slot, *counter) {
+        return None;
+    }
+    steps();
+    Some(old)
+}
+
+/// `0x0081ffb0`: allocates the next id from the global counter and checks
+/// its presence in the hash table at object offsets `+0x94` (bucket count)
+/// / `+0x98` (buckets); runs the three follow-up steps and returns the id.
+pub fn w25a04_alloc_id_table_94(
+    counter: &mut u32,
+    bucket_count: u32,
+    contains: impl Fn(u32, u32) -> bool,
+    steps: impl FnMut(),
+) -> Option<u32> {
+    w25a04_register_id(counter, bucket_count, contains, steps)
+}
+
+/// `0x008200f0`: same as the routine at `0x0081ffb0` but for the table at
+/// object offsets `+0xa4` (bucket count) / `+0xa8` (buckets).
+pub fn w25a04_alloc_id_table_a4(
+    counter: &mut u32,
+    bucket_count: u32,
+    contains: impl Fn(u32, u32) -> bool,
+    steps: impl FnMut(),
+) -> Option<u32> {
+    w25a04_register_id(counter, bucket_count, contains, steps)
+}
+
+/// `0x00844060`: element index of `ptr` in a vector with base `base` and
+/// element stride `0x38`, plus the capacity-growth update.  `meta` is the
+/// packed size/capacity word (`bit31` flag, low 31 bits capacity).  Returns
+/// `(index, new_meta)`; `new_meta` only differs when `len == capacity`,
+/// growing by `max(1, capacity / 2)` while preserving the flag bit.
+pub fn w25a04_vec38_index_grow(base: u32, ptr: u32, len: u32, meta: u32) -> (u32, u32) {
+    let index = ptr.wrapping_sub(base) / 0x38;
+    let cap = meta & 0x7fff_ffff;
+    if len != cap || cap.wrapping_add(1) <= cap {
+        return (index, meta);
+    }
+    let half = meta >> 1 & 0x3fff_ffff;
+    let add = if half > 0 { half } else { 1 };
+    let new_meta = (add.wrapping_add(cap) ^ meta) & 0x7fff_ffff ^ meta;
+    (index, new_meta)
+}
+
+#[cfg(test)]
+mod tests_wave25_agent04 {
+    use super::*;
+
+    #[test]
+    fn hash_and_bucket() {
+        assert_eq!(w25a04_mix_hash(0), 0);
+        assert_eq!(w25a04_bucket_index(5, 0), None);
+        assert!(w25a04_bucket_index(5, 16).unwrap() < 16);
+    }
+
+    #[test]
+    fn alloc_ids() {
+        let mut c = 7;
+        let mut n = 0;
+        assert_eq!(
+            w25a04_alloc_id_table_94(&mut c, 8, |_, k| k == 8, || n += 1),
+            Some(7)
+        );
+        assert_eq!((c, n), (8, 1));
+        let mut c = 1;
+        assert_eq!(
+            w25a04_alloc_id_table_a4(&mut c, 8, |_, _| false, || {}),
+            None
+        );
+        assert_eq!(c, 2);
+        assert_eq!(
+            w25a04_alloc_id_table_a4(&mut c, 0, |_, _| true, || {}),
+            None
+        );
+    }
+
+    #[test]
+    fn vec_grow() {
+        assert_eq!(w25a04_vec38_index_grow(0x1000, 0x1000 + 0x70, 2, 4), (2, 4));
+        assert_eq!(w25a04_vec38_index_grow(0, 0x38, 4, 4), (1, 6));
+        assert_eq!(w25a04_vec38_index_grow(0, 0, 0, 0), (0, 1));
+        assert_eq!(w25a04_vec38_index_grow(0, 0, 4, 0x8000_0004).1, 0x8000_0006);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave25/agent05.rs
+// ===========================================================================
+// Wave 25 agent 05: small client-side helpers (deque pop, hash bucket, wrappers).
+
+/// `0x00878280`: calls the shared helper with the global at the first
+/// slot and flag `1`.
+pub fn w25a05_call_with_flag_a(global: u32, helper: &mut dyn FnMut(u32, u32)) {
+    helper(global, 1);
+}
+
+/// `0x008782d0`: same as the sibling wrapper but with the second global.
+pub fn w25a05_call_with_flag_b(global: u32, helper: &mut dyn FnMut(u32, u32)) {
+    helper(global, 1);
+}
+
+/// `0x00887f10`: returns `Some(2)` when the probe is non-zero and the
+/// global is not `-1`; otherwise the original tail-calls a non-returning
+/// handler (modelled as `None`).
+pub fn w25a05_state_or_fail(probe: i32, global: i32) -> Option<u32> {
+    if probe != 0 && global != -1 {
+        Some(2)
+    } else {
+        None
+    }
+}
+
+/// `0x00864630`: stores `value` into `*out` when the two iterators are
+/// equal; otherwise the original raises an error (modelled as `false`).
+pub fn w25a05_store_if_equal(out: &mut u32, a: i32, b: i32, value: u32) -> bool {
+    if a != b {
+        return false;
+    }
+    *out = value;
+    true
+}
+
+/// Block/slot pair of a deque element (16 elements per block).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct W25a05DequePos {
+    pub block: usize,
+    pub slot: usize,
+}
+
+/// `0x0087c7d0`: pops the front of a block deque (16 entries per block,
+/// block map length power of two).  Returns the position read, and
+/// advances `start` while decrementing `size`.
+pub fn w25a05_deque_pop_front(start: &mut u32, size: &mut u32, map_len: u32) -> W25a05DequePos {
+    let block = ((*start >> 4) & map_len.wrapping_sub(1)) as usize;
+    let slot = (*start & 0xf) as usize;
+    *start = start.wrapping_add(1);
+    *size = size.wrapping_sub(1);
+    W25a05DequePos { block, slot }
+}
+
+/// `0x0087be60`: bucket index of a 16-bit key in the hash table
+/// (`buckets` is a power of two).
+pub fn w25a05_hash_bucket(key: u32, buckets: u32) -> u32 {
+    let k = key & 0xffff;
+    let a = k.wrapping_mul(0x85ebca6b);
+    let b = (a >> 13 ^ a).wrapping_mul(0xc2b2ae35);
+    (b >> 16 ^ b) & buckets.wrapping_sub(1)
+}
+
+#[cfg(test)]
+mod tests_wave25_agent05 {
+    use super::*;
+
+    #[test]
+    fn wrappers() {
+        let mut got = vec![];
+        w25a05_call_with_flag_a(7, &mut |a, b| got.push((a, b)));
+        w25a05_call_with_flag_b(9, &mut |a, b| got.push((a, b)));
+        assert_eq!(got, vec![(7, 1), (9, 1)]);
+    }
+
+    #[test]
+    fn state_and_store() {
+        assert_eq!(w25a05_state_or_fail(1, 3), Some(2));
+        assert_eq!(w25a05_state_or_fail(1, -1), None);
+        assert_eq!(w25a05_state_or_fail(0, 3), None);
+        let mut o = 0;
+        assert!(!w25a05_store_if_equal(&mut o, 1, 2, 5));
+        assert!(w25a05_store_if_equal(&mut o, 2, 2, 5));
+        assert_eq!(o, 5);
+    }
+
+    #[test]
+    fn deque() {
+        let mut s = 0x1f;
+        let mut n = 3;
+        let p = w25a05_deque_pop_front(&mut s, &mut n, 4);
+        assert_eq!(p, W25a05DequePos { block: 1, slot: 15 });
+        assert_eq!((s, n), (0x20, 2));
+    }
+
+    #[test]
+    fn hash() {
+        assert_eq!(w25a05_hash_bucket(0, 8), 0);
+        assert!(w25a05_hash_bucket(0x1234, 16) < 16);
+        assert_eq!(
+            w25a05_hash_bucket(0x11234, 16),
+            w25a05_hash_bucket(0x1234, 16)
+        );
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave25/agent06.rs
+// ===========================================================================
+// Wave 25 agent 06: selection-list control helpers (menu widget).
+
+/// Control fields touched by the list helpers: `cur` is the dword at `+0xb4`
+/// (pending selection, `0xffff_ffff` none, `0xffff_fffe` suspended), `tail`
+/// the dword at `+0xc0`.  `list_ready` is `*(list + 0x30) >= 0`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct W25a06Ctl {
+    pub cur: u32,
+    pub tail: u32,
+    pub list_ready: bool,
+}
+
+fn w25a06_sel_byte(v: u32) -> u8 {
+    if v == 0xffff_ffff {
+        0xff
+    } else {
+        (v & 0xff) as u8
+    }
+}
+
+/// `0x00897530`: runs the list command (`first`, `-1` aborts with -1); if the
+/// list then holds exactly one entry it selects entry 0 (or stores 0 in `cur`
+/// when the list is not ready).  Returns `count - 1`.
+pub fn w25a06_select_single(
+    ctl: &mut W25a06Ctl,
+    first: i8,
+    mut count: impl FnMut() -> u8,
+    mut set_sel: impl FnMut(u8),
+) -> i32 {
+    if first == -1 {
+        return -1;
+    }
+    if count() == 1 {
+        if ctl.list_ready {
+            set_sel(0);
+            return i32::from(count()) - 1;
+        }
+        ctl.cur = 0;
+    }
+    i32::from(count()) - 1
+}
+
+/// `0x008975f0`: resets the list, clears the bucket table (`table` is the
+/// `+0xbc` array; a non-zero entry reaches a non-returning call, reported as
+/// `Err(index)`), zeroes `tail`, then clears the selection.
+pub fn w25a06_reset_list(
+    ctl: &mut W25a06Ctl,
+    table: &mut [u32],
+    mut reset: impl FnMut(),
+    mut set_sel: impl FnMut(u8),
+) -> Result<(), usize> {
+    reset();
+    for (i, e) in table.iter_mut().enumerate() {
+        if *e != 0 {
+            return Err(i);
+        }
+        *e = 0;
+    }
+    ctl.tail = 0;
+    if !ctl.list_ready {
+        ctl.cur = 0xffff_ffff;
+    } else {
+        set_sel(0xff);
+    }
+    Ok(())
+}
+
+/// `0x008976a0`: clears the selection (`0xff`) or marks `cur` as none.
+pub fn w25a06_clear_selection(ctl: &mut W25a06Ctl, mut set_sel: impl FnMut(u8)) {
+    if ctl.list_ready {
+        set_sel(0xff);
+    } else {
+        ctl.cur = 0xffff_ffff;
+    }
+}
+
+/// `0x008976f0`: sets the list flag to 1, then (unless already suspended)
+/// applies the pending selection and marks `cur` suspended (`0xffff_fffe`).
+pub fn w25a06_suspend_selection(
+    ctl: &mut W25a06Ctl,
+    mut set_flag: impl FnMut(u8),
+    mut set_sel: impl FnMut(u8),
+) {
+    set_flag(1);
+    if ctl.cur != 0xffff_fffe {
+        if ctl.list_ready {
+            set_sel(w25a06_sel_byte(ctl.cur));
+        }
+        ctl.cur = 0xffff_fffe;
+    }
+}
+
+/// `0x00897c90`: selects `index` now, or stores it in `cur` if not ready.
+pub fn w25a06_select_index(ctl: &mut W25a06Ctl, index: u32, mut set_sel: impl FnMut(u8)) {
+    if ctl.list_ready {
+        set_sel(w25a06_sel_byte(index));
+    } else {
+        ctl.cur = index;
+    }
+}
+
+/// Hash used by the bucket lookup in `0x008979f0` (murmur3 finaliser).
+pub fn w25a06_hash(key: u32) -> u32 {
+    let mut h = (key >> 16 ^ key).wrapping_mul(0x85eb_ca6b);
+    h = (h >> 13 ^ h).wrapping_mul(0xc2b2_ae35);
+    h >> 16 ^ h
+}
+
+/// Bucket index for a table of `buckets` (power of two) entries.
+pub fn w25a06_bucket(key: u32, buckets: u32) -> u32 {
+    w25a06_hash(key) & buckets.wrapping_sub(1)
+}
+
+/// `0x008979f0`: finds the first entry whose looked-up record (`+0x10`,
+/// `+0x14`) equals `(a, b)` and selects it.  `lookup(key)` yields that pair
+/// (retail dereferences a null record on a miss; here a miss is a non-match).
+/// Returns true when selected (index `0xffff_ffff` never occurs in the loop).
+pub fn w25a06_select_by_pair(
+    ctl: &mut W25a06Ctl,
+    a: i32,
+    b: i32,
+    mut count: impl FnMut() -> u8,
+    mut key_at: impl FnMut(u8) -> u32,
+    mut lookup: impl FnMut(u32) -> Option<(i32, i32)>,
+    mut set_sel: impl FnMut(u8),
+) -> bool {
+    let mut i: u32 = 0;
+    if count() == 0 {
+        return false;
+    }
+    loop {
+        let key = key_at((i & 0xff) as u8);
+        if lookup(key) == Some((a, b)) {
+            if i == 0xffff_ffff {
+                return false;
+            }
+            if ctl.list_ready {
+                set_sel(w25a06_sel_byte(i));
+            } else {
+                ctl.cur = i;
+            }
+            return true;
+        }
+        i += 1;
+        if (i as i32) >= i32::from(count()) {
+            return false;
+        }
+    }
+}
+
+/// Shared body of the four wrappers: saves the dword at `+0xcc` of the
+/// global context, runs `inner`, calls the apply routine with
+/// `kind == 10` (the word at `+0xe`), and restores the dword.
+pub fn w25a06_with_saved_cc(
+    cc: &mut u32,
+    kind: u16,
+    inner: impl FnOnce(),
+    apply: impl FnOnce(bool),
+) {
+    let saved = *cc;
+    inner();
+    apply(kind == 10);
+    *cc = saved;
+}
+
+/// `0x008ae590`: wrapper over callee A.
+pub fn w25a06_wrap_ae590(cc: &mut u32, kind: u16, inner: impl FnOnce(), apply: impl FnOnce(bool)) {
+    w25a06_with_saved_cc(cc, kind, inner, apply)
+}
+
+/// `0x008ae5d0`: wrapper over callee B.
+pub fn w25a06_wrap_ae5d0(cc: &mut u32, kind: u16, inner: impl FnOnce(), apply: impl FnOnce(bool)) {
+    w25a06_with_saved_cc(cc, kind, inner, apply)
+}
+
+/// `0x008ae610`: wrapper over callee C.
+pub fn w25a06_wrap_ae610(cc: &mut u32, kind: u16, inner: impl FnOnce(), apply: impl FnOnce(bool)) {
+    w25a06_with_saved_cc(cc, kind, inner, apply)
+}
+
+/// `0x008b0540`: wrapper over callee D.
+pub fn w25a06_wrap_b0540(cc: &mut u32, kind: u16, inner: impl FnOnce(), apply: impl FnOnce(bool)) {
+    w25a06_with_saved_cc(cc, kind, inner, apply)
+}
+
+#[cfg(test)]
+mod tests_wave25_agent06 {
+    use super::*;
+
+    #[test]
+    fn select_single() {
+        let mut c = W25a06Ctl {
+            list_ready: true,
+            ..Default::default()
+        };
+        assert_eq!(w25a06_select_single(&mut c, -1, || 3, |_| {}), -1);
+        let mut s = vec![];
+        assert_eq!(w25a06_select_single(&mut c, 0, || 1, |v| s.push(v)), 0);
+        assert_eq!(s, vec![0]);
+        c.list_ready = false;
+        c.cur = 9;
+        assert_eq!(w25a06_select_single(&mut c, 0, || 1, |_| {}), 0);
+        assert_eq!(c.cur, 0);
+        assert_eq!(w25a06_select_single(&mut c, 0, || 4, |_| {}), 3);
+    }
+
+    #[test]
+    fn reset_and_clear() {
+        let mut c = W25a06Ctl {
+            cur: 5,
+            tail: 7,
+            list_ready: false,
+        };
+        let mut t = [0u32; 3];
+        assert_eq!(w25a06_reset_list(&mut c, &mut t, || {}, |_| {}), Ok(()));
+        assert_eq!((c.tail, c.cur), (0, 0xffff_ffff));
+        let mut t = [0, 4];
+        assert_eq!(w25a06_reset_list(&mut c, &mut t, || {}, |_| {}), Err(1));
+        let mut s = vec![];
+        c.list_ready = true;
+        w25a06_clear_selection(&mut c, |v| s.push(v));
+        assert_eq!(s, vec![0xff]);
+        c.list_ready = false;
+        w25a06_clear_selection(&mut c, |_| {});
+        assert_eq!(c.cur, 0xffff_ffff);
+    }
+
+    #[test]
+    fn suspend_and_index() {
+        let mut c = W25a06Ctl {
+            cur: 0x1_05,
+            tail: 0,
+            list_ready: true,
+        };
+        let (mut f, mut s) = (vec![], vec![]);
+        w25a06_suspend_selection(&mut c, |v| f.push(v), |v| s.push(v));
+        assert_eq!((f.clone(), s.clone()), (vec![1], vec![5]));
+        assert_eq!(c.cur, 0xffff_fffe);
+        w25a06_suspend_selection(&mut c, |v| f.push(v), |v| s.push(v));
+        assert_eq!(s.len(), 1);
+        w25a06_select_index(&mut c, 0xffff_ffff, |v| s.push(v));
+        assert_eq!(s[1], 0xff);
+        c.list_ready = false;
+        w25a06_select_index(&mut c, 3, |_| {});
+        assert_eq!(c.cur, 3);
+    }
+
+    #[test]
+    fn hash_and_pair() {
+        assert_eq!(w25a06_hash(0), 0);
+        assert!(w25a06_bucket(12345, 16) < 16);
+        let mut c = W25a06Ctl {
+            cur: 0,
+            tail: 0,
+            list_ready: false,
+        };
+        let r = w25a06_select_by_pair(
+            &mut c,
+            1,
+            2,
+            || 3,
+            |i| u32::from(i),
+            |k| Some((k as i32, 2)),
+            |_| {},
+        );
+        assert!(r);
+        assert_eq!(c.cur, 1);
+        let r = w25a06_select_by_pair(&mut c, 9, 9, || 3, |i| u32::from(i), |_| None, |_| {});
+        assert!(!r);
+    }
+
+    #[test]
+    fn wrappers() {
+        let mut cc = 5u32;
+        let mut got = None;
+        w25a06_wrap_ae590(&mut cc, 10, || {}, |b| got = Some(b));
+        assert_eq!(got, Some(true));
+        w25a06_wrap_ae5d0(&mut cc, 3, || {}, |b| got = Some(b));
+        assert_eq!(got, Some(false));
+        w25a06_wrap_ae610(&mut cc, 3, || {}, |_| {});
+        w25a06_wrap_b0540(&mut cc, 3, || {}, |_| {});
+        assert_eq!(cc, 5);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave25/agent07.rs
+// ===========================================================================
+// Wave 25 translation batch 07.
+
+/// `0x008c6700`: rectangle built from a `(x, y, w, h)` i16 rect and an
+/// `(a, b)` i16 pair (after the opaque callee adjusted them): returns
+/// `[x - px + a, y - py + b, w + a + 1, h + b + 1]`.
+pub fn w25a07_rect_offset(px: i32, py: i32, rect: [i16; 4], pair: [i16; 2]) -> [i32; 4] {
+    [
+        (rect[0] as i32 - px) + pair[0] as i32,
+        (rect[1] as i32 - py) + pair[1] as i32,
+        rect[2] as i32 + pair[0] as i32 + 1,
+        rect[3] as i32 + pair[1] as i32 + 1,
+    ]
+}
+
+/// Shared gate of `0x008c6a90` and `0x008c6b20`: when the flag at `+0x1e0`
+/// is zero the local id must equal the current id; then the action is
+/// allowed only if neither blocker is set and the enabling check holds.
+pub fn w25a07_gate(
+    flag_1e0: bool,
+    local_id: i32,
+    current_id: i32,
+    blocked: bool,
+    enabled: bool,
+    extra_ok: bool,
+) -> bool {
+    if !flag_1e0 && local_id != current_id {
+        return false;
+    }
+    !blocked && enabled && extra_ok
+}
+
+/// `0x008c6a90`: gated dispatch; returns the result of `act` when the gate
+/// (checker `FUN_008c6bb0` as `extra_ok`) passes.
+pub fn w25a07_gated_a<T>(
+    flag_1e0: bool,
+    local_id: i32,
+    current_id: i32,
+    blocked: bool,
+    enabled: bool,
+    extra_ok: bool,
+    act: impl FnOnce() -> T,
+) -> Option<T> {
+    w25a07_gate(flag_1e0, local_id, current_id, blocked, enabled, extra_ok).then(act)
+}
+
+/// `0x008c6b20`: same gate as `0x008c6a90` with the other checker/action.
+pub fn w25a07_gated_b<T>(
+    flag_1e0: bool,
+    local_id: i32,
+    current_id: i32,
+    blocked: bool,
+    enabled: bool,
+    extra_ok: bool,
+    act: impl FnOnce() -> T,
+) -> Option<T> {
+    w25a07_gate(flag_1e0, local_id, current_id, blocked, enabled, extra_ok).then(act)
+}
+
+/// `0x009010f0`: builds the `(param_4, param_5, flags)` request block;
+/// returns the packed flags dword.
+pub fn w25a07_request_flags(param_4: u32, param_5: i32) -> u32 {
+    let mut lo: u16 = if param_5 >= 0 { 0x196 } else { 0x116 };
+    let mut packed = (lo as u32) << 16;
+    if param_5 == 0 {
+        lo |= 0x40;
+        packed = (((lo & !0x40) as u32) << 16) | 0x400000;
+    }
+    if param_4 & 0x8000_0000 == 0 && param_5 == 0 {
+        packed = ((lo as u32) << 16) | 0x200000;
+    }
+    packed
+}
+
+/// `0x0090cdd0`: returns true when `id` is below `floor`; otherwise, if the
+/// record id matches and the lookup succeeds, runs `apply` and returns its
+/// result.
+pub fn w25a07_check_id(
+    floor: u32,
+    id: u32,
+    rec_id: u32,
+    lookup: impl FnOnce() -> bool,
+    apply: impl FnOnce() -> bool,
+) -> bool {
+    if id < floor {
+        return true;
+    }
+    if rec_id == id && lookup() {
+        return apply();
+    }
+    false
+}
+
+#[cfg(test)]
+mod tests_wave25_agent07 {
+    use super::*;
+    #[test]
+    fn rect() {
+        assert_eq!(
+            w25a07_rect_offset(10, 20, [15, 30, 4, 5], [1, 2]),
+            [6, 12, 6, 8]
+        );
+    }
+    #[test]
+    fn gates() {
+        assert!(w25a07_gate(true, 1, 2, false, true, true));
+        assert!(!w25a07_gate(false, 1, 2, false, true, true));
+        assert!(!w25a07_gate(true, 1, 1, true, true, true));
+        assert_eq!(
+            w25a07_gated_a(false, 3, 3, false, true, true, || 7),
+            Some(7)
+        );
+        assert_eq!(w25a07_gated_b(false, 3, 3, false, false, true, || 7), None);
+    }
+    #[test]
+    fn flags() {
+        assert_eq!(w25a07_request_flags(0, -1), 0x116 << 16);
+        assert_eq!(w25a07_request_flags(0, 1), 0x196 << 16);
+        assert_eq!(
+            w25a07_request_flags(0, 0),
+            ((0x196 | 0x40) << 16) | 0x200000
+        );
+        assert_eq!(
+            w25a07_request_flags(0x8000_0000, 0),
+            (0x196 << 16) | 0x400000
+        );
+    }
+    #[test]
+    fn check_id() {
+        assert!(w25a07_check_id(5, 4, 0, || false, || false));
+        assert!(w25a07_check_id(5, 5, 5, || true, || true));
+        assert!(!w25a07_check_id(5, 5, 6, || true, || true));
+        assert!(!w25a07_check_id(5, 5, 5, || false, || true));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave25/agent08.rs
+// ===========================================================================
+// Wave 25 translation batch 08: C-runtime style helpers (string copy,
+// CRC32, FILETIME / performance-counter time conversion).
+
+/// Bounded C-string copy shared by the two copies below: copies at most
+/// `cap - 1` bytes of the NUL-terminated `src`; `cap == 0` yields no copy.
+fn w25a08_bounded_copy(src: &[u8], cap: usize) -> Option<Vec<u8>> {
+    if cap == 0 {
+        return None;
+    }
+    let len = src.iter().position(|&b| b == 0).unwrap_or(src.len());
+    Some(src[..len.min(cap - 1)].to_vec())
+}
+
+/// `0x0092a130`: copies the name string stored at offset `0x14` of a looked
+/// up record into a caller buffer of `cap` bytes (truncating to `cap - 1`).
+/// `record_name` is `None` when the lookup fails (returns `None`).  The
+/// caller's buffer is cleared first; the refcount release is not modelled.
+pub fn w25a08_copy_record_name(record_name: Option<&[u8]>, cap: usize) -> Option<Vec<u8>> {
+    let name = record_name?;
+    Some(w25a08_bounded_copy(name, cap).unwrap_or_default())
+}
+
+/// `0x0092a380`: copies the string at offset `0x10` of a record into a
+/// buffer of `cap` bytes, truncated to `cap - 1`.  Returns `Some(bytes)` on
+/// success (success even when `cap == 0`, where nothing is copied).
+pub fn w25a08_copy_record_string(record_string: &[u8], cap: usize) -> Option<Vec<u8>> {
+    Some(w25a08_bounded_copy(record_string, cap).unwrap_or_default())
+}
+
+/// `0x0092feb0`: table-driven CRC32 step.  `flags & 1` seeds with
+/// `0xffffffff`, `flags & 2` processes `data`, `flags & 4` inverts the
+/// result.  `state` is the optional in/out running value.  The table is the
+/// retail CRC table (`DAT_00f37a88`) supplied by the caller.
+pub fn w25a08_crc32(data: &[u8], state: Option<&mut u32>, flags: u32, table: &[u32; 256]) -> u32 {
+    let mut crc = state.as_ref().map_or(0, |s| **s);
+    if flags & 1 != 0 {
+        crc = 0xffff_ffff;
+    }
+    if flags & 2 != 0 {
+        for &b in data {
+            crc = (crc >> 8) ^ table[((b as u32 ^ crc) & 0xff) as usize];
+        }
+    }
+    let out = if flags & 4 != 0 { !crc } else { crc };
+    if let Some(s) = state {
+        *s = out;
+    }
+    out
+}
+
+/// `0x0093f610`: converts a Windows FILETIME (100 ns ticks since 1601, split
+/// lo/hi) to Unix seconds: subtract `0x019db1ded53e8000`, divide by
+/// 10,000,000 (unsigned, wrapping).  `None` input yields `None` (the retail
+/// code reports ERROR_INVALID_PARAMETER 0x57).
+pub fn w25a08_filetime_to_unix(ft: Option<(u32, u32)>) -> Option<u64> {
+    let (lo, hi) = ft?;
+    let ticks = (((hi as u64) << 32) | lo as u64).wrapping_sub(0x019d_b1de_d53e_8000);
+    Some(ticks / 10_000_000)
+}
+
+/// `0x0093f6d0`: milliseconds from a performance counter: `counter * 1000`
+/// (wrapping 64-bit) divided by the frequency.  The frequency is cached in
+/// `cached_freq`; when it is zero it is fetched through `query_freq` first.
+/// Returns `None` if the frequency stays zero.
+pub fn w25a08_counter_to_ms(
+    counter: u64,
+    cached_freq: &mut u64,
+    query_freq: impl FnOnce() -> u64,
+) -> Option<u64> {
+    if *cached_freq == 0 {
+        *cached_freq = query_freq();
+    }
+    if *cached_freq == 0 {
+        return None;
+    }
+    Some(counter.wrapping_mul(1000) / *cached_freq)
+}
+
+/// `0x0093fb70`: closes a handle unless it is the invalid handle `-1`;
+/// returns whether `close` was invoked.
+pub fn w25a08_close_handle(handle: i32, close: impl FnOnce(i32)) -> bool {
+    if handle == -1 {
+        return false;
+    }
+    close(handle);
+    true
+}
+
+#[cfg(test)]
+mod tests_wave25_agent08 {
+    use super::*;
+
+    #[test]
+    fn copies_truncate() {
+        assert_eq!(w25a08_copy_record_name(None, 8), None);
+        assert_eq!(
+            w25a08_copy_record_name(Some(b"hello\0x"), 4),
+            Some(b"hel".to_vec())
+        );
+        assert_eq!(
+            w25a08_copy_record_name(Some(b"hi\0"), 8),
+            Some(b"hi".to_vec())
+        );
+        assert_eq!(w25a08_copy_record_name(Some(b"hi\0"), 0), Some(vec![]));
+        assert_eq!(w25a08_copy_record_string(b"abc\0", 3), Some(b"ab".to_vec()));
+    }
+
+    fn table() -> [u32; 256] {
+        let mut t = [0u32; 256];
+        for (i, e) in t.iter_mut().enumerate() {
+            let mut c = i as u32;
+            for _ in 0..8 {
+                c = if c & 1 != 0 {
+                    0xedb8_8320 ^ (c >> 1)
+                } else {
+                    c >> 1
+                };
+            }
+            *e = c;
+        }
+        t
+    }
+
+    #[test]
+    fn crc_check_value() {
+        let t = table();
+        assert_eq!(w25a08_crc32(b"123456789", None, 7, &t), 0xcbf4_3926);
+        let mut st = 0;
+        w25a08_crc32(b"1234", Some(&mut st), 3, &t);
+        let r = w25a08_crc32(b"56789", Some(&mut st), 6, &t);
+        assert_eq!(r, 0xcbf4_3926);
+        assert_eq!(st, r);
+    }
+
+    #[test]
+    fn time_conversions() {
+        assert_eq!(w25a08_filetime_to_unix(None), None);
+        let ft = 0x019d_b1de_d53e_8000u64 + 5 * 10_000_000;
+        assert_eq!(
+            w25a08_filetime_to_unix(Some((ft as u32, (ft >> 32) as u32))),
+            Some(5)
+        );
+        let mut f = 0;
+        assert_eq!(
+            w25a08_counter_to_ms(3_000_000, &mut f, || 1_000_000),
+            Some(3000)
+        );
+        assert_eq!(f, 1_000_000);
+        let mut z = 0;
+        assert_eq!(w25a08_counter_to_ms(1, &mut z, || 0), None);
+    }
+
+    #[test]
+    fn close_handle_skips_invalid() {
+        let mut got = None;
+        assert!(!w25a08_close_handle(-1, |h| got = Some(h)));
+        assert!(w25a08_close_handle(7, |h| got = Some(h)));
+        assert_eq!(got, Some(7));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave25/agent09.rs
+// ===========================================================================
+// Wave 25 agent 09: small UI widget helpers (client module).
+
+/// Widget node used by the w25a09 helpers (indices instead of pointers).
+#[derive(Clone, Debug, Default)]
+pub struct W25a09Widget {
+    /// `+0x00` next sibling.
+    pub next: Option<usize>,
+    /// `+0x04`, `+0x06`, `+0x08`, `+0x0a`: left, top, right, bottom.
+    pub rect: [i16; 4],
+    /// `+0x3c` short; when nonzero `+0x4c` anchor is used.
+    pub anchored: u16,
+    /// `+0x4c` anchor widget.
+    pub anchor: Option<usize>,
+    /// `+0x30` flag word (bit 5 = already-top).
+    pub flags: u32,
+    /// `+0x5c` next link used by the walker when `anchored == 0`.
+    pub link: Option<usize>,
+    /// `+0x5c` first child (hit test).
+    pub first_child: Option<usize>,
+}
+
+/// `0x00940bf0`: builds the 8-dword invalidate record `{0, 0x80, x, y, x, y,
+/// x + w, y + h}` when the flag at the global is set; otherwise `None`.
+pub fn w25a09_build_rect_record(enabled: bool, x: i32, y: i32, w: i32, h: i32) -> Option<[i32; 8]> {
+    if !enabled {
+        return None;
+    }
+    Some([0, 0x80, x, y, x, y, x.wrapping_add(w), y.wrapping_add(h)])
+}
+
+/// `0x00963790`: walks a widget chain, reading the successor before invoking
+/// `f` (successor is `next` when `anchored != 0`, else `link`).
+pub fn w25a09_walk_chain(nodes: &[W25a09Widget], start: Option<usize>, mut f: impl FnMut(usize)) {
+    let mut cur = start;
+    while let Some(i) = cur {
+        let n = &nodes[i];
+        let nxt = if n.anchored != 0 { n.next } else { n.link };
+        f(i);
+        cur = nxt;
+    }
+}
+
+/// `0x00964170`: mouse hit test.  Returns the deepest matching child (a
+/// later match replaces the current one unless the current has flag bit 5),
+/// else the widget itself when its handler accepts, else `None`.
+/// `handler(idx)` models the virtual call at `+0x44` with the event.
+pub fn w25a09_hit_test(
+    nodes: &[W25a09Widget],
+    root: usize,
+    x: i16,
+    y: i16,
+    mut handler: impl FnMut(usize) -> bool,
+) -> Option<usize> {
+    let r = &nodes[root];
+    let inside = |n: &W25a09Widget, px: i16, py: i16| {
+        n.rect[0] <= px && px <= n.rect[2] && n.rect[1] <= py && py <= n.rect[3]
+    };
+    if !inside(r, x, y) {
+        return None;
+    }
+    let base = if r.anchored != 0 {
+        r.anchor.map(|a| &nodes[a]).unwrap_or(r)
+    } else {
+        r
+    };
+    let lx = x.wrapping_sub(base.rect[0]);
+    let ly = y.wrapping_sub(base.rect[1]);
+    let mut best: Option<usize> = None;
+    let mut c = r.first_child;
+    while let Some(i) = c {
+        let n = &nodes[i];
+        if inside(n, lx, ly) && handler(i) && best.is_none_or(|b| nodes[b].flags >> 5 & 1 == 0) {
+            best = Some(i);
+        }
+        c = n.next;
+    }
+    if best.is_some() {
+        return best;
+    }
+    handler(root).then_some(root)
+}
+
+#[cfg(test)]
+mod tests_wave25_agent09 {
+    use super::*;
+
+    #[test]
+    fn rect_record() {
+        assert_eq!(w25a09_build_rect_record(false, 1, 2, 3, 4), None);
+        assert_eq!(
+            w25a09_build_rect_record(true, 1, 2, 3, 4),
+            Some([0, 0x80, 1, 2, 1, 2, 4, 6])
+        );
+    }
+
+    fn tree() -> Vec<W25a09Widget> {
+        vec![
+            W25a09Widget {
+                rect: [0, 0, 100, 100],
+                first_child: Some(1),
+                ..Default::default()
+            },
+            W25a09Widget {
+                rect: [0, 0, 50, 50],
+                next: Some(2),
+                ..Default::default()
+            },
+            W25a09Widget {
+                rect: [10, 10, 60, 60],
+                ..Default::default()
+            },
+        ]
+    }
+
+    #[test]
+    fn hit() {
+        let t = tree();
+        assert_eq!(w25a09_hit_test(&t, 0, 20, 20, |_| true), Some(2));
+        assert_eq!(w25a09_hit_test(&t, 0, 5, 5, |_| true), Some(1));
+        assert_eq!(w25a09_hit_test(&t, 0, 90, 90, |i| i == 0), Some(0));
+        assert_eq!(w25a09_hit_test(&t, 0, 90, 90, |_| false), None);
+        assert_eq!(w25a09_hit_test(&t, 0, 200, 5, |_| true), None);
+        let mut t2 = tree();
+        t2[1].flags = 0x20;
+        assert_eq!(w25a09_hit_test(&t2, 0, 20, 20, |_| true), Some(1));
+    }
+
+    #[test]
+    fn walk() {
+        let mut t = vec![W25a09Widget::default(); 3];
+        t[0].link = Some(2);
+        t[2].anchored = 1;
+        t[2].next = Some(1);
+        let mut seen = vec![];
+        w25a09_walk_chain(&t, Some(0), |i| seen.push(i));
+        assert_eq!(seen, vec![0, 2, 1]);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave25/agent10.rs
+// ===========================================================================
+// Wave 25 agent 10: small UI-list helpers.
+
+/// Node of the singly linked widget list walked by `0x00964a60`.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct W25a10Node {
+    /// Link at dword 0 (used when `flag != 0`).
+    pub next_primary: Option<usize>,
+    /// Link at dword 0x17 (used when `flag == 0`).
+    pub next_secondary: Option<usize>,
+    /// Short at dword 0xf (offset 0x3c).
+    pub flag: u16,
+}
+
+/// `0x00964a60`: stores `param3 >> 2` in the global short (returned) and calls
+/// `visit(index)` on every node, choosing the next link by `flag`.
+pub fn w25a10_walk_list(
+    nodes: &[W25a10Node],
+    start: Option<usize>,
+    param3: u32,
+    mut visit: impl FnMut(usize),
+) -> u16 {
+    let mut cur = start;
+    while let Some(i) = cur {
+        let n = &nodes[i];
+        cur = if n.flag != 0 {
+            n.next_primary
+        } else {
+            n.next_secondary
+        };
+        visit(i);
+    }
+    (param3 >> 2) as u16
+}
+
+/// `0x00979cc0`: returns the byte at offset 0x60 (item count).
+pub fn w25a10_item_count(widget: &[u8]) -> u8 {
+    widget[0x60]
+}
+
+/// `0x00983510`: `*out = height * width * 2` when the surface exists.
+pub fn w25a10_surface_bytes(present: bool, width: i32, height: i32) -> Option<i32> {
+    if !present {
+        return None;
+    }
+    Some(height.wrapping_mul(width).wrapping_mul(2))
+}
+
+/// `0x00983b60`: true when `(flags & 0x7ff0) == 0x10`.
+pub fn w25a10_flags_match(flags: u16) -> bool {
+    flags & 0x7ff0 == 0x10
+}
+
+/// Subset of the dialog list state used by `0x009791b0`.
+#[derive(Clone, Debug, Default)]
+pub struct W25a10List {
+    pub count: u8,
+    pub capacity: u8,
+    pub item_flags: Vec<u8>,
+    pub item_text: Vec<String>,
+}
+
+/// `0x009791b0`: appends an item; returns the new index or `-1` when full.
+/// Flag bit 0x10 means the text is duplicated (always owned here).
+pub fn w25a10_add_item(list: &mut W25a10List, text: &str, flags: u8) -> i8 {
+    if list.capacity <= list.count {
+        return -1;
+    }
+    let idx = list.count as usize;
+    if list.item_flags.len() <= idx {
+        list.item_flags.resize(idx + 1, 0);
+        list.item_text.resize(idx + 1, String::new());
+    }
+    list.item_flags[idx] = flags;
+    list.item_text[idx] = text.to_string();
+    list.count += 1;
+    idx as i8
+}
+
+#[cfg(test)]
+mod tests_wave25_agent10 {
+    use super::*;
+
+    #[test]
+    fn walk() {
+        let nodes = [
+            W25a10Node {
+                next_primary: Some(1),
+                next_secondary: None,
+                flag: 1,
+            },
+            W25a10Node {
+                next_primary: None,
+                next_secondary: Some(2),
+                flag: 0,
+            },
+            W25a10Node::default(),
+        ];
+        let mut seen = vec![];
+        let v = w25a10_walk_list(&nodes, Some(0), 0x41, |i| seen.push(i));
+        assert_eq!(seen, vec![0, 1, 2]);
+        assert_eq!(v, 0x10);
+    }
+
+    #[test]
+    fn small() {
+        let mut w = [0u8; 0x70];
+        w[0x60] = 7;
+        assert_eq!(w25a10_item_count(&w), 7);
+        assert_eq!(w25a10_surface_bytes(true, 3, 4), Some(24));
+        assert_eq!(w25a10_surface_bytes(false, 3, 4), None);
+        assert!(w25a10_flags_match(0x8010));
+        assert!(!w25a10_flags_match(0x0020));
+    }
+
+    #[test]
+    fn add() {
+        let mut l = W25a10List {
+            capacity: 1,
+            ..Default::default()
+        };
+        assert_eq!(w25a10_add_item(&mut l, "a", 0x10), 0);
+        assert_eq!(w25a10_add_item(&mut l, "b", 0), -1);
+    }
+}
