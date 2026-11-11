@@ -7062,11 +7062,11 @@ address	name	size	thunk	body	evidence_count	evidence	status
 0x0066f490	FUN_0066f490	239	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07060_0066f490_FUN_0066f490.c	0		decompiled_uncited
 0x0066f7c4	FUN_0066f7c4	21	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07061_0066f7c4_FUN_0066f7c4.c	0		decompiled_uncited
 0x0066f7d9	FUN_0066f7d9	33	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07062_0066f7d9_FUN_0066f7d9.c	0		decompiled_uncited
-0x0066f800	FUN_0066f800	181	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07063_0066f800_FUN_0066f800.c	0		decompiled_uncited
+0x0066f800	FUN_0066f800	181	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07063_0066f800_FUN_0066f800.c	1	engine-rust/src/runtime.rs	translated
 0x0066f8c0	FUN_0066f8c0	60	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07064_0066f8c0_FUN_0066f8c0.c	0		decompiled_uncited
 0x0066f901	FUN_0066f901	5	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07065_0066f901_FUN_0066f901.c	0		decompiled_uncited
 0x0066fc78	FUN_0066fc78	25	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07066_0066fc78_FUN_0066fc78.c	0		decompiled_uncited
-0x0066fd00	FUN_0066fd00	228	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07067_0066fd00_FUN_0066fd00.c	0		decompiled_uncited
+0x0066fd00	FUN_0066fd00	228	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07067_0066fd00_FUN_0066fd00.c	1	engine-rust/src/runtime.rs	translated
 0x0066fe20	FUN_0066fe20	15	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07068_0066fe20_FUN_0066fe20.c	1	engine-rust/src/runtime.rs	translated
 0x0066fe30	FUN_0066fe30	234	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07069_0066fe30_FUN_0066fe30.c	1	engine-rust/src/runtime.rs	translated
 0x0066ff40	FUN_0066ff40	18	0	/home/cotizcesar/.cache/galaxycraft/decomp_full/07070_0066ff40_FUN_0066ff40.c	1	engine-rust/src/runtime.rs	translated

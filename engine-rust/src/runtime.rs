@@ -29148,7 +29148,7 @@ mod tests_wave13_agent07 {
 // | `0x0196` | positive 64-bit value with bit 63 clear and a non-zero high word |
 // | `0x0216` | double |
 //
-// Nine rows in this window are compiler-generated SEH fragments, bare
+// Seven rows in this window are compiler-generated SEH fragments, bare
 // frame-pointer fragments, or bodies that stop at a call Ghidra mislabelled
 // as non-returning; they are listed in the batch report rather than guessed
 // at here.
@@ -29170,6 +29170,10 @@ mod tests_wave13_agent07 {
 //   recovered body.
 // * The document routine's final stack-restore/allocator tail is outside the
 //   recovered status logic and is not modelled.
+// * The two getters apply their second lookup to the first value's table
+//   header.  The safe model returns nil (or an empty byte string) when that
+//   first value is not a table, instead of reinterpreting a non-table
+//   payload as a node array.
 //
 // ## Style note
 //
@@ -29178,7 +29182,7 @@ mod tests_wave13_agent07 {
 // a [`W13a10ValueParser`] so the caller can supply the array arm (whose
 // routine lies outside this window).  Nothing here touches `World`,
 // `SimUnit`, the renderer, or the client.
-
+//
 /// Status code for a malformed literal.
 pub const W13A10_ERR_SYNTAX: u32 = 3;
 /// Status code for a non-string object key.
@@ -30258,7 +30262,7 @@ impl W13a10StringSlot {
     }
 }
 
-/// One value of the minimal document tree used by the endpoint store.
+/// One value of the minimal document tree used by the endpoint accessors.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum W13a10StoredValue {
     /// The table lookup produced the shared nil value.
@@ -30267,6 +30271,61 @@ pub enum W13a10StoredValue {
     Table(Vec<(Vec<u8>, W13a10StoredValue)>),
     /// A string slot.
     String(W13a10StringSlot),
+}
+
+/// Shared nil value standing in for the static nil scratch record the retail
+/// lookups return on a miss.
+pub static W13A10_NIL: W13a10StoredValue = W13a10StoredValue::Nil;
+
+/// Looks up a byte-string key in insertion order.
+///
+/// The retail table is a `0x20`-byte node array searched by the shared lookup
+/// helper; order is not observable for a miss, and duplicate keys resolve to
+/// the first entry, so a linear scan over the translated table model matches
+/// the recovered length-plus-byte comparisons.
+fn w13a10_lookup<'a>(
+    table: &'a [(Vec<u8>, W13a10StoredValue)],
+    key: &[u8],
+) -> Option<&'a W13a10StoredValue> {
+    table
+        .iter()
+        .find_map(|(name, value)| (name.as_slice() == key).then_some(value))
+}
+
+/// `0x0066f800`: returns the value of the nested `data.data` entry.
+///
+/// The routine performs two lookups: first `data` on the caller's table,
+/// then `data` again on the first result.  A miss at either step returns the
+/// shared nil record.  The second lookup is applied to the first value's
+/// table header in the retail code; this safe model returns nil when the
+/// first `data` value is not a table, rather than reinterpreting a non-table
+/// payload as a node array.
+pub fn w13a10_get_nested_data(document: &[(Vec<u8>, W13a10StoredValue)]) -> &W13a10StoredValue {
+    let Some(W13a10StoredValue::Table(data)) = w13a10_lookup(document, b"data") else {
+        return &W13A10_NIL;
+    };
+    w13a10_lookup(data, b"data").unwrap_or(&W13A10_NIL)
+}
+
+/// `0x0066fd00`: returns a copy of the `data.endpoint` string.
+///
+/// The getter resolves `data`, then `endpoint`, and copies the resulting
+/// string into a fresh standard string object.  The retail code distinguishes
+/// the short-string layout (tag bit `0x1000` set; the length is
+/// `0xd - byte[+0xd]` and the bytes are inline) from the long-string layout
+/// (length at `+0x00`, payload pointer at `+0x08`).  Both layouts are
+/// represented by [`W13a10StringSlot`], so the decoded bytes are returned
+/// directly.  A missing `data`/`endpoint` entry, or a non-string value, yields
+/// an empty string; the original would read a non-string payload through its
+/// unchecked long-string branch, which safe Rust cannot reproduce.
+pub fn w13a10_get_endpoint(document: &[(Vec<u8>, W13a10StoredValue)]) -> Vec<u8> {
+    let Some(W13a10StoredValue::Table(data)) = w13a10_lookup(document, b"data") else {
+        return Vec::new();
+    };
+    match w13a10_lookup(data, b"endpoint") {
+        Some(W13a10StoredValue::String(slot)) => slot.bytes.clone(),
+        _ => Vec::new(),
+    }
 }
 
 /// `0x0066fe30`: stores `bytes` in the `data.endpoint` string slot.
@@ -30852,5 +30911,65 @@ mod tests_wave13_agent10 {
 
         let mut no_endpoint = vec![(b"data".to_vec(), W13a10StoredValue::Table(Vec::new()))];
         assert!(!w13a10_store_endpoint(&mut no_endpoint, b"x"));
+    }
+
+    #[test]
+    fn endpoint_getter_returns_decoded_bytes_and_empty_on_misses() {
+        let mut document = vec![(
+            b"data".to_vec(),
+            W13a10StoredValue::Table(vec![(
+                b"endpoint".to_vec(),
+                W13a10StoredValue::String(W13a10StringSlot::from_bytes(b"endpoint value")),
+            )]),
+        )];
+        assert_eq!(w13a10_get_endpoint(&document).as_slice(), b"endpoint value");
+
+        assert!(w13a10_store_endpoint(&mut document, b"0123456789abcd"));
+        assert_eq!(w13a10_get_endpoint(&document).as_slice(), b"0123456789abcd");
+
+        let missing = vec![(b"other".to_vec(), W13a10StoredValue::Table(Vec::new()))];
+        assert!(w13a10_get_endpoint(&missing).is_empty());
+
+        let not_table = vec![(
+            b"data".to_vec(),
+            W13a10StoredValue::String(W13a10StringSlot::from_bytes(b"x")),
+        )];
+        assert!(w13a10_get_endpoint(&not_table).is_empty());
+
+        let no_endpoint = vec![(b"data".to_vec(), W13a10StoredValue::Table(Vec::new()))];
+        assert!(w13a10_get_endpoint(&no_endpoint).is_empty());
+
+        let numeric_endpoint = vec![(
+            b"data".to_vec(),
+            W13a10StoredValue::Table(vec![(b"endpoint".to_vec(), W13a10StoredValue::Nil)]),
+        )];
+        assert!(w13a10_get_endpoint(&numeric_endpoint).is_empty());
+    }
+
+    #[test]
+    fn nested_data_getter_returns_inner_value_or_nil() {
+        let document = vec![(
+            b"data".to_vec(),
+            W13a10StoredValue::Table(vec![(
+                b"data".to_vec(),
+                W13a10StoredValue::String(W13a10StringSlot::from_bytes(b"inner")),
+            )]),
+        )];
+        assert_eq!(
+            w13a10_get_nested_data(&document),
+            &W13a10StoredValue::String(W13a10StringSlot::from_bytes(b"inner"))
+        );
+
+        let missing = vec![(b"other".to_vec(), W13a10StoredValue::Nil)];
+        assert_eq!(w13a10_get_nested_data(&missing), &W13A10_NIL);
+
+        let not_table = vec![(
+            b"data".to_vec(),
+            W13a10StoredValue::String(W13a10StringSlot::from_bytes(b"x")),
+        )];
+        assert_eq!(w13a10_get_nested_data(&not_table), &W13A10_NIL);
+
+        let no_inner = vec![(b"data".to_vec(), W13a10StoredValue::Table(Vec::new()))];
+        assert_eq!(w13a10_get_nested_data(&no_inner), &W13A10_NIL);
     }
 }
