@@ -2207,3 +2207,1425 @@ mod tests {
         }
     }
 }
+
+// ===========================================================================
+// Merged from src/wave13/agent05.rs
+// ===========================================================================
+// Wave 13 batch 05 — the trigger *accumulate* condition family.
+//
+// Window `0x664000`–`0x665fff` (StarCraft 1.23.10).  Every routine in this
+// window answers the same question: *how many units of a given kind belong
+// to the player set denoted by a selector?*  The answer is either read from
+// per-player/per-kind count tables or summed over the player slots that the
+// selector denotes.
+//
+// ## Recovered player selectors (first argument)
+//
+// | selector | slot set |
+// |---|---|
+// | `0x00..=0x0b` | the selector is itself a player index |
+// | `0x0d` | the current player (`FUN_007a9d00`) |
+// | `0x0e` | cursor slots with `relation[current][slot] == 0`, current excluded |
+// | `0x0f` | cursor slots with `relation[current][slot] == 2`, current excluded |
+// | `0x10` | cursor slots with `relation[current][slot] == 1`, current excluded |
+// | `0x11` | every cursor slot, plus slots `8..=11` |
+// | `0x12..=0x15` | cursor slots whose owner (`FUN_006c52e0 & 0xff`) equals `selector - 0x11` |
+// | `0x16..=0x19` | none (returns `0`) |
+// | `0x1a` | cursor slots that are not mutual class-`2` relations with the current player |
+//
+// ## Recovered tables (offsets from the xor-keyed game base)
+//
+// | offset | contents |
+// |---|---|
+// | `+0x2cf4` | first cached block, `0x150` dwords, mirrored to `0x00fdfe10` |
+// | `+0x2d84` / `+0x2ed4` / `+0x2ff4` | trio A: first / second / third per-player tables |
+// | `+0x2db4` / `+0x2f04` / `+0x3024` | trio B: the same three tables, `+0x30` from trio A |
+// | `+0x2de4` / `+0x2e14` / `+0x2f34` / `+0x2f64` / `+0x3204` | five category tables |
+// | `+0x5cf4` | second cached block, `0x2ac0` bytes, mirrored to `0x00fe0350` |
+// | `+0x87b4` | per-unit table `[unit][player]`, stride `12`, trio B |
+// | `+0xb274` | per-unit table `[unit][player]`, stride `12`, trio A |
+// | `+0xe544` | `12 x 12` relation matrix, row stride `0x0c`, `[from][to]` |
+// | `+0xe608` | dword compared by `0x00664210` |
+// | `+0xe61c` / `+0xe61d` / `+0xe61e` | setup mode byte / byte argument / word argument |
+//
+// ## Static data used by this window
+//
+// | address | contents |
+// |---|---|
+// | `0x00fe58d0` | mode byte, cleared by `0x00664810`, set by `0x006656d0` |
+// | `0x00fe58d1` | mode argument |
+// | `0x00fe58d8` | eight `{ id: u32, value: u32 }` result records |
+// | `0x00fdfe10` | cached player block (`0x540` bytes) |
+// | `0x00fe0350` | cached per-unit block (`0x2ac0` bytes) |
+//
+// The slot cursor is the `FUN_0065b0c0` / `FUN_0065b0e0` pair.  Its exact walk
+// is out of window, so every routine here takes the yielded index sequence as
+// `W13A05World::cursor`; the recovered loops stop at the first index `>= 8`.
+//
+// Relation class `1` and class `2` are the two non-zero bytes of the `+0xe544`
+// matrix.  The dispatch below uses class `2` for its enemy-style selector and
+// class `1` for its ally-style selector, so those labels follow the selector,
+// not an independently recovered enum.
+
+/// Number of player slots addressed by the count tables.
+pub const W13A05_SLOT_COUNT: usize = 12;
+/// First index the slot cursor no longer yields for the filtered loops.
+pub const W13A05_CURSOR_LIMIT: u32 = 8;
+/// Upper bound (exclusive) of the per-unit table rows.
+pub const W13A05_UNIT_LIMIT: u32 = 0xe9;
+/// Rows of the per-unit tables (`0 ..= 0xe4`).
+pub const W13A05_UNIT_ROWS: usize = 0xe5;
+/// The four aggregate kind indices `0xe5..=0xe8`.  `0xe5` is the sum of the
+/// two rows read by `0xe6`/`0xe7`, and `0xe8` is a third row.  The trigger
+/// editor exposes these as its special unit entries; only the arithmetic is
+/// recovered here.
+pub const W13A05_KIND_SUM: u32 = 0xe5;
+pub const W13A05_KIND_FIRST: u32 = 0xe6;
+pub const W13A05_KIND_SECOND: u32 = 0xe7;
+pub const W13A05_KIND_THIRD: u32 = 0xe8;
+/// Relation classes stored in the `+0xe544` matrix.
+pub const W13A05_REL_NONE: u8 = 0;
+pub const W13A05_REL_ALLY: u8 = 1;
+pub const W13A05_REL_ENEMY: u8 = 2;
+/// Dwords copied from `+0x2cf4` into the cached player block.
+pub const W13A05_CACHED_PLAYER_WORDS: usize = 0x150;
+/// Dwords copied from `+0x5cf4` into the cached per-unit block.
+pub const W13A05_CACHED_UNIT_WORDS: usize = 0x2ac0 / 4;
+/// Base of the eight result records written by `0x00665dd0`.
+pub const W13A05_RESULT_TABLE: usize = 0x00fe_58d8;
+/// Sentinel id the setup routine writes into every result record.
+pub const W13A05_RESULT_SENTINEL: u32 = 0xffff_ffff;
+
+/// The `12 x 12` relation matrix at `+0xe544`, indexed `[from][to]`.
+pub type W13A05Relation = [[u8; W13A05_SLOT_COUNT]; W13A05_SLOT_COUNT];
+
+/// Everything the accumulate evaluators need besides their count tables.
+#[derive(Clone, Copy, Debug)]
+pub struct W13A05World<'a> {
+    /// Index sequence produced by the slot cursor.
+    pub cursor: &'a [u32],
+    /// Player index returned by `FUN_007a9d00` for the running trigger.
+    pub current: usize,
+    /// Relation matrix at `+0xe544`.
+    pub relation: &'a W13A05Relation,
+    /// `FUN_006c52e0(slot) & 0xff` for every slot.
+    pub owners: &'a [u8; W13A05_SLOT_COUNT],
+    /// Value of the `DAT_01165f58` alternate provider switch; when present,
+    /// `0x00664980` returns it for every per-unit row.
+    pub override_value: Option<i32>,
+}
+
+impl<'a> W13A05World<'a> {
+    /// Builds a world without the alternate provider switch.
+    pub fn w13a05_new(
+        cursor: &'a [u32],
+        current: usize,
+        relation: &'a W13A05Relation,
+        owners: &'a [u8; W13A05_SLOT_COUNT],
+    ) -> Self {
+        Self {
+            cursor,
+            current,
+            relation,
+            owners,
+            override_value: None,
+        }
+    }
+
+    /// Enables the alternate provider (`DAT_01165f58 != 0`).
+    pub fn w13a05_with_override(mut self, value: i32) -> Self {
+        self.override_value = Some(value);
+        self
+    }
+
+    /// Cursor indices below the loop bound, in order.
+    fn w13a05_slots(&self) -> impl Iterator<Item = u32> + '_ {
+        self.cursor
+            .iter()
+            .copied()
+            .take_while(|slot| *slot < W13A05_CURSOR_LIMIT)
+    }
+
+    /// `relation[from][to]`, `0` when either index is out of range.
+    fn w13a05_relation_at(&self, from: u32, to: u32) -> u8 {
+        if from >= W13A05_SLOT_COUNT as u32 || to >= W13A05_SLOT_COUNT as u32 {
+            return W13A05_REL_NONE;
+        }
+        self.relation[from as usize][to as usize]
+    }
+
+    /// Owner byte of a slot, `None` when the slot is out of range.
+    fn w13a05_owner_at(&self, slot: u32) -> Option<u8> {
+        self.owners.get(slot as usize).copied()
+    }
+}
+
+/// Shared truth table of the two condition comparators.
+fn w13a05_compare(target: u32, op: u8, current: u32) -> bool {
+    match op {
+        0 => target <= current,
+        1 => current <= target,
+        10 => target == current,
+        _ => false,
+    }
+}
+
+/// `0x00664210`: compares the condition operand `target` against the global
+/// value at `+0xe608`.
+///
+/// ```text
+/// current = *(u32 *)((base ^ key) + 0xe608);
+/// switch (byte at parameter + 0xe) {
+///   0  => target <= current,
+///   1  => current <= target,
+///   10 => current == target,
+///   _  => false,
+/// }
+/// ```
+pub fn w13a05_compare_global(target: u32, op: u8, current: u32) -> bool {
+    w13a05_compare(target, op, current)
+}
+
+/// `0x00664260`: compares the condition operand `target` against a count read
+/// for the player stored at `parameter + 4` (the read goes through the cached
+/// provider `FUN_006651b0`).
+///
+/// The comparison itself is the same truth table as [`w13a05_compare_global`];
+/// the two routines differ only in where the current value comes from.
+pub fn w13a05_compare_player(target: u32, op: u8, current: u32) -> bool {
+    w13a05_compare(target, op, current)
+}
+
+/// `0x00664610`: sums `visit` over the cursor slots below `8` and then over
+/// slots `8..=11` unconditionally.
+///
+/// The shipped loop is `while (cursor < 8)` followed by a `do { } while
+/// (next < 0xc)` that runs for `8, 9, 10, 11` exactly once each.
+pub fn w13a05_sum_all_slots(world: &W13A05World<'_>, visit: &dyn Fn(u32) -> i32) -> i32 {
+    let mut total = 0;
+    for slot in world.w13a05_slots() {
+        total += visit(slot);
+    }
+    for slot in W13A05_CURSOR_LIMIT..W13A05_SLOT_COUNT as u32 {
+        total += visit(slot);
+    }
+    total
+}
+
+/// `0x00664700`: sums `visit` over the cursor slots that are not the current
+/// player and whose `relation[current][slot]` is class `2`.
+pub fn w13a05_sum_relation_enemy(world: &W13A05World<'_>, visit: &dyn Fn(u32) -> i32) -> i32 {
+    w13a05_sum_relation_class(world, W13A05_REL_ENEMY, visit)
+}
+
+/// `0x00664810`: clears the accumulate mode byte at `0x00fe58d0`.
+pub fn w13a05_clear_accumulate_mode(state: &mut W13A05Mode) {
+    state.mode = 0;
+}
+
+/// `0x00664980`: the accumulate dispatcher over trio A.
+///
+/// ```text
+/// switch (selector) {
+///   0x0d => selector = FUN_007a9d00();        /* falls into the table read */
+///   0x0e => sum relation class 0, recursion;  0x0f => class 2;
+///   0x10 => class 1, recursion;               0x11 => every slot;
+///   0x12..0x15 => owner == selector - 0x11;   0x16..0x19 => 0;
+///   0x1a => not mutually class 2;             default => table read;
+/// }
+/// ```
+///
+/// The table read uses the per-player trio at `+0x2d84` / `+0x2ed4` /
+/// `+0x2ff4` (`0xe5` = first + second, `0xe6` = first, `0xe7` = second,
+/// `0xe8` = third) and the per-unit table at `+0xb274`, indexed
+/// `player + unit * 12`.  When `DAT_01165f58` is non-zero every per-unit row
+/// returns that global's value instead.
+pub fn w13a05_accumulate_count(
+    world: &W13A05World<'_>,
+    counts: &W13A05TrioCounts,
+    selector: u32,
+    unit_type: u32,
+) -> i32 {
+    let over = world.override_value;
+    let leaf = |player: u32, kind: u32| counts.w13a05_value(player, kind, over);
+    w13a05_dispatch(world, selector, unit_type, &leaf, W13A05_SLOT_COUNT as u32)
+}
+
+/// `0x00664b60`: sums `visit` over the cursor slots that are not the current
+/// player and whose `relation[current][slot]` is class `0`.
+pub fn w13a05_sum_relation_none(world: &W13A05World<'_>, visit: &dyn Fn(u32) -> i32) -> i32 {
+    w13a05_sum_relation_class(world, W13A05_REL_NONE, visit)
+}
+
+/// `0x00664be0`: [`w13a05_sum_relation_none`] with a target total.
+///
+/// The routine first reads the cursor; if the first index is already `>= 8`
+/// it returns `0` without calling the visitor.  It stops as soon as the
+/// running total equals `target`.  The visitor also receives `target`
+/// (the fourth argument of the shipped callback).
+pub fn w13a05_sum_relation_none_limited(
+    world: &W13A05World<'_>,
+    target: i32,
+    visit: &dyn Fn(u32, i32) -> i32,
+) -> i32 {
+    match world.cursor.first() {
+        None => return 0,
+        Some(&first) if first >= W13A05_CURSOR_LIMIT => return 0,
+        Some(_) => {}
+    }
+    let mut total = 0;
+    for slot in world.w13a05_slots() {
+        if slot == world.current as u32 {
+            continue;
+        }
+        if world.w13a05_relation_at(world.current as u32, slot) == W13A05_REL_NONE {
+            total += visit(slot, target);
+            if total == target {
+                return total;
+            }
+        }
+    }
+    total
+}
+
+/// `0x00664c70`: primes the cached count blocks once.
+///
+/// ```text
+/// if (mode != 1) {
+///     mode = 1;
+///     copy 0x150 dwords from +0x2cf4 to 0x00fdfe10;
+///     memcpy(0x00fe0350, +0x5cf4, 0x2ac0);
+/// }
+/// ```
+///
+/// Returns `true` when the copy ran.
+pub fn w13a05_prime_cache(
+    mode: &mut u8,
+    cached_players: &mut [i32; W13A05_CACHED_PLAYER_WORDS],
+    live_players: &[i32; W13A05_CACHED_PLAYER_WORDS],
+    cached_units: &mut [i32; W13A05_CACHED_UNIT_WORDS],
+    live_units: &[i32; W13A05_CACHED_UNIT_WORDS],
+) -> bool {
+    if *mode == 1 {
+        return false;
+    }
+    *mode = 1;
+    cached_players.copy_from_slice(live_players);
+    cached_units.copy_from_slice(live_units);
+    true
+}
+
+/// `0x00664ce0`: sums `visit` over the cursor slots whose owner byte equals
+/// `selector - 0x11` (selectors `0x12..=0x15`).
+pub fn w13a05_sum_owned_slots(
+    world: &W13A05World<'_>,
+    selector: u32,
+    visit: &dyn Fn(u32) -> i32,
+) -> i32 {
+    if selector < 0x11 {
+        return 0;
+    }
+    let wanted = selector - 0x11;
+    let mut total = 0;
+    for slot in world.w13a05_slots() {
+        if world.w13a05_owner_at(slot).map(u32::from) == Some(wanted) {
+            total += visit(slot);
+        }
+    }
+    total
+}
+
+/// `0x00664d40`: [`w13a05_sum_owned_slots`] with a target total.
+///
+/// Like `0x00664be0` it bails out when the first cursor index is `>= 8` and
+/// stops as soon as the running total reaches `target`; the visitor receives
+/// `target` as its second argument.
+pub fn w13a05_sum_owned_slots_limited(
+    world: &W13A05World<'_>,
+    selector: u32,
+    target: i32,
+    visit: &dyn Fn(u32, i32) -> i32,
+) -> i32 {
+    if selector < 0x11 {
+        return 0;
+    }
+    match world.cursor.first() {
+        None => return 0,
+        Some(&first) if first >= W13A05_CURSOR_LIMIT => return 0,
+        Some(_) => {}
+    }
+    let wanted = selector - 0x11;
+    let mut total = 0;
+    for slot in world.w13a05_slots() {
+        if world.w13a05_owner_at(slot).map(u32::from) == Some(wanted) {
+            total += visit(slot, target);
+            if total == target {
+                return total;
+            }
+        }
+    }
+    total
+}
+
+/// `0x00664db0`: the accumulate dispatcher over trio B.
+///
+/// Same selector dispatch as `0x00664980`, but the per-player tables sit at
+/// `+0x2db4` / `+0x2f04` / `+0x3024` and the per-unit table at `+0x87b4`.
+/// This routine has no `DAT_01165f58` alternate provider.
+pub fn w13a05_accumulate_live_count(
+    world: &W13A05World<'_>,
+    counts: &W13A05TrioCounts,
+    selector: u32,
+    unit_type: u32,
+) -> i32 {
+    let leaf = |player: u32, kind: u32| counts.w13a05_value(player, kind, None);
+    w13a05_dispatch(world, selector, unit_type, &leaf, W13A05_SLOT_COUNT as u32)
+}
+
+/// `0x00664f50`: sums `visit` over the cursor slots that are not the current
+/// player and are **not** mutual class-`2` relations with it.
+///
+/// A slot is skipped only when `relation[slot][current] == 2` *and*
+/// `relation[current][slot] == 2`; a one-way class-`2` entry still counts.
+pub fn w13a05_sum_not_mutual_enemies(world: &W13A05World<'_>, visit: &dyn Fn(u32) -> i32) -> i32 {
+    let current = world.current as u32;
+    let mut total = 0;
+    for slot in world.w13a05_slots() {
+        if slot == current {
+            continue;
+        }
+        if world.w13a05_relation_at(slot, current) != W13A05_REL_ENEMY
+            || world.w13a05_relation_at(current, slot) != W13A05_REL_ENEMY
+        {
+            total += visit(slot);
+        }
+    }
+    total
+}
+
+/// `0x006650a0`: sums `visit` over the cursor slots that are not the current
+/// player and whose `relation[current][slot]` is class `1`.
+pub fn w13a05_sum_relation_ally(world: &W13A05World<'_>, visit: &dyn Fn(u32) -> i32) -> i32 {
+    w13a05_sum_relation_class(world, W13A05_REL_ALLY, visit)
+}
+
+/// `0x006651b0`: the accumulate dispatcher over the cached block.
+///
+/// The body is the same fourteen-way selector dispatch, but the per-player
+/// read is delegated to `FUN_00748d40` and only accepts player indices below
+/// `8`; every other fall-through selector returns `0`.  The reader is supplied
+/// by the caller because its body is out of window.
+pub fn w13a05_accumulate_cached_count(
+    world: &W13A05World<'_>,
+    selector: u32,
+    leaf: &dyn Fn(u32) -> i32,
+) -> i32 {
+    let leaf = |player: u32, _kind: u32| leaf(player);
+    w13a05_dispatch(world, selector, 0, &leaf, W13A05_CURSOR_LIMIT)
+}
+
+/// `0x006655e0`: sums over the selector's slot set the predicate
+/// "`field` equals the slot index".
+///
+/// ```text
+/// if (0xb < selector) return 0;
+/// return *(u8 *)(parameter + 0x4c) == selector;
+/// ```
+///
+/// `field` is the byte at `parameter + 0x4c`; because the recursive calls
+/// forward the same parameter block, every slot is tested against it.
+pub fn w13a05_accumulate_slot_flag(world: &W13A05World<'_>, selector: u32, field: u8) -> i32 {
+    let leaf = |player: u32, _kind: u32| {
+        if player < W13A05_SLOT_COUNT as u32 && u32::from(field) == player {
+            1
+        } else {
+            0
+        }
+    };
+    w13a05_dispatch(world, selector, 0, &leaf, W13A05_SLOT_COUNT as u32)
+}
+
+/// `0x006656d0`: switches the mode byte to `2` and records the argument.
+///
+/// Returns `false` (and changes nothing) when the mode is already `2` with the
+/// same argument.  Otherwise the cached player block (`0x540` bytes at
+/// `0x00fdfe10`) is zeroed.
+pub fn w13a05_set_accumulate_mode(
+    state: &mut W13A05Mode,
+    argument: u8,
+    cached_players: &mut [i32; W13A05_CACHED_PLAYER_WORDS],
+) -> bool {
+    if state.mode == 2 && state.argument == argument {
+        return false;
+    }
+    state.mode = 2;
+    state.argument = argument;
+    cached_players.fill(0);
+    true
+}
+
+/// `0x006657a0`: the accumulate dispatcher over the low pair of per-player
+/// tables.
+///
+/// `which` (`parameter + 2`) selects `+0x00`, `+0x30`, or their sum; values
+/// above `2` return `0`.
+pub fn w13a05_accumulate_pair(
+    world: &W13A05World<'_>,
+    counts: &W13A05PairCounts,
+    selector: u32,
+    which: u32,
+) -> i32 {
+    let leaf = |player: u32, kind: u32| counts.w13a05_value(player, kind);
+    w13a05_dispatch(world, selector, which, &leaf, W13A05_SLOT_COUNT as u32)
+}
+
+/// `0x006658e0`: the accumulate dispatcher over the five category tables.
+///
+/// `which` (`parameter + 2`) selects one of eight category combinations:
+///
+/// | `which` | value |
+/// |---|---|
+/// | `0` | all five tables |
+/// | `1` | `+0x2de4` |
+/// | `2` | `+0x2f34` |
+/// | `3` | `+0x2f34 + +0x2de4` |
+/// | `4` | `+0x2e14` |
+/// | `5` | `+0x2f64` |
+/// | `6` | `+0x2f64 + +0x2e14` |
+/// | `7` | `+0x3204` |
+/// | other | `0` |
+pub fn w13a05_accumulate_category(
+    world: &W13A05World<'_>,
+    counts: &W13A05CategoryCounts,
+    selector: u32,
+    which: u32,
+) -> i32 {
+    let leaf = |player: u32, kind: u32| counts.w13a05_value(player, kind);
+    w13a05_dispatch(world, selector, which, &leaf, W13A05_SLOT_COUNT as u32)
+}
+
+/// `0x00665ad0`: the accumulate dispatcher over the cached block, choosing
+/// between its two layouts.
+///
+/// `which == 0` reads `0x00fdfe10` / `0x00fdff60` / `0x00fe00b0` with the
+/// per-unit table at `0x00fe2e10`; any other value reads `0x00fdfe40` /
+/// `0x00fdff90` / `0x00fe00e0` with the per-unit table at `0x00fe0350`.
+/// Both trios use the `0xe5 = first + second`, `0xe6 = first`,
+/// `0xe7 = second`, `0xe8 = third` mapping.
+pub fn w13a05_accumulate_snapshot(
+    world: &W13A05World<'_>,
+    cached: &W13A05TrioCounts,
+    live: &W13A05TrioCounts,
+    selector: u32,
+    unit_type: u32,
+    which: u32,
+) -> i32 {
+    let chosen = if which == 0 { cached } else { live };
+    let leaf = |player: u32, kind: u32| chosen.w13a05_value(player, kind, None);
+    w13a05_dispatch(world, selector, unit_type, &leaf, W13A05_SLOT_COUNT as u32)
+}
+
+/// `0x00665dd0`: returns the base of the eight result records.
+pub const fn w13a05_result_table_base() -> usize {
+    W13A05_RESULT_TABLE
+}
+
+/// One result record written by the setup routine.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct W13A05Result {
+    /// Cached id; `0xffffffff` when the record is empty.
+    pub id: u32,
+    /// Cached value.
+    pub value: u32,
+}
+
+/// The accumulate handler a setup mode installs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum W13A05Handler {
+    /// `0x00665ad0` (cached block, two layouts).
+    Snapshot,
+    /// `0x006657a0` (low table pair).
+    Pair,
+    /// `0x00664db0` (trio B).
+    Live,
+    /// `0x006658e0` (five category tables).
+    Category,
+}
+
+/// One `FUN_00665de0(handler, argument)` registration.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct W13A05Visit {
+    /// Handler installed for the argument.
+    pub handler: W13A05Handler,
+    /// Argument forwarded to the handler.
+    pub argument: u16,
+}
+
+/// The two handler tables the setup routine registers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum W13A05Registration {
+    /// Handler table used by the `0x11..=0x15` modes.
+    ModeTable,
+    /// Handler table used by the `0x21..=0x28` modes.
+    VisitTable,
+}
+
+/// The plan `0x00665ec0` builds for one setup mode.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct W13A05Setup {
+    /// `FUN_00664c70` runs first.
+    pub prime_cache: bool,
+    /// `FUN_006656d0` runs with this argument.
+    pub player_mode: Option<u8>,
+    /// `FUN_00666230` installs this handler as the default.
+    pub default_handler: Option<W13A05Handler>,
+    /// `FUN_00665de0` registrations, in call order.
+    pub visits: Vec<W13A05Visit>,
+    /// Which handler table is registered last.
+    pub registration: Option<W13A05Registration>,
+}
+
+/// `0x00665ec0`: resets the eight result records and classifies the setup mode.
+///
+/// The first action is always the same: every record at `0x00fe58d8` becomes
+/// `{ 0xffffffff, 0 }`.  The mode byte at `+0xe61c` then selects one of the
+/// plans in [`W13A05Setup`]; unlisted modes return `None` after the reset.
+pub fn w13a05_setup(
+    results: &mut [W13A05Result; 8],
+    mode: u8,
+    argument: u8,
+    word: u16,
+) -> Option<W13A05Setup> {
+    for record in results.iter_mut() {
+        *record = W13A05Result {
+            id: W13A05_RESULT_SENTINEL,
+            value: 0,
+        };
+    }
+    let mut plan = W13A05Setup::default();
+    match mode {
+        0x11 => {
+            plan.prime_cache = true;
+            plan.default_handler = Some(W13A05Handler::Snapshot);
+            plan.registration = Some(W13A05Registration::ModeTable);
+        }
+        0x12 => {
+            plan.player_mode = Some(argument);
+            plan.default_handler = Some(W13A05Handler::Snapshot);
+            plan.registration = Some(W13A05Registration::ModeTable);
+        }
+        0x13 => {
+            plan.default_handler = Some(W13A05Handler::Pair);
+            plan.registration = Some(W13A05Registration::ModeTable);
+        }
+        0x14 => {
+            plan.default_handler = Some(W13A05Handler::Live);
+            plan.registration = Some(W13A05Registration::ModeTable);
+        }
+        0x15 => {
+            plan.default_handler = Some(W13A05Handler::Category);
+            plan.registration = Some(W13A05Registration::ModeTable);
+        }
+        0x21 => {
+            plan.prime_cache = true;
+            plan.visits.push(W13A05Visit {
+                handler: W13A05Handler::Snapshot,
+                argument: word,
+            });
+            plan.registration = Some(W13A05Registration::VisitTable);
+        }
+        0x22 => {
+            plan.player_mode = Some(argument);
+            plan.visits.push(W13A05Visit {
+                handler: W13A05Handler::Snapshot,
+                argument: word,
+            });
+            plan.registration = Some(W13A05Registration::VisitTable);
+        }
+        0x23 | 0x28 => {
+            if mode == 0x23 && word != 2 {
+                plan.visits.push(W13A05Visit {
+                    handler: W13A05Handler::Pair,
+                    argument: word,
+                });
+            } else {
+                plan.visits.push(W13A05Visit {
+                    handler: W13A05Handler::Pair,
+                    argument: 0,
+                });
+                plan.visits.push(W13A05Visit {
+                    handler: W13A05Handler::Pair,
+                    argument: 1,
+                });
+            }
+            plan.registration = Some(W13A05Registration::VisitTable);
+        }
+        0x24 => {
+            plan.visits.push(W13A05Visit {
+                handler: W13A05Handler::Live,
+                argument: word,
+            });
+            plan.registration = Some(W13A05Registration::VisitTable);
+        }
+        0x25 => {
+            match word {
+                0 => {
+                    for argument in [7, 1, 2, 4, 5] {
+                        plan.visits.push(W13A05Visit {
+                            handler: W13A05Handler::Category,
+                            argument,
+                        });
+                    }
+                }
+                3 => {
+                    for argument in [1, 2] {
+                        plan.visits.push(W13A05Visit {
+                            handler: W13A05Handler::Category,
+                            argument,
+                        });
+                    }
+                }
+                6 => {
+                    for argument in [4, 5] {
+                        plan.visits.push(W13A05Visit {
+                            handler: W13A05Handler::Category,
+                            argument,
+                        });
+                    }
+                }
+                other => plan.visits.push(W13A05Visit {
+                    handler: W13A05Handler::Category,
+                    argument: other,
+                }),
+            }
+            plan.registration = Some(W13A05Registration::VisitTable);
+        }
+        _ => return None,
+    }
+    Some(plan)
+}
+
+/// The mode state at `0x00fe58d0` / `0x00fe58d1`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct W13A05Mode {
+    /// Mode byte.
+    pub mode: u8,
+    /// Mode argument.
+    pub argument: u8,
+}
+
+/// Trio of per-player tables (`+0x2d84` / `+0x2ed4` / `+0x2ff4` and its
+/// `+0x30`-shifted twin) plus the matching per-unit table.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct W13A05TrioCounts {
+    /// `0xe6` row.
+    pub first: [i32; W13A05_SLOT_COUNT],
+    /// `0xe7` row.
+    pub second: [i32; W13A05_SLOT_COUNT],
+    /// `0xe8` row.
+    pub third: [i32; W13A05_SLOT_COUNT],
+    /// `[unit_type][player]`, stride `12`, rows `0 ..= 0xe4`.
+    pub per_unit: Vec<i32>,
+}
+
+impl W13A05TrioCounts {
+    /// All-zero tables of the correct size.
+    pub fn w13a05_zeroed() -> Self {
+        Self {
+            first: [0; W13A05_SLOT_COUNT],
+            second: [0; W13A05_SLOT_COUNT],
+            third: [0; W13A05_SLOT_COUNT],
+            per_unit: vec![0; W13A05_UNIT_ROWS * W13A05_SLOT_COUNT],
+        }
+    }
+
+    /// Reads the count for `player` and `unit_type`.
+    ///
+    /// `0xe5` is first + second, `0xe6` first, `0xe7` second, `0xe8` third;
+    /// any other type below `0xe9` reads the per-unit table, where
+    /// `override_value` (if any) takes precedence.  The shipped readers mask
+    /// the kind with `0xffff` first.
+    pub fn w13a05_value(&self, player: u32, unit_type: u32, override_value: Option<i32>) -> i32 {
+        let unit_type = unit_type & 0xffff;
+        if player >= W13A05_SLOT_COUNT as u32 || unit_type >= W13A05_UNIT_LIMIT {
+            return 0;
+        }
+        let slot = player as usize;
+        match unit_type {
+            W13A05_KIND_SUM => self.first[slot] + self.second[slot],
+            W13A05_KIND_FIRST => self.first[slot],
+            W13A05_KIND_SECOND => self.second[slot],
+            W13A05_KIND_THIRD => self.third[slot],
+            _ => {
+                if let Some(value) = override_value {
+                    return value;
+                }
+                let index = unit_type as usize * W13A05_SLOT_COUNT + slot;
+                self.per_unit.get(index).copied().unwrap_or(0)
+            }
+        }
+    }
+}
+
+/// The low pair of per-player tables at `+0x00` and `+0x30`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct W13A05PairCounts {
+    /// `+0x00` row.
+    pub low: [i32; W13A05_SLOT_COUNT],
+    /// `+0x30` row.
+    pub high: [i32; W13A05_SLOT_COUNT],
+}
+
+impl W13A05PairCounts {
+    /// `which` `0` reads `low`, `1` reads `high`, `2` reads their sum;
+    /// every other value reads `0`.
+    pub fn w13a05_value(&self, player: u32, which: u32) -> i32 {
+        if player >= W13A05_SLOT_COUNT as u32 {
+            return 0;
+        }
+        let slot = player as usize;
+        match which & 0xffff {
+            0 => self.low[slot],
+            1 => self.high[slot],
+            2 => self.low[slot] + self.high[slot],
+            _ => 0,
+        }
+    }
+}
+
+/// The five category tables used by `0x006658e0`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct W13A05CategoryCounts {
+    /// Tables read from `+0x2de4`, `+0x2e14`, `+0x2f34`, `+0x2f64`, `+0x3204`,
+    /// in that order.
+    pub tables: [[i32; W13A05_SLOT_COUNT]; 5],
+}
+
+impl W13A05CategoryCounts {
+    /// Reads the eight recovered category combinations.
+    pub fn w13a05_value(&self, player: u32, which: u32) -> i32 {
+        if player >= W13A05_SLOT_COUNT as u32 {
+            return 0;
+        }
+        let slot = player as usize;
+        let table = &self.tables;
+        match which & 0xffff {
+            0 => table[0][slot] + table[1][slot] + table[2][slot] + table[3][slot] + table[4][slot],
+            1 => table[0][slot],
+            2 => table[2][slot],
+            3 => table[2][slot] + table[0][slot],
+            4 => table[1][slot],
+            5 => table[3][slot],
+            6 => table[3][slot] + table[1][slot],
+            7 => table[4][slot],
+            _ => 0,
+        }
+    }
+}
+
+/// Sums over the class-filtered selector set (selectors `0x0e`, `0x0f`,
+/// `0x10`), skipping the current player.
+fn w13a05_sum_relation_class(
+    world: &W13A05World<'_>,
+    class: u8,
+    visit: &dyn Fn(u32) -> i32,
+) -> i32 {
+    let current = world.current as u32;
+    let mut total = 0;
+    for slot in world.w13a05_slots() {
+        if slot == current {
+            continue;
+        }
+        if world.w13a05_relation_at(current, slot) == class {
+            total += visit(slot);
+        }
+    }
+    total
+}
+
+/// The shared selector dispatch used by every accumulate routine in this
+/// window.
+///
+/// `leaf` receives `(player, unit_type)` for a concrete player slot and
+/// `player_limit` is the highest player index the leaf accepts (`12` for the
+/// table readers, `8` for `0x006651b0`).
+fn w13a05_dispatch(
+    world: &W13A05World<'_>,
+    selector: u32,
+    unit_type: u32,
+    leaf: &dyn Fn(u32, u32) -> i32,
+    player_limit: u32,
+) -> i32 {
+    let recurse = |slot: u32| w13a05_dispatch(world, slot, unit_type, leaf, player_limit);
+    match selector {
+        0x0d => {
+            let current = world.current as u32;
+            if current < player_limit {
+                leaf(current, unit_type)
+            } else {
+                0
+            }
+        }
+        0x0e => w13a05_sum_relation_class(world, W13A05_REL_NONE, &recurse),
+        0x0f => w13a05_sum_relation_class(world, W13A05_REL_ENEMY, &recurse),
+        0x10 => w13a05_sum_relation_class(world, W13A05_REL_ALLY, &recurse),
+        0x11 => w13a05_sum_all_slots(world, &recurse),
+        0x12..=0x15 => w13a05_sum_owned_slots(world, selector, &recurse),
+        0x16..=0x19 => 0,
+        0x1a => w13a05_sum_not_mutual_enemies(world, &recurse),
+        _ => {
+            if selector < player_limit {
+                leaf(selector, unit_type)
+            } else {
+                0
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests_wave13_agent05 {
+    use super::*;
+
+    fn relation() -> W13A05Relation {
+        // Current player 1: slot 2 is class 1, slot 3 is a one-way class 2,
+        // slot 4 is a mutual class 2, slot 5 is class 0.
+        let mut relation = [[W13A05_REL_NONE; W13A05_SLOT_COUNT]; W13A05_SLOT_COUNT];
+        relation[1][2] = W13A05_REL_ALLY;
+        relation[2][1] = W13A05_REL_ALLY;
+        relation[1][3] = W13A05_REL_ENEMY;
+        relation[1][4] = W13A05_REL_ENEMY;
+        relation[4][1] = W13A05_REL_ENEMY;
+        relation
+    }
+
+    const OWNERS: [u8; W13A05_SLOT_COUNT] = [0, 1, 2, 3, 1, 2, 3, 0, 0, 1, 2, 3];
+    const CURSOR: [u32; 8] = [0, 1, 2, 3, 4, 5, 6, 7];
+
+    fn world<'a>(relation: &'a W13A05Relation, owners: &'a [u8; 12]) -> W13A05World<'a> {
+        W13A05World::w13a05_new(&CURSOR, 1, relation, owners)
+    }
+
+    fn trio() -> W13A05TrioCounts {
+        let mut counts = W13A05TrioCounts::w13a05_zeroed();
+        for player in 0..W13A05_SLOT_COUNT {
+            counts.first[player] = 100 + player as i32;
+            counts.second[player] = 200 + player as i32;
+            counts.third[player] = 300 + player as i32;
+        }
+        for unit in 0..W13A05_UNIT_ROWS {
+            for player in 0..W13A05_SLOT_COUNT {
+                counts.per_unit[unit * W13A05_SLOT_COUNT + player] =
+                    player as i32 * 1000 + unit as i32;
+            }
+        }
+        counts
+    }
+
+    fn pair() -> W13A05PairCounts {
+        let mut counts = W13A05PairCounts {
+            low: [0; W13A05_SLOT_COUNT],
+            high: [0; W13A05_SLOT_COUNT],
+        };
+        for player in 0..W13A05_SLOT_COUNT {
+            counts.low[player] = player as i32;
+            counts.high[player] = 1000 + player as i32;
+        }
+        counts
+    }
+
+    fn categories() -> W13A05CategoryCounts {
+        let mut counts = W13A05CategoryCounts {
+            tables: [[0; W13A05_SLOT_COUNT]; 5],
+        };
+        for player in 0..W13A05_SLOT_COUNT {
+            let base = player as i32;
+            counts.tables[0][player] = base;
+            counts.tables[1][player] = 10 + base;
+            counts.tables[2][player] = 20 + base;
+            counts.tables[3][player] = 30 + base;
+            counts.tables[4][player] = 40 + base;
+        }
+        counts
+    }
+
+    #[test]
+    fn compare_operators_and_boundaries() {
+        // 0x00664210 / 0x00664260: op 0 is `target <= current`.
+        assert!(w13a05_compare_global(5, 0, 5));
+        assert!(w13a05_compare_global(4, 0, 5));
+        assert!(!w13a05_compare_global(6, 0, 5));
+        assert!(w13a05_compare_player(6, 1, 5));
+        assert!(w13a05_compare_player(5, 1, 5));
+        assert!(!w13a05_compare_player(4, 1, 5));
+        assert!(w13a05_compare_global(u32::MAX, 10, u32::MAX));
+        assert!(!w13a05_compare_global(0, 10, u32::MAX));
+        for op in [2u8, 9, 11, 0xff] {
+            assert!(!w13a05_compare_global(1, op, 1));
+        }
+    }
+
+    #[test]
+    fn sum_all_slots_covers_cursor_then_eight_to_eleven() {
+        // 0x00664610
+        let relation = relation();
+        let world = world(&relation, &OWNERS);
+        let visited = std::cell::RefCell::new(Vec::new());
+        let total = w13a05_sum_all_slots(&world, &|slot| {
+            visited.borrow_mut().push(slot);
+            slot as i32
+        });
+        assert_eq!(visited.into_inner(), (0..12).collect::<Vec<u32>>());
+        assert_eq!(total, 66);
+    }
+
+    #[test]
+    fn relation_sums_filter_and_skip_current() {
+        // 0x00664b60 (class 0), 0x00664700 (class 2), 0x006650a0 (class 1)
+        let relation = relation();
+        let world = world(&relation, &OWNERS);
+        let collect = |slot: u32| slot as i32;
+
+        let none: Vec<u32> = world
+            .w13a05_slots()
+            .filter(|&slot| slot != 1 && relation[1][slot as usize] == 0)
+            .collect();
+        assert_eq!(none, vec![0, 5, 6, 7]);
+        assert_eq!(w13a05_sum_relation_none(&world, &collect), 18);
+        assert_eq!(w13a05_sum_relation_enemy(&world, &collect), 7);
+        assert_eq!(w13a05_sum_relation_ally(&world, &collect), 2);
+    }
+
+    #[test]
+    fn limited_relation_sum_bails_and_stops_at_target() {
+        // 0x00664be0
+        let relation = relation();
+        let world = world(&relation, &OWNERS);
+        assert_eq!(
+            w13a05_sum_relation_none_limited(&world, 100, &|slot, target| {
+                assert_eq!(target, 100);
+                slot as i32
+            }),
+            18
+        );
+        // Stops as soon as the running total reaches the target.
+        assert_eq!(
+            w13a05_sum_relation_none_limited(&world, 5, &|slot, _| slot as i32),
+            5
+        );
+        // A cursor whose first index is already out of range returns 0.
+        let late = [8u32, 0, 1];
+        let late_world = W13A05World::w13a05_new(&late, 1, &relation, &OWNERS);
+        assert_eq!(
+            w13a05_sum_relation_none_limited(&late_world, 10, &|_, _| 1),
+            0
+        );
+    }
+
+    #[test]
+    fn owned_slot_sums() {
+        // 0x00664ce0 / 0x00664d40
+        let relation = relation();
+        let world = world(&relation, &OWNERS);
+        // selector 0x12 wants owner 1: slots 1 and 4 (the owner loop never
+        // walks slots 8..11).
+        assert_eq!(w13a05_sum_owned_slots(&world, 0x12, &|slot| slot as i32), 5);
+        // selector 0x13 wants owner 2: slots 2 and 5.
+        assert_eq!(w13a05_sum_owned_slots(&world, 0x13, &|slot| slot as i32), 7);
+        assert_eq!(w13a05_sum_owned_slots(&world, 0x10, &|_| 1), 0);
+        assert_eq!(
+            w13a05_sum_owned_slots_limited(&world, 0x12, 99, &|slot, _| slot as i32),
+            5
+        );
+        assert_eq!(
+            w13a05_sum_owned_slots_limited(&world, 0x12, 1, &|slot, _| slot as i32),
+            1
+        );
+        let late = [9u32, 0];
+        let late_world = W13A05World::w13a05_new(&late, 1, &relation, &OWNERS);
+        assert_eq!(
+            w13a05_sum_owned_slots_limited(&late_world, 0x12, 99, &|_, _| 1),
+            0
+        );
+    }
+
+    #[test]
+    fn not_mutual_enemies_only_drops_two_way_hostility() {
+        // 0x00664f50
+        let relation = relation();
+        let world = world(&relation, &OWNERS);
+        let visited = std::cell::RefCell::new(Vec::new());
+        let total = w13a05_sum_not_mutual_enemies(&world, &|slot| {
+            visited.borrow_mut().push(slot);
+            1
+        });
+        assert_eq!(visited.into_inner(), vec![0, 2, 3, 5, 6, 7]);
+        assert_eq!(total, 6);
+    }
+
+    #[test]
+    fn trio_value_maps_kinds_and_units() {
+        let counts = trio();
+        assert_eq!(counts.w13a05_value(2, 0xe5, None), 304);
+        assert_eq!(counts.w13a05_value(2, 0xe6, None), 102);
+        assert_eq!(counts.w13a05_value(2, 0xe7, None), 202);
+        assert_eq!(counts.w13a05_value(2, 0xe8, None), 302);
+        assert_eq!(counts.w13a05_value(2, 5, None), 2005);
+        assert_eq!(counts.w13a05_value(2, 0xe4, None), 2228);
+        assert_eq!(counts.w13a05_value(12, 5, None), 0);
+        assert_eq!(counts.w13a05_value(2, 0xe9, None), 0);
+        assert_eq!(counts.w13a05_value(2, 5, Some(-7)), -7);
+        // The shipped readers mask the kind with 0xffff.
+        assert_eq!(counts.w13a05_value(2, 0x1_0005, None), 2005);
+        assert_eq!(counts.w13a05_value(2, 0x1_00e6, None), 102);
+        // The kind rows ignore the alternate provider.
+        assert_eq!(counts.w13a05_value(2, 0xe6, Some(-7)), 102);
+    }
+
+    #[test]
+    fn dispatch_over_trio_a() {
+        // 0x00664980
+        let relation = relation();
+        let world = world(&relation, &OWNERS);
+        let counts = trio();
+        let value = |selector: u32| w13a05_accumulate_count(&world, &counts, selector, 5);
+
+        assert_eq!(value(0x0d), 1005);
+        assert_eq!(value(0x0e), 18020);
+        assert_eq!(value(0x0f), 3005 + 4005);
+        assert_eq!(value(0x10), 2005);
+        assert_eq!(value(0x11), 66060);
+        assert_eq!(value(0x12), 1005 + 4005);
+        for selector in 0x16..=0x19 {
+            assert_eq!(value(selector), 0);
+        }
+        assert_eq!(value(0x1a), 23030);
+        assert_eq!(value(0x0c), 0);
+        assert_eq!(value(0x1b), 0);
+
+        // `DAT_01165f58 != 0` replaces every per-unit row.
+        let overridden = world.w13a05_with_override(-5);
+        assert_eq!(w13a05_accumulate_count(&overridden, &counts, 0x0d, 5), -5);
+        assert_eq!(
+            w13a05_accumulate_count(&overridden, &counts, 0x0d, 0xe6),
+            101
+        );
+    }
+
+    #[test]
+    fn dispatch_over_trio_b_uses_its_own_override_free_tables() {
+        // 0x00664db0
+        let relation = relation();
+        let mut world = world(&relation, &OWNERS);
+        world.override_value = Some(999);
+        let mut counts = trio();
+        counts.per_unit[5 * 12 + 1] = 42;
+        assert_eq!(w13a05_accumulate_live_count(&world, &counts, 0x0d, 5), 42);
+        assert_eq!(w13a05_accumulate_live_count(&world, &counts, 0xe6, 5), 0);
+        assert_eq!(
+            w13a05_accumulate_live_count(&world, &counts, 0x11, 0xe5),
+            3732
+        );
+    }
+
+    #[test]
+    fn pair_tables_and_dispatch() {
+        // 0x006657a0
+        let relation = relation();
+        let world = world(&relation, &OWNERS);
+        let counts = pair();
+        assert_eq!(counts.w13a05_value(3, 0), 3);
+        assert_eq!(counts.w13a05_value(3, 1), 1003);
+        assert_eq!(counts.w13a05_value(3, 2), 1006);
+        assert_eq!(counts.w13a05_value(3, 3), 0);
+        assert_eq!(counts.w13a05_value(3, 0x1_0002), 1006);
+        // 0x11 sums every slot; which 2 is low + high.
+        assert_eq!(
+            w13a05_accumulate_pair(&world, &counts, 0x11, 2),
+            12000 + 132
+        );
+        // 0x0f is slots 3 and 4.
+        assert_eq!(w13a05_accumulate_pair(&world, &counts, 0x0f, 1), 2007);
+        assert_eq!(w13a05_accumulate_pair(&world, &counts, 0x0d, 0), 1);
+    }
+
+    #[test]
+    fn category_tables_match_the_eight_combinations() {
+        // 0x006658e0
+        let relation = relation();
+        let world = world(&relation, &OWNERS);
+        let counts = categories();
+        for (which, expected) in [
+            (0, 100),
+            (1, 0),
+            (2, 20),
+            (3, 20),
+            (4, 10),
+            (5, 30),
+            (6, 40),
+            (7, 40),
+        ] {
+            assert_eq!(counts.w13a05_value(0, which), expected, "which {which}");
+        }
+        assert_eq!(counts.w13a05_value(0, 8), 0);
+        assert_eq!(counts.w13a05_value(0, 0x1_0000), 100);
+        assert_eq!(counts.w13a05_value(12, 0), 0);
+        // Selector 0x0d on player 1, category 0 sums all five tables.
+        assert_eq!(w13a05_accumulate_category(&world, &counts, 0x0d, 0), 105);
+        // 0x16..=0x19 return zero even for a valid category.
+        assert_eq!(w13a05_accumulate_category(&world, &counts, 0x17, 0), 0);
+    }
+
+    #[test]
+    fn snapshot_dispatch_reads_the_chosen_trio() {
+        // 0x00665ad0
+        let relation = relation();
+        let world = world(&relation, &OWNERS);
+        let mut cached = trio();
+        cached.first = [1; W13A05_SLOT_COUNT];
+        cached.second = [2; W13A05_SLOT_COUNT];
+        cached.third = [3; W13A05_SLOT_COUNT];
+        let mut live = trio();
+        live.first = [10; W13A05_SLOT_COUNT];
+        live.second = [20; W13A05_SLOT_COUNT];
+        live.third = [30; W13A05_SLOT_COUNT];
+
+        // `which == 0` selects the cached layout, anything else the live one.
+        assert_eq!(
+            w13a05_accumulate_snapshot(&world, &cached, &live, 0x0d, 0xe6, 0),
+            1
+        );
+        assert_eq!(
+            w13a05_accumulate_snapshot(&world, &cached, &live, 0x0d, 0xe6, 1),
+            10
+        );
+        assert_eq!(
+            w13a05_accumulate_snapshot(&world, &cached, &live, 0x0d, 0xe5, 0),
+            3
+        );
+        assert_eq!(
+            w13a05_accumulate_snapshot(&world, &cached, &live, 0x0d, 0xe8, 1),
+            30
+        );
+        assert_eq!(
+            w13a05_accumulate_snapshot(&world, &cached, &live, 0x0d, 0xe9, 0),
+            0
+        );
+    }
+
+    #[test]
+    fn slot_flag_selector_counts_membership() {
+        // 0x006655e0
+        let relation = relation();
+        let world = world(&relation, &OWNERS);
+        // Field 7 lies in the class-0 set {0,5,6,7}; field 3 does not.
+        assert_eq!(w13a05_accumulate_slot_flag(&world, 0x0e, 3), 0);
+        assert_eq!(w13a05_accumulate_slot_flag(&world, 0x0e, 5), 1);
+        assert_eq!(w13a05_accumulate_slot_flag(&world, 0x0e, 7), 1);
+        assert_eq!(w13a05_accumulate_slot_flag(&world, 0x0e, 1), 0);
+        assert_eq!(w13a05_accumulate_slot_flag(&world, 0x11, 11), 1);
+        assert_eq!(w13a05_accumulate_slot_flag(&world, 0x11, 12), 0);
+        assert_eq!(w13a05_accumulate_slot_flag(&world, 0x0c, 0), 0);
+    }
+
+    #[test]
+    fn cached_dispatch_limits_players_to_eight() {
+        // 0x006651b0
+        let relation = relation();
+        let mut world = world(&relation, &OWNERS);
+        let leaf = |player: u32| player as i32 * 10;
+        assert_eq!(w13a05_accumulate_cached_count(&world, 0x0d, &leaf), 10);
+        // The 0x11 set also walks slots 8..11, but this dispatcher's reader
+        // only accepts players below 8, so those slots contribute zero.
+        assert_eq!(w13a05_accumulate_cached_count(&world, 0x11, &leaf), 280);
+        assert_eq!(w13a05_accumulate_cached_count(&world, 0x0f, &leaf), 70);
+        assert_eq!(w13a05_accumulate_cached_count(&world, 0x07, &leaf), 70);
+        // Selectors 8..=12 fall outside the reader's eight-player bound.
+        assert_eq!(w13a05_accumulate_cached_count(&world, 0x0b, &leaf), 0);
+        assert_eq!(w13a05_accumulate_cached_count(&world, 0x0c, &leaf), 0);
+        world.current = 9;
+        assert_eq!(w13a05_accumulate_cached_count(&world, 0x0d, &leaf), 0);
+    }
+
+    #[test]
+    fn prime_cache_runs_once() {
+        // 0x00664c70
+        let mut mode = 0u8;
+        let mut cached_players = [0i32; W13A05_CACHED_PLAYER_WORDS];
+        let mut cached_units = [0i32; W13A05_CACHED_UNIT_WORDS];
+        let mut live_players = [0i32; W13A05_CACHED_PLAYER_WORDS];
+        let mut live_units = [0i32; W13A05_CACHED_UNIT_WORDS];
+        live_players[0] = 11;
+        live_players[W13A05_CACHED_PLAYER_WORDS - 1] = 12;
+        live_units[0] = 13;
+        live_units[W13A05_CACHED_UNIT_WORDS - 1] = 14;
+
+        assert!(w13a05_prime_cache(
+            &mut mode,
+            &mut cached_players,
+            &live_players,
+            &mut cached_units,
+            &live_units
+        ));
+        assert_eq!(mode, 1);
+        assert_eq!(cached_players, live_players);
+        assert_eq!(cached_units, live_units);
+
+        live_players[0] = 99;
+        assert!(!w13a05_prime_cache(
+            &mut mode,
+            &mut cached_players,
+            &live_players,
+            &mut cached_units,
+            &live_units
+        ));
+        assert_eq!(cached_players[0], 11);
+    }
+
+    #[test]
+    fn mode_byte_setters() {
+        // 0x00664810 and 0x006656d0
+        let mut state = W13A05Mode {
+            mode: 2,
+            argument: 4,
+        };
+        w13a05_clear_accumulate_mode(&mut state);
+        assert_eq!(state.mode, 0);
+        assert_eq!(state.argument, 4);
+
+        let mut cached = [7i32; W13A05_CACHED_PLAYER_WORDS];
+        assert!(w13a05_set_accumulate_mode(&mut state, 5, &mut cached));
+        assert_eq!(state.mode, 2);
+        assert_eq!(state.argument, 5);
+        assert!(cached.iter().all(|&word| word == 0));
+
+        cached[0] = 1;
+        assert!(!w13a05_set_accumulate_mode(&mut state, 5, &mut cached));
+        assert_eq!(cached[0], 1);
+        assert!(w13a05_set_accumulate_mode(&mut state, 6, &mut cached));
+    }
+
+    #[test]
+    fn result_table_address_is_recovered() {
+        // 0x00665dd0
+        assert_eq!(w13a05_result_table_base(), 0x00fe_58d8);
+    }
+
+    #[test]
+    fn setup_resets_records_before_classifying() {
+        // 0x00665ec0
+        let mut results = [W13A05Result { id: 1, value: 2 }; 8];
+        let plan = w13a05_setup(&mut results, 0x11, 0, 0).expect("mode 0x11 is known");
+        assert!(
+            results
+                .iter()
+                .all(|record| record.id == W13A05_RESULT_SENTINEL && record.value == 0)
+        );
+        assert!(plan.prime_cache);
+        assert_eq!(plan.default_handler, Some(W13A05Handler::Snapshot));
+        assert_eq!(plan.registration, Some(W13A05Registration::ModeTable));
+        assert!(plan.visits.is_empty());
+
+        let unknown = w13a05_setup(&mut results, 0x99, 7, 7);
+        assert!(unknown.is_none());
+        assert_eq!(results[0].id, W13A05_RESULT_SENTINEL);
+    }
+
+    #[test]
+    fn setup_modes_register_the_recovered_handlers() {
+        // 0x00665ec0
+        let mut results = [W13A05Result { id: 0, value: 0 }; 8];
+
+        let plan = w13a05_setup(&mut results, 0x12, 3, 0).unwrap();
+        assert!(!plan.prime_cache);
+        assert_eq!(plan.player_mode, Some(3));
+        assert_eq!(plan.default_handler, Some(W13A05Handler::Snapshot));
+        assert_eq!(plan.registration, Some(W13A05Registration::ModeTable));
+
+        for (mode, handler) in [
+            (0x13u8, W13A05Handler::Pair),
+            (0x14, W13A05Handler::Live),
+            (0x15, W13A05Handler::Category),
+        ] {
+            let plan = w13a05_setup(&mut results, mode, 0, 0).unwrap();
+            assert_eq!(plan.default_handler, Some(handler), "mode {mode:#x}");
+            assert_eq!(plan.registration, Some(W13A05Registration::ModeTable));
+            assert!(!plan.prime_cache);
+        }
+
+        let plan = w13a05_setup(&mut results, 0x21, 0, 4).unwrap();
+        assert!(plan.prime_cache);
+        assert_eq!(
+            plan.visits,
+            vec![W13A05Visit {
+                handler: W13A05Handler::Snapshot,
+                argument: 4
+            }]
+        );
+        assert_eq!(plan.registration, Some(W13A05Registration::VisitTable));
+
+        let plan = w13a05_setup(&mut results, 0x22, 8, 4).unwrap();
+        assert_eq!(plan.player_mode, Some(8));
+        assert_eq!(plan.visits.len(), 1);
+
+        // 0x23: word 2 expands into the pair 0 + 1, other words stay singular.
+        let plan = w13a05_setup(&mut results, 0x23, 0, 2).unwrap();
+        assert_eq!(
+            plan.visits
+                .iter()
+                .map(|visit| visit.argument)
+                .collect::<Vec<_>>(),
+            vec![0, 1]
+        );
+        let plan = w13a05_setup(&mut results, 0x23, 0, 5).unwrap();
+        assert_eq!(plan.visits.len(), 1);
+
+        let plan = w13a05_setup(&mut results, 0x24, 0, 6).unwrap();
+        assert_eq!(plan.visits[0].handler, W13A05Handler::Live);
+
+        // 0x25: categories 0/3/6 expand, everything else is passed through.
+        let plan = w13a05_setup(&mut results, 0x25, 0, 0).unwrap();
+        assert_eq!(
+            plan.visits
+                .iter()
+                .map(|visit| visit.argument)
+                .collect::<Vec<_>>(),
+            vec![7, 1, 2, 4, 5]
+        );
+        let plan = w13a05_setup(&mut results, 0x25, 0, 3).unwrap();
+        assert_eq!(
+            plan.visits
+                .iter()
+                .map(|visit| visit.argument)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        let plan = w13a05_setup(&mut results, 0x25, 0, 6).unwrap();
+        assert_eq!(
+            plan.visits
+                .iter()
+                .map(|visit| visit.argument)
+                .collect::<Vec<_>>(),
+            vec![4, 5]
+        );
+        let plan = w13a05_setup(&mut results, 0x25, 0, 7).unwrap();
+        assert_eq!(plan.visits[0].argument, 7);
+        assert_eq!(plan.registration, Some(W13A05Registration::VisitTable));
+
+        // 0x28 registers both halves of the low pair.
+        let plan = w13a05_setup(&mut results, 0x28, 0, 0).unwrap();
+        assert_eq!(
+            plan.visits,
+            vec![
+                W13A05Visit {
+                    handler: W13A05Handler::Pair,
+                    argument: 0
+                },
+                W13A05Visit {
+                    handler: W13A05Handler::Pair,
+                    argument: 1
+                }
+            ]
+        );
+    }
+}

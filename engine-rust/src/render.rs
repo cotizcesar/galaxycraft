@@ -2583,3 +2583,1338 @@ mod sd_pose_tests {
         );
     }
 }
+
+// ===========================================================================
+// Merged from src/wave13/agent01.rs
+// ===========================================================================
+// Wave 13 translation batch 01.
+//
+// Window `0x0065c000..0x0065dfff`: the `TilePage` family (`TilePage`,
+// `TilePageDXT1`, `TilePagePaletteColor`) and the tile-set page cache that
+// the terrain loader fills from `.tileset`/DDS data.
+//
+// Recovered layouts (all offsets are byte offsets, patch 1.23.10):
+//
+// `TilePage` (object size `0x44`, vtable `0x00d3d298`):
+//
+// | offset | type | meaning |
+// |---|---|---|
+// | `+0x00` | `u32` | vtable |
+// | `+0x04` | `u32` | page index |
+// | `+0x08` | `u32` | page kind (`0`, `1`, `2`; `2` writes the record frame slot) |
+// | `+0x0c` | `u32` | tile edge length in bytes |
+// | `+0x10` | `0x10` bytes | embedded base object destroyed by `FUN_00a892e0` |
+// | `+0x14` | `i16` | page width / destination stride |
+// | `+0x16` | `i16` | page height |
+// | `+0x1c` | `u32` | unused by the translated page methods |
+// | `+0x20` | pointer | pixel buffer (`std::vector<u8>` begin) |
+// | `+0x24` | `u32` | pixel buffer length |
+// | `+0x28` | `u32` | pixel buffer capacity, high bit = owned flag |
+// | `+0x2c` | `u32` | cursor X |
+// | `+0x30` | `u32` | cursor Y |
+// | `+0x34` | `u32` | reference count (`0x0065c1f0` increments it) |
+// | `+0x38` | `u32` | owner tag copied from the tile set (`+0x0c`) |
+// | `+0x3c` | `u32` | bytes per pixel (`2` = DXT1, `4` = palette) |
+// | `+0x40` | `u8` | sealed flag; a page is only reused while zero |
+//
+// `TileSet`:
+//
+// | offset | type | meaning |
+// |---|---|---|
+// | `+0x00` | array | page array, 8-byte `shared_ptr` entries |
+// | `+0x04` | `u32` | page count |
+// | `+0x08` | `u32` | page capacity, high bit = owned flag |
+// | `+0x0c` | `u32` | owner tag copied to every page |
+// | `+0x10` | array | 10-byte tile records |
+// | `+0x14` | `u32` | tile-record count |
+// | `+0x18` | `u32` | tile-record capacity |
+// | `+0x1c` | `u32` | tile edge length |
+// | `+0x20` | `u8` | non-zero: pages use DXT1 (2 bpp), else palette (4 bpp) |
+// | `+0x24` | array | one presence byte per tile id |
+// | `+0x28` | `u32` | presence length |
+// | `+0x2c` | `u32` | presence capacity |
+// | `+0x30` | `i16` | page width |
+// | `+0x34` | `i16` | page height |
+//
+// A tile record is 10 bytes: `<u16 id><u16 page><u16 frame><u16 x><u16 y>`.
+// New records are filled with `{0xfffe, 0xffff, 0xffff, 0, 0}`.
+//
+// The Ghidra ledger lists 58 rows in the window, but only 18 of them begin a
+// standalone recoverable function.  Rows such as `FUN_0065c47c` and
+// `FUN_0065c759` are basic blocks of `0x0065c410`; the remaining rows are
+// listed by name in the "Skipped rows" table at the end.
+//
+// Verified against the shipped PE image at `0x0065c000..0x0065e000`; every
+// translated address below appears in the function that owns that VA.
+//
+// Skipped rows (names only; none of these is claimed as a translation):
+//
+// | rows | reason |
+// |---|---|
+// | `FUN_0065c005`, `FUN_0065c028`, `FUN_0065c05f`, `FUN_0065c077`, `FUN_0065c095` | exception-unwind fragments of the 0x38-byte destructor that starts before this row; they begin mid-function, read `unaff_*`/`ExceptionList` and end in non-returning cleanup |
+// | `FUN_0065c47c`, `FUN_0065c50e`, `FUN_0065c51d`, `FUN_0065c595`, `FUN_0065c61f`, `FUN_0065c68f`, `FUN_0065c71e`, `FUN_0065c759` | basic blocks of `0x0065c410` (shared_ptr/control-block construction, vector growth, record initialisation and tail zeroing); not standalone functions |
+// | `FUN_0065c9f5` | basic block of `0x0065c960` (UV assembly after the texture-preparation call) |
+// | `FUN_0065cb91`, `FUN_0065cc1a` | blocks of `0x0065cb10` (capacity growth and the `memset` tail) |
+// | `FUN_0065cc30`, `FUN_0065cc46`, `FUN_0065cee3` | the `FUN_0065cc30` body is truncated at `FUN_0065cc46` and resumes after an embedded data/bad-instruction region split by exception funclets; no faithful whole function |
+// | `FUN_0065cf60` | `halt_baddata` and overlapping instructions dominate the body |
+// | `FUN_0065d150` | builds a `.tmsk` name with `std::string` internals and the unknown `FUN_0053f840`; no recoverable pure result |
+// | `FUN_0065d410`, `FUN_0065d426`, `FUN_0065d4b7`, `FUN_0065d5c3`, `FUN_0065d60b`, `FUN_0065d656`, `FUN_0065d68c`, `FUN_0065d7c2`, `FUN_0065d805` | DDS tile loader and its blocks; virtual stream reads, caller-frame stack slots and vector-resize tails, no standalone pure result |
+// | `FUN_0065d850` | configures 32x32 pages and then tail-calls `FUN_0060f870`/`FUN_00680190`; no recoverable return value |
+// | `FUN_0065d972`, `FUN_0065da6d`, `FUN_0065daa0`, `FUN_0065dcec` | tile-image stream loader and its blocks; `unaff_*` registers/stack slots and a caller-owned stream vtable |
+// | `FUN_0065dd40`, `FUN_0065de51`, `FUN_0065df74`, `FUN_0065df93`, `FUN_0065dfa5` | `halt_baddata`/overlapping instructions; decompile failed |
+
+// ===========================================================================
+// Tile record / page data
+// ===========================================================================
+
+/// Stride of one tile record (`0x0065c960` computes `id * 10`).
+pub const W13A01_TILE_RECORD_STRIDE: usize = 10;
+
+/// Tile id written into a fresh record (`0x0065c410` / the resizer behind
+/// `FUN_0065e700` write `0xfffffffe` as the first dword, i.e. id `0xfffe`).
+pub const W13A01_TILE_PLACEHOLDER_ID: u16 = 0xfffe;
+
+/// "No tile / no page" sentinel (`0xffff`).
+pub const W13A01_TILE_NONE: u16 = 0xffff;
+
+/// Bytes-per-pixel tag stored at `TilePage + 0x3c` for DXT1 pages.
+pub const W13A01_BPP_DXT1: u32 = 2;
+
+/// Bytes-per-pixel tag stored at `TilePage + 0x3c` for palette pages.
+pub const W13A01_BPP_PALETTE: u32 = 4;
+
+/// Page kind whose index is written into the record's frame slot by
+/// `0x0065c1f0`.
+pub const W13A01_KIND_DXT1: u32 = 2;
+
+/// `TilePage` vtable stored by the deleting destructor at `0x0065c170`.
+pub const W13A01_TILE_PAGE_VTABLE: u32 = 0x00d3_d298;
+
+/// Allocation size passed to `operator delete` by `0x0065c170`.
+pub const W13A01_TILE_PAGE_OBJECT_SIZE: usize = 0x44;
+
+/// `blz::_shared_ptr_manager` vtable stored by `0x0065c140`.
+pub const W13A01_SHARED_PTR_MANAGER_VTABLE: u32 = 0x00d3_287c;
+
+/// Allocation size passed to `operator delete` by `0x0065c140`.
+pub const W13A01_SHARED_PTR_MANAGER_SIZE: usize = 0x50;
+
+/// One 10-byte tile-set record.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct W13A01TileRecord {
+    /// `+0x00`: tile id; the lookup at `0x0065c960` rejects a record whose
+    /// stored id differs from the requested id.
+    pub id: u16,
+    /// `+0x02`: primary page index used by `0x0065c960`.
+    pub page: u16,
+    /// `+0x04`: secondary page index written when a page of kind
+    /// [`W13A01_KIND_DXT1`] is selected.
+    pub frame: u16,
+    /// `+0x06`: tile X inside the page, written by both blitters.
+    pub x: u16,
+    /// `+0x08`: tile Y inside the page, written by both blitters.
+    pub y: u16,
+}
+
+impl W13A01TileRecord {
+    /// The value the record resizer writes into newly grown slots.
+    pub const PLACEHOLDER: Self = Self {
+        id: W13A01_TILE_PLACEHOLDER_ID,
+        page: W13A01_TILE_NONE,
+        frame: W13A01_TILE_NONE,
+        x: 0,
+        y: 0,
+    };
+
+    /// Decode one little-endian record.
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        let b: [u8; W13A01_TILE_RECORD_STRIDE] =
+            bytes.get(..W13A01_TILE_RECORD_STRIDE)?.try_into().ok()?;
+        Some(Self {
+            id: u16::from_le_bytes([b[0], b[1]]),
+            page: u16::from_le_bytes([b[2], b[3]]),
+            frame: u16::from_le_bytes([b[4], b[5]]),
+            x: u16::from_le_bytes([b[6], b[7]]),
+            y: u16::from_le_bytes([b[8], b[9]]),
+        })
+    }
+
+    /// Encode one little-endian record; returns `false` when `out` is short.
+    pub fn write_bytes(self, out: &mut [u8]) -> bool {
+        if out.len() < W13A01_TILE_RECORD_STRIDE {
+            return false;
+        }
+        out[0..2].copy_from_slice(&self.id.to_le_bytes());
+        out[2..4].copy_from_slice(&self.page.to_le_bytes());
+        out[4..6].copy_from_slice(&self.frame.to_le_bytes());
+        out[6..8].copy_from_slice(&self.x.to_le_bytes());
+        out[8..10].copy_from_slice(&self.y.to_le_bytes());
+        true
+    }
+}
+
+/// One tile page.  The `pixels` vector stands for the `+0x20..+0x28`
+/// `std::vector<u8>` inside the shipped object.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct W13A01TilePage {
+    pub kind: u32,
+    pub index: u16,
+    pub tile_size: u32,
+    pub width: i16,
+    pub height: i16,
+    pub pixels: Vec<u8>,
+    pub cursor_x: u32,
+    pub cursor_y: u32,
+    pub refs: u32,
+    pub owner_tag: u32,
+    pub bpp: u32,
+    pub sealed: bool,
+}
+
+impl W13A01TilePage {
+    /// Virtual `size()` of the page: DXT1 halves the area, palette keeps it.
+    pub fn size_bytes(&self) -> u32 {
+        if self.bpp == W13A01_BPP_DXT1 {
+            w13a01_dxt1_page_size(self.width, self.height)
+        } else {
+            w13a01_palette_page_size(self.width, self.height)
+        }
+    }
+}
+
+/// The tile set object (page array + record table + presence map).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct W13A01Tileset {
+    pub pages: Vec<W13A01TilePage>,
+    pub field_04: u32,
+    pub field_08: u32,
+    pub owner_tag: u32,
+    pub records: Vec<W13A01TileRecord>,
+    pub tile_size: u32,
+    pub use_dxt1: bool,
+    pub present: Vec<u8>,
+    pub width: i16,
+    pub height: i16,
+}
+
+/// Result of the tile lookup at `0x0065c960`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct W13A01TileUv {
+    /// Record `+0x02` (the primary page index).
+    pub page: u16,
+    /// Record `+0x04`.
+    pub frame: u16,
+    /// `x / page.width`.
+    pub u0: f32,
+    /// `y / page.height`.
+    pub v0: f32,
+    /// `tile_size / page.width`.
+    pub u1: f32,
+    /// `tile_size / page.height`.
+    pub v1: f32,
+}
+
+// ===========================================================================
+// Page geometry and blitters
+// ===========================================================================
+
+/// `0x0065c940`: `TilePageDXT1::size()`.
+///
+/// ```c
+/// return (short[+0x16] * short[+0x14]) >> 1;
+/// ```
+///
+/// The two operand loads are sign-extending `movsx` and the multiply is a
+/// 32-bit `imul`; the shift is logical.  The result is a byte count.
+pub fn w13a01_dxt1_page_size(width: i16, height: i16) -> u32 {
+    ((width as i32).wrapping_mul(height as i32) as u32) >> 1
+}
+
+/// `0x0065c950`: `TilePagePaletteColor::size()`.
+///
+/// ```c
+/// return (short[+0x16] * short[+0x14]);
+/// ```
+///
+/// Same sign-extending 32-bit multiply as [`w13a01_dxt1_page_size`], without
+/// the halving step.
+pub fn w13a01_palette_page_size(width: i16, height: i16) -> u32 {
+    (width as i32).wrapping_mul(height as i32) as u32
+}
+
+/// `0x0065cf00`: `TilePageDXT1::is_full()`.
+///
+/// ```c
+/// cols = (uint)(int)width / tile_size;          // unsigned div
+/// rows = (height + ((height >> 31) & 3)) >> 2;  // truncating / 4
+/// return cursor_y >= cols * rows;
+/// ```
+///
+/// A zero `tile_size` would fault in the shipped code; this version reports
+/// "not full" instead.
+pub fn w13a01_dxt1_is_full(width: i16, height: i16, tile_size: u32, cursor_y: u32) -> bool {
+    let cols = match (width as i32 as u32).checked_div(tile_size) {
+        Some(v) => v,
+        None => return false,
+    };
+    let h = height as i32;
+    let rows = (h.wrapping_add((h >> 31) & 3) >> 2) as u32;
+    cursor_y >= cols.wrapping_mul(rows)
+}
+
+/// `0x0065cf30`: `TilePagePaletteColor::is_full()`.
+///
+/// ```c
+/// return cursor_y >= (uint)(int)height;
+/// ```
+///
+/// Unlike the DXT1 test this compares directly with the page height; the
+/// palette page is full only after the last 1-byte row has been consumed.
+pub fn w13a01_palette_is_full(height: i16, cursor_y: u32) -> bool {
+    cursor_y >= height as i32 as u32
+}
+
+/// `0x0065c7a0`: `TilePageDXT1::blit(record, source)`.
+///
+/// The shipped body copies `tile_size / 4` rows of `(tile_size / 4) * 8`
+/// bytes, advancing the destination row by `width / tile_size` each time, then
+/// writes the tile's page coordinates to `record.x`/`record.y` and advances the
+/// cursor (`cursor_x += stride`; wrap to the next band when the band is full).
+///
+/// The destination offset is `(cursor_y + local) * stride + cursor_x`; the
+/// original has no bounds checks.  This version returns `false` without
+/// writing when a row would leave the pixel buffer or the source slice, and
+/// uses zero for the coordinate divisions a zero-sized page would fault on.
+pub fn w13a01_dxt1_blit(
+    page: &mut W13A01TilePage,
+    record: &mut W13A01TileRecord,
+    source: &[u8],
+) -> bool {
+    let tile = page.tile_size;
+    if tile == 0 {
+        return false;
+    }
+    let rows = tile >> 2;
+    // The shipped body forms the row stride as `(tile_size >> 2) * 8`, which
+    // only equals `tile_size * 2` for tile sizes that are multiples of four.
+    let stride = rows.wrapping_mul(8);
+    if rows == 0 || stride == 0 {
+        return false;
+    }
+    let row_step = match (page.width as i32 as u32).checked_div(tile) {
+        Some(v) => v,
+        None => return false,
+    };
+    let band_height = row_step.wrapping_mul(rows);
+    if band_height == 0 {
+        return false;
+    }
+
+    let mut local = 0u32;
+    let mut src_off = 0usize;
+    for _ in 0..rows {
+        let dst_start =
+            (page.cursor_y as u64 + local as u64) * stride as u64 + page.cursor_x as u64;
+        let dst_end = dst_start + stride as u64;
+        let src_end = src_off as u64 + stride as u64;
+        if dst_end > page.pixels.len() as u64 || src_end > source.len() as u64 {
+            return false;
+        }
+        page.pixels[dst_start as usize..dst_end as usize]
+            .copy_from_slice(&source[src_off..src_end as usize]);
+        src_off = src_end as usize;
+        local = local.wrapping_add(row_step);
+    }
+
+    let tile_low = tile as u16 as u32;
+    record.x = (page.cursor_x / stride).wrapping_mul(tile_low) as u16;
+    record.y = (page.cursor_y / band_height).wrapping_mul(tile_low) as u16;
+
+    page.cursor_x = page.cursor_x.wrapping_add(stride);
+    if band_height.wrapping_mul(stride) as u64 <= page.cursor_x as u64 {
+        page.cursor_y = page.cursor_y.wrapping_add(band_height);
+        page.cursor_x = 0;
+    }
+    true
+}
+
+/// `0x0065c880`: `TilePagePaletteColor::blit(record, source)`.
+///
+/// Copies a `tile_size` x `tile_size` square of bytes into
+/// `pixels[(cursor_y + dy) * width + cursor_x + dx]`, stores the cursor in the
+/// record's X/Y slots and advances `cursor_x` by one tile; when it reaches the
+/// page width the cursor wraps to the next tile row.
+///
+/// The shipped body also has no bounds checks; this version returns `false`
+/// when a destination byte or source byte is out of range.
+pub fn w13a01_palette_blit(
+    page: &mut W13A01TilePage,
+    record: &mut W13A01TileRecord,
+    source: &[u8],
+) -> bool {
+    let edge = page.tile_size;
+    if edge == 0 {
+        return false;
+    }
+    let width = page.width as i32;
+    let mut src_off = 0usize;
+    for dy in 0..edge {
+        for dx in 0..edge {
+            let row = (page.cursor_y as i64 + dy as i64) * width as i64
+                + page.cursor_x as i64
+                + dx as i64;
+            if row < 0 || src_off >= source.len() {
+                return false;
+            }
+            let dst = row as usize;
+            if dst >= page.pixels.len() {
+                return false;
+            }
+            page.pixels[dst] = source[src_off];
+            src_off += 1;
+        }
+    }
+
+    record.x = page.cursor_x as u16;
+    record.y = page.cursor_y as u16;
+    page.cursor_x = page.cursor_x.wrapping_add(edge);
+    if page.cursor_x >= width as u32 {
+        page.cursor_y = page.cursor_y.wrapping_add(edge);
+        page.cursor_x = 0;
+    }
+    true
+}
+
+/// Dispatch the virtual `size()` (slots 1 of both page vtables).
+pub fn w13a01_page_size(page: &W13A01TilePage) -> u32 {
+    page.size_bytes()
+}
+
+/// Dispatch the virtual `is_full()` (slot 2 of both page vtables).
+pub fn w13a01_page_is_full(page: &W13A01TilePage) -> bool {
+    if page.bpp == W13A01_BPP_DXT1 {
+        w13a01_dxt1_is_full(page.width, page.height, page.tile_size, page.cursor_y)
+    } else {
+        w13a01_palette_is_full(page.height, page.cursor_y)
+    }
+}
+
+/// Dispatch the virtual `blit(record, source)` (slot 3 of both page vtables).
+pub fn w13a01_page_blit(
+    page: &mut W13A01TilePage,
+    record: &mut W13A01TileRecord,
+    source: &[u8],
+) -> bool {
+    if page.bpp == W13A01_BPP_DXT1 {
+        w13a01_dxt1_blit(page, record, source)
+    } else {
+        w13a01_palette_blit(page, record, source)
+    }
+}
+
+// ===========================================================================
+// Tile-set accessors
+// ===========================================================================
+
+/// `0x0065c910`: the second dword of the tile-set object behind the wrapper.
+///
+/// ```c
+/// return *(u32 *)(*in_ECX + 4);
+/// ```
+///
+/// `this->[0]` is a `TileSet *`; the returned word is `TileSet + 0x04`.
+pub fn w13a01_tileset_word_04(tileset: &W13A01Tileset) -> u32 {
+    tileset.field_04
+}
+
+/// `0x0065c920`: the tile edge length divided by the wrapper's slot 9.
+///
+/// ```c
+/// v = *(u32 *)(*in_ECX + 0x1c);
+/// if (in_ECX[9] != 0) v /= in_ECX[9];
+/// return v;
+/// ```
+///
+/// `in_ECX[9]` is the dword at wrapper offset `+0x24`.  A zero divisor keeps
+/// the value unchanged, matching the shipped `test ecx,ecx; je` guard.
+pub fn w13a01_tileset_scaled_tile_size(tileset: &W13A01Tileset, divisor: u32) -> u32 {
+    tileset
+        .tile_size
+        .checked_div(divisor)
+        .unwrap_or(tileset.tile_size)
+}
+
+/// `0x0065cb00`: the tile edge length (`TileSet + 0x1c`).
+///
+/// ```c
+/// return *(u32 *)(*in_ECX + 0x1c);
+/// ```
+pub fn w13a01_tileset_tile_size(tileset: &W13A01Tileset) -> u32 {
+    tileset.tile_size
+}
+
+/// `0x0065cf40`: the per-tile presence byte.
+///
+/// ```c
+/// return *(u8 *)(*(u32 *)(*in_ECX + 0x24) + param_1);
+/// ```
+///
+/// The presence map is the one resized by [`w13a01_configure_tile_set`].  The
+/// shipped read is unchecked; this version returns `None` past the map end.
+pub fn w13a01_tile_presence(tileset: &W13A01Tileset, tile_id: u16) -> Option<u8> {
+    tileset.present.get(tile_id as usize).copied()
+}
+
+/// `0x0065caa0`: resolve the page stored at `index` in the tile set's page
+/// array.
+///
+/// ```c
+/// page = (*(TilePage ***)set)[index];
+/// if (!prepare_texture(page + 0x10)) { lock_surface(page + 0x10); ... }
+/// return page + 4;                 // address of the +0x10 subobject
+/// ```
+///
+/// The shipped return value is the embedded base object at `TilePage + 0x10`;
+/// this helper returns the owning [`W13A01TilePage`] instead.  The texture
+/// preparation (`FUN_0067acc0`, `FUN_00a894d0`, `FUN_00a89790`) is a side effect and
+/// is not represented.  Out-of-range indices return `None` instead of reading
+/// past the array.
+pub fn w13a01_tile_page_at(tileset: &W13A01Tileset, index: u16) -> Option<&W13A01TilePage> {
+    tileset.pages.get(index as usize)
+}
+
+/// `0x0065cb10`: configure the tile set and resize its two parallel tables.
+///
+/// ```c
+/// this->[+0x0c] = param_3;      // owner tag
+/// this->[+0x1c] = param_2;      // tile edge
+/// this->[+0x20] = param_4;      // DXT1 flag
+/// resize_records(param_1);      // FUN_0065e700: new slots get 0xfffe/0xffff
+/// resize_present(param_1);      // new bytes are zeroed
+/// ```
+///
+/// `FUN_0065e700` fills fresh 10-byte records with
+/// [`W13A01TileRecord::PLACEHOLDER`](W13A01TileRecord::PLACEHOLDER); the
+/// presence vector is grown with `memset(..., 0, ...)`.
+pub fn w13a01_configure_tile_set(
+    tileset: &mut W13A01Tileset,
+    count: u32,
+    tile_size: u32,
+    owner_tag: u32,
+    use_dxt1: bool,
+) {
+    tileset.owner_tag = owner_tag;
+    tileset.tile_size = tile_size;
+    tileset.use_dxt1 = use_dxt1;
+    tileset
+        .records
+        .resize(count as usize, W13A01TileRecord::PLACEHOLDER);
+    tileset.present.resize(count as usize, 0);
+}
+
+/// `0x0065c960`: look up a tile record and build its texture UV rectangle.
+///
+/// ```c
+/// rec = record_base + tile_id * 10;
+/// if (rec->id != tile_id) return 0;
+/// *out_page = rec->page;
+/// if (out_frame) *out_frame = rec->frame;
+/// page = pages[rec->page];
+/// tile = (float)set->tile_size;
+/// rect = { rec->x / page->width, rec->y / page->height,
+///          tile / page->width, tile / page->height };
+/// ```
+///
+/// The shipped body additionally prepares the page texture through
+/// `FUN_0067acc0`/`FUN_00a894d0`/`FUN_00a89790` before reading the dimensions; that
+/// side effect is not part of this value helper.  A zero page dimension is
+/// rejected here instead of dividing by zero.
+pub fn w13a01_tile_uv(tileset: &W13A01Tileset, tile_id: u16) -> Option<W13A01TileUv> {
+    let record = *tileset.records.get(tile_id as usize)?;
+    if record.id != tile_id {
+        return None;
+    }
+    let page = tileset.pages.get(record.page as usize)?;
+    let w = page.width as f32;
+    let h = page.height as f32;
+    if w == 0.0 || h == 0.0 {
+        return None;
+    }
+    let tile = tileset.tile_size as f32;
+    Some(W13A01TileUv {
+        page: record.page,
+        frame: record.frame,
+        u0: record.x as f32 / w,
+        v0: record.y as f32 / h,
+        u1: tile / w,
+        v1: tile / h,
+    })
+}
+
+// ===========================================================================
+// Page construction and cache
+// ===========================================================================
+
+/// `0x0065c410`: build one page, append it to the tile set's page array, and
+/// size its pixel buffer.
+///
+/// The shipped body:
+///
+/// * takes `index = (u16)set->page_count` before the append;
+/// * picks `TilePageDXT1` (2 bpp, vtable `0x00d3d2ac`) when
+///   `set->[+0x20] != 0`, otherwise `TilePagePaletteColor` (4 bpp, vtable
+///   `0x00d3d2c0`);
+/// * stores `page->[+0x04] = index`, `page->[+0x08] = kind`,
+///   `page->[+0x0c] = set->tile_size`, `page->[+0x14] = (i16)set->width`,
+///   `page->[+0x16] = (i16)set->height`, `page->[+0x38] = set->[+0x0c]`,
+///   `page->[+0x40] = 0`;
+/// * appends the shared pointer and calls the virtual `size()` to resize the
+///   pixel vector, zero-filling the new tail.
+///
+/// Returns the zero-based index of the new page.  The 0x50-byte
+/// `_shared_ptr_emplace` control block is represented by the Rust value.
+pub fn w13a01_new_tile_page(tileset: &mut W13A01Tileset, kind: u32) -> usize {
+    let index = tileset.pages.len() as u16;
+    let bpp = if tileset.use_dxt1 {
+        W13A01_BPP_DXT1
+    } else {
+        W13A01_BPP_PALETTE
+    };
+    let mut page = W13A01TilePage {
+        kind,
+        index,
+        tile_size: tileset.tile_size,
+        width: tileset.width,
+        height: tileset.height,
+        pixels: Vec::new(),
+        cursor_x: 0,
+        cursor_y: 0,
+        refs: 0,
+        owner_tag: tileset.owner_tag,
+        bpp,
+        sealed: false,
+    };
+    let size = page.size_bytes() as usize;
+    page.pixels.resize(size, 0);
+    tileset.pages.push(page);
+    index as usize
+}
+
+/// The page-selection loop of `0x0065c1f0`.
+///
+/// ```c
+/// for (i = 0; i < set->page_count; ++i) {
+///   page = set->pages[i];
+///   if (page->kind == kind && !page->is_full() && page->[+0x40] == 0)
+///     return i;
+/// }
+/// ```
+///
+/// The shared-pointer addref/release traffic around each iteration is not
+/// modelled; the page's `refs` counter is incremented by
+/// [`w13a01_place_tile`] exactly where the shipped body increments
+/// `page->[+0x34]`.
+pub fn w13a01_find_tile_page(tileset: &W13A01Tileset, kind: u32) -> Option<usize> {
+    tileset
+        .pages
+        .iter()
+        .position(|p| p.kind == kind && !p.sealed && !w13a01_page_is_full(p))
+}
+
+/// `0x0065c1f0`: find or create a page for `kind` and blit one tile into it.
+///
+/// The hit path increments `page->[+0x34]`, calls the virtual blit with
+/// `(page->[+0x20], record, source)`, then writes `page->[+0x04]` into
+/// `record->[+0x04]` when `page->[+0x08] == 2`, otherwise into
+/// `record->[+0x02]`.  The miss path calls `0x0065c410`, then applies the same
+/// `!is_full && !sealed` test to the new page.
+///
+/// Returns `false` only when the newly constructed page is already full or
+/// sealed, matching the shipped `uVar8 = 0` exit.  A failed blit (out of
+/// bounds in the safe model) still counts as a cache hit; the shipped blit
+/// has no failure path.
+pub fn w13a01_place_tile(
+    tileset: &mut W13A01Tileset,
+    kind: u32,
+    record: &mut W13A01TileRecord,
+    source: &[u8],
+) -> bool {
+    let page_index = match w13a01_find_tile_page(tileset, kind) {
+        Some(index) => index,
+        None => {
+            let index = w13a01_new_tile_page(tileset, kind);
+            let page = &tileset.pages[index];
+            if page.sealed || w13a01_page_is_full(page) {
+                return false;
+            }
+            index
+        }
+    };
+
+    let page = &mut tileset.pages[page_index];
+    page.refs = page.refs.wrapping_add(1);
+    let _ = w13a01_page_blit(page, record, source);
+    if page.kind == W13A01_KIND_DXT1 {
+        record.frame = page.index;
+    } else {
+        record.page = page.index;
+    }
+    true
+}
+
+// ===========================================================================
+// Destructors
+// ===========================================================================
+
+/// The two owned buffers and the third refcounted slot released by
+/// `0x0065c0b0`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct W13A01OwnedResources {
+    pub first: Option<Vec<u8>>,
+    pub second: Option<Vec<u8>>,
+    pub third: Option<Vec<u8>>,
+    /// `+0x10`: the third slot is released only while this is non-negative.
+    pub third_state: i32,
+}
+
+/// `0x0065c0b0`: release the three resources owned by the object.
+///
+/// ```c
+/// if (this->[0]) { free(this->[0]); this->[0] = 0; }
+/// if (this->[1]) { free(this->[1]); this->[1] = 0; }
+/// if (this->[4] >= 0) {
+///   obj = this->[2];
+///   obj->vtable[4]();       // release
+///   this->[2] = 0;
+/// }
+/// ```
+///
+/// Dropping the `Vec`s models the two `free` calls; the negative-state test
+/// is kept verbatim.
+pub fn w13a01_release_owned_resources(resources: &mut W13A01OwnedResources) {
+    resources.first = None;
+    resources.second = None;
+    if resources.third_state >= 0 {
+        resources.third = None;
+    }
+}
+
+/// The `_shared_ptr_manager` control block touched by `0x0065c140`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct W13A01SharedPtrManager {
+    pub vtable: u32,
+}
+
+/// `0x0065c140`: the scalar deleting destructor of `_shared_ptr_manager`.
+///
+/// ```c
+/// *this = blz::_shared_ptr_manager::vftable;   // 0x00d3287c
+/// if (flags & 1) operator delete(this, 0x50);
+/// return this;
+/// ```
+///
+/// Returns the allocation size the shipped code hands to `operator delete`,
+/// or `None` when the deleting branch is not taken.
+pub fn w13a01_shared_ptr_manager_deleting_dtor(
+    manager: &mut W13A01SharedPtrManager,
+    flags: u8,
+) -> Option<usize> {
+    manager.vtable = W13A01_SHARED_PTR_MANAGER_VTABLE;
+    if flags & 1 != 0 {
+        Some(W13A01_SHARED_PTR_MANAGER_SIZE)
+    } else {
+        None
+    }
+}
+
+/// The `TilePage` state inspected by the deleting destructor at `0x0065c170`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct W13A01TilePageDeletion {
+    pub vtable: u32,
+    /// `+0x20`: pixel/surface buffer released through the object's vtable.
+    pub surface: Option<Vec<u8>>,
+    /// `+0x28`: the release path runs only while this is non-negative.
+    pub surface_state: i32,
+    /// Stands for the embedded base object at `+0x10`, destroyed by
+    /// `FUN_00a892e0`.
+    pub base_live: bool,
+}
+
+/// `0x0065c170`: the scalar deleting destructor of `TilePage`.
+///
+/// ```c
+/// *this = TilePage::vftable;                   // 0x00d3d298
+/// if (this->[+0x28] >= 0) {
+///   this->[+0x20]->vtable[4]();                // release surface
+///   this->[+0x20] = 0;
+/// }
+/// destroy_base(this + 0x10);                   // FUN_00a892e0
+/// if (flags & 1) operator delete(this, 0x44);
+/// return this;
+/// ```
+///
+/// Returns the allocation size for the deleting branch.
+pub fn w13a01_tile_page_deleting_dtor(
+    page: &mut W13A01TilePageDeletion,
+    flags: u8,
+) -> Option<usize> {
+    page.vtable = W13A01_TILE_PAGE_VTABLE;
+    if page.surface_state >= 0 {
+        page.surface = None;
+    }
+    page.base_live = false;
+    if flags & 1 != 0 {
+        Some(W13A01_TILE_PAGE_OBJECT_SIZE)
+    } else {
+        None
+    }
+}
+
+// ===========================================================================
+// Tests
+// ===========================================================================
+
+#[cfg(test)]
+mod tests_wave13_agent01 {
+    use super::*;
+
+    fn palette_tileset() -> W13A01Tileset {
+        W13A01Tileset {
+            tile_size: 8,
+            width: 32,
+            height: 32,
+            use_dxt1: false,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn record_layout_round_trips_and_placeholder_is_fffe() {
+        let record = W13A01TileRecord {
+            id: 0x1234,
+            page: 0x0002,
+            frame: 0x0003,
+            x: 0x0040,
+            y: 0x0080,
+        };
+        let mut bytes = [0u8; W13A01_TILE_RECORD_STRIDE];
+        assert!(record.write_bytes(&mut bytes));
+        assert_eq!(W13A01TileRecord::from_bytes(&bytes), Some(record));
+        assert_eq!(bytes[0..2], [0x34, 0x12]);
+        assert_eq!(bytes[8..10], [0x80, 0x00]);
+        assert_eq!(W13A01TileRecord::from_bytes(&bytes[..9]), None);
+        assert!(!record.write_bytes(&mut bytes[..9]));
+
+        let mut placeholder = [0u8; 10];
+        assert!(W13A01TileRecord::PLACEHOLDER.write_bytes(&mut placeholder));
+        assert_eq!(&placeholder[0..2], &[0xfe, 0xff]);
+        assert_eq!(&placeholder[2..6], &[0xff, 0xff, 0xff, 0xff]);
+        assert_eq!(&placeholder[6..10], &[0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn page_sizes_match_dxt1_half_and_palette_area() {
+        // 0x0065c940 / 0x0065c950
+        assert_eq!(w13a01_dxt1_page_size(256, 128), 0x4000);
+        assert_eq!(w13a01_dxt1_page_size(32, 32), 0x200);
+        assert_eq!(w13a01_palette_page_size(256, 128), 0x8000);
+        assert_eq!(w13a01_palette_page_size(32, 32), 0x400);
+        // Signed operands: the shipped body sign-extends both halves, then
+        // shifts the 32-bit product right logically.
+        assert_eq!(w13a01_dxt1_page_size(-4, 8), 0x7fff_fff0);
+        assert_eq!(w13a01_palette_page_size(-4, 8), 0xffff_ffe0);
+    }
+
+    #[test]
+    fn dxt1_page_is_full_uses_width_over_tile_times_height_over_four() {
+        // 0x0065cf00: cols = 64 / 8 = 8, rows = 32 / 4 = 8, need 64.
+        assert!(!w13a01_dxt1_is_full(64, 32, 8, 63));
+        assert!(w13a01_dxt1_is_full(64, 32, 8, 64));
+        assert!(w13a01_dxt1_is_full(64, 32, 8, 65));
+        // Truncating signed divide: -1 / 4 == 0 after the +3 bias.
+        assert!(w13a01_dxt1_is_full(8, -1, 8, 0));
+        // The shipped divide faults on a zero tile size; the model says no.
+        assert!(!w13a01_dxt1_is_full(64, 32, 0, 999));
+    }
+
+    #[test]
+    fn palette_page_is_full_compares_against_height() {
+        // 0x0065cf30
+        assert!(!w13a01_palette_is_full(32, 31));
+        assert!(w13a01_palette_is_full(32, 32));
+        assert!(w13a01_palette_is_full(32, 33));
+        // A negative height sign-extends to 0xffffffff, so 0 is below it.
+        assert!(!w13a01_palette_is_full(-1, 0));
+    }
+
+    #[test]
+    fn palette_blit_copies_square_and_advances_cursor() {
+        // 0x0065c880
+        let mut page = W13A01TilePage {
+            tile_size: 2,
+            width: 5,
+            height: 4,
+            pixels: vec![0; 20],
+            ..Default::default()
+        };
+        let mut record = W13A01TileRecord::default();
+        let source = [1, 2, 3, 4];
+        assert!(w13a01_palette_blit(&mut page, &mut record, &source));
+        assert_eq!(page.pixels[0..2], [1, 2]);
+        assert_eq!(page.pixels[5..7], [3, 4]);
+        assert_eq!(record.x, 0);
+        assert_eq!(record.y, 0);
+        assert_eq!(page.cursor_x, 2);
+
+        // The next tile wraps: 2 + 2 >= width 5 is false, so no wrap yet.
+        assert!(w13a01_palette_blit(&mut page, &mut record, &[5, 6, 7, 8]));
+        assert_eq!(page.cursor_x, 4);
+        // Third tile crosses the right edge: 4 + 2 >= 5 -> new row.
+        assert!(w13a01_palette_blit(
+            &mut page,
+            &mut record,
+            &[9, 10, 11, 12]
+        ));
+        assert_eq!(record.x, 4);
+        assert_eq!(page.cursor_x, 0);
+        assert_eq!(page.cursor_y, 2);
+        assert_eq!(page.pixels[4], 9);
+        assert_eq!(page.pixels[5], 10);
+        assert_eq!(page.pixels[9], 11);
+        assert_eq!(page.pixels[10], 12);
+        assert_eq!(page.pixels[8], 8);
+
+        // Out-of-range destination: 2 rows at y=2 with height 4 works, y=3
+        // would need row 4; force the cursor past the buffer.
+        page.cursor_y = 99;
+        assert!(!w13a01_palette_blit(&mut page, &mut record, &source));
+    }
+
+    #[test]
+    fn dxt1_blit_copies_strips_and_writes_tile_coordinates() {
+        // 0x0065c7a0 with tile=8: rows=2, stride=16, row_step=width/8=4,
+        // band_height=8.  Destination row 0 at 0 and row 4 at 4*16=64.
+        let mut page = W13A01TilePage {
+            tile_size: 8,
+            width: 32,
+            height: 64,
+            pixels: vec![0; 8 * 16],
+            ..Default::default()
+        };
+        let mut record = W13A01TileRecord::default();
+        let source: Vec<u8> = (0..32).collect();
+        assert!(w13a01_dxt1_blit(&mut page, &mut record, &source));
+        assert_eq!(&page.pixels[0..16], &source[0..16]);
+        assert_eq!(&page.pixels[64..80], &source[16..32]);
+        assert_eq!(record.x, 0);
+        assert_eq!(record.y, 0);
+        assert_eq!(page.cursor_x, 16);
+
+        // cursor_x=16 -> x = 16/16 * 8 = 8; the next band starts at 8*16.
+        assert!(w13a01_dxt1_blit(&mut page, &mut record, &source));
+        assert_eq!(record.x, 8);
+        assert_eq!(page.cursor_x, 32);
+        // band_height * stride = 8*16 = 128; 32 < 128, no wrap yet.
+        assert_eq!(page.cursor_y, 0);
+
+        // Set the cursor at the end of the band: cursor_x 0, y 8 wraps after
+        // the blit because the new cursor_x (16) is still below 128 -- so to
+        // exercise the wrap use a narrow page: width 8 -> row_step 1.
+        let mut narrow = W13A01TilePage {
+            tile_size: 8,
+            width: 8,
+            height: 64,
+            pixels: vec![0; 8 * 16],
+            ..Default::default()
+        };
+        assert!(w13a01_dxt1_blit(&mut narrow, &mut record, &source));
+        // band_height = 1 * 2 = 2; 2*16 = 32 <= cursor_x 16? No: 16 < 32.
+        assert_eq!(narrow.cursor_y, 0);
+        narrow.cursor_x = 16;
+        assert!(w13a01_dxt1_blit(&mut narrow, &mut record, &source));
+        assert_eq!(narrow.cursor_x, 0);
+        assert_eq!(narrow.cursor_y, 2);
+
+        // Short source -> no write.
+        let mut fresh = W13A01TilePage {
+            tile_size: 8,
+            width: 32,
+            height: 64,
+            pixels: vec![0; 128],
+            ..Default::default()
+        };
+        assert!(!w13a01_dxt1_blit(&mut fresh, &mut record, &[0u8; 31]));
+
+        // Non-multiple-of-four tile size: tile=6 -> rows=1, stride=8 (not 12).
+        let mut odd = W13A01TilePage {
+            tile_size: 6,
+            width: 24,
+            height: 32,
+            pixels: vec![0; 64],
+            cursor_x: 16,
+            cursor_y: 4,
+            ..Default::default()
+        };
+        let mut odd_record = W13A01TileRecord::default();
+        let eight = [7u8; 8];
+        assert!(w13a01_dxt1_blit(&mut odd, &mut odd_record, &eight));
+        assert_eq!(&odd.pixels[48..56], &eight);
+        assert_eq!(odd_record.x, 12); // (16 / 8) * 6
+        assert_eq!(odd_record.y, 6); // (4 / 4) * 6
+    }
+
+    #[test]
+    fn page_dispatch_matches_bpp_tags() {
+        let mut dxt1 = W13A01TilePage {
+            bpp: W13A01_BPP_DXT1,
+            tile_size: 8,
+            width: 64,
+            height: 32,
+            ..Default::default()
+        };
+        let mut palette = W13A01TilePage {
+            bpp: W13A01_BPP_PALETTE,
+            tile_size: 8,
+            width: 64,
+            height: 32,
+            ..Default::default()
+        };
+        assert_eq!(w13a01_page_size(&dxt1), 0x400);
+        assert_eq!(w13a01_page_size(&palette), 0x800);
+        assert!(!w13a01_page_is_full(&dxt1));
+        dxt1.cursor_y = 64;
+        assert!(w13a01_page_is_full(&dxt1));
+        assert!(!w13a01_page_is_full(&palette));
+        palette.cursor_y = 32;
+        assert!(w13a01_page_is_full(&palette));
+    }
+
+    #[test]
+    fn tileset_word_and_tile_size_accessors() {
+        // 0x0065c910 / 0x0065cb00 / 0x0065c920
+        let mut set = palette_tileset();
+        set.field_04 = 0x1234_5678;
+        set.tile_size = 0x20;
+        assert_eq!(w13a01_tileset_word_04(&set), 0x1234_5678);
+        assert_eq!(w13a01_tileset_tile_size(&set), 0x20);
+        assert_eq!(w13a01_tileset_scaled_tile_size(&set, 4), 8);
+        assert_eq!(w13a01_tileset_scaled_tile_size(&set, 0), 0x20);
+        assert_eq!(w13a01_tileset_scaled_tile_size(&set, 5), 6);
+    }
+
+    #[test]
+    fn tile_presence_reads_the_presence_map() {
+        // 0x0065cf40
+        let mut set = palette_tileset();
+        set.present = vec![0, 1, 0, 7];
+        assert_eq!(w13a01_tile_presence(&set, 0), Some(0));
+        assert_eq!(w13a01_tile_presence(&set, 1), Some(1));
+        assert_eq!(w13a01_tile_presence(&set, 3), Some(7));
+        assert_eq!(w13a01_tile_presence(&set, 4), None);
+        assert_eq!(w13a01_tile_presence(&set, u16::MAX), None);
+    }
+
+    #[test]
+    fn tile_page_at_returns_the_owning_page() {
+        // 0x0065caa0
+        let mut set = palette_tileset();
+        set.pages = vec![
+            W13A01TilePage {
+                kind: 4,
+                ..Default::default()
+            },
+            W13A01TilePage {
+                kind: 5,
+                ..Default::default()
+            },
+        ];
+        assert_eq!(w13a01_tile_page_at(&set, 0).map(|p| p.kind), Some(4));
+        assert_eq!(w13a01_tile_page_at(&set, 1).map(|p| p.kind), Some(5));
+        assert_eq!(w13a01_tile_page_at(&set, 2), None);
+        assert_eq!(w13a01_tile_page_at(&set, u16::MAX), None);
+    }
+
+    #[test]
+    fn configure_resizes_records_and_presence_with_placeholders() {
+        // 0x0065cb10
+        let mut set = palette_tileset();
+        set.records = vec![W13A01TileRecord {
+            id: 1,
+            page: 2,
+            frame: 3,
+            x: 4,
+            y: 5,
+        }];
+        set.present = vec![9];
+        w13a01_configure_tile_set(&mut set, 3, 16, 0xabcd, true);
+        assert_eq!(set.tile_size, 16);
+        assert_eq!(set.owner_tag, 0xabcd);
+        assert!(set.use_dxt1);
+        assert_eq!(set.records.len(), 3);
+        assert_eq!(set.records[0].id, 1);
+        assert_eq!(set.records[1], W13A01TileRecord::PLACEHOLDER);
+        assert_eq!(set.records[2], W13A01TileRecord::PLACEHOLDER);
+        assert_eq!(set.present, vec![9, 0, 0]);
+
+        // Shrinking keeps the prefix and drops the tail.
+        w13a01_configure_tile_set(&mut set, 1, 8, 1, false);
+        assert_eq!(set.records.len(), 1);
+        assert_eq!(set.records[0].id, 1);
+        assert_eq!(set.present, vec![9]);
+        assert!(!set.use_dxt1);
+    }
+
+    #[test]
+    fn tile_uv_lookup_rejects_wrong_id_and_missing_page() {
+        // 0x0065c960
+        let mut set = palette_tileset();
+        set.tile_size = 16;
+        set.pages = vec![W13A01TilePage {
+            width: 64,
+            height: 32,
+            ..Default::default()
+        }];
+        set.records = vec![W13A01TileRecord::default(); 6];
+        set.records[0].id = 0xdead;
+        set.records[5] = W13A01TileRecord {
+            id: 5,
+            page: 0,
+            frame: 9,
+            x: 16,
+            y: 8,
+        };
+        let uv = w13a01_tile_uv(&set, 5).expect("known tile");
+        assert_eq!(uv.page, 0);
+        assert_eq!(uv.frame, 9);
+        assert_eq!(uv.u0, 0.25);
+        assert_eq!(uv.v0, 0.25);
+        assert_eq!(uv.u1, 0.25);
+        assert_eq!(uv.v1, 0.5);
+
+        // Requesting id 0 reads record 0, whose stored id is 5 -> reject.
+        assert_eq!(w13a01_tile_uv(&set, 0), None);
+        assert_eq!(w13a01_tile_uv(&set, 1), None);
+        let mut missing_page = set.clone();
+        missing_page.records[5].page = 7;
+        assert_eq!(w13a01_tile_uv(&missing_page, 5), None);
+        set.pages[0].width = 0;
+        assert_eq!(w13a01_tile_uv(&set, 5), None);
+    }
+
+    #[test]
+    fn new_tile_page_uses_tileset_fields_and_zero_fills_pixels() {
+        // 0x0065c410
+        let mut set = W13A01Tileset {
+            pages: Vec::new(),
+            owner_tag: 0x77,
+            tile_size: 8,
+            use_dxt1: false,
+            width: 32,
+            height: 32,
+            ..Default::default()
+        };
+        let index = w13a01_new_tile_page(&mut set, 0);
+        assert_eq!(index, 0);
+        assert_eq!(set.pages.len(), 1);
+        let page = &set.pages[0];
+        assert_eq!(page.index, 0);
+        assert_eq!(page.kind, 0);
+        assert_eq!(page.bpp, W13A01_BPP_PALETTE);
+        assert_eq!(page.tile_size, 8);
+        assert_eq!(page.width, 32);
+        assert_eq!(page.height, 32);
+        assert_eq!(page.owner_tag, 0x77);
+        assert_eq!(page.pixels.len(), 32 * 32);
+        assert!(page.pixels.iter().all(|&b| b == 0));
+        assert_eq!(page.cursor_x, 0);
+        assert_eq!(page.cursor_y, 0);
+        assert_eq!(page.refs, 0);
+        assert!(!page.sealed);
+
+        set.use_dxt1 = true;
+        let index = w13a01_new_tile_page(&mut set, W13A01_KIND_DXT1);
+        assert_eq!(index, 1);
+        let page = &set.pages[1];
+        assert_eq!(page.index, 1);
+        assert_eq!(page.kind, W13A01_KIND_DXT1);
+        assert_eq!(page.bpp, W13A01_BPP_DXT1);
+        assert_eq!(page.pixels.len(), (32 * 32) / 2);
+    }
+
+    #[test]
+    fn find_tile_page_skips_full_and_sealed_pages() {
+        // 0x0065c1f0 selection loop
+        let mut set = palette_tileset();
+        set.pages = vec![
+            W13A01TilePage {
+                kind: 0,
+                height: 32,
+                cursor_y: 32, // full
+                ..Default::default()
+            },
+            W13A01TilePage {
+                kind: 0,
+                height: 32,
+                sealed: true, // sealed
+                ..Default::default()
+            },
+            W13A01TilePage {
+                kind: 1,
+                height: 32,
+                ..Default::default()
+            },
+            W13A01TilePage {
+                kind: 0,
+                height: 32,
+                cursor_y: 8,
+                ..Default::default()
+            },
+        ];
+        assert_eq!(w13a01_find_tile_page(&set, 0), Some(3));
+        assert_eq!(w13a01_find_tile_page(&set, 1), Some(2));
+        assert_eq!(w13a01_find_tile_page(&set, 2), None);
+    }
+
+    #[test]
+    fn place_tile_creates_page_then_reuses_it_and_writes_page_slot() {
+        // 0x0065c1f0 + 0x0065c410
+        let mut set = W13A01Tileset {
+            tile_size: 2,
+            width: 4,
+            height: 4,
+            use_dxt1: false,
+            ..Default::default()
+        };
+        // Palette blit needs 4 bytes per tile; page is 4x4, so four 2x2
+        // tiles fit per row and two rows per page: 8 tiles total.
+        let source = [1u8, 2, 3, 4];
+        let mut record = W13A01TileRecord {
+            id: 1,
+            ..Default::default()
+        };
+        assert!(w13a01_place_tile(&mut set, 0, &mut record, &source));
+        assert_eq!(set.pages.len(), 1);
+        assert_eq!(record.page, 0);
+        assert_eq!(set.pages[0].refs, 1);
+        assert_eq!(set.pages[0].pixels[0], 1);
+
+        let mut second = W13A01TileRecord {
+            id: 2,
+            ..Default::default()
+        };
+        assert!(w13a01_place_tile(&mut set, 0, &mut second, &source));
+        assert_eq!(set.pages.len(), 1);
+        assert_eq!(second.page, 0);
+        assert_eq!(set.pages[0].refs, 2);
+
+        // A different kind forces a new page and stores it in the record's
+        // primary slot (kind != 2).
+        let mut third = W13A01TileRecord {
+            id: 3,
+            ..Default::default()
+        };
+        assert!(w13a01_place_tile(&mut set, 1, &mut third, &source));
+        assert_eq!(set.pages.len(), 2);
+        assert_eq!(third.page, 1);
+        assert_eq!(set.pages[1].kind, 1);
+
+        // Kind 2 writes the page index into the frame slot.
+        let mut fourth = W13A01TileRecord {
+            id: 4,
+            ..Default::default()
+        };
+        assert!(w13a01_place_tile(
+            &mut set,
+            W13A01_KIND_DXT1,
+            &mut fourth,
+            &source
+        ));
+        assert_eq!(set.pages.len(), 3);
+        assert_eq!(fourth.frame, 2);
+        assert_eq!(fourth.page, 0);
+    }
+
+    #[test]
+    fn place_tile_returns_false_when_the_new_page_is_already_full() {
+        // 0x0065c1f0 miss path: zero-sized palette page is full at y=0.
+        let mut set = W13A01Tileset {
+            tile_size: 2,
+            width: 4,
+            height: 0,
+            use_dxt1: false,
+            ..Default::default()
+        };
+        let mut record = W13A01TileRecord::default();
+        assert!(!w13a01_place_tile(&mut set, 0, &mut record, &[1, 2, 3, 4]));
+        assert_eq!(set.pages.len(), 1);
+        // The record slot is untouched on failure.
+        assert_eq!(record.page, 0);
+    }
+
+    #[test]
+    fn release_owned_resources_drops_first_two_and_conditional_third() {
+        // 0x0065c0b0
+        let mut resources = W13A01OwnedResources {
+            first: Some(vec![1]),
+            second: Some(vec![2]),
+            third: Some(vec![3]),
+            third_state: 0,
+        };
+        w13a01_release_owned_resources(&mut resources);
+        assert_eq!(resources.first, None);
+        assert_eq!(resources.second, None);
+        assert_eq!(resources.third, None);
+        assert_eq!(resources.third_state, 0);
+
+        let mut negative = W13A01OwnedResources {
+            first: None,
+            second: None,
+            third: Some(vec![3]),
+            third_state: -1,
+        };
+        w13a01_release_owned_resources(&mut negative);
+        assert_eq!(negative.third, Some(vec![3]));
+    }
+
+    #[test]
+    fn deleting_destructors_report_the_shipped_free_sizes() {
+        // 0x0065c140
+        let mut manager = W13A01SharedPtrManager::default();
+        assert_eq!(
+            w13a01_shared_ptr_manager_deleting_dtor(&mut manager, 0),
+            None
+        );
+        assert_eq!(manager.vtable, W13A01_SHARED_PTR_MANAGER_VTABLE);
+        assert_eq!(
+            w13a01_shared_ptr_manager_deleting_dtor(&mut manager, 1),
+            Some(0x50)
+        );
+        assert_eq!(
+            w13a01_shared_ptr_manager_deleting_dtor(&mut manager, 0xfe),
+            None
+        );
+
+        // 0x0065c170
+        let mut page = W13A01TilePageDeletion {
+            surface: Some(vec![0; 16]),
+            surface_state: 0,
+            base_live: true,
+            ..Default::default()
+        };
+        assert_eq!(w13a01_tile_page_deleting_dtor(&mut page, 0), None);
+        assert_eq!(page.vtable, W13A01_TILE_PAGE_VTABLE);
+        assert_eq!(page.surface, None);
+        assert!(!page.base_live);
+        assert_eq!(w13a01_tile_page_deleting_dtor(&mut page, 1), Some(0x44));
+
+        let mut retained = W13A01TilePageDeletion {
+            surface: Some(vec![7]),
+            surface_state: -1,
+            base_live: true,
+            ..Default::default()
+        };
+        assert_eq!(w13a01_tile_page_deleting_dtor(&mut retained, 0), None);
+        assert_eq!(retained.surface, Some(vec![7]));
+        assert!(!retained.base_live);
+    }
+}

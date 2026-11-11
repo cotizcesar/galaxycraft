@@ -26913,3 +26913,3944 @@ mod tests_agent60 {
 //   would claim behaviour the ledger does not contain.
 // * FUN_0060af0a is `int3`; FUN_0060b980 is a five-byte thunk; FUN_0060bd70 is
 //   `decompile_failed`; FUN_0060b560 was already translated outside this batch.
+
+// ===========================================================================
+// Merged from src/wave13/agent02.rs
+// ===========================================================================
+// Wave 13 translation batch 02: container/allocator helpers and small
+// state predicates in `0065e000..=0065ffff`.
+//
+// The ledger lists 32 `decompiled_uncited` rows in this window plus the
+// already-translated `0065f590` (`return 1`).  The window is the tail of
+// the `blz` byte/word/record vector implementation, the `TimedScope` /
+// `InGameLagTimedScope` header setup, and the first button-condition
+// routines.  Most rows are continuation fragments of the two large string /
+// registry routines at `0065e8a0` and `0065ee50`, or compiler-generated
+// vtable/epilogue stubs.  Nine rows are translated here; every other row is
+// listed under [Skipped rows](#skipped-rows) with the reason it is not
+// modelled.
+//
+// Nothing here touches the simulation.  The helpers are auditable reference
+// code over `Vec`/slices/values only; allocation is modelled with `Vec`
+// instead of the shipped allocator singleton returned by `0093ec70`.
+//
+// ## Recovered layouts
+//
+// | location | layout |
+// |----------|--------|
+// | vector header | `+0x00` begin pointer, `+0x04` element count, `+0x08` capacity word |
+// | capacity word | bit 31 is the ownership flag (clear = owned), bits 0..30 are the capacity in elements |
+// | record | `10` bytes, five `u16` words: `[id, 0xffff, 0xffff, 0, 0]` |
+// | table object | `+0x10` record array, `+0x24` per-slot flag bytes |
+// | scope header | `+0x00` vtable, `+0x08` context word |
+//
+// The three capacity-growing routines (`0x0065e460`, `0x0065e640`,
+// `0x0065e700`) all use the same policy: when the requested capacity exceeds
+// the low 31 bits of the header word, the new capacity is
+// `max(needed, capacity + capacity / 2)` and bit 31 is preserved.  The byte
+// and record routines allocate through the allocator singleton
+// `0093ec70` with alignment `8`.
+//
+// ## Skipped rows
+//
+// * `0065e009` - Ghidra hit bad instruction data and an overlapping
+//   instruction at `0065e135`; every local is an `unaff_EBP` slot and the
+//   surviving body mixes three non-returning teardown calls.
+// * `0065e335` - bare thunk: `this->vtable[4]([ebp - 0x54])` with an
+//   unrecovered stack word, then the non-returning `00c86b6e`.
+// * `0065e450` - one-line dispatch through the object at `this + 0x0c`
+//   with a constant `0`; neither the object type nor the slot has a
+//   recovered contract.
+// * `0065e8a0`, `0065e9d0`, `0065ea1c`, `0065ead0`, `0065eb45`,
+//   `0065eb81` - one large string/hash-table routine.  `0065e8a0`
+//   starts it (`strlen`, a local SSO string, hash bucket lookup) and the
+//   other rows are interior continuation fragments whose operands live in
+//   `unaff_EBP`/`unaff_ESI`/`unaff_EDI`; the hash table globals are not
+//   self-contained.
+// * `0065ec45` - fragment: a 64-bit delta from `[esi + 0x10]` and
+//   `[esi + 0x14]`, `FUN_00709680(3)`, then the non-returning
+//   `thunk_FUN_0093f6c0`; no arguments or return value survive.
+// * `0065ee0c` - epilogue fragment (`add esp, 8`, `mov eax, esi`, SEH
+//   restore, `ret 4`); no recovered operands.
+// * `0065ee50` - registry/string insert that spans to `0065f3af`
+//   through the globals `0x00f05e60..0x00f05e64`; the decompiled body is
+//   truncated at the first table insert and is not a self-contained
+//   routine.
+// * `0065f1a0`, `0065f1c5` - dominated by
+//   `WARNING: Control flow encountered bad instruction data` and
+//   `halt_baddata`; the recovered blocks are pointer arithmetic on
+//   `unaff_*` registers.
+// * `0065f39f` - a one-byte `halt_baddata`.
+// * `0065f3d0` - hash-table insert/erase over the globals
+//   `0x00f05f18`, `0x00f05f1c` and `0x00f05f20`, with an SEH frame and a
+//   bucket-chain removal; the table object layout is not visible in the
+//   body.
+// * `0065f413` - 11-byte thunk: push `EAX`, call `0065e8a0`, jump to
+//   the routine epilogue.
+// * `0065f4f7`, `0065f53d`, `0065f553` - cleanup landing pads of
+//   `0065f3d0`; they start mid-sequence and use `unaff_EDI`/`unaff_EBX`
+//   and the global counter `0x00f05f20`.
+// * `0065f5e9` - a bare `ret`.
+// * `0065f7a0` - button-condition routine that reads `0x0119f7bc`,
+//   `0x011b8692` and the table through `0x011a0e38`; it always answers `1`
+//   and the side-effect body is a client reset that cannot be expressed
+//   without those global layouts.
+// * `0065fe00` - button-condition routine whose body continues far past
+//   the listed 74 bytes and reads the scenario/team globals
+//   `0x0119f7bc`, `0x00f2acf4` and `0x00f063cc`.
+
+// ---------------------------------------------------------------------------
+// Recovered constants
+// ---------------------------------------------------------------------------
+
+/// Size of one table record (`0x0065e3a0`, `0x0065e700`).
+pub const W13A02_RECORD_BYTES: usize = 10;
+
+/// Number of `u16` words in one table record.
+pub const W13A02_RECORD_WORDS: usize = 5;
+
+/// The empty record written by `0x0065e700` and reset by `0x0065e3a0`:
+/// `[0xfffe, 0xffff, 0xffff, 0, 0]`.
+pub const W13A02_RECORD_EMPTY: [u16; W13A02_RECORD_WORDS] =
+    [0xfffe, 0xffff, 0xffff, 0x0000, 0x0000];
+
+/// Low 31 bits of a vector header capacity word.
+pub const W13A02_CAPACITY_MASK: u32 = 0x7fff_ffff;
+
+/// Bit 31 of a vector header capacity word.  When it is **clear** the
+/// routine owns the buffer and frees it after reallocation; when it is set
+/// the buffer belongs to someone else and is left alone.
+pub const W13A02_CAPACITY_OWNED_FLAG: u32 = 0x8000_0000;
+
+/// Nanoseconds per second used by the `0x0065e870` comparison.
+pub const W13A02_NANOS_PER_SECOND: u64 = 1_000_000_000;
+
+/// Vtable installed by the `TimedScope` constructor `0x0065ebe0`.
+pub const W13A02_TIMED_SCOPE_VTABLE: u32 = 0x00d3_d364;
+
+/// Vtable installed by the `InGameLagTimedScope` rows `0x0065ec10` and
+/// `0x0065ed10`.
+pub const W13A02_IN_GAME_LAG_TIMED_SCOPE_VTABLE: u32 = 0x00d3_d36c;
+
+/// Object size passed to the CRT delete helper by `0x0065ee30`.
+pub const W13A02_DELETED_OBJECT_BYTES: usize = 0x18;
+
+// ---------------------------------------------------------------------------
+// 0x0065e460 / 0x0065e640 / 0x0065e700 - shared capacity word
+// ---------------------------------------------------------------------------
+
+/// `0x0065e460`, `0x0065e640`, `0x0065e700`: the capacity stored in the low
+/// 31 bits of a vector header word.
+pub fn w13a02_capacity(word: u32) -> u32 {
+    word & W13A02_CAPACITY_MASK
+}
+
+/// `0x0065e460`, `0x0065e640`, `0x0065e700`: whether the header owns its
+/// buffer.  The shipped code tests bit 31 with a signed "less than zero"
+/// branch, so a clear bit means owned.
+pub fn w13a02_capacity_is_owned(word: u32) -> bool {
+    word & W13A02_CAPACITY_OWNED_FLAG == 0
+}
+
+/// `0x0065e460`, `0x0065e640`, `0x0065e700`: build a header word with the
+/// given low-31-bit capacity while preserving the ownership flag.
+pub fn w13a02_capacity_word(capacity: u32, owned: bool) -> u32 {
+    let flag = if owned { 0 } else { W13A02_CAPACITY_OWNED_FLAG };
+    (capacity & W13A02_CAPACITY_MASK) | flag
+}
+
+/// `0x0065e460`, `0x0065e640`, `0x0065e700`: capacity growth.
+///
+/// The low 31 bits are the current capacity and the high bit is preserved.
+/// When `needed` does not fit, the new capacity is
+/// `max(needed, capacity + capacity / 2)`.  A request that already fits
+/// returns the word unchanged, exactly like the three routines' early
+/// `jbe` exits.
+pub fn w13a02_grow_capacity_word(word: u32, needed: u32) -> u32 {
+    let capacity = w13a02_capacity(word);
+    if needed <= capacity {
+        return word;
+    }
+    let grown = capacity + (capacity >> 1);
+    let new_capacity = grown.max(needed);
+    (word ^ new_capacity) & W13A02_CAPACITY_MASK ^ word
+}
+
+// ---------------------------------------------------------------------------
+// 0x0065e460 - grow a byte vector and return the inserted span
+// ---------------------------------------------------------------------------
+
+/// The three output words `0x0065e460` stores through its first argument.
+///
+/// The shipped routine returns pointers; the helper returns the equivalent
+/// offsets from the (possibly relocated) buffer start.  The middle-insert
+/// branch stores the old end in the second word, which is why the fields are
+/// named positionally instead of being documented as a plain range.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct W13a02ByteSpan {
+    /// First output word: the insertion position.
+    pub first: usize,
+    /// Second output word: the insertion position for the append/relocate
+    /// paths and the old end for the middle-insert path.
+    pub second: usize,
+    /// Third output word: one past the inserted range.
+    pub third: usize,
+}
+
+/// `0x0065e460`: make room for `count` uninitialised bytes at offset `at`,
+/// updating the recovered capacity word and returning the output span.
+///
+/// The full body is longer than the ledger's 306-byte row; the recovered
+/// disassembly continues to `0x0065e640`.  The routine reads `begin`,
+/// `count` and the capacity word from the header, grows through the
+/// allocator singleton `0093ec70` (alignment `8`) when necessary, moves
+/// the old tail right by `count`, and stores three words through `out`.
+///
+/// All recovered call sites pass `at = 0` (a fresh local vector), so the
+/// relocation path is the common one: it answers `(0, 0, count)` relative
+/// to the new allocation.  The non-relocating append path answers
+/// `(at, at, at + count)`; the middle-insert path answers
+/// `(at, old_len, at + count)`.  The new bytes are uninitialised in the
+/// shipped code; this safe model writes zeroes.
+///
+/// Returns `None` when `at` lies past the end or the requested size does not
+/// fit a 32-bit capacity word.
+pub fn w13a02_byte_vector_insert_uninit(
+    bytes: &mut Vec<u8>,
+    capacity_word: &mut u32,
+    at: usize,
+    count: usize,
+) -> Option<W13a02ByteSpan> {
+    let old_len = bytes.len();
+    if at > old_len {
+        return None;
+    }
+    if count == 0 {
+        let second = if at < old_len { old_len } else { at };
+        return Some(W13a02ByteSpan {
+            first: at,
+            second,
+            third: at,
+        });
+    }
+    let new_len = old_len.checked_add(count)?;
+    let required = u32::try_from(new_len).ok()?;
+    let relocates = required > w13a02_capacity(*capacity_word);
+    if relocates {
+        *capacity_word = w13a02_grow_capacity_word(*capacity_word, required);
+    }
+    bytes.resize(new_len, 0);
+    bytes.copy_within(at..old_len, at + count);
+    // The shipped code leaves the inserted range uninitialised; use zeroes.
+    bytes[at..at + count].fill(0);
+    if relocates {
+        Some(W13a02ByteSpan {
+            first: 0,
+            second: 0,
+            third: count,
+        })
+    } else if at + count >= old_len {
+        Some(W13a02ByteSpan {
+            first: at,
+            second: at,
+            third: at + count,
+        })
+    } else {
+        Some(W13a02ByteSpan {
+            first: at,
+            second: old_len,
+            third: at + count,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 0x0065e640 - reserve a u16 vector
+// ---------------------------------------------------------------------------
+
+/// Result of the `0x0065e640` reserve step.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct W13a02Reserve {
+    /// Whether the requested capacity exceeded the old capacity.
+    pub grew: bool,
+    /// Whether the old buffer was owned (bit 31 clear).
+    pub old_was_owned: bool,
+    /// Capacity in elements after the step.
+    pub capacity: u32,
+}
+
+/// `0x0065e640`: reserve room for `requested` `u16` elements.
+///
+/// The header is `begin` at `+0x00`, element count at `+0x04` and the
+/// capacity word at `+0x08`; the element stride is `2`.  A request that fits
+/// the low 31 bits of the word does nothing.  Otherwise the routine applies
+/// [`w13a02_grow_capacity_word`], allocates `new_capacity * 2` bytes through
+/// `0093ec70` with alignment `8`, copies the current elements, frees the
+/// old buffer only when the old ownership flag was clear, and stores the new
+/// begin and capacity.
+///
+/// `Vec` performs the copy; the capacity word is updated with the recovered
+/// policy rather than `Vec::capacity()`, because the shipped word is the
+/// authoritative size for the caller.
+pub fn w13a02_reserve_u16(
+    values: &mut Vec<u16>,
+    capacity_word: &mut u32,
+    requested: usize,
+) -> Option<W13a02Reserve> {
+    let requested = u32::try_from(requested).ok()?;
+    let old_word = *capacity_word;
+    let capacity = w13a02_capacity(old_word);
+    if requested <= capacity {
+        return Some(W13a02Reserve {
+            grew: false,
+            old_was_owned: w13a02_capacity_is_owned(old_word),
+            capacity,
+        });
+    }
+    *capacity_word = w13a02_grow_capacity_word(old_word, requested);
+    let new_capacity = w13a02_capacity(*capacity_word);
+    if new_capacity as usize > values.len() {
+        values.reserve(new_capacity as usize - values.len());
+    }
+    Some(W13a02Reserve {
+        grew: true,
+        old_was_owned: w13a02_capacity_is_owned(old_word),
+        capacity: new_capacity,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// 0x0065e700 - resize the 10-byte record vector
+// ---------------------------------------------------------------------------
+
+/// Result of the `0x0065e700` resize step.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum W13a02Resize {
+    /// The new length equals the old length.
+    Unchanged,
+    /// The vector was truncated; the removed records are at the end.
+    Truncated { len: usize },
+    /// The vector was extended with [`W13A02_RECORD_EMPTY`] records.
+    Extended { len: usize, reallocated: bool },
+}
+
+/// `0x0065e700`: resize a vector of 10-byte records.
+///
+/// The ledger row is 209 bytes, but the recovered body continues to
+/// `0x0065e870`.  Shrinking only rewrites the count at `+0x04`; the shipped
+/// `memmove` at the shrink site is passed a zero length because the removed
+/// records sit at the end (the records are trivially destructible), so the
+/// safe model is a plain truncation.
+///
+/// Growing checks the capacity word at `+0x08`, applies
+/// [`w13a02_grow_capacity_word`], allocates `new_capacity * 10` bytes through
+/// `0093ec70` with alignment `8`, copies the old records, frees the old
+/// buffer only when it was owned, and fills every new record with
+/// `[0xfffe, 0xffff, 0xffff, 0, 0]`.
+///
+/// Returns `None` only when the requested length does not fit a 32-bit
+/// capacity.
+pub fn w13a02_resize_records(
+    records: &mut Vec<[u16; W13A02_RECORD_WORDS]>,
+    capacity_word: &mut u32,
+    new_len: usize,
+) -> Option<W13a02Resize> {
+    let old_len = records.len();
+    if new_len < old_len {
+        records.truncate(new_len);
+        return Some(W13a02Resize::Truncated { len: new_len });
+    }
+    if new_len == old_len {
+        return Some(W13a02Resize::Unchanged);
+    }
+    let required = u32::try_from(new_len).ok()?;
+    let reallocated = required > w13a02_capacity(*capacity_word);
+    if reallocated {
+        *capacity_word = w13a02_grow_capacity_word(*capacity_word, required);
+    }
+    records.resize(new_len, W13A02_RECORD_EMPTY);
+    Some(W13a02Resize::Extended {
+        len: new_len,
+        reallocated,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// 0x0065e3a0 - initialise one table slot
+// ---------------------------------------------------------------------------
+
+/// Two possible binding call sequences `0x0065e3a0` performs through
+/// `0065c1f0`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum W13a02BindPlan {
+    /// `param_4 == 0`: one call with selector `0` and `param_2`.
+    Single { value: u32 },
+    /// `param_4 != 0`: call selector `1` with `param_2`, then selector `2`
+    /// with `param_4`.
+    Pair { first: u32, second: u32 },
+}
+
+/// `0x0065e3a0`: initialise table record `index` and return the binding plan.
+///
+/// ```c
+/// record = records + index * 10;
+/// if (record[0] == index) return 0;          // already present
+/// record[0..5] = [0xfffe, 0xffff, 0xffff, 0, 0];
+/// record[0] = index;
+/// if (param_4 == 0) bind(0, record, param_2);
+/// else { bind(1, record, param_2); bind(2, record, param_4); }
+/// flags[index] = param_3;
+/// return 1;
+/// ```
+///
+/// The second argument of `0065c1f0` is the record pointer, so the
+/// callback receives the record index in that position.  `bind` is called
+/// with `(selector, record_index, value)` in the shipped order; the flag
+/// byte is written last.  Returns `None` when the record already exists or
+/// either the record array or the flag array is too short.
+pub fn w13a02_init_table_slot<F>(
+    records: &mut [[u16; W13A02_RECORD_WORDS]],
+    flags: &mut [u8],
+    index: u16,
+    param_2: u32,
+    param_3: u8,
+    param_4: u32,
+    mut bind: F,
+) -> Option<W13a02BindPlan>
+where
+    F: FnMut(u16, u16, u32),
+{
+    let slot = index as usize;
+    if slot >= records.len() || slot >= flags.len() {
+        return None;
+    }
+    if records[slot][0] == index {
+        return None;
+    }
+    records[slot] = W13A02_RECORD_EMPTY;
+    records[slot][0] = index;
+    let plan = if param_4 == 0 {
+        bind(0, index, param_2);
+        W13a02BindPlan::Single { value: param_2 }
+    } else {
+        bind(1, index, param_2);
+        bind(2, index, param_4);
+        W13a02BindPlan::Pair {
+            first: param_2,
+            second: param_4,
+        }
+    };
+    flags[slot] = param_3;
+    Some(plan)
+}
+
+// ---------------------------------------------------------------------------
+// 0x0065e870 - nanosecond threshold comparison
+// ---------------------------------------------------------------------------
+
+/// `0x0065e870`: true when `threshold` is strictly after `ticks` converted
+/// to whole seconds.
+///
+/// The shipped code calls the 64-bit unsigned divide helper
+/// `00c86d80(ticks, 1_000_000_000)` and then compares the 64-bit result
+/// with the two words at `param_1` (`+0x00` low, `+0x04` high`).  The high
+/// words are compared with signed `jl`/`jg` branches while the final low
+/// comparison is unsigned `jbe`, i.e. a signed 64-bit `>` on the bit
+/// patterns.  The helper keeps that signed comparison.
+pub fn w13a02_time_threshold_exceeded(threshold: u64, ticks: u64) -> bool {
+    let seconds = ticks / W13A02_NANOS_PER_SECOND;
+    (threshold as i64) > (seconds as i64)
+}
+
+// ---------------------------------------------------------------------------
+// 0x0065ebe0 / 0x0065ec10 / 0x0065ed10 - scope headers
+// ---------------------------------------------------------------------------
+
+/// The two recovered scope vtable identities.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum W13a02ScopeVtable {
+    /// `0x00d3d364`: `TimedScope`.
+    TimedScope,
+    /// `0x00d3d36c`: `InGameLagTimedScope`.
+    InGameLagTimedScope,
+}
+
+impl W13a02ScopeVtable {
+    /// The shipped vtable address.
+    pub const fn address(self) -> u32 {
+        match self {
+            Self::TimedScope => W13A02_TIMED_SCOPE_VTABLE,
+            Self::InGameLagTimedScope => W13A02_IN_GAME_LAG_TIMED_SCOPE_VTABLE,
+        }
+    }
+
+    /// Recover the identity from the shipped vtable address.
+    pub const fn from_address(address: u32) -> Option<Self> {
+        match address {
+            W13A02_TIMED_SCOPE_VTABLE => Some(Self::TimedScope),
+            W13A02_IN_GAME_LAG_TIMED_SCOPE_VTABLE => Some(Self::InGameLagTimedScope),
+            _ => None,
+        }
+    }
+}
+
+/// The recovered prefix of both timer-scope objects: a vtable pointer at
+/// `+0x00` and, for `TimedScope`, a context word at `+0x08`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct W13a02ScopeHeader {
+    /// `+0x00`: vtable address.
+    pub vtable: u32,
+    /// `+0x08`: context word (`TimedScope` constructor argument).
+    pub context: u32,
+}
+
+/// `0x0065ebe0`: `TimedScope` constructor header.
+///
+/// ```c
+/// this->vtable = TimedScope::vftable;   // 0x00d3d364
+/// this->context = param_1;              // +0x08
+/// ```
+///
+/// The trailing `00c66860` call is the shipped timer/cookie helper and
+/// does not touch the two recovered header words.
+pub fn w13a02_timed_scope_new(context: u32) -> W13a02ScopeHeader {
+    W13a02ScopeHeader {
+        vtable: W13a02ScopeVtable::TimedScope.address(),
+        context,
+    }
+}
+
+/// `0x0065ec10`: install the `InGameLagTimedScope` vtable on `header`.
+///
+/// The only recovered object store is `this->vtable = 0x00d3d36c`; the rest
+/// of the routine is the MSVC SEH/prologue trailer.
+pub fn w13a02_in_game_lag_scope_init(header: &mut W13a02ScopeHeader) {
+    header.vtable = W13a02ScopeVtable::InGameLagTimedScope.address();
+}
+
+/// `0x0065ed10`: teardown/install the `InGameLagTimedScope` vtable.
+///
+/// The routine writes the same `0x00d3d36c` vtable as `0x0065ec10`; its
+/// `[ebp - 4] = 0` store is the SEH state slot, not a field of the object.
+pub fn w13a02_in_game_lag_scope_reset(header: &mut W13a02ScopeHeader) {
+    header.vtable = W13a02ScopeVtable::InGameLagTimedScope.address();
+}
+
+// ---------------------------------------------------------------------------
+// 0x0065ee30 - scalar deleting destructor predicate
+// ---------------------------------------------------------------------------
+
+/// Result of the `0x0065ee30` scalar deleting destructor prologue.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct W13a02DeleteAction {
+    /// Whether bit 0 of the delete flag is set.
+    pub delete_object: bool,
+    /// Size passed to the CRT delete helper when deleting (`0x18`).
+    pub size: usize,
+}
+
+/// `0x0065ee30`: MSVC scalar deleting destructor predicate.
+///
+/// ```c
+/// if (flags & 1) operator_delete(this, 0x18);
+/// return this;
+/// ```
+///
+/// The flag word is the second `thiscall` argument pushed by the caller.
+/// Only the recovered predicate and the constant object size are modelled;
+/// the delete itself is the CRT routine `00923e90`.
+pub fn w13a02_scalar_deleting_destructor(flags: u8) -> W13a02DeleteAction {
+    W13a02DeleteAction {
+        delete_object: flags & 1 != 0,
+        size: W13A02_DELETED_OBJECT_BYTES,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests_wave13_agent02 {
+    use super::*;
+
+    // -- capacity word ------------------------------------------------------
+
+    /// The shared capacity policy of `0x0065e460`, `0x0065e640` and
+    /// `0x0065e700`.
+    #[test]
+    fn capacity_word_layout_and_growth() {
+        assert_eq!(W13A02_RECORD_BYTES, W13A02_RECORD_WORDS * 2);
+        assert_eq!(w13a02_capacity(0x8000_0004), 4);
+        assert!(w13a02_capacity_is_owned(0x0000_0004));
+        assert!(!w13a02_capacity_is_owned(0x8000_0004));
+        assert_eq!(w13a02_capacity_word(7, true), 7);
+        assert_eq!(w13a02_capacity_word(7, false), 0x8000_0007);
+
+        // Fitting requests are a no-op, including the high bit.
+        assert_eq!(w13a02_grow_capacity_word(0x8000_0008, 8), 0x8000_0008);
+        assert_eq!(w13a02_grow_capacity_word(0x8000_0008, 9), 0x8000_000c);
+        assert_eq!(w13a02_grow_capacity_word(0x0000_000a, 20), 20);
+        assert_eq!(w13a02_grow_capacity_word(0, 1), 1);
+        assert_eq!(w13a02_grow_capacity_word(3, 4), 4);
+        // 3 + 1 = 4, but the request needs 5.
+        assert_eq!(w13a02_grow_capacity_word(3, 5), 5);
+    }
+
+    // -- 0x0065e460 ---------------------------------------------------------
+
+    /// `0x0065e460`: fresh allocation, append and middle-insert spans.
+    #[test]
+    fn byte_vector_insert_span() {
+        let mut bytes = Vec::new();
+        let mut word = 0u32;
+        let span = w13a02_byte_vector_insert_uninit(&mut bytes, &mut word, 0, 3).unwrap();
+        assert_eq!(
+            span,
+            W13a02ByteSpan {
+                first: 0,
+                second: 0,
+                third: 3
+            }
+        );
+        assert_eq!(bytes, vec![0, 0, 0]);
+        assert_eq!(word, 3);
+
+        // Append with enough capacity keeps the span at the old end.
+        word = 10;
+        let span = w13a02_byte_vector_insert_uninit(&mut bytes, &mut word, 3, 2).unwrap();
+        assert_eq!(
+            span,
+            W13a02ByteSpan {
+                first: 3,
+                second: 3,
+                third: 5
+            }
+        );
+        assert_eq!(bytes.len(), 5);
+
+        // Middle insert: the recovered second word is the old end.
+        let mut bytes = vec![1u8, 2, 3];
+        let mut word = 10;
+        let span = w13a02_byte_vector_insert_uninit(&mut bytes, &mut word, 1, 1).unwrap();
+        assert_eq!(
+            span,
+            W13a02ByteSpan {
+                first: 1,
+                second: 3,
+                third: 2
+            }
+        );
+        assert_eq!(bytes, vec![1, 0, 2, 3]);
+        assert_eq!(word, 10);
+
+        // Zero-byte insert at the end and in the middle, and a bad offset.
+        assert_eq!(
+            w13a02_byte_vector_insert_uninit(&mut bytes, &mut word, 4, 0).unwrap(),
+            W13a02ByteSpan {
+                first: 4,
+                second: 4,
+                third: 4
+            }
+        );
+        assert_eq!(
+            w13a02_byte_vector_insert_uninit(&mut bytes, &mut word, 1, 0).unwrap(),
+            W13a02ByteSpan {
+                first: 1,
+                second: 4,
+                third: 1
+            }
+        );
+        assert!(w13a02_byte_vector_insert_uninit(&mut bytes, &mut word, 5, 1).is_none());
+
+        // Relocation follows the recovered `max(needed, cap + cap / 2)` rule.
+        let mut bytes = vec![9u8];
+        let mut word = 1;
+        let span = w13a02_byte_vector_insert_uninit(&mut bytes, &mut word, 0, 2).unwrap();
+        assert_eq!(
+            span,
+            W13a02ByteSpan {
+                first: 0,
+                second: 0,
+                third: 2
+            }
+        );
+        assert_eq!(word, 3);
+        assert_eq!(bytes, vec![0, 0, 9]);
+    }
+
+    // -- 0x0065e640 ---------------------------------------------------------
+
+    /// `0x0065e640`: growth, ownership preservation and no-op requests.
+    #[test]
+    fn reserve_u16_updates_capacity_word() {
+        let mut values = vec![7u16, 8];
+        let mut word = 0x8000_0004; // four elements, foreign buffer
+
+        let result = w13a02_reserve_u16(&mut values, &mut word, 4).unwrap();
+        assert!(!result.grew);
+        assert!(!result.old_was_owned);
+        assert_eq!(result.capacity, 4);
+        assert_eq!(word, 0x8000_0004);
+
+        // 4 + 2 = 6, which already covers the request.
+        let result = w13a02_reserve_u16(&mut values, &mut word, 5).unwrap();
+        assert!(result.grew);
+        assert_eq!(result.capacity, 6);
+        assert_eq!(word, 0x8000_0006);
+        assert_eq!(values, vec![7, 8]);
+
+        // A request past the geometric growth wins verbatim.
+        let mut word = 2u32;
+        let result = w13a02_reserve_u16(&mut values, &mut word, 9).unwrap();
+        assert_eq!(result.capacity, 9);
+        assert_eq!(word, 9);
+        assert!(result.old_was_owned);
+    }
+
+    // -- 0x0065e700 ---------------------------------------------------------
+
+    /// `0x0065e700`: extend fills the canonical empty record, shrink truncates.
+    #[test]
+    fn resize_records_fills_and_truncates() {
+        let mut records: Vec<[u16; 5]> = Vec::new();
+        let mut word = 0u32;
+
+        assert_eq!(
+            w13a02_resize_records(&mut records, &mut word, 2).unwrap(),
+            W13a02Resize::Extended {
+                len: 2,
+                reallocated: true
+            }
+        );
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0], W13A02_RECORD_EMPTY);
+        assert_eq!(records[1], [0xfffe, 0xffff, 0xffff, 0, 0]);
+        assert_eq!(word, 2);
+
+        // A second extension that fits the word does not reallocate.
+        assert_eq!(
+            w13a02_resize_records(&mut records, &mut word, 2).unwrap(),
+            W13a02Resize::Unchanged
+        );
+        assert_eq!(
+            w13a02_resize_records(&mut records, &mut word, 3).unwrap(),
+            W13a02Resize::Extended {
+                len: 3,
+                reallocated: true
+            }
+        );
+        assert_eq!(word, 3); // max(3, 2 + 1)
+
+        assert_eq!(
+            w13a02_resize_records(&mut records, &mut word, 1).unwrap(),
+            W13a02Resize::Truncated { len: 1 }
+        );
+        assert_eq!(records.len(), 1);
+        assert_eq!(word, 3, "truncation does not touch the capacity word");
+    }
+
+    // -- 0x0065e3a0 ---------------------------------------------------------
+
+    /// `0x0065e3a0`: duplicate detection, record reset and bind order.
+    #[test]
+    fn table_slot_init_and_bind_order() {
+        let mut records = vec![W13A02_RECORD_EMPTY; 2];
+        let mut flags = vec![0u8; 2];
+        let mut calls = Vec::new();
+
+        let plan = w13a02_init_table_slot(
+            &mut records,
+            &mut flags,
+            1,
+            0x1111,
+            0x7f,
+            0,
+            |selector, index, value| calls.push((selector, index, value)),
+        )
+        .unwrap();
+        assert_eq!(plan, W13a02BindPlan::Single { value: 0x1111 });
+        assert_eq!(records[1], [1, 0xffff, 0xffff, 0, 0]);
+        assert_eq!(flags[1], 0x7f);
+        assert_eq!(calls, vec![(0, 1, 0x1111)]);
+
+        // Existing records are left alone and do not bind again.
+        calls.clear();
+        assert!(
+            w13a02_init_table_slot(&mut records, &mut flags, 1, 0, 0, 0, |s, i, v| {
+                calls.push((s, i, v))
+            })
+            .is_none()
+        );
+        assert!(calls.is_empty());
+        assert_eq!(flags[1], 0x7f);
+
+        // A non-zero fourth argument issues the selector 1 then 2 pair.
+        let plan =
+            w13a02_init_table_slot(&mut records, &mut flags, 0, 0x2222, 3, 0x3333, |s, i, v| {
+                calls.push((s, i, v))
+            })
+            .unwrap();
+        assert_eq!(
+            plan,
+            W13a02BindPlan::Pair {
+                first: 0x2222,
+                second: 0x3333
+            }
+        );
+        assert_eq!(calls, vec![(1, 0, 0x2222), (2, 0, 0x3333)]);
+        assert_eq!(records[0], [0, 0xffff, 0xffff, 0, 0]);
+        assert_eq!(flags[0], 3);
+
+        // Out-of-range slots are refused rather than writing either array.
+        assert!(
+            w13a02_init_table_slot(&mut records, &mut flags, 2, 1, 1, 0, |_, _, _| {}).is_none()
+        );
+    }
+
+    // -- 0x0065e870 ---------------------------------------------------------
+
+    /// `0x0065e870`: whole-second conversion and the signed 64-bit compare.
+    #[test]
+    fn time_threshold_uses_whole_seconds() {
+        assert!(!w13a02_time_threshold_exceeded(0, 0));
+        assert!(!w13a02_time_threshold_exceeded(0, 999_999_999));
+        assert!(!w13a02_time_threshold_exceeded(1, 1_000_000_000));
+        assert!(w13a02_time_threshold_exceeded(2, 1_000_000_000));
+        assert!(!w13a02_time_threshold_exceeded(1, 1_999_999_999));
+        assert!(w13a02_time_threshold_exceeded(2, 1_999_999_999));
+
+        // The shipped high-word branches are signed; a wrapped threshold is
+        // therefore not "larger" than a small quotient.
+        assert!(!w13a02_time_threshold_exceeded(u64::MAX, 0));
+        assert!(w13a02_time_threshold_exceeded(0x8000_0000, 0));
+    }
+
+    // -- 0x0065ebe0 / 0x0065ec10 / 0x0065ed10 -------------------------------
+
+    /// The two recovered vtable identities and the context field.
+    #[test]
+    fn scope_headers_install_recovered_vtables() {
+        assert_eq!(W13a02ScopeVtable::TimedScope.address(), 0x00d3_d364);
+        assert_eq!(
+            W13a02ScopeVtable::InGameLagTimedScope.address(),
+            0x00d3_d36c
+        );
+        assert_eq!(
+            W13a02ScopeVtable::from_address(0x00d3_d36c),
+            Some(W13a02ScopeVtable::InGameLagTimedScope)
+        );
+        assert_eq!(W13a02ScopeVtable::from_address(0), None);
+
+        let mut header = w13a02_timed_scope_new(0x1234_5678);
+        assert_eq!(
+            header,
+            W13a02ScopeHeader {
+                vtable: W13A02_TIMED_SCOPE_VTABLE,
+                context: 0x1234_5678
+            }
+        );
+
+        w13a02_in_game_lag_scope_init(&mut header);
+        assert_eq!(header.vtable, W13A02_IN_GAME_LAG_TIMED_SCOPE_VTABLE);
+        assert_eq!(header.context, 0x1234_5678);
+
+        header.vtable = W13A02_TIMED_SCOPE_VTABLE;
+        w13a02_in_game_lag_scope_reset(&mut header);
+        assert_eq!(header.vtable, W13A02_IN_GAME_LAG_TIMED_SCOPE_VTABLE);
+    }
+
+    // -- 0x0065ee30 ---------------------------------------------------------
+
+    /// `0x0065ee30`: only bit 0 of the delete flag selects the free path.
+    #[test]
+    fn scalar_deleting_destructor_flag() {
+        for (flags, deletes) in [
+            (0u8, false),
+            (1, true),
+            (2, false),
+            (0xfe, false),
+            (0xff, true),
+        ] {
+            let action = w13a02_scalar_deleting_destructor(flags);
+            assert_eq!(action.delete_object, deletes, "flags = {flags:#x}");
+            assert_eq!(action.size, 0x18);
+        }
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave13/agent07.rs
+// ===========================================================================
+// Wave 13 translation batch 07 (staging).
+//
+// Window: `00668000..00669fff` (hex).
+//
+// This window is client/runtime support code, not simulation state.  It
+// contains the 1.23.10 instantiations of the MSVC `std::unordered_map`
+// bucket helpers (the same `_Hash` layout used by the `0x005e....` rows of
+// batch 43), the type-erased 20-byte callable storage used by
+// `std::function`, and the `ClientSdk::IInternetFileUploadInfoV1`
+// aggregate/constructor/destructor family.  Nothing below touches
+// [`crate::sim::World`] or the renderer; every translation is a free
+// function over values, slices or caller-supplied callbacks.
+//
+// The decompiler cut several routines at the global allocator singleton
+// (`FUN_0093ec70`, which it marks non-returning) or at the first 16-bit
+// store, so those bodies were read from the shipped instruction bytes as
+// well.  Each doc comment says exactly which slice of the retail body the
+// Rust function covers; a routine whose remaining work is an opaque
+// allocator/vtable call reports the recovered words and leaves the call to
+// the caller.
+//
+// ## Recovered layout
+//
+// | object | offset | field |
+// |--------|--------|-------|
+// | hash table | `+0x00` | bucket count, power of two |
+// | hash table | `+0x04` | bucket base (null before the first grow) |
+// | hash table | `+0x08` | element count |
+// | hash table | `+0x0c` | maximum load factor (`f32`) |
+// | key node | `+0x00` | next node in the bucket chain |
+// | key node | `+0x08` | key bytes pointer |
+// | key node | `+0x0c` | key length |
+// | key node | `+0x28` | mapped value (released by `0x00668a60`) |
+// | upload info | `+0x00` | three zero words |
+// | upload info | `+0x0c` | kind byte / subtype byte |
+// | upload info | `+0x0e` | 16-bit type word |
+// | upload info | `+0x10` | stream word, or child pointer |
+// | upload info | `+0x14` | child pointer alias |
+// | upload info | `+0x18` | fourth constructor argument |
+// | upload info | `+0x2c` | third constructor argument |
+// | upload info | `+0x34` | last word (record size `0x38`) |
+// | upload child | `+0x00` | five words, second word `0x00010000` |
+// | callable slot | `+0x00` | storage word (20-byte slot) |
+//
+// ## Skipped rows
+//
+// The throw-only wrappers at the start of the window (the integer, float,
+// `int64`, string and string-plus-length key formatters) have no surviving
+// value: every path ends in the non-returning out-of-range throw, so they
+// are not modelled.  The `halt_baddata` row is not a routine.  The hash
+// table constructors and the iterator walk whose tail is a non-returning
+// cleanup call are not reproduced.  The array destructor in
+// the middle of the window was truncated after its first element and needs
+// a `0x98`-byte element layout that the body does not expose.  The
+// static-table guard depends on the `0x00f94a30` global and on a
+// `0x20`-stride record whose key field is behind an unrecovered table.  The
+// range initialiser whose decompile stops at the allocator prologue (the
+// `0x1c`-stride string list) is left to a later pass.  The upload-manager
+// destructors, their duplicate, and the jump-table dispatcher are skipped:
+// the former need the full `0xb8`-byte layout and the latter's jump table
+// is unrecovered.  The frame-restore stub accumulates `unaff_EBP` slots and
+// is not a routine; it and the other argument-free fragments are listed in
+// the batch report.
+
+// ---------------------------------------------------------------------------
+// Hash-container helpers (`_Hash` instantiations)
+// ---------------------------------------------------------------------------
+
+/// Byte offset of the next-node word in a keyed hash node.
+pub const W13A07_HASH_NODE_NEXT: usize = 0x00;
+/// Byte offset of the key-bytes pointer in a keyed hash node.
+pub const W13A07_HASH_NODE_KEY_PTR: usize = 0x08;
+/// Byte offset of the key length in a keyed hash node.
+pub const W13A07_HASH_NODE_KEY_LEN: usize = 0x0c;
+/// Byte offset of the mapped value in this instantiation's nodes.
+pub const W13A07_HASH_NODE_VALUE: usize = 0x28;
+/// Smallest bucket count the growth routine ever returns.
+pub const W13A07_HASH_MIN_BUCKETS: u32 = 8;
+
+/// The three words written by the bucket probe at `0x00668f80`.
+///
+/// The retail routine stores a node pointer and two bucket-relative byte
+/// offsets.  `next_offset` is the matching bucket slot when the key is
+/// present and the table's end offset otherwise.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct W13a07HashProbe {
+    /// First output word: the chain node, or `None` when the bucket probe
+    /// stopped at a null link.
+    pub node: Option<u32>,
+    /// Second output word: `(bucket_count - 1 & hash) * 4` on a hit, else
+    /// `end_offset`.
+    pub next_offset: u32,
+    /// Third output word: `bucket_count * 4`.
+    pub end_offset: u32,
+}
+
+/// `0x00668f80`: probe the bucket chain for a key.
+///
+/// ```c
+/// if (table[1] == 0) {                 // no bucket array yet
+///   out[0] = 0;
+///   out[1] = table[0] << 2;
+///   out[2] = table[0] << 2;
+///   return;
+/// }
+/// hash = FUN_00c62800(key.ptr, key.len, 0);       // MurmurHash3 x86-32
+/// slot = table[1] + (table[0] - 1 & hash) * 4;
+/// link = FUN_005e8660(slot, &key);                // chain walk
+/// out[0] = *link;
+/// out[1] = (*link != 0) ? slot : table[1] + table[0] * 4;
+/// out[2] = table[1] + table[0] * 4;
+/// ```
+///
+/// `found_node` is `*link`, i.e. the node the chain walk reached.  The
+/// chain walk itself (`FUN_005e8660`) compares the node key at `+0x08`/`+0x0c`
+/// against the search key and returns the link pointing at the matching
+/// node, or the last link on a miss.
+pub fn w13a07_hash_bucket_probe(
+    bucket_count: u32,
+    buckets_allocated: bool,
+    key: &[u8],
+    found_node: Option<u32>,
+) -> W13a07HashProbe {
+    let end_offset = bucket_count.wrapping_mul(4);
+    if !buckets_allocated {
+        return W13a07HashProbe {
+            node: None,
+            next_offset: end_offset,
+            end_offset,
+        };
+    }
+    let hash = a43_hash_bytes(key);
+    let slot = (bucket_count.wrapping_sub(1) & hash).wrapping_mul(4);
+    match found_node {
+        Some(node) => W13a07HashProbe {
+            node: Some(node),
+            next_offset: slot,
+            end_offset,
+        },
+        None => W13a07HashProbe {
+            node: None,
+            next_offset: end_offset,
+            end_offset,
+        },
+    }
+}
+
+/// `0x006686a0`: `contains(key)`.
+///
+/// The body probes into a 12-byte local and returns `local[0] != 0`; the
+/// lookup and key comparison are the probe at `0x00668f80`.  The returned
+/// boolean is exactly the probe's node word.
+pub fn w13a07_hash_contains(
+    bucket_count: u32,
+    buckets_allocated: bool,
+    key: &[u8],
+    found_node: Option<u32>,
+) -> bool {
+    w13a07_hash_bucket_probe(bucket_count, buckets_allocated, key, found_node)
+        .node
+        .is_some()
+}
+
+/// Byte written by `0x00668a60` into the destination's presence flag.
+pub const W13A07_PRESENCE_OFFSET: usize = 0x28;
+/// Set when the lookup found a node.
+pub const W13A07_PRESENCE_SET: u8 = 1;
+/// Cleared when the lookup missed.
+pub const W13A07_PRESENCE_CLEAR: u8 = 0;
+
+/// `0x00668a60`: store the lookup presence flag.
+///
+/// ```c
+/// FUN_00668f80(&local, key);
+/// if (local[0] != 0) {
+///   *(u8 *)(dest + 0x28) = 1;
+///   FUN_0060ffb0(local[0] + 0x28);     // release the mapped string
+///   return dest;
+/// }
+/// *(u8 *)(dest + 0x28) = 0;
+/// return dest;
+/// ```
+///
+/// Only the flag value is returned here; the release of the found value
+/// (its `+0x28` word, driven by `FUN_0060ffb0`) is a side effect the caller
+/// performs when it owns the node.
+pub fn w13a07_presence_flag(found_node: Option<u32>) -> u8 {
+    match found_node {
+        Some(_) => W13A07_PRESENCE_SET,
+        None => W13A07_PRESENCE_CLEAR,
+    }
+}
+
+/// One node of the keyed bucket chain used by `0x00668ca0`.
+///
+/// The retail node stores the next pointer at `+0x00`, the key pointer at
+/// `+0x08` and the key length at `+0x0c`.  Here the key is a borrowed byte
+/// slice and the next node is an index into the node table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct W13a07KeyNode<'a> {
+    /// `+0x00`: next node in the same bucket chain.
+    pub next: Option<usize>,
+    /// `+0x08`/`+0x0c`: key bytes and their length.
+    pub key: &'a [u8],
+}
+
+/// Where an iterator's predecessor link lives.
+///
+/// The retail `equal_range` result stores raw addresses: a bucket slot
+/// address, the `next` word of a preceding node, or the table end address.
+/// Indices keep the same three cases without expressing a pointer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum W13a07Link {
+    /// The link is the bucket-head slot with this index.
+    Bucket(usize),
+    /// The link is the `next` word of this node.
+    Node(usize),
+    /// The link is the table end (`bucket_count * 4`).
+    End,
+}
+
+/// The `0x18`-byte result of `0x00668ca0`: two iterators sharing one end.
+///
+/// Each iterator is `{node, link}`; the retail record repeats the end
+/// offset at `+0x08` and `+0x14`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct W13a07EqualRange {
+    /// First matching node, or `None` when the key is absent.
+    pub first: Option<usize>,
+    /// Link that points at [`Self::first`].
+    pub first_link: W13a07Link,
+    /// First node past the equal run, or `None` at the table end.
+    pub last: Option<usize>,
+    /// Link that points at [`Self::last`].
+    pub last_link: W13a07Link,
+    /// `bucket_count * 4`, stored at `+0x08` and `+0x14`.
+    pub end: u32,
+}
+
+fn w13a07_empty_range(end: u32) -> W13a07EqualRange {
+    W13a07EqualRange {
+        first: None,
+        first_link: W13a07Link::End,
+        last: None,
+        last_link: W13a07Link::End,
+        end,
+    }
+}
+
+/// `0x00668ca0`: the hash container's `equal_range(key)`.
+///
+/// ```c
+/// if (table[1] == 0) {                  // no bucket base
+///   out = {0, count << 2, count << 2, 0, count << 2, count << 2};
+///   return;
+/// }
+/// hash = FUN_00c62800(key.ptr, key.len, 0);
+/// slot = table[1] + (table[0] - 1 & hash) * 4;
+/// link = FUN_005e8660(slot, &key);      // first match or last link
+/// first = *link;
+/// if (first == 0) { out = {0, end, end, 0, end, end}; return; }
+/// out[0..1] = {first, link};
+/// // second iterator: advance while the node key compares equal
+/// out[2..3] = {stop, stop_link};
+/// out[4] = end;
+/// ```
+///
+/// Equality is the retail `memcmp(min(len))` followed by the length
+/// difference, i.e. exact byte equality (including length).  `buckets`
+/// holds the bucket-head node indices; `nodes[next]` follows the chain.
+/// The scan past the end of one chain continues with the next non-empty
+/// bucket slot, exactly like the container's iterator.
+pub fn w13a07_equal_range(
+    bucket_count: u32,
+    buckets: &[Option<usize>],
+    nodes: &[W13a07KeyNode<'_>],
+    key: &[u8],
+) -> W13a07EqualRange {
+    let end = bucket_count.wrapping_mul(4);
+    if bucket_count == 0 || buckets.is_empty() {
+        return w13a07_empty_range(end);
+    }
+    debug_assert_eq!(bucket_count as usize, buckets.len());
+
+    let hash = a43_hash_bytes(key);
+    let mut slot = ((bucket_count - 1) & hash) as usize;
+    let mut current = buckets[slot];
+    let mut predecessor = W13a07Link::Bucket(slot);
+    while let Some(index) = current {
+        if nodes[index].key == key {
+            break;
+        }
+        predecessor = W13a07Link::Node(index);
+        current = nodes[index].next;
+    }
+    let Some(first) = current else {
+        return w13a07_empty_range(end);
+    };
+    let first_link = predecessor;
+
+    let mut last = first;
+    let mut last_link;
+    loop {
+        let previous = last;
+        if let Some(next) = nodes[previous].next {
+            last = next;
+            last_link = W13a07Link::Node(previous);
+        } else {
+            slot += 1;
+            while slot < buckets.len() && buckets[slot].is_none() {
+                slot += 1;
+            }
+            if slot == buckets.len() {
+                return W13a07EqualRange {
+                    first: Some(first),
+                    first_link,
+                    last: None,
+                    last_link: W13a07Link::End,
+                    end,
+                };
+            }
+            last = buckets[slot].expect("non-empty bucket slot");
+            last_link = W13a07Link::Bucket(slot);
+        }
+        if nodes[last].key != key {
+            break;
+        }
+    }
+
+    W13a07EqualRange {
+        first: Some(first),
+        first_link,
+        last: Some(last),
+        last_link,
+        end,
+    }
+}
+
+/// `0x00668dc0`: number of nodes in a key's equal range.
+///
+/// The retail row is the `_Hash::erase(key)` instantiation.  Its return
+/// value is the number of nodes it unlinks, destroys (`node + 0x28` plus the
+/// node itself) and subtracts from `table[2]`.  Only the count is modelled:
+/// `w13a07_equal_range` supplies the first matching node and the walk to
+/// the first non-equal node.  Every equal key hashes to the same bucket, so
+/// the run never crosses into another bucket.
+pub fn w13a07_equal_count(
+    bucket_count: u32,
+    buckets: &[Option<usize>],
+    nodes: &[W13a07KeyNode<'_>],
+    key: &[u8],
+) -> u32 {
+    let range = w13a07_equal_range(bucket_count, buckets, nodes, key);
+    let Some(first) = range.first else {
+        return 0;
+    };
+    let mut count = 0u32;
+    let mut current = Some(first);
+    while let Some(index) = current {
+        if nodes[index].key != key {
+            break;
+        }
+        count = count.wrapping_add(1);
+        current = nodes[index].next;
+    }
+    count
+}
+
+/// The two values computed by the load-factor growth helper.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct W13a07HashGrowth {
+    /// `max(ceil(elements / max_load), minimum)`.
+    pub required: u32,
+    /// Smallest power of two `>= 8` and `>= required`.
+    pub buckets: u32,
+}
+
+/// `0x00669000`: compute the bucket count for a rehash.
+///
+/// ```c
+/// d = (double)elements;                     // unsigned-to-double helper
+/// need = (int)((float)d / max_load);        // truncation
+/// if ((float)d <= (float)need * max_load) candidate = need;
+/// else candidate = need + 1;                // ceil
+/// if (candidate < minimum) candidate = minimum;
+/// buckets = 8;
+/// while (buckets < candidate) buckets *= 2;
+/// if (buckets == table[0] && table[1] != 0) return;  // already sized
+/// FUN_0093ec70();                           // rehash/allocate tail
+/// ```
+///
+/// `table[2]` is the element count and `table[3]` the maximum load factor
+/// (`f32`).  The comparison is the compiler's float `ceil` idiom: truncate
+/// the quotient, then add one when the truncated product falls short.  The
+/// rehash itself is an allocator/vtable tail and is not reproduced; the
+/// returned pair is the input the tail receives.
+pub fn w13a07_hash_growth(elements: u32, max_load: f32, minimum: u32) -> W13a07HashGrowth {
+    let elements_f = elements as f32;
+    let quotient = elements_f / max_load;
+    let truncated = quotient as u32;
+    let candidate = if elements_f <= truncated as f32 * max_load {
+        truncated
+    } else {
+        truncated.wrapping_add(1)
+    };
+    let required = candidate.max(minimum);
+
+    let mut buckets = W13A07_HASH_MIN_BUCKETS;
+    while buckets < required {
+        let next = buckets.wrapping_mul(2);
+        if next == 0 {
+            break;
+        }
+        buckets = next;
+    }
+    W13a07HashGrowth { required, buckets }
+}
+
+// ---------------------------------------------------------------------------
+// Upload-info record (`ClientSdk::IInternetFileUploadInfoV1` family)
+// ---------------------------------------------------------------------------
+
+/// Size in bytes of the aggregate initialised by `0x00669490` (`0x38`).
+pub const W13A07_UPLOAD_INFO_SIZE: usize = 0x38;
+/// Number of 32-bit words in that aggregate.
+pub const W13A07_UPLOAD_INFO_WORDS: usize = 0x0e;
+/// Byte offset of the kind byte (`0x0c`).
+pub const W13A07_UPLOAD_INFO_BYTE_KIND: usize = 0x0c;
+/// Byte offset of the subtype byte (`0x0d`).
+pub const W13A07_UPLOAD_INFO_BYTE_SUBTYPE: usize = 0x0d;
+/// Byte offset of the 16-bit type word (`0x0e`).
+pub const W13A07_UPLOAD_INFO_WORD_TYPE: usize = 0x0e;
+/// Word offset of the stream word / child pointer (`0x10`).
+pub const W13A07_UPLOAD_INFO_WORD_STREAM: usize = 0x10;
+/// Word offset of the child-pointer alias (`0x14`).
+pub const W13A07_UPLOAD_INFO_WORD_CHILD_ALIAS: usize = 0x14;
+/// Word offset of the fourth constructor argument (`0x18`).
+pub const W13A07_UPLOAD_INFO_WORD_ARG4: usize = 0x18;
+/// Word offset of the third constructor argument (`0x2c`).
+pub const W13A07_UPLOAD_INFO_WORD_ARG3: usize = 0x2c;
+/// Size in bytes of the child allocation created by `0x00669490` (`0x14`).
+pub const W13A07_UPLOAD_INFO_CHILD_SIZE: u32 = 0x14;
+/// Number of words in the child allocation.
+pub const W13A07_UPLOAD_INFO_CHILD_WORDS: usize = 5;
+
+/// Kind value that also writes `0x0d` into the subtype byte.
+pub const W13A07_UPLOAD_INFO_KIND_SPECIAL: u32 = 5;
+
+/// The five-word child allocation made by `0x00669490`.
+///
+/// The words are `{0, 0x00010000, 0, 0, 0}`; retail allocates `0x14` bytes
+/// and stores the pointer in both the stream word (`+0x10`) and the alias
+/// word (`+0x14`) when the stream argument is zero.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct W13a07UploadChild {
+    /// The five words.
+    pub words: [u32; W13A07_UPLOAD_INFO_CHILD_WORDS],
+}
+
+impl W13a07UploadChild {
+    /// The recovered child contents.
+    pub fn new() -> Self {
+        Self {
+            words: [0, 0x0001_0000, 0, 0, 0],
+        }
+    }
+}
+
+/// The `0x38`-byte aggregate built by `0x00669490`.
+///
+/// `words[3]` packs the kind byte, the subtype byte and the type word;
+/// `words[4]`/`words[5]` are the stream word and its alias, and the word at
+/// `+0x18` and `+0x2c` carry the fourth and third constructor arguments.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct W13a07UploadInfo {
+    /// The fourteen record words.
+    pub words: [u32; W13A07_UPLOAD_INFO_WORDS],
+    /// Child allocation, present only on the zero-stream path.
+    pub child: Option<W13a07UploadChild>,
+}
+
+/// `0x00669490`: construct the `0x38`-byte upload-info aggregate.
+///
+/// ```c
+/// words[0..3] = 0;                      // 16 zero bytes
+/// word[+0x0e] = table[kind];            // DAT_00d3dba4[kind]
+/// if (kind == 5) byte[+0x0d] = 0x0d;
+/// word[+0x10] = arg2;
+/// word[+0x14] = 0;
+/// word[+0x18] = arg4;
+/// word[+0x1c..0x28] = 0;
+/// word[+0x2c] = arg3;
+/// word[+0x30] = word[+0x34] = 0;
+/// if (word[+0x10] == 0) {
+///   child = allocate(0x14);             // {0, 0x10000, 0, 0, 0}
+///   word[+0x10] = word[+0x14] = child;
+/// }
+/// ```
+///
+/// `table_byte` is the 16-bit value the caller read from the recovered
+/// `0x00d3dba4` table; that global's initialised contents are not part of
+/// the shipped image copy available to this batch, so the lookup stays an
+/// argument.  Ghidra split the child allocation into a separate row; it is
+/// the tail of this constructor and is folded into this translation.
+pub fn w13a07_upload_info_new(
+    kind: u32,
+    table_byte: u16,
+    stream: u32,
+    arg4: u32,
+    arg3: u32,
+) -> W13a07UploadInfo {
+    let mut info = W13a07UploadInfo {
+        words: [0; W13A07_UPLOAD_INFO_WORDS],
+        child: None,
+    };
+    info.words[3] = (table_byte as u32) << 16;
+    if kind == W13A07_UPLOAD_INFO_KIND_SPECIAL {
+        info.words[3] |= (W13A07_UPLOAD_INFO_BYTE_SUBTYPE as u32) << 8;
+    }
+    info.words[W13A07_UPLOAD_INFO_WORD_STREAM / 4] = stream;
+    info.words[W13A07_UPLOAD_INFO_WORD_ARG4 / 4] = arg4;
+    info.words[W13A07_UPLOAD_INFO_WORD_ARG3 / 4] = arg3;
+    if stream == 0 {
+        info.child = Some(W13a07UploadChild::new());
+    }
+    info
+}
+
+/// `0x00669ab0`: move-assign one upload-info record.
+///
+/// ```c
+/// dst[0..4] = src[0..4];                 // 16 bytes
+/// *(u16 *)(src + 0x0e) = 0;              // clear the type word
+/// FUN_0066a2b0(dst);                     // release dst's nested block
+/// dst[+0x10] = src[+0x10];
+/// dst[+0x14] = src[+0x14];
+/// dst[+0x18..+0x2c] = src[+0x18..+0x2c];  // stolen nested block
+/// dst[+0x30] = src[+0x30];
+/// dst[+0x34] = src[+0x34];
+/// src[+0x10] = src[+0x14] = 0;
+/// src[+0x30] = src[+0x34] = 0;
+/// ```
+///
+/// The nested block at `+0x18` is a 24-byte MSVC string plus two trailing
+/// words; the retail move steals it without clearing the source's
+/// `+0x18..+0x2c` span (only the source's `+0x30`/`+0x34` are cleared).
+/// `release_dst_nested` stands in for `FUN_0066a2b0`, which frees the
+/// destination's old block through the allocator singleton.
+pub fn w13a07_move_upload_info(
+    dst: &mut [u32; W13A07_UPLOAD_INFO_WORDS],
+    src: &mut [u32; W13A07_UPLOAD_INFO_WORDS],
+    release_dst_nested: impl FnOnce(&mut [u32; W13A07_UPLOAD_INFO_WORDS]),
+) {
+    for (index, word) in src.iter().take(4).enumerate() {
+        dst[index] = *word;
+    }
+    src[3] &= 0xffff_0000;
+    release_dst_nested(dst);
+    dst[4] = src[4];
+    dst[5] = src[5];
+    dst[6..W13A07_UPLOAD_INFO_WORDS].copy_from_slice(&src[6..W13A07_UPLOAD_INFO_WORDS]);
+    src[4] = 0;
+    src[5] = 0;
+    src[12] = 0;
+    src[13] = 0;
+}
+
+// ---------------------------------------------------------------------------
+// Type-erased callable slots (`std::function` storage)
+// ---------------------------------------------------------------------------
+
+/// Size of one callable slot (`0x14` bytes).
+pub const W13A07_CALLABLE_SLOT_SIZE: usize = 0x14;
+/// Word stored in a released/empty slot.
+pub const W13A07_CALLABLE_EMPTY_WORD: u32 = 1;
+/// Bit 0 of the storage word marks a heap pointer (`word & ~1`).
+pub const W13A07_CALLABLE_HEAP_TAG: u32 = 1;
+
+/// Decoded callable storage.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum W13a07Callable {
+    /// The slot is the empty word `1` (retail skips the destroy call).
+    Empty,
+    /// Bit 0 is clear: the target lives inline at the slot address.
+    Inline,
+    /// Bit 0 is set: the target is the pointer `word & ~1`.
+    Heap(u32),
+}
+
+/// `0x006696e0` (and the slot pattern repeated by `0x00669800`): decode a
+/// 20-byte callable slot's storage word.
+///
+/// ```c
+/// word = slot[0];
+/// if ((word & 1) == 0) target = slot;          // inline
+/// else if ((word & ~1) != 0) target = word & ~1; // heap
+/// else target = 0;                              // empty
+/// ```
+///
+/// The retail check is on bit 0 only; the empty word `1` therefore maps to
+/// the null target and is the only value for which the destroy call is
+/// skipped.
+pub fn w13a07_callable_storage(word: u32) -> W13a07Callable {
+    if word & W13A07_CALLABLE_HEAP_TAG == 0 {
+        W13a07Callable::Inline
+    } else {
+        let pointer = word & !W13A07_CALLABLE_HEAP_TAG;
+        if pointer == 0 {
+            W13a07Callable::Empty
+        } else {
+            W13a07Callable::Heap(pointer)
+        }
+    }
+}
+
+/// Release one callable slot and reset it to the empty word.
+///
+/// This is the shared destroy step of `0x006696e0` (three slots) and
+/// `0x00669800` (the `+0x28` slot).
+/// Returns the storage that was released, or `None` for an already empty
+/// slot.  The retail body calls `target->vtable[0](target, 0)` and, for the
+/// heap form, hands the pointer to the allocator singleton at
+/// `FUN_0093ec70` (`vtable + 0x10`); those two calls stay with the caller.
+pub fn w13a07_release_callable(word: &mut u32) -> Option<W13a07Callable> {
+    let storage = w13a07_callable_storage(*word);
+    if storage == W13a07Callable::Empty {
+        return None;
+    }
+    *word = W13A07_CALLABLE_EMPTY_WORD;
+    Some(storage)
+}
+
+/// The three callable slots released by `0x006696e0`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct W13a07CallableTriple {
+    /// Slot at `+0x28`.
+    pub at_28: u32,
+    /// Slot at `+0x14`.
+    pub at_14: u32,
+    /// Slot at `+0x00`.
+    pub at_00: u32,
+}
+
+/// `0x006696e0`: release the three callable slots of a manager object.
+///
+/// The order is `+0x28`, then `+0x14`, then `+0x00`, exactly the order the
+/// retail body destroys them (each through the 20-byte slot protocol).
+/// Every slot is left holding `1`.
+pub fn w13a07_release_callable_triple(
+    triple: &mut W13a07CallableTriple,
+) -> [Option<W13a07Callable>; 3] {
+    let first = w13a07_release_callable(&mut triple.at_28);
+    let second = w13a07_release_callable(&mut triple.at_14);
+    let third = w13a07_release_callable(&mut triple.at_00);
+    [first, second, third]
+}
+
+/// Which manager function a callable uses.
+///
+/// The table at the frame local is exactly two entries: the CFG guard check
+/// (`guard_check_icall`) and `0x00669430`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum W13a07FunctionManager {
+    /// Entry 0: the control-flow-guard check.
+    Guard,
+    /// Entry 1: the checked buffer release at `0x00669430`.
+    Checked,
+}
+
+/// Decode the manager index stored at `+0x20` (the two-entry local table
+/// used by `0x006698c0` and the tail of `0x00669800`).
+///
+/// The retail table dispatch accepts indices `0` and `1`; `-1` marks an
+/// unset manager.  Other values have no table entry and are reported as
+/// unsupported rather than read past the two-entry local table.
+pub fn w13a07_function_manager(index: i32) -> Option<W13a07FunctionManager> {
+    match index {
+        0 => Some(W13a07FunctionManager::Guard),
+        1 => Some(W13a07FunctionManager::Checked),
+        _ => None,
+    }
+}
+
+/// `0x006698c0`: dispatch and clear the manager index at `+0x20`.
+///
+/// ```c
+/// if (*(int *)(this + 0x20) != -1) {
+///   table = {guard_check_icall, FUN_00669430};
+///   table[*(int *)(this + 0x20)](this);
+///   *(int *)(this + 0x20) = -1;
+/// }
+/// ```
+///
+/// `0x00669800` contains the same tail after releasing its `+0x28` slot, so
+/// both rows share this helper.  The index is cleared only when the table
+/// actually has an entry.
+pub fn w13a07_take_function_manager(index: &mut i32) -> Option<W13a07FunctionManager> {
+    let manager = w13a07_function_manager(*index);
+    if manager.is_some() {
+        *index = -1;
+    }
+    manager
+}
+
+/// The actions recovered from the two scalar-deleting-destructor rows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct W13a07DeleteAction {
+    /// Vtable word written before destruction, when the row writes one.
+    pub vtable_write: Option<u32>,
+    /// Whether a base destructor is called (`FUN_0083d770`).
+    pub destroy: bool,
+    /// Object size passed to the deallocator, when `flags & 1` is set.
+    pub deallocate: Option<u32>,
+}
+
+/// Vtable stored by `0x00669930` and `0x00669bf0`.
+pub const W13A07_UPLOAD_INFO_V1_VTABLE: u32 = 0x00d3_d9ac;
+
+/// `0x00669930`: reset the four-byte `IInternetFileUploadInfoV1` object's
+/// vtable word.
+///
+/// ```c
+/// *(u32 *)this = ClientSdk::IInternetFileUploadInfoV1::vftable; // 0x00d3d9ac
+/// ```
+pub fn w13a07_upload_info_v1_init(object: &mut u32) {
+    *object = W13A07_UPLOAD_INFO_V1_VTABLE;
+}
+
+/// `0x00669800`: release the `+0x28` callable slot, then dispatch and clear
+/// the `+0x20` manager index.
+///
+/// The slot protocol is the same 20-byte storage handled by
+/// [`w13a07_release_callable`]; the manager tail is
+/// [`w13a07_take_function_manager`].
+pub fn w13a07_release_upload_slot(
+    slot: &mut u32,
+    manager: &mut i32,
+) -> (Option<W13a07Callable>, Option<W13a07FunctionManager>) {
+    let released = w13a07_release_callable(slot);
+    let taken = w13a07_take_function_manager(manager);
+    (released, taken)
+}
+
+/// `0x00669430`: the checked-manager body.
+///
+/// ```c
+/// if (*(int *)(record + 8) >= 0) {
+///   allocator = FUN_0093ec70();
+///   allocator->vtable[0x10](*(u32 *)record);   // deallocate
+/// }
+/// ```
+///
+/// The record's capacity word at `+0x8` decides whether the buffer word at
+/// `+0x0` is owned.  The function returns the pointer to deallocate, or
+/// `None` when the capacity is negative.  A null pointer is still reported
+/// when the capacity allows it; the allocator tail is the caller's.
+pub fn w13a07_checked_buffer_release(pointer: u32, capacity: i32) -> Option<u32> {
+    if capacity >= 0 { Some(pointer) } else { None }
+}
+
+// ---------------------------------------------------------------------------
+// Destructor / serial helpers
+// ---------------------------------------------------------------------------
+
+/// `0x00669bc0`: scalar deleting destructor of the `0xb8`-byte manager.
+///
+/// ```c
+/// FUN_0083d770(this);                  // base destructor
+/// if (flags & 1) FUN_00923e90(this, 0xb8);
+/// return this;
+/// ```
+pub fn w13a07_upload_manager_deleting_destructor(flags: u8) -> W13a07DeleteAction {
+    W13a07DeleteAction {
+        vtable_write: None,
+        destroy: true,
+        deallocate: if flags & 1 != 0 { Some(0xb8) } else { None },
+    }
+}
+
+/// `0x00669bf0`: scalar deleting destructor of the four-byte
+/// `IInternetFileUploadInfoV1` object.
+///
+/// ```c
+/// *(u32 *)this = 0x00d3d9ac;           // ClientSdk vftable
+/// if (flags & 1) FUN_00923e90(this, 4);
+/// return this;
+/// ```
+///
+/// This row performs no base-destructor call; the vtable store is its only
+/// destruction step.
+pub fn w13a07_upload_info_v1_deleting_destructor(flags: u8) -> W13a07DeleteAction {
+    W13a07DeleteAction {
+        vtable_write: Some(W13A07_UPLOAD_INFO_V1_VTABLE),
+        destroy: false,
+        deallocate: if flags & 1 != 0 { Some(4) } else { None },
+    }
+}
+
+/// `0x00669ce0`: allocate a serial number from the manager counter.
+///
+/// ```c
+/// serial = *(int *)(this + 0x20);
+/// *(int *)(this + 0x20) = serial + 1;
+/// // insert serial into the id map, allocate a 0x28-byte node
+/// // (id at +0x10, empty callable at +0x14), link it, then assign the
+/// // callable argument through FUN_00534dc0 and return the old counter.
+/// return serial;
+/// ```
+///
+/// The map insertion and the 0x28-byte node are not modelled; the recovered
+/// arithmetic is the wrapping post-increment of the id counter.
+pub fn w13a07_next_serial(counter: &mut i32) -> i32 {
+    let serial = *counter;
+    *counter = serial.wrapping_add(1);
+    serial
+}
+
+/// The handle and dispatch arguments recovered from `0x00669fd0`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct W13a07ChildTake {
+    /// The child handle that was cleared from `+0xb4`.
+    pub child: Option<u32>,
+    /// Size passed to the deallocator for [`Self::child`] (`0xb8`).
+    pub child_size: Option<u32>,
+    /// The `FUN_0066af10` this-pointer and its two arguments.
+    pub dispatch: (u32, u32, u32),
+}
+
+/// Size in bytes of the child object destroyed by `0x00669fd0`.
+pub const W13A07_UPLOAD_CHILD_MANAGER_SIZE: u32 = 0xb8;
+
+/// `0x00669fd0`: clear the nested child handle, then dispatch.
+///
+/// ```c
+/// owner = *(u32 *)(this + 8);
+/// child = *(u32 *)(owner + 0xb4);
+/// *(u32 *)(owner + 0xb4) = 0;
+/// if (child != 0) {
+///   FUN_0083d770(child);               // destroy the child
+///   FUN_00923e90(child, 0xb8);         // deallocate it
+/// }
+/// FUN_0066af10(*(u32 *)(this + 0x10), *(u32 *)(this + 0x14));
+/// ```
+///
+/// `child_slot` is the `+0xb4` word; `owner`, `first` and `second` are the
+/// `this` pointer and the two arguments the tail dispatch receives.
+pub fn w13a07_take_upload_child(
+    child_slot: &mut u32,
+    owner: u32,
+    first: u32,
+    second: u32,
+) -> W13a07ChildTake {
+    let child = *child_slot;
+    *child_slot = 0;
+    if child == 0 {
+        W13a07ChildTake {
+            child: None,
+            child_size: None,
+            dispatch: (owner, first, second),
+        }
+    } else {
+        W13a07ChildTake {
+            child: Some(child),
+            child_size: Some(W13A07_UPLOAD_CHILD_MANAGER_SIZE),
+            dispatch: (owner, first, second),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests_wave13_agent07 {
+    use super::*;
+
+    fn node<'a>(next: Option<usize>, key: &'a [u8]) -> W13a07KeyNode<'a> {
+        W13a07KeyNode { next, key }
+    }
+
+    #[test]
+    fn hash_kernel_values_used_by_the_bucket_tests() {
+        // The shared MurmurHash3 kernel (`FUN_00c62800`, batch 43) must agree
+        // with the constants the bucket masks below are derived from.
+        assert_eq!(a43_hash_bytes(b""), 0x0000_0000);
+        assert_eq!(a43_hash_bytes(b"key"), 0xe29c_6a44);
+        assert_eq!(a43_hash_bytes(b"hello"), 0x248b_fa47);
+        assert_eq!(a43_hash_bytes(b"abc"), 0xb3dd_93fa);
+    }
+
+    #[test]
+    fn bucket_probe_masks_the_hash_and_reports_the_end() {
+        assert_eq!(
+            w13a07_hash_bucket_probe(8, true, b"", None),
+            W13a07HashProbe {
+                node: None,
+                next_offset: 32,
+                end_offset: 32
+            }
+        );
+        // "key" hashes to 0xe29c6a44; the three low bits are 4.
+        assert_eq!(
+            w13a07_hash_bucket_probe(8, true, b"key", Some(0x1234)),
+            W13a07HashProbe {
+                node: Some(0x1234),
+                next_offset: 16,
+                end_offset: 32
+            }
+        );
+        assert_eq!(
+            w13a07_hash_bucket_probe(8, true, b"key", None),
+            W13a07HashProbe {
+                node: None,
+                next_offset: 32,
+                end_offset: 32
+            }
+        );
+        // Without a bucket base the probe never hashes the key.
+        assert_eq!(
+            w13a07_hash_bucket_probe(8, false, b"key", Some(0x1234)),
+            W13a07HashProbe {
+                node: None,
+                next_offset: 32,
+                end_offset: 32
+            }
+        );
+    }
+
+    #[test]
+    fn contains_is_the_probe_node_word() {
+        assert!(w13a07_hash_contains(8, true, b"key", Some(7)));
+        assert!(!w13a07_hash_contains(8, true, b"key", None));
+        assert!(!w13a07_hash_contains(8, false, b"key", Some(7)));
+    }
+
+    #[test]
+    fn presence_flag_sets_one_only_on_a_hit() {
+        assert_eq!(w13a07_presence_flag(Some(0x40)), 1);
+        assert_eq!(w13a07_presence_flag(None), 0);
+        assert_eq!(W13A07_PRESENCE_OFFSET, 0x28);
+    }
+
+    #[test]
+    fn equal_range_returns_the_matching_run() {
+        let nodes = [
+            node(Some(1), b"alpha"),
+            node(Some(2), b"key"),
+            node(Some(3), b"key"),
+            node(Some(4), b"kex"),
+            node(None, b"key"),
+        ];
+        let buckets = [Some(0), None, None, None];
+        let range = w13a07_equal_range(4, &buckets, &nodes, b"key");
+        assert_eq!(range.first, Some(1));
+        // The bucket head is "alpha", so the first match hangs off node 0.
+        assert_eq!(range.first_link, W13a07Link::Node(0));
+        assert_eq!(range.last, Some(3));
+        assert_eq!(range.last_link, W13a07Link::Node(2));
+        assert_eq!(range.end, 16);
+        assert_eq!(w13a07_equal_count(4, &buckets, &nodes, b"key"), 2);
+    }
+
+    #[test]
+    fn equal_range_misses_and_empty_tables() {
+        let nodes = [node(None, b"alpha")];
+        let buckets = [Some(0), None, None, None];
+        let range = w13a07_equal_range(4, &buckets, &nodes, b"key");
+        assert_eq!(range.first, None);
+        assert_eq!(range.first_link, W13a07Link::End);
+        assert_eq!(range.last, None);
+        assert_eq!(w13a07_equal_count(4, &buckets, &nodes, b"key"), 0);
+
+        let empty = w13a07_equal_range(4, &[], &nodes, b"key");
+        assert_eq!(empty.first, None);
+        assert_eq!(empty.end, 16);
+    }
+
+    #[test]
+    fn equal_range_advances_to_the_next_bucket() {
+        // "key" maps to bucket 0 and "hello" (odd hash) to bucket 1.
+        let nodes = [node(None, b"key"), node(None, b"hello")];
+        let buckets = [Some(0), Some(1)];
+        let range = w13a07_equal_range(2, &buckets, &nodes, b"key");
+        assert_eq!(range.first, Some(0));
+        assert_eq!(range.first_link, W13a07Link::Bucket(0));
+        assert_eq!(range.last, Some(1));
+        assert_eq!(range.last_link, W13a07Link::Bucket(1));
+        assert_eq!(w13a07_equal_count(2, &buckets, &nodes, b"key"), 1);
+    }
+
+    #[test]
+    fn equal_count_walks_a_full_bucket() {
+        let nodes = [
+            node(Some(1), b"key"),
+            node(Some(2), b"key"),
+            node(None, b"key"),
+        ];
+        let buckets = [Some(0), None, None, None];
+        assert_eq!(w13a07_equal_count(4, &buckets, &nodes, b"key"), 3);
+    }
+
+    #[test]
+    fn growth_uses_ceil_and_the_power_of_two_ladder() {
+        assert_eq!(
+            w13a07_hash_growth(0, 1.0, 0),
+            W13a07HashGrowth {
+                required: 0,
+                buckets: 8
+            }
+        );
+        assert_eq!(
+            w13a07_hash_growth(8, 1.0, 0),
+            W13a07HashGrowth {
+                required: 8,
+                buckets: 8
+            }
+        );
+        assert_eq!(
+            w13a07_hash_growth(9, 1.0, 0),
+            W13a07HashGrowth {
+                required: 9,
+                buckets: 16
+            }
+        );
+        assert_eq!(
+            w13a07_hash_growth(15, 2.0, 0),
+            W13a07HashGrowth {
+                required: 8,
+                buckets: 8
+            }
+        );
+        assert_eq!(
+            w13a07_hash_growth(16, 2.0, 0),
+            W13a07HashGrowth {
+                required: 8,
+                buckets: 8
+            }
+        );
+        assert_eq!(
+            w13a07_hash_growth(10, 0.75, 0),
+            W13a07HashGrowth {
+                required: 14,
+                buckets: 16
+            }
+        );
+        assert_eq!(
+            w13a07_hash_growth(1, 1.0, 20),
+            W13a07HashGrowth {
+                required: 20,
+                buckets: 32
+            }
+        );
+        assert_eq!(w13a07_hash_growth(1, 1.0, 9).buckets, 16);
+    }
+
+    #[test]
+    fn upload_info_constructor_writes_the_recovered_words() {
+        let info = w13a07_upload_info_new(3, 0x1234, 0x55, 0x77, 0x99);
+        assert!(info.child.is_none());
+        assert_eq!(info.words[0], 0);
+        assert_eq!(info.words[1], 0);
+        assert_eq!(info.words[2], 0);
+        assert_eq!(info.words[3], 0x1234_0000);
+        assert_eq!(info.words[W13A07_UPLOAD_INFO_WORD_STREAM / 4], 0x55);
+        assert_eq!(info.words[W13A07_UPLOAD_INFO_WORD_CHILD_ALIAS / 4], 0);
+        assert_eq!(info.words[W13A07_UPLOAD_INFO_WORD_ARG4 / 4], 0x77);
+        assert_eq!(&info.words[7..11], &[0, 0, 0, 0]);
+        assert_eq!(info.words[W13A07_UPLOAD_INFO_WORD_ARG3 / 4], 0x99);
+        assert_eq!(info.words[12], 0);
+        assert_eq!(info.words[13], 0);
+    }
+
+    #[test]
+    fn upload_info_constructor_special_kind_and_child_path() {
+        let info = w13a07_upload_info_new(5, 0x0203, 0, 0, 0);
+        assert_eq!(info.words[3], 0x0203_0d00);
+        assert_eq!(info.words[W13A07_UPLOAD_INFO_WORD_STREAM / 4], 0);
+        let child = info.child.expect("zero stream allocates the child");
+        assert_eq!(child.words, [0, 0x0001_0000, 0, 0, 0]);
+        assert_eq!(W13A07_UPLOAD_INFO_CHILD_SIZE, 0x14);
+    }
+
+    #[test]
+    fn callable_slots_decode_inline_heap_and_empty() {
+        assert_eq!(w13a07_callable_storage(1), W13a07Callable::Empty);
+        assert_eq!(w13a07_callable_storage(0), W13a07Callable::Inline);
+        assert_eq!(
+            w13a07_callable_storage(0x1235),
+            W13a07Callable::Heap(0x1234)
+        );
+        assert_eq!(
+            w13a07_callable_storage(0x8000_0001),
+            W13a07Callable::Heap(0x8000_0000)
+        );
+    }
+
+    #[test]
+    fn release_callable_resets_to_the_empty_word() {
+        let mut heap = 0x1235;
+        assert_eq!(
+            w13a07_release_callable(&mut heap),
+            Some(W13a07Callable::Heap(0x1234))
+        );
+        assert_eq!(heap, W13A07_CALLABLE_EMPTY_WORD);
+
+        let mut inline = 0;
+        assert_eq!(
+            w13a07_release_callable(&mut inline),
+            Some(W13a07Callable::Inline)
+        );
+        assert_eq!(inline, W13A07_CALLABLE_EMPTY_WORD);
+
+        let mut empty = W13A07_CALLABLE_EMPTY_WORD;
+        assert_eq!(w13a07_release_callable(&mut empty), None);
+        assert_eq!(empty, W13A07_CALLABLE_EMPTY_WORD);
+    }
+
+    #[test]
+    fn release_triple_follows_the_retail_order() {
+        let mut triple = W13a07CallableTriple {
+            at_28: 0x11,
+            at_14: 0x15,
+            at_00: 0,
+        };
+        let released = w13a07_release_callable_triple(&mut triple);
+        assert_eq!(
+            released,
+            [
+                Some(W13a07Callable::Heap(0x10)),
+                Some(W13a07Callable::Heap(0x14)),
+                Some(W13a07Callable::Inline),
+            ]
+        );
+        assert_eq!(
+            triple,
+            W13a07CallableTriple {
+                at_28: 1,
+                at_14: 1,
+                at_00: 1
+            }
+        );
+    }
+
+    #[test]
+    fn manager_indices_map_to_the_two_entry_table() {
+        assert_eq!(
+            w13a07_function_manager(0),
+            Some(W13a07FunctionManager::Guard)
+        );
+        assert_eq!(
+            w13a07_function_manager(1),
+            Some(W13a07FunctionManager::Checked)
+        );
+        assert_eq!(w13a07_function_manager(-1), None);
+        assert_eq!(w13a07_function_manager(2), None);
+    }
+
+    #[test]
+    fn take_manager_clears_only_known_entries() {
+        let mut index = 1;
+        assert_eq!(
+            w13a07_take_function_manager(&mut index),
+            Some(W13a07FunctionManager::Checked)
+        );
+        assert_eq!(index, -1);
+
+        let mut unset = -1;
+        assert_eq!(w13a07_take_function_manager(&mut unset), None);
+        assert_eq!(unset, -1);
+    }
+
+    #[test]
+    fn release_upload_slot_does_both_steps() {
+        let mut slot = 0x21;
+        let mut manager = 0;
+        let (released, taken) = w13a07_release_upload_slot(&mut slot, &mut manager);
+        assert_eq!(released, Some(W13a07Callable::Heap(0x20)));
+        assert_eq!(taken, Some(W13a07FunctionManager::Guard));
+        assert_eq!(slot, 1);
+        assert_eq!(manager, -1);
+    }
+
+    #[test]
+    fn checked_buffer_release_tests_the_capacity_sign() {
+        assert_eq!(w13a07_checked_buffer_release(0x1000, 0), Some(0x1000));
+        assert_eq!(w13a07_checked_buffer_release(0x1000, 15), Some(0x1000));
+        assert_eq!(w13a07_checked_buffer_release(0x1000, -1), None);
+        assert_eq!(w13a07_checked_buffer_release(0, 0), Some(0));
+    }
+
+    #[test]
+    fn v1_vtable_store_uses_the_recovered_constant() {
+        let mut object = 0;
+        w13a07_upload_info_v1_init(&mut object);
+        assert_eq!(object, 0x00d3_d9ac);
+        assert_eq!(object, W13A07_UPLOAD_INFO_V1_VTABLE);
+    }
+
+    #[test]
+    fn move_upload_info_copies_and_clears() {
+        let mut dst = [0u32; W13A07_UPLOAD_INFO_WORDS];
+        let mut src = [0u32; W13A07_UPLOAD_INFO_WORDS];
+        for (index, word) in dst.iter_mut().enumerate() {
+            *word = 0x1000 + index as u32;
+        }
+        for (index, word) in src.iter_mut().enumerate() {
+            *word = 0x2000 + index as u32;
+        }
+        src[3] = 0x00aa_bbcc;
+        let mut released_tail = None;
+        w13a07_move_upload_info(&mut dst, &mut src, |destination| {
+            // The nested-block release sees the freshly copied head words
+            // and the destination's old tail.
+            released_tail = Some((destination[0], destination[13]));
+        });
+        assert_eq!(released_tail, Some((0x2000, 0x100d)));
+        // The head is copied before the source type word is cleared.
+        assert_eq!(&dst[..3], &src[..3]);
+        assert_eq!(dst[3], 0x00aa_bbcc);
+        assert_eq!(dst[4], 0x2004);
+        assert_eq!(dst[5], 0x2005);
+        assert_eq!(&dst[6..12], &src[6..12]);
+        assert_eq!(dst[12], 0x200c);
+        assert_eq!(dst[13], 0x200d);
+        // The source's type word is cleared and so are +0x10/+0x14 and the
+        // two trailing words; the stolen nested block stays aliased.
+        assert_eq!(src[3], 0x00aa_0000);
+        assert_eq!(src[4], 0);
+        assert_eq!(src[5], 0);
+        assert_eq!(src[6], 0x2006);
+        assert_eq!(src[12], 0);
+        assert_eq!(src[13], 0);
+    }
+
+    #[test]
+    fn deleting_destructors_report_their_sizes() {
+        assert_eq!(
+            w13a07_upload_manager_deleting_destructor(0),
+            W13a07DeleteAction {
+                vtable_write: None,
+                destroy: true,
+                deallocate: None
+            }
+        );
+        assert_eq!(
+            w13a07_upload_manager_deleting_destructor(1),
+            W13a07DeleteAction {
+                vtable_write: None,
+                destroy: true,
+                deallocate: Some(0xb8)
+            }
+        );
+        assert_eq!(
+            w13a07_upload_manager_deleting_destructor(0xff).deallocate,
+            Some(0xb8)
+        );
+        assert_eq!(
+            w13a07_upload_info_v1_deleting_destructor(0),
+            W13a07DeleteAction {
+                vtable_write: Some(0x00d3_d9ac),
+                destroy: false,
+                deallocate: None
+            }
+        );
+        assert_eq!(
+            w13a07_upload_info_v1_deleting_destructor(1).deallocate,
+            Some(4)
+        );
+    }
+
+    #[test]
+    fn serial_allocation_is_a_wrapping_post_increment() {
+        let mut counter = 41;
+        assert_eq!(w13a07_next_serial(&mut counter), 41);
+        assert_eq!(counter, 42);
+        let mut wrap = i32::MAX;
+        assert_eq!(w13a07_next_serial(&mut wrap), i32::MAX);
+        assert_eq!(wrap, i32::MIN);
+    }
+
+    #[test]
+    fn take_upload_child_clears_the_slot_and_reports_the_dispatch() {
+        let mut child = 0x9000;
+        let taken = w13a07_take_upload_child(&mut child, 0x100, 0x200, 0x300);
+        assert_eq!(child, 0);
+        assert_eq!(
+            taken,
+            W13a07ChildTake {
+                child: Some(0x9000),
+                child_size: Some(0xb8),
+                dispatch: (0x100, 0x200, 0x300)
+            }
+        );
+
+        let mut empty = 0;
+        let taken = w13a07_take_upload_child(&mut empty, 1, 2, 3);
+        assert_eq!(
+            taken,
+            W13a07ChildTake {
+                child: None,
+                child_size: None,
+                dispatch: (1, 2, 3)
+            }
+        );
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave13/agent10.rs
+// ===========================================================================
+// Wave 13 translation batch 10: the JSON-subset data parser in
+// `0x0066e000..=0x0066ffff`.
+//
+// The retail executable contains a small JSON-like reader used by the data
+// document loader.  It is not a general parser: values are a subset of JSON
+// (objects, strings, numbers, `true`, `false`, `null`, and arrays), and the
+// object keys are byte strings.  The routines translated below are the
+// lexical core: cursor access, whitespace skipping, string escapes, number
+// conversion, object assembly, and the one-value document check.
+//
+// ## Recovered layout
+//
+// The input cursor (a `ZIO` in the original) is three pointers:
+//
+// | offset | field |
+// |--------|-------|
+// | `+0x00` | `p`, next byte to read |
+// | `+0x04` | `base`, start of the buffer (used for error offsets) |
+// | `+0x08` | `end`, one past the last byte |
+//
+// A byte at `p == end` reads as zero but is *not* advanced; this is how the
+// original distinguishes "end of buffer" from a NUL byte in the data.
+//
+// The lexer state keeps a byte buffer at `+0x0c` (write pointer) and
+// `+0x10` (end pointer), and the parser status at `+0x18` (code) and
+// `+0x1c` (byte offset from `base`).  Code `0` means success.  The codes
+// observed in this window are:
+//
+// | code | meaning |
+// |------|---------|
+// | `3`  | malformed literal / bad keyword / bad number start |
+// | `4`  | object key is not a quoted string |
+// | `5`  | missing `:` after an object key |
+// | `6`  | missing `,` or `}` after an object member |
+// | `8`  | bad digit in a `\uXXXX` escape |
+// | `9`  | bad or missing UTF-16 surrogate |
+// | `10` | unknown backslash escape |
+// | `11` | end of input inside a string |
+// | `12` | raw control byte inside a string |
+// | `13` | exponent out of range |
+// | `14` | missing digit after the decimal point |
+// | `15` | missing digit after the exponent marker |
+// | `16` | string interning failure (not reachable in this pure model) |
+//
+// A numeric value is a 16-byte record: an eight-byte payload at `+0x00` and
+// a two-byte tag at `+0x0e` (the remaining bytes are zero).  [`W13a10Number`]
+// keeps exactly those two meaningful pieces so the tags written by the
+// number routine can be asserted directly.  The raw tag literals are:
+//
+// | tag | written for |
+// |-----|-------------|
+// | `0x00b6` | negative value that fits in `i32` |
+// | `0x01f6` | non-negative value below `0x8000_0000` |
+// | `0x01d6` | non-negative value in `0x8000_0000..=0xffff_ffff` |
+// | `0x0096` | negative 64-bit value |
+// | `0x0116` | positive 64-bit value with bit 63 set |
+// | `0x0196` | positive 64-bit value with bit 63 clear and a non-zero high word |
+// | `0x0216` | double |
+//
+// Nine rows in this window are compiler-generated SEH fragments, bare
+// frame-pointer fragments, or bodies that stop at a call Ghidra mislabelled
+// as non-returning; they are listed in the batch report rather than guessed
+// at here.
+//
+// ## Translation notes
+//
+// * The integer-to-double step in the number routine is an inlined
+//   conversion helper whose decompiled body is empty.  The translation
+//   converts the accumulated `u64`/`u32` magnitude with Rust's `as f64`,
+//   which rounds to nearest, and applies the sign only after scaling.
+// * The static powers-of-ten table is reconstructed from the recovered
+//   index range `0..=308`; every entry is the correctly rounded decimal
+//   literal the compiler would emit for `1eN`.
+// * The string routine's trailing interning helper always reports success,
+//   so status `16` is not reachable and only the decoded bytes are
+//   returned.
+// * The object routine returns its key/value list instead of building a Lua
+//   table node array; the table finalisation has no failure path in the
+//   recovered body.
+// * The document routine's final stack-restore/allocator tail is outside the
+//   recovered status logic and is not modelled.
+//
+// ## Style note
+//
+// The original parser pushes values on a caller-owned stack.  These
+// translations return values instead, and the object/document routines take
+// a [`W13a10ValueParser`] so the caller can supply the array arm (whose
+// routine lies outside this window).  Nothing here touches `World`,
+// `SimUnit`, the renderer, or the client.
+
+/// Status code for a malformed literal.
+pub const W13A10_ERR_SYNTAX: u32 = 3;
+/// Status code for a non-string object key.
+pub const W13A10_ERR_EXPECTED_STRING: u32 = 4;
+/// Status code for a missing `:`.
+pub const W13A10_ERR_EXPECTED_COLON: u32 = 5;
+/// Status code for a missing `,` or `}`.
+pub const W13A10_ERR_EXPECTED_BRACE_OR_COMMA: u32 = 6;
+/// Status code for a bad hexadecimal digit in `\uXXXX`.
+pub const W13A10_ERR_INVALID_UNICODE_ESCAPE: u32 = 8;
+/// Status code for a bad UTF-16 surrogate pair.
+pub const W13A10_ERR_INVALID_SURROGATE: u32 = 9;
+/// Status code for an unknown backslash escape.
+pub const W13A10_ERR_INVALID_ESCAPE: u32 = 10;
+/// Status code for end of input inside a string.
+pub const W13A10_ERR_UNFINISHED_STRING: u32 = 11;
+/// Status code for a raw control byte inside a string.
+pub const W13A10_ERR_CONTROL_CHARACTER: u32 = 12;
+/// Status code for an exponent that is too large.
+pub const W13A10_ERR_EXPONENT_OVERFLOW: u32 = 13;
+/// Status code for a missing fraction digit.
+pub const W13A10_ERR_MISSING_FRACTION_DIGIT: u32 = 14;
+/// Status code for a missing exponent digit.
+pub const W13A10_ERR_MISSING_EXPONENT_DIGIT: u32 = 15;
+
+/// Number tag: negative value that fits in `i32`.
+pub const W13A10_TAG_NEG_I32: u16 = 0x00b6;
+/// Number tag: non-negative value below `0x8000_0000`.
+pub const W13A10_TAG_NONNEG_I32: u16 = 0x01f6;
+/// Number tag: non-negative value in `0x8000_0000..=0xffff_ffff`.
+pub const W13A10_TAG_POS_U32: u16 = 0x01d6;
+/// Number tag: negative 64-bit value.
+pub const W13A10_TAG_NEG_I64: u16 = 0x0096;
+/// Number tag: positive 64-bit value with bit 63 set.
+pub const W13A10_TAG_POS_U64_HIGH: u16 = 0x0116;
+/// Number tag: positive 64-bit value with bit 63 clear and a non-zero high word.
+pub const W13A10_TAG_POS_I64: u16 = 0x0196;
+/// Number tag: double.
+pub const W13A10_TAG_DOUBLE: u16 = 0x0216;
+
+/// Short-string tag written when a string is at most thirteen bytes.
+pub const W13A10_TAG_SHORT_STRING: u16 = 0x1c05;
+/// Long-string tag written when a string is at least fourteen bytes.
+pub const W13A10_TAG_LONG_STRING: u16 = 0x0c05;
+
+/// Number of bytes of a short string that fit in the value record.
+pub const W13A10_SHORT_STRING_BYTES: usize = 0x0d;
+
+/// Maximum decimal exponent handled by the number routine.
+pub const W13A10_MAX_EXPONENT: i32 = 0x134;
+
+/// A byte cursor shaped like the original `ZIO` input stream.
+///
+/// Offsets reported by the parser are byte offsets from the start of `data`,
+/// exactly like the original's `p - base` arithmetic.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct W13a10Cursor<'a> {
+    data: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> W13a10Cursor<'a> {
+    /// Creates a cursor at the start of `data`.
+    pub const fn new(data: &'a [u8]) -> Self {
+        Self { data, pos: 0 }
+    }
+
+    /// Current byte offset from the start of the buffer.
+    pub const fn position(&self) -> usize {
+        self.pos
+    }
+
+    /// Whether `p` has reached `end`.
+    pub const fn at_end(&self) -> bool {
+        self.pos >= self.data.len()
+    }
+
+    /// Raw cursor byte without the end-of-buffer special case.
+    fn byte_at_cursor(&self) -> Option<u8> {
+        self.data.get(self.pos).copied()
+    }
+
+    /// Advances `p` by one byte unless it already equals `end`.
+    fn advance(&mut self) {
+        if !self.at_end() {
+            self.pos += 1;
+        }
+    }
+}
+
+/// Parser status: a code (`0` = success) and the byte offset of the failure.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct W13a10Error {
+    /// Status code.  `0` means success.
+    pub code: u32,
+    /// Byte offset from the start of the input.
+    pub offset: usize,
+}
+
+impl W13a10Error {
+    /// Whether the status is success.
+    pub const fn is_ok(&self) -> bool {
+        self.code == 0
+    }
+
+    /// Records `code` at `offset`.  The original writes the failure site
+    /// unconditionally once it decides to fail.
+    pub fn set(&mut self, code: u32, offset: usize) {
+        self.code = code;
+        self.offset = offset;
+    }
+}
+
+/// `0x0066fe20`: returns the byte under the cursor, or zero at `end`.
+///
+/// The original never advances here, so a NUL byte and the end of the buffer
+/// are distinguishable only by the separate cursor-position checks performed
+/// by the callers.
+pub fn w13a10_peek(cur: &W13a10Cursor<'_>) -> u8 {
+    cur.byte_at_cursor().unwrap_or(0)
+}
+
+/// `0x0066ff40`: returns the byte under the cursor and advances `p`.
+///
+/// Returns zero without advancing when `p == end`.  This is the original's
+/// "read one character" primitive; [`w13a10_peek`] is the non-consuming
+/// variant.
+pub fn w13a10_getc(cur: &mut W13a10Cursor<'_>) -> u8 {
+    let value = w13a10_peek(cur);
+    cur.advance();
+    value
+}
+
+/// `0x0066f3c0`: consumes spaces, newlines, carriage returns and tabs.
+///
+/// The original returns nothing and leaves the cursor on the first other
+/// byte; this translation returns that byte for convenience.  A NUL byte and
+/// the end of the buffer both stop the loop.
+pub fn w13a10_skip_whitespace(cur: &mut W13a10Cursor<'_>) -> u8 {
+    loop {
+        let c = w13a10_peek(cur);
+        if !matches!(c, b' ' | b'\n' | b'\r' | b'\t') {
+            return c;
+        }
+        cur.advance();
+    }
+}
+
+/// Decoded replacement for a JSON backslash escape, or `None` for the
+/// `\uXXXX` form and for escapes the table does not know.
+///
+/// The original indexes a 256-byte lookup table.  The table contents are not
+/// present in the decompiled body, but the call sites and the surrounding
+/// string syntax identify the standard JSON set: `"`, `\`, `/`, `b`, `f`,
+/// `n`, `r`, `t`.  The `u` entry must be zero because the routine takes a
+/// separate branch for it.
+const fn w13a10_escape_value(c: u8) -> Option<u8> {
+    match c {
+        b'"' => Some(b'"'),
+        b'\\' => Some(b'\\'),
+        b'/' => Some(b'/'),
+        b'b' => Some(0x08),
+        b'f' => Some(0x0c),
+        b'n' => Some(b'\n'),
+        b'r' => Some(b'\r'),
+        b't' => Some(b'\t'),
+        _ => None,
+    }
+}
+
+/// Appends the UTF-8 encoding of `cp` to `out`.
+///
+/// This is the encoding shape used by the string routine: one byte below
+/// `0x80`, two below `0x800`, three below `0x10000`, four otherwise.  It
+/// deliberately takes a `u32` rather than a `char`, because the original
+/// encodes a lone low surrogate without rejecting it.
+fn w13a10_push_utf8(out: &mut Vec<u8>, cp: u32) {
+    if cp < 0x80 {
+        out.push(cp as u8);
+    } else if cp < 0x800 {
+        out.push(0xc0 | (cp >> 6) as u8);
+        out.push(0x80 | (cp & 0x3f) as u8);
+    } else if cp < 0x10000 {
+        out.push(0xe0 | (cp >> 12) as u8);
+        out.push(0x80 | ((cp >> 6) & 0x3f) as u8);
+        out.push(0x80 | (cp & 0x3f) as u8);
+    } else {
+        out.push(0xf0 | (cp >> 18) as u8);
+        out.push(0x80 | ((cp >> 12) & 0x3f) as u8);
+        out.push(0x80 | ((cp >> 6) & 0x3f) as u8);
+        out.push(0x80 | (cp & 0x3f) as u8);
+    }
+}
+
+/// `0x0066e120`: reads exactly four hexadecimal digits and returns their
+/// value.
+///
+/// The cursor is on the first digit on entry and is left after the fourth
+/// digit on success.  On a bad digit the routine does not advance past it,
+/// writes status `8` at `token_start`, and returns `None`.  End of input
+/// reads as zero and therefore also fails with status `8`.  The 32-bit
+/// accumulator wraps exactly like the original.
+pub fn w13a10_parse_hex4(
+    cur: &mut W13a10Cursor<'_>,
+    token_start: usize,
+    err: &mut W13a10Error,
+) -> Option<u32> {
+    let mut value = 0u32;
+    for _ in 0..4 {
+        let c = w13a10_peek(cur);
+        let digit = match c {
+            b'0'..=b'9' => u32::from(c - b'0'),
+            b'A'..=b'F' => u32::from(c - b'A') + 10,
+            b'a'..=b'f' => u32::from(c - b'a') + 10,
+            _ => {
+                err.set(W13A10_ERR_INVALID_UNICODE_ESCAPE, token_start);
+                return None;
+            }
+        };
+        cur.advance();
+        value = value.wrapping_mul(16).wrapping_add(digit);
+    }
+    Some(value)
+}
+
+/// One numeric value as the original stores it: the eight-byte payload and
+/// the two-byte tag at record offset `+0x0e`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct W13a10Number {
+    /// `+0x00`: raw eight-byte payload.  For a double this is the IEEE-754
+    /// bit pattern; for an integer it is the two's-complement value.
+    pub payload: u64,
+    /// `+0x0e`: the exact 16-bit tag written by the routine.
+    pub tag: u16,
+}
+
+impl W13a10Number {
+    /// Builds a number record from its raw payload and tag.
+    pub const fn from_parts(payload: u64, tag: u16) -> Self {
+        Self { payload, tag }
+    }
+
+    /// Builds a double record (tag `0x0216`).
+    pub fn from_double(value: f64) -> Self {
+        Self {
+            payload: value.to_bits(),
+            tag: W13A10_TAG_DOUBLE,
+        }
+    }
+
+    /// Returns the payload as a signed integer.
+    pub const fn as_i64(&self) -> i64 {
+        self.payload as i64
+    }
+
+    /// Returns the payload as an unsigned integer.
+    pub const fn as_u64(&self) -> u64 {
+        self.payload
+    }
+
+    /// Returns the double payload when the tag is `0x0216`.
+    pub fn as_f64(&self) -> Option<f64> {
+        if self.tag == W13A10_TAG_DOUBLE {
+            Some(f64::from_bits(self.payload))
+        } else {
+            None
+        }
+    }
+}
+
+/// Powers of ten used by the exponent-scaling step of
+/// [`w13a10_parse_number`].
+///
+/// The original reads a static table of correctly rounded decimal literals
+/// indexed by `0..=308`.  Reproducing the literals keeps the scaling step
+/// bit-exact with the retail routine.
+const W13A10_POW10: [f64; 309] = [
+    1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12, 1e13, 1e14, 1e15, 1e16,
+    1e17, 1e18, 1e19, 1e20, 1e21, 1e22, 1e23, 1e24, 1e25, 1e26, 1e27, 1e28, 1e29, 1e30, 1e31, 1e32,
+    1e33, 1e34, 1e35, 1e36, 1e37, 1e38, 1e39, 1e40, 1e41, 1e42, 1e43, 1e44, 1e45, 1e46, 1e47, 1e48,
+    1e49, 1e50, 1e51, 1e52, 1e53, 1e54, 1e55, 1e56, 1e57, 1e58, 1e59, 1e60, 1e61, 1e62, 1e63, 1e64,
+    1e65, 1e66, 1e67, 1e68, 1e69, 1e70, 1e71, 1e72, 1e73, 1e74, 1e75, 1e76, 1e77, 1e78, 1e79, 1e80,
+    1e81, 1e82, 1e83, 1e84, 1e85, 1e86, 1e87, 1e88, 1e89, 1e90, 1e91, 1e92, 1e93, 1e94, 1e95, 1e96,
+    1e97, 1e98, 1e99, 1e100, 1e101, 1e102, 1e103, 1e104, 1e105, 1e106, 1e107, 1e108, 1e109, 1e110,
+    1e111, 1e112, 1e113, 1e114, 1e115, 1e116, 1e117, 1e118, 1e119, 1e120, 1e121, 1e122, 1e123,
+    1e124, 1e125, 1e126, 1e127, 1e128, 1e129, 1e130, 1e131, 1e132, 1e133, 1e134, 1e135, 1e136,
+    1e137, 1e138, 1e139, 1e140, 1e141, 1e142, 1e143, 1e144, 1e145, 1e146, 1e147, 1e148, 1e149,
+    1e150, 1e151, 1e152, 1e153, 1e154, 1e155, 1e156, 1e157, 1e158, 1e159, 1e160, 1e161, 1e162,
+    1e163, 1e164, 1e165, 1e166, 1e167, 1e168, 1e169, 1e170, 1e171, 1e172, 1e173, 1e174, 1e175,
+    1e176, 1e177, 1e178, 1e179, 1e180, 1e181, 1e182, 1e183, 1e184, 1e185, 1e186, 1e187, 1e188,
+    1e189, 1e190, 1e191, 1e192, 1e193, 1e194, 1e195, 1e196, 1e197, 1e198, 1e199, 1e200, 1e201,
+    1e202, 1e203, 1e204, 1e205, 1e206, 1e207, 1e208, 1e209, 1e210, 1e211, 1e212, 1e213, 1e214,
+    1e215, 1e216, 1e217, 1e218, 1e219, 1e220, 1e221, 1e222, 1e223, 1e224, 1e225, 1e226, 1e227,
+    1e228, 1e229, 1e230, 1e231, 1e232, 1e233, 1e234, 1e235, 1e236, 1e237, 1e238, 1e239, 1e240,
+    1e241, 1e242, 1e243, 1e244, 1e245, 1e246, 1e247, 1e248, 1e249, 1e250, 1e251, 1e252, 1e253,
+    1e254, 1e255, 1e256, 1e257, 1e258, 1e259, 1e260, 1e261, 1e262, 1e263, 1e264, 1e265, 1e266,
+    1e267, 1e268, 1e269, 1e270, 1e271, 1e272, 1e273, 1e274, 1e275, 1e276, 1e277, 1e278, 1e279,
+    1e280, 1e281, 1e282, 1e283, 1e284, 1e285, 1e286, 1e287, 1e288, 1e289, 1e290, 1e291, 1e292,
+    1e293, 1e294, 1e295, 1e296, 1e297, 1e298, 1e299, 1e300, 1e301, 1e302, 1e303, 1e304, 1e305,
+    1e306, 1e307, 1e308,
+];
+
+/// Returns the tag written for a 32-bit integer payload.
+///
+/// The negative branch writes `0x00b6` unless the negated value is
+/// non-negative (the `-0` corner), in which case it writes `0x01f6`.  The
+/// positive branch tests bit 31 to distinguish `0x01f6` from `0x01d6`.
+const fn w13a10_narrow_tag(value: u32, negative: bool) -> u16 {
+    if negative {
+        if (value as i32) < 0 {
+            W13A10_TAG_NEG_I32
+        } else {
+            W13A10_TAG_NONNEG_I32
+        }
+    } else if value & 0x8000_0000 == 0 {
+        W13A10_TAG_NONNEG_I32
+    } else {
+        W13A10_TAG_POS_U32
+    }
+}
+
+/// Returns the tag written for a wide integer payload.
+///
+/// `payload` is the final two's-complement 64-bit value.  The original
+/// applies the same decision tree to both signs; the branches below are the
+/// literal comparisons from the routine.
+const fn w13a10_wide_tag(payload: u64, negative: bool) -> u16 {
+    let high = (payload >> 32) as u32;
+    let low = payload as u32;
+    if negative {
+        // The routine starts at 0x0096 and only shortens the tag when the
+        // negated value happens to fit the 32-bit ranges.
+        if (high as i32) < 0 {
+            if (high as i32) > -2 && low > 0x7fff_ffff {
+                W13A10_TAG_NEG_I32
+            } else {
+                W13A10_TAG_NEG_I64
+            }
+        } else if high == 0 {
+            if low & 0x8000_0000 == 0 {
+                W13A10_TAG_NONNEG_I32
+            } else {
+                W13A10_TAG_POS_U32
+            }
+        } else {
+            W13A10_TAG_POS_I64
+        }
+    } else if (high as i32) < 0 {
+        W13A10_TAG_POS_U64_HIGH
+    } else if high == 0 {
+        if low & 0x8000_0000 == 0 {
+            W13A10_TAG_NONNEG_I32
+        } else {
+            W13A10_TAG_POS_U32
+        }
+    } else {
+        W13A10_TAG_POS_I64
+    }
+}
+
+/// `0x0066e1a0`: parses one numeric literal and returns the 16-byte value
+/// payload plus its exact tag.
+///
+/// The accepted grammar is
+/// `-? (0 | [1-9][0-9]*) ( '.' [0-9]+ )? ( [eE] [+-]? [0-9]+ )?`.
+/// The routine first accumulates into a 32-bit integer, then into a 64-bit
+/// integer when the 32-bit bound would be crossed, and finally into a
+/// `double` when the 64-bit bound would be crossed.  The narrow bounds are
+/// `i32::MAX` for a negative literal and `u32::MAX` for a non-negative one;
+/// the wide bounds are `i64::MAX` and `u64::MAX`.  The fractional accumulator
+/// keeps at most seventeen significant digits, and the exponent is applied
+/// through the recovered powers-of-ten table.  A total exponent below
+/// `-616` underflows to zero; `[-616, -309]` is scaled in two steps through
+/// `1e308`.
+///
+/// On failure the cursor is left at the byte that caused the failure and the
+/// status code and offset are written to `err`:
+///
+/// * the first character is not `0` or `1..=9` -> `3` at the literal start;
+/// * no digit after `.` -> `14` at the byte after the dot;
+/// * no digit after `e`/`E` and an optional sign -> `15` at the current byte;
+/// * a positive exponent above `308 + kept_fraction_digits` -> `13` at the
+///   literal start (the original reports the token start for this case).
+///
+/// `1e309` fails with status `13`; `1e-400` returns `+0.0`.  The routine
+/// stops at the first byte that cannot continue a number, so `0x10` parses as
+/// the value `0` and leaves the cursor on `x`.
+pub fn w13a10_parse_number(
+    cur: &mut W13a10Cursor<'_>,
+    err: &mut W13a10Error,
+) -> Option<W13a10Number> {
+    let token_start = cur.position();
+    let negative = if w13a10_peek(cur) == b'-' {
+        cur.advance();
+        true
+    } else {
+        false
+    };
+
+    let mut narrow: u32 = 0;
+    let mut wide = false;
+    let mut wide_bits: u64 = 0;
+    let mut is_double = false;
+    let mut double_value = 0.0f64;
+    let mut significant_digits: u32 = 0;
+    let mut fraction_shift: i32 = 0;
+
+    let first = w13a10_peek(cur);
+    if first == b'0' {
+        cur.advance();
+    } else {
+        if !(b'1'..=b'9').contains(&first) {
+            err.set(W13A10_ERR_SYNTAX, token_start);
+            return None;
+        }
+        cur.advance();
+        narrow = u32::from(first - b'0');
+
+        // Narrow accumulation.  A negative literal may reach 2^31, a
+        // non-negative literal may reach 2^32 - 1.
+        let (narrow_limit, max_last_digit) = if negative {
+            (0x0ccc_ccccu32, 8u8)
+        } else {
+            (0x1999_9999u32, 5u8)
+        };
+        loop {
+            if cur.at_end() {
+                break;
+            }
+            let c = w13a10_peek(cur);
+            if !c.is_ascii_digit() {
+                break;
+            }
+            let digit = c - b'0';
+            if narrow > narrow_limit || (narrow == narrow_limit && digit > max_last_digit) {
+                wide = true;
+                wide_bits = u64::from(narrow);
+                break;
+            }
+            cur.advance();
+            significant_digits = significant_digits.wrapping_add(1);
+            narrow = narrow.wrapping_mul(10).wrapping_add(u32::from(digit));
+        }
+
+        if wide {
+            // The 64-bit bound is i64::MAX / 10 for a negative literal and
+            // u64::MAX / 10 otherwise.  Crossing it starts the double path.
+            let (high_limit, low_limit, max_last_digit) = if negative {
+                (0x0ccc_ccccu32, 0xcccc_ccccu32, 8u8)
+            } else {
+                (0x1999_9999u32, 0x9999_9999u32, 5u8)
+            };
+            loop {
+                if cur.at_end() {
+                    break;
+                }
+                let c = w13a10_peek(cur);
+                if !c.is_ascii_digit() {
+                    break;
+                }
+                let digit = c - b'0';
+                let high = (wide_bits >> 32) as u32;
+                let low = wide_bits as u32;
+                let crosses = high > high_limit
+                    || (high == high_limit
+                        && (low > low_limit || (low == low_limit && digit > max_last_digit)));
+                if crosses {
+                    is_double = true;
+                    double_value = wide_bits as f64;
+                    break;
+                }
+                cur.advance();
+                significant_digits = significant_digits.wrapping_add(1);
+                wide_bits = wide_bits.wrapping_mul(10).wrapping_add(u64::from(digit));
+            }
+
+            if is_double {
+                loop {
+                    if cur.at_end() {
+                        break;
+                    }
+                    let c = w13a10_peek(cur);
+                    if !c.is_ascii_digit() {
+                        break;
+                    }
+                    if double_value >= 1.797_693_134_862_315_8e307 {
+                        err.set(W13A10_ERR_EXPONENT_OVERFLOW, token_start);
+                        return None;
+                    }
+                    cur.advance();
+                    double_value = double_value * 10.0 + f64::from(c - b'0');
+                }
+            }
+        }
+    }
+
+    // Fractional part.  The first fraction digit forces the value into the
+    // double path, even when the integer part was still narrow.
+    if w13a10_peek(cur) == b'.' {
+        cur.advance();
+        if !w13a10_peek(cur).is_ascii_digit() {
+            err.set(W13A10_ERR_MISSING_FRACTION_DIGIT, cur.position());
+            return None;
+        }
+        if !is_double {
+            double_value = if wide {
+                wide_bits as f64
+            } else {
+                f64::from(narrow)
+            };
+            is_double = true;
+        }
+        loop {
+            if cur.at_end() {
+                break;
+            }
+            let c = w13a10_peek(cur);
+            if !c.is_ascii_digit() {
+                break;
+            }
+            cur.advance();
+            if significant_digits < 0x11 {
+                fraction_shift = fraction_shift.wrapping_sub(1);
+                double_value = double_value * 10.0 + f64::from(c - b'0');
+                if double_value > 0.0 {
+                    significant_digits = significant_digits.wrapping_add(1);
+                }
+            }
+        }
+    }
+
+    // Optional decimal exponent.
+    let mut exponent: i32 = 0;
+    let marker = w13a10_peek(cur);
+    if marker == b'e' || marker == b'E' {
+        cur.advance();
+        if !is_double {
+            double_value = if wide {
+                wide_bits as f64
+            } else {
+                f64::from(narrow)
+            };
+            is_double = true;
+        }
+        let mut negative_exponent = false;
+        match w13a10_peek(cur) {
+            b'+' => cur.advance(),
+            b'-' => {
+                negative_exponent = true;
+                cur.advance();
+            }
+            _ => {}
+        }
+        if !w13a10_peek(cur).is_ascii_digit() {
+            err.set(W13A10_ERR_MISSING_EXPONENT_DIGIT, cur.position());
+            return None;
+        }
+        exponent = i32::from(w13a10_getc(cur) - b'0');
+        if negative_exponent {
+            loop {
+                if cur.at_end() {
+                    break;
+                }
+                let c = w13a10_peek(cur);
+                if !c.is_ascii_digit() {
+                    break;
+                }
+                cur.advance();
+                exponent = exponent.wrapping_mul(10).wrapping_add(i32::from(c - b'0'));
+                if exponent > 0x0ccc_cccb {
+                    // The original stops accumulating and only consumes the
+                    // remaining exponent digits.
+                    while !cur.at_end() && w13a10_peek(cur).is_ascii_digit() {
+                        cur.advance();
+                    }
+                    break;
+                }
+            }
+            exponent = exponent.wrapping_neg();
+        } else {
+            loop {
+                if cur.at_end() {
+                    break;
+                }
+                let c = w13a10_peek(cur);
+                if !c.is_ascii_digit() {
+                    break;
+                }
+                cur.advance();
+                exponent = exponent.wrapping_mul(10).wrapping_add(i32::from(c - b'0'));
+                if W13A10_MAX_EXPONENT - fraction_shift < exponent {
+                    err.set(W13A10_ERR_EXPONENT_OVERFLOW, token_start);
+                    return None;
+                }
+            }
+        }
+    }
+
+    if is_double {
+        let mut value = double_value;
+        let mut total = exponent.wrapping_add(fraction_shift);
+        if total < -W13A10_MAX_EXPONENT {
+            value /= 1e308;
+            total = total.wrapping_add(W13A10_MAX_EXPONENT);
+            if total < -W13A10_MAX_EXPONENT {
+                value = 0.0;
+                if negative {
+                    value = -value;
+                }
+                return Some(W13a10Number::from_double(value));
+            }
+        }
+        if total < 0 {
+            value /= W13A10_POW10[total.unsigned_abs() as usize];
+        } else if total > 0 {
+            value *= W13A10_POW10[total as usize];
+        }
+        if negative {
+            value = -value;
+        }
+        return Some(W13a10Number::from_double(value));
+    }
+
+    if wide {
+        let payload = if negative {
+            (!wide_bits).wrapping_add(1)
+        } else {
+            wide_bits
+        };
+        let tag = w13a10_wide_tag(payload, negative);
+        return Some(W13a10Number::from_parts(payload, tag));
+    }
+
+    if negative {
+        let payload = narrow.wrapping_neg();
+        let extended = u64::from(payload) | (((payload as i32) >> 31) as u32 as u64) << 32;
+        let tag = w13a10_narrow_tag(payload, true);
+        Some(W13a10Number::from_parts(extended, tag))
+    } else {
+        let tag = w13a10_narrow_tag(narrow, false);
+        Some(W13a10Number::from_parts(u64::from(narrow), tag))
+    }
+}
+
+/// `0x0066edc0`: decodes one quoted string and returns its bytes.
+///
+/// The cursor must be on the opening `"`; the routine consumes it, decodes
+/// backslash escapes, encodes `\uXXXX` (including surrogate pairs) as UTF-8,
+/// and consumes the closing quote.  The original then materialises a Lua
+/// string value and optionally interns it; interning is not observable in a
+/// pure parser, so only the byte sequence is returned here.  The original's
+/// interning call cannot fail (its helper always reports success), so the
+/// `16` status is not reachable.
+///
+/// Error sites:
+///
+/// * unknown escape -> code `10` at the backslash;
+/// * bad `\u` digit -> code `8` at the backslash (via
+///   [`w13a10_parse_hex4`]);
+/// * missing or out-of-range surrogate -> code `9` at the backslash;
+/// * NUL or end of input -> code `11` at the current byte;
+/// * another raw byte below `0x20` -> code `12` at that byte.
+pub fn w13a10_parse_string(cur: &mut W13a10Cursor<'_>, err: &mut W13a10Error) -> Option<Vec<u8>> {
+    // Consume the opening quote.
+    cur.advance();
+
+    let mut out = Vec::new();
+    loop {
+        let c = w13a10_peek(cur);
+        if c == b'\\' {
+            let escape_start = cur.position();
+            cur.advance();
+            let escape = w13a10_peek(cur);
+            if let Some(replacement) = w13a10_escape_value(escape) {
+                cur.advance();
+                out.push(replacement);
+            } else if escape == b'u' {
+                cur.advance();
+                let mut code_point = w13a10_parse_hex4(cur, escape_start, err)?;
+                if (0xd800..0xdc00).contains(&code_point) {
+                    if w13a10_peek(cur) != b'\\' {
+                        err.set(W13A10_ERR_INVALID_SURROGATE, escape_start);
+                        return None;
+                    }
+                    cur.advance();
+                    if w13a10_peek(cur) != b'u' {
+                        err.set(W13A10_ERR_INVALID_SURROGATE, escape_start);
+                        return None;
+                    }
+                    cur.advance();
+                    let low = w13a10_parse_hex4(cur, escape_start, err)?;
+                    if !(0xdc00..0xe000).contains(&low) {
+                        err.set(W13A10_ERR_INVALID_SURROGATE, escape_start);
+                        return None;
+                    }
+                    code_point = ((code_point - 0xd800) * 0x400 | (low - 0xdc00)) + 0x1_0000;
+                }
+                w13a10_push_utf8(&mut out, code_point);
+            } else {
+                err.set(W13A10_ERR_INVALID_ESCAPE, escape_start);
+                return None;
+            }
+        } else if c == b'"' {
+            cur.advance();
+            return Some(out);
+        } else if c < 0x20 {
+            if c == 0 {
+                err.set(W13A10_ERR_UNFINISHED_STRING, cur.position());
+            } else {
+                err.set(W13A10_ERR_CONTROL_CHARACTER, cur.position());
+            }
+            return None;
+        } else {
+            cur.advance();
+            out.push(c);
+        }
+    }
+}
+
+/// The value kind selected by [`w13a10_dispatch`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum W13a10Dispatch {
+    /// A quoted string; the cursor is left on the opening quote.
+    String,
+    /// An array; the cursor is left on `[`.
+    Array,
+    /// The keyword `false`, already consumed.
+    False,
+    /// The keyword `null`, already consumed.
+    Null,
+    /// The keyword `true`, already consumed.
+    True,
+    /// An object; the cursor is left on `{`.
+    Object,
+    /// A numeric literal; the cursor is left on its first byte.
+    Number,
+    /// A partial `false`/`null`/`true` keyword; status `3` was written.
+    Invalid,
+}
+
+/// `0x0066f130`: selects the value routine from the first byte.
+///
+/// The string, array, object and number arms do not consume the first byte;
+/// their routines do.  The keyword arms consume the letters one at a time,
+/// exactly like the original, so a partial keyword leaves the cursor after
+/// the letters it matched and writes status `3` at the first unmatched byte.
+/// Any other byte (including end of input) is handed to the number routine,
+/// which then reports status `3` if it is not a valid number start.  The
+/// boolean and nil helpers called by the keyword arms always report success
+/// in the recovered body and are represented by the returned variants.
+pub fn w13a10_dispatch(cur: &mut W13a10Cursor<'_>, err: &mut W13a10Error) -> W13a10Dispatch {
+    match w13a10_peek(cur) {
+        b'"' => W13a10Dispatch::String,
+        b'[' => W13a10Dispatch::Array,
+        b'{' => W13a10Dispatch::Object,
+        b'f' => {
+            cur.advance();
+            if w13a10_peek(cur) == b'a' {
+                cur.advance();
+                if w13a10_peek(cur) == b'l' {
+                    cur.advance();
+                    if w13a10_peek(cur) == b's' {
+                        cur.advance();
+                        if w13a10_peek(cur) == b'e' {
+                            cur.advance();
+                            return W13a10Dispatch::False;
+                        }
+                    }
+                }
+            }
+            err.set(W13A10_ERR_SYNTAX, cur.position());
+            W13a10Dispatch::Invalid
+        }
+        b'n' => {
+            cur.advance();
+            if w13a10_peek(cur) == b'u' {
+                cur.advance();
+                if w13a10_peek(cur) == b'l' {
+                    cur.advance();
+                    if w13a10_peek(cur) == b'l' {
+                        cur.advance();
+                        return W13a10Dispatch::Null;
+                    }
+                }
+            }
+            err.set(W13A10_ERR_SYNTAX, cur.position());
+            W13a10Dispatch::Invalid
+        }
+        b't' => {
+            cur.advance();
+            if w13a10_peek(cur) == b'r' {
+                cur.advance();
+                if w13a10_peek(cur) == b'u' {
+                    cur.advance();
+                    if w13a10_peek(cur) == b'e' {
+                        cur.advance();
+                        return W13a10Dispatch::True;
+                    }
+                }
+            }
+            err.set(W13A10_ERR_SYNTAX, cur.position());
+            W13a10Dispatch::Invalid
+        }
+        _ => W13a10Dispatch::Number,
+    }
+}
+
+/// A parsed value.  This mirrors the five value shapes the dispatcher can
+/// produce; the array variant is only constructed by the caller-supplied
+/// array routine because that routine lies outside this window.
+#[derive(Clone, Debug, PartialEq)]
+pub enum W13a10Value {
+    /// `null` (an all-zero record).
+    Nil,
+    /// `true` or `false`.
+    Bool(bool),
+    /// A numeric literal with its exact payload and tag.
+    Number(W13a10Number),
+    /// A decoded quoted string.
+    String(Vec<u8>),
+    /// An object, preserving member order and duplicate keys.
+    Table(Vec<(Vec<u8>, W13a10Value)>),
+    /// An array returned by the caller-supplied array parser.
+    Array(Vec<W13a10Value>),
+}
+
+/// Parser facade that owns the caller-supplied array arm.
+///
+/// The original dispatcher calls an array routine whose body is outside this
+/// window.  Passing it in as a callback keeps the translated routines
+/// self-contained and lets the caller decide whether arrays are supported.
+pub struct W13a10ValueParser<'a> {
+    /// Array arm for the `[` dispatch case.
+    pub array:
+        &'a mut dyn for<'c> FnMut(&mut W13a10Cursor<'c>, &mut W13a10Error) -> Option<W13a10Value>,
+}
+
+impl W13a10ValueParser<'_> {
+    /// `0x0066f130`: parses one value using the recovered dispatch.
+    ///
+    /// String, number, object and array values are delegated to their
+    /// routines; `false`, `null` and `true` are consumed and returned
+    /// directly.  An invalid keyword leaves `err` set and returns `None`.
+    pub fn parse_value(
+        &mut self,
+        cur: &mut W13a10Cursor<'_>,
+        err: &mut W13a10Error,
+    ) -> Option<W13a10Value> {
+        match w13a10_dispatch(cur, err) {
+            W13a10Dispatch::String => w13a10_parse_string(cur, err).map(W13a10Value::String),
+            W13a10Dispatch::Array => (self.array)(cur, err),
+            W13a10Dispatch::False => Some(W13a10Value::Bool(false)),
+            W13a10Dispatch::Null => Some(W13a10Value::Nil),
+            W13a10Dispatch::True => Some(W13a10Value::Bool(true)),
+            W13a10Dispatch::Object => w13a10_parse_object(cur, err, self).map(W13a10Value::Table),
+            W13a10Dispatch::Number => w13a10_parse_number(cur, err).map(W13a10Value::Number),
+            W13a10Dispatch::Invalid => None,
+        }
+    }
+}
+
+/// `0x0066ea60`: parses an object body and returns its key/value pairs.
+///
+/// The cursor must be on `{`.  The routine consumes the brace, consumes an
+/// immediate `}`, or loops over `"key" : value` members separated by commas.
+/// Member order and duplicate keys are preserved because the original fills
+/// a table node array in insertion order.  The final table-build call cannot
+/// fail in this model, so the `16` status is unreachable.
+///
+/// Errors are reported at the current byte: `4` when a key does not start
+/// with `"`, `5` when `:` is missing, and `6` when neither `,` nor `}` follows
+/// a member.  A trailing comma therefore reaches the key check and reports
+/// `4` at the closing brace, matching the original's loop structure.
+pub fn w13a10_parse_object(
+    cur: &mut W13a10Cursor<'_>,
+    err: &mut W13a10Error,
+    parser: &mut W13a10ValueParser<'_>,
+) -> Option<Vec<(Vec<u8>, W13a10Value)>> {
+    // Consume the opening brace.
+    cur.advance();
+    w13a10_skip_whitespace(cur);
+    if !err.is_ok() {
+        return None;
+    }
+    if w13a10_peek(cur) == b'}' {
+        cur.advance();
+        return Some(Vec::new());
+    }
+
+    let mut pairs = Vec::new();
+    loop {
+        if w13a10_peek(cur) != b'"' {
+            err.set(W13A10_ERR_EXPECTED_STRING, cur.position());
+            return None;
+        }
+        let key = w13a10_parse_string(cur, err)?;
+        w13a10_skip_whitespace(cur);
+        if !err.is_ok() {
+            return None;
+        }
+        if w13a10_peek(cur) != b':' {
+            err.set(W13A10_ERR_EXPECTED_COLON, cur.position());
+            return None;
+        }
+        cur.advance();
+        w13a10_skip_whitespace(cur);
+        if !err.is_ok() {
+            return None;
+        }
+        let value = parser.parse_value(cur, err)?;
+        w13a10_skip_whitespace(cur);
+        if !err.is_ok() {
+            return None;
+        }
+        pairs.push((key, value));
+
+        match w13a10_peek(cur) {
+            b',' => {
+                cur.advance();
+                w13a10_skip_whitespace(cur);
+                if !err.is_ok() {
+                    return None;
+                }
+            }
+            b'}' => {
+                cur.advance();
+                return Some(pairs);
+            }
+            _ => {
+                err.set(W13A10_ERR_EXPECTED_BRACE_OR_COMMA, cur.position());
+                return None;
+            }
+        }
+    }
+}
+
+/// `0x0066ec60`: parses exactly one value and classifies the remainder.
+///
+/// The original works on a stack-local status record, so this translation
+/// starts from a clean [`W13a10Error`].  After skipping leading whitespace:
+///
+/// * end of input or a NUL byte yields [`W13a10DocumentStatus::Empty`] with
+///   the current offset;
+/// * otherwise one value is parsed; if it succeeds, trailing whitespace is
+///   skipped and any remaining byte yields
+///   [`W13a10DocumentStatus::Trailing`] with that offset;
+/// * a parse failure returns `None` with `err` set.
+///
+/// On success the original pops the parsed value from its result stack; this
+/// translation returns the status only, because the value is produced by the
+/// caller-supplied parser.
+pub fn w13a10_parse_document(
+    cur: &mut W13a10Cursor<'_>,
+    err: &mut W13a10Error,
+    parser: &mut W13a10ValueParser<'_>,
+) -> Option<W13a10DocumentStatus> {
+    *err = W13a10Error::default();
+    w13a10_skip_whitespace(cur);
+    if !err.is_ok() {
+        return None;
+    }
+    if cur.at_end() || w13a10_peek(cur) == 0 {
+        return Some(W13a10DocumentStatus::Empty {
+            offset: cur.position(),
+        });
+    }
+    parser.parse_value(cur, err)?;
+    w13a10_skip_whitespace(cur);
+    if !err.is_ok() {
+        return None;
+    }
+    if !cur.at_end() && w13a10_peek(cur) != 0 {
+        return Some(W13a10DocumentStatus::Trailing {
+            offset: cur.position(),
+        });
+    }
+    Some(W13a10DocumentStatus::Complete)
+}
+
+/// Result of [`w13a10_parse_document`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum W13a10DocumentStatus {
+    /// Exactly one value was consumed.
+    Complete,
+    /// The input was empty (end of buffer or NUL) at this offset.
+    Empty {
+        /// Byte offset of the empty position.
+        offset: usize,
+    },
+    /// Extra data followed the value at this offset.
+    Trailing {
+        /// Byte offset of the first trailing byte.
+        offset: usize,
+    },
+}
+
+/// `0x0066f3f0`: moves a fourteen-word (`0x38`-byte) parser record.
+///
+/// The record contains the four-word value header followed by a table
+/// pointer, a terminator word, six owned words and two status words.  The
+/// original copies the whole record to the destination and then clears the
+/// source's tag (the high half of word `3`, at `+0x0e`) and the owned fields
+/// so the source will not release them a second time.
+pub fn w13a10_move_record(src: &mut [u32; 14]) -> [u32; 14] {
+    let dst = *src;
+    // Clear the two-byte tag at +0x0e, which is the high half of word 3.
+    src[3] &= 0x0000_ffff;
+    // The destination took ownership of these fields.
+    src[4] = 0;
+    src[5] = 0;
+    for word in &mut src[6..12] {
+        *word = 0;
+    }
+    src[12] = 0;
+    src[13] = 0;
+    dst
+}
+
+/// A 16-byte string value in the parser's value record shape.
+///
+/// Short strings (at most thirteen bytes) store their bytes inline starting
+/// at `+0x00`, the length encoding at `+0x0d`, and tag `0x1c05` at `+0x0e`.
+/// Long strings store the byte count at `+0x00`, a payload pointer at
+/// `+0x08`, and tag `0x0c05` at `+0x0e`.  The pointer cannot be represented
+/// directly in safe Rust, so [`bytes`](Self::bytes) keeps the decoded payload
+/// alongside the raw words.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct W13a10StringSlot {
+    /// Raw `+0x00..+0x0f` record words.
+    pub words: [u32; 4],
+    /// Decoded string bytes (inline bytes or the long-string payload).
+    pub bytes: Vec<u8>,
+}
+
+impl W13a10StringSlot {
+    /// Builds the record exactly as the store routine lays it out.
+    pub fn from_bytes(bytes: &[u8]) -> Self {
+        let mut words = [0u32; 4];
+        if bytes.len() <= W13A10_SHORT_STRING_BYTES {
+            let mut record = [0u8; 16];
+            record[..bytes.len()].copy_from_slice(bytes);
+            record[0x0d] = 0x0d - bytes.len() as u8;
+            record[0x0e] = 0x05;
+            record[0x0f] = 0x1c;
+            for (index, word) in words.iter_mut().enumerate() {
+                let start = index * 4;
+                *word = u32::from_le_bytes([
+                    record[start],
+                    record[start + 1],
+                    record[start + 2],
+                    record[start + 3],
+                ]);
+            }
+        } else {
+            words[0] = bytes.len() as u32;
+            words[3] = 0x0c05_0000;
+        }
+        Self {
+            words,
+            bytes: bytes.to_vec(),
+        }
+    }
+
+    /// The tag stored at `+0x0e`.
+    pub const fn tag(&self) -> u16 {
+        (self.words[3] >> 16) as u16
+    }
+
+    /// The short-string length encoding at `+0x0d`, if this is a short
+    /// string.
+    pub const fn short_length_byte(&self) -> Option<u8> {
+        if self.tag() == W13A10_TAG_SHORT_STRING {
+            Some((self.words[3] >> 8) as u8)
+        } else {
+            None
+        }
+    }
+}
+
+/// One value of the minimal document tree used by the endpoint store.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum W13a10StoredValue {
+    /// The table lookup produced the shared nil value.
+    Nil,
+    /// A table of key/value entries, in insertion order.
+    Table(Vec<(Vec<u8>, W13a10StoredValue)>),
+    /// A string slot.
+    String(W13a10StringSlot),
+}
+
+/// `0x0066fe30`: stores `bytes` in the `data.endpoint` string slot.
+///
+/// The retail routine resolves the global document table's `data` entry,
+/// then the `endpoint` entry of that table, and writes a string value into
+/// the resolved slot.  A missing `data` entry or a `data` entry that is not a
+/// table makes the following lookup fail, in which case the original writes
+/// into a shared nil scratch value and the document is unchanged; the same
+/// happens when `endpoint` is absent.  Returns `true` only when a real slot
+/// was updated.
+///
+/// The value layout is the one produced by the string routine: at most
+/// thirteen bytes are inline with tag `0x1c05`; longer strings get a
+/// count/pointer record with tag `0x0c05`.
+pub fn w13a10_store_endpoint(document: &mut [(Vec<u8>, W13a10StoredValue)], bytes: &[u8]) -> bool {
+    let Some((_, W13a10StoredValue::Table(data))) = document
+        .iter_mut()
+        .find(|(key, _)| key.as_slice() == b"data")
+    else {
+        return false;
+    };
+    let Some((_, value)) = data
+        .iter_mut()
+        .find(|(key, _)| key.as_slice() == b"endpoint")
+    else {
+        return false;
+    };
+    *value = W13a10StoredValue::String(W13a10StringSlot::from_bytes(bytes));
+    true
+}
+
+#[cfg(test)]
+mod tests_wave13_agent10 {
+    use super::*;
+
+    fn number(text: &[u8]) -> (W13a10Number, usize) {
+        let mut cur = W13a10Cursor::new(text);
+        let mut err = W13a10Error::default();
+        let value = w13a10_parse_number(&mut cur, &mut err).expect("number");
+        assert!(err.is_ok(), "unexpected status {err:?} for {text:?}");
+        (value, cur.position())
+    }
+
+    fn number_error(text: &[u8]) -> (u32, usize) {
+        let mut cur = W13a10Cursor::new(text);
+        let mut err = W13a10Error::default();
+        assert!(w13a10_parse_number(&mut cur, &mut err).is_none());
+        (err.code, err.offset)
+    }
+
+    #[test]
+    fn cursor_peek_and_getc_stop_at_end() {
+        let mut cur = W13a10Cursor::new(b"ab");
+        assert_eq!(w13a10_peek(&cur), b'a');
+        assert_eq!(cur.position(), 0);
+        assert_eq!(w13a10_getc(&mut cur), b'a');
+        assert_eq!(cur.position(), 1);
+        assert_eq!(w13a10_peek(&cur), b'b');
+        assert_eq!(w13a10_getc(&mut cur), b'b');
+        assert_eq!(cur.position(), 2);
+        assert!(cur.at_end());
+        assert_eq!(w13a10_peek(&cur), 0);
+        assert_eq!(w13a10_getc(&mut cur), 0);
+        assert_eq!(cur.position(), 2);
+    }
+
+    #[test]
+    fn skip_whitespace_stops_on_nul_and_end() {
+        let mut cur = W13a10Cursor::new(b" \n\r\tX");
+        assert_eq!(w13a10_skip_whitespace(&mut cur), b'X');
+        assert_eq!(cur.position(), 4);
+
+        let mut empty = W13a10Cursor::new(b"");
+        assert_eq!(w13a10_skip_whitespace(&mut empty), 0);
+        assert_eq!(empty.position(), 0);
+
+        let mut nul = W13a10Cursor::new(b"  \0x");
+        assert_eq!(w13a10_skip_whitespace(&mut nul), 0);
+        assert_eq!(nul.position(), 2);
+    }
+
+    #[test]
+    fn hex4_accepts_both_cases_and_reports_bad_digits() {
+        let mut cur = W13a10Cursor::new(b"00Af!");
+        let mut err = W13a10Error::default();
+        assert_eq!(w13a10_parse_hex4(&mut cur, 7, &mut err), Some(0x00af));
+        assert_eq!(cur.position(), 4);
+        assert!(err.is_ok());
+
+        let mut cur = W13a10Cursor::new(b"12G4");
+        let mut err = W13a10Error::default();
+        assert_eq!(w13a10_parse_hex4(&mut cur, 5, &mut err), None);
+        assert_eq!(err, W13a10Error { code: 8, offset: 5 });
+        assert_eq!(cur.position(), 2);
+
+        let mut cur = W13a10Cursor::new(b"123");
+        let mut err = W13a10Error::default();
+        assert_eq!(w13a10_parse_hex4(&mut cur, 0, &mut err), None);
+        assert_eq!(err.code, 8);
+        assert_eq!(cur.position(), 3);
+    }
+
+    #[test]
+    fn number_narrow_ranges_and_tags() {
+        let (zero, end) = number(b"0");
+        assert_eq!(zero, W13a10Number::from_parts(0, W13A10_TAG_NONNEG_I32));
+        assert_eq!(end, 1);
+
+        let (value, _) = number(b"42");
+        assert_eq!(value.as_i64(), 42);
+        assert_eq!(value.tag, W13A10_TAG_NONNEG_I32);
+
+        let (value, _) = number(b"2147483647");
+        assert_eq!(value.as_i64(), 2_147_483_647);
+        assert_eq!(value.tag, W13A10_TAG_NONNEG_I32);
+
+        let (value, _) = number(b"2147483648");
+        assert_eq!(value.as_u64(), 2_147_483_648);
+        assert_eq!(value.tag, W13A10_TAG_POS_U32);
+
+        let (value, _) = number(b"4294967295");
+        assert_eq!(value.as_u64(), 4_294_967_295);
+        assert_eq!(value.tag, W13A10_TAG_POS_U32);
+
+        let (value, _) = number(b"4294967296");
+        assert_eq!(value.as_u64(), 4_294_967_296);
+        assert_eq!(value.tag, W13A10_TAG_POS_I64);
+    }
+
+    #[test]
+    fn number_negative_ranges_and_minus_zero() {
+        let (neg_zero, _) = number(b"-0");
+        assert_eq!(neg_zero.as_u64(), 0);
+        assert_eq!(neg_zero.tag, W13A10_TAG_NONNEG_I32);
+
+        let (value, _) = number(b"-1");
+        assert_eq!(value.as_i64(), -1);
+        assert_eq!(value.tag, W13A10_TAG_NEG_I32);
+
+        let (value, _) = number(b"-2147483648");
+        assert_eq!(value.as_i64(), -2_147_483_648);
+        assert_eq!(value.tag, W13A10_TAG_NEG_I32);
+
+        let (value, _) = number(b"-2147483649");
+        assert_eq!(value.as_i64(), -2_147_483_649);
+        assert_eq!(value.tag, W13A10_TAG_NEG_I64);
+
+        let (value, _) = number(b"-4294967295");
+        assert_eq!(value.as_i64(), -4_294_967_295);
+        assert_eq!(value.tag, W13A10_TAG_NEG_I64);
+
+        let (value, _) = number(b"-9223372036854775808");
+        assert_eq!(value.as_i64(), i64::MIN);
+        assert_eq!(value.tag, W13A10_TAG_NEG_I64);
+    }
+
+    #[test]
+    fn number_wide_positive_tags() {
+        let (value, _) = number(b"9223372036854775807");
+        assert_eq!(value.as_u64(), i64::MAX as u64);
+        assert_eq!(value.tag, W13A10_TAG_POS_I64);
+
+        let (value, _) = number(b"9223372036854775808");
+        assert_eq!(value.as_u64(), 1u64 << 63);
+        assert_eq!(value.tag, W13A10_TAG_POS_U64_HIGH);
+
+        let (value, _) = number(b"18446744073709551615");
+        assert_eq!(value.as_u64(), u64::MAX);
+        assert_eq!(value.tag, W13A10_TAG_POS_U64_HIGH);
+
+        let (value, _) = number(b"18446744073709551616");
+        assert_eq!(
+            value.as_f64().expect("double"),
+            18_446_744_073_709_551_616.0
+        );
+    }
+
+    #[test]
+    fn number_fraction_exponent_and_stop_rules() {
+        let (value, end) = number(b"1.5");
+        assert_eq!(value.as_f64(), Some(1.5));
+        assert_eq!(value.tag, W13A10_TAG_DOUBLE);
+        assert_eq!(end, 3);
+
+        let (value, _) = number(b"12.34");
+        let parsed = value.as_f64().expect("double");
+        assert!((parsed - 12.34).abs() < 1e-12);
+
+        let (value, _) = number(b"1e3");
+        assert_eq!(value.as_f64(), Some(1000.0));
+
+        let (value, _) = number(b"1.25e-2");
+        let parsed = value.as_f64().expect("double");
+        assert!((parsed - 0.0125).abs() < 1e-15);
+
+        let (value, end) = number(b"0x10");
+        assert_eq!(value.as_i64(), 0);
+        assert_eq!(value.tag, W13A10_TAG_NONNEG_I32);
+        assert_eq!(end, 1);
+
+        let (value, end) = number(b"007");
+        assert_eq!(value.as_i64(), 0);
+        assert_eq!(end, 1);
+
+        let (value, _) = number(b"1e-400");
+        assert_eq!(value.as_f64(), Some(0.0));
+
+        let (value, _) = number(b"-1e-400");
+        let parsed = value.as_f64().expect("double");
+        assert_eq!(parsed, 0.0);
+        assert!(parsed.is_sign_negative());
+
+        let (value, _) = number(b"1e308");
+        assert_eq!(value.as_f64(), Some(1e308));
+    }
+
+    #[test]
+    fn number_failures_report_exact_sites() {
+        assert_eq!(number_error(b""), (W13A10_ERR_SYNTAX, 0));
+        assert_eq!(number_error(b"-"), (W13A10_ERR_SYNTAX, 0));
+        assert_eq!(number_error(b"+1"), (W13A10_ERR_SYNTAX, 0));
+        assert_eq!(number_error(b".5"), (W13A10_ERR_SYNTAX, 0));
+        assert_eq!(number_error(b"1."), (W13A10_ERR_MISSING_FRACTION_DIGIT, 2));
+        assert_eq!(number_error(b"1e"), (W13A10_ERR_MISSING_EXPONENT_DIGIT, 2));
+        assert_eq!(number_error(b"1e+"), (W13A10_ERR_MISSING_EXPONENT_DIGIT, 3));
+        assert_eq!(number_error(b"1e309"), (W13A10_ERR_EXPONENT_OVERFLOW, 0));
+        assert_eq!(number_error(b"-2e309"), (W13A10_ERR_EXPONENT_OVERFLOW, 0));
+    }
+
+    #[test]
+    fn string_plain_and_escaped() {
+        let mut cur = W13a10Cursor::new(br#""abc""#);
+        let mut err = W13a10Error::default();
+        let out = w13a10_parse_string(&mut cur, &mut err).expect("string");
+        assert_eq!(out.as_slice(), b"abc");
+        assert!(err.is_ok());
+        assert_eq!(cur.position(), 5);
+
+        let mut cur = W13a10Cursor::new(br#""a\n\t\"\\\/b""#);
+        let mut err = W13a10Error::default();
+        let out = w13a10_parse_string(&mut cur, &mut err).expect("string");
+        assert_eq!(out.as_slice(), b"a\n\t\"\\/b");
+        assert!(err.is_ok());
+
+        let mut cur = W13a10Cursor::new(br#""\b\f\r""#);
+        let mut err = W13a10Error::default();
+        let out = w13a10_parse_string(&mut cur, &mut err).expect("string");
+        assert_eq!(out.as_slice(), b"\x08\x0c\r");
+    }
+
+    #[test]
+    fn string_unicode_and_surrogates() {
+        let mut cur = W13a10Cursor::new(br#""\u0041""#);
+        let mut err = W13a10Error::default();
+        let out = w13a10_parse_string(&mut cur, &mut err).expect("string");
+        assert_eq!(out.as_slice(), b"A");
+
+        let mut cur = W13a10Cursor::new(br#""\u00e9""#);
+        let mut err = W13a10Error::default();
+        let out = w13a10_parse_string(&mut cur, &mut err).expect("string");
+        assert_eq!(out.as_slice(), b"\xc3\xa9");
+
+        let mut cur = W13a10Cursor::new(br#""\ud83d\ude00""#);
+        let mut err = W13a10Error::default();
+        let out = w13a10_parse_string(&mut cur, &mut err).expect("string");
+        assert_eq!(out.as_slice(), b"\xf0\x9f\x98\x80");
+
+        let mut cur = W13a10Cursor::new(br#""\ud83dX""#);
+        let mut err = W13a10Error::default();
+        assert!(w13a10_parse_string(&mut cur, &mut err).is_none());
+        assert_eq!(err, W13a10Error { code: 9, offset: 1 });
+    }
+
+    #[test]
+    fn string_failures_report_exact_sites() {
+        let mut cur = W13a10Cursor::new(br#""\q""#);
+        let mut err = W13a10Error::default();
+        assert!(w13a10_parse_string(&mut cur, &mut err).is_none());
+        assert_eq!(
+            err,
+            W13a10Error {
+                code: 10,
+                offset: 1
+            }
+        );
+
+        let mut cur = W13a10Cursor::new(b"\"abc");
+        let mut err = W13a10Error::default();
+        assert!(w13a10_parse_string(&mut cur, &mut err).is_none());
+        assert_eq!(
+            err,
+            W13a10Error {
+                code: 11,
+                offset: 4
+            }
+        );
+
+        let mut cur = W13a10Cursor::new(b"\"a\x01b\"");
+        let mut err = W13a10Error::default();
+        assert!(w13a10_parse_string(&mut cur, &mut err).is_none());
+        assert_eq!(
+            err,
+            W13a10Error {
+                code: 12,
+                offset: 2
+            }
+        );
+    }
+
+    #[test]
+    fn dispatch_consumes_keywords_and_leaves_other_bytes() {
+        let mut cur = W13a10Cursor::new(b"\"x\"");
+        let mut err = W13a10Error::default();
+        assert_eq!(w13a10_dispatch(&mut cur, &mut err), W13a10Dispatch::String);
+        assert_eq!(cur.position(), 0);
+
+        let mut cur = W13a10Cursor::new(b"[1]");
+        let mut err = W13a10Error::default();
+        assert_eq!(w13a10_dispatch(&mut cur, &mut err), W13a10Dispatch::Array);
+        assert_eq!(cur.position(), 0);
+
+        let mut cur = W13a10Cursor::new(b"{");
+        let mut err = W13a10Error::default();
+        assert_eq!(w13a10_dispatch(&mut cur, &mut err), W13a10Dispatch::Object);
+        assert_eq!(cur.position(), 0);
+
+        let mut cur = W13a10Cursor::new(b"false!");
+        let mut err = W13a10Error::default();
+        assert_eq!(w13a10_dispatch(&mut cur, &mut err), W13a10Dispatch::False);
+        assert_eq!(cur.position(), 5);
+        assert!(err.is_ok());
+
+        let mut cur = W13a10Cursor::new(b"null");
+        let mut err = W13a10Error::default();
+        assert_eq!(w13a10_dispatch(&mut cur, &mut err), W13a10Dispatch::Null);
+        assert_eq!(cur.position(), 4);
+
+        let mut cur = W13a10Cursor::new(b"true");
+        let mut err = W13a10Error::default();
+        assert_eq!(w13a10_dispatch(&mut cur, &mut err), W13a10Dispatch::True);
+        assert_eq!(cur.position(), 4);
+
+        let mut cur = W13a10Cursor::new(b"falsX");
+        let mut err = W13a10Error::default();
+        assert_eq!(w13a10_dispatch(&mut cur, &mut err), W13a10Dispatch::Invalid);
+        assert_eq!(err, W13a10Error { code: 3, offset: 4 });
+        assert_eq!(cur.position(), 4);
+
+        let mut cur = W13a10Cursor::new(b"nul");
+        let mut err = W13a10Error::default();
+        assert_eq!(w13a10_dispatch(&mut cur, &mut err), W13a10Dispatch::Invalid);
+        assert_eq!(err, W13a10Error { code: 3, offset: 3 });
+
+        let mut cur = W13a10Cursor::new(b"?");
+        let mut err = W13a10Error::default();
+        assert_eq!(w13a10_dispatch(&mut cur, &mut err), W13a10Dispatch::Number);
+        assert_eq!(cur.position(), 0);
+        assert!(err.is_ok());
+    }
+
+    fn unsupported_array(
+        _cur: &mut W13a10Cursor<'_>,
+        err: &mut W13a10Error,
+    ) -> Option<W13a10Value> {
+        err.set(W13A10_ERR_SYNTAX, 0);
+        None
+    }
+
+    fn parse_object_value(text: &[u8]) -> (W13a10Value, usize) {
+        let mut cur = W13a10Cursor::new(text);
+        let mut err = W13a10Error::default();
+        let mut array = unsupported_array;
+        let mut parser = W13a10ValueParser { array: &mut array };
+        let value = parser.parse_value(&mut cur, &mut err).expect("value");
+        assert!(err.is_ok(), "unexpected status {err:?}");
+        (value, cur.position())
+    }
+
+    #[test]
+    fn value_parser_scalars() {
+        assert_eq!(
+            parse_object_value(b"\"hi\"").0,
+            W13a10Value::String(b"hi".to_vec())
+        );
+
+        let (value, end) = parse_object_value(b"false");
+        assert_eq!(value, W13a10Value::Bool(false));
+        assert_eq!(end, 5);
+
+        assert_eq!(parse_object_value(b"null").0, W13a10Value::Nil);
+        assert_eq!(parse_object_value(b"true").0, W13a10Value::Bool(true));
+
+        let (value, end) = parse_object_value(b"12");
+        assert_eq!(
+            value,
+            W13a10Value::Number(W13a10Number::from_parts(12, W13A10_TAG_NONNEG_I32))
+        );
+        assert_eq!(end, 2);
+    }
+
+    #[test]
+    fn object_parser_preserves_order_and_nests() {
+        let (value, end) = parse_object_value(br#"{"a":1,"b":true,"c":{"d":"x"}}"#);
+        let expected = W13a10Value::Table(vec![
+            (
+                b"a".to_vec(),
+                W13a10Value::Number(W13a10Number::from_parts(1, W13A10_TAG_NONNEG_I32)),
+            ),
+            (b"b".to_vec(), W13a10Value::Bool(true)),
+            (
+                b"c".to_vec(),
+                W13a10Value::Table(vec![(b"d".to_vec(), W13a10Value::String(b"x".to_vec()))]),
+            ),
+        ]);
+        assert_eq!(value, expected);
+        assert_eq!(end, 30);
+
+        let (value, end) = parse_object_value(b"{}");
+        assert_eq!(value, W13a10Value::Table(Vec::new()));
+        assert_eq!(end, 2);
+
+        let (value, _) = parse_object_value(br#"{"a":1,"a":2}"#);
+        assert_eq!(
+            value,
+            W13a10Value::Table(vec![
+                (
+                    b"a".to_vec(),
+                    W13a10Value::Number(W13a10Number::from_parts(1, W13A10_TAG_NONNEG_I32)),
+                ),
+                (
+                    b"a".to_vec(),
+                    W13a10Value::Number(W13a10Number::from_parts(2, W13A10_TAG_NONNEG_I32)),
+                ),
+            ])
+        );
+    }
+
+    fn object_error(text: &[u8]) -> (u32, usize) {
+        let mut cur = W13a10Cursor::new(text);
+        let mut err = W13a10Error::default();
+        let mut array = unsupported_array;
+        let mut parser = W13a10ValueParser { array: &mut array };
+        assert!(parser.parse_value(&mut cur, &mut err).is_none());
+        (err.code, err.offset)
+    }
+
+    #[test]
+    fn object_parser_errors() {
+        assert_eq!(object_error(b"{"), (4, 1));
+        assert_eq!(object_error(br#"{"a" 1}"#), (5, 5));
+        assert_eq!(object_error(br#"{"a":1 "b":2}"#), (6, 7));
+        assert_eq!(object_error(br#"{"a":1,}"#), (4, 7));
+        assert_eq!(object_error(br#"{"a":}"#), (3, 5));
+        assert_eq!(object_error(br#"{"a":tru}"#), (3, 8));
+    }
+
+    #[test]
+    fn array_callback_is_used_for_brackets() {
+        let mut cur = W13a10Cursor::new(b"[ignored]");
+        let mut err = W13a10Error::default();
+        let mut array = |cur: &mut W13a10Cursor<'_>, _err: &mut W13a10Error| {
+            while !cur.at_end() && w13a10_peek(cur) != b']' {
+                cur.advance();
+            }
+            cur.advance();
+            Some(W13a10Value::Array(vec![W13a10Value::Nil]))
+        };
+        let mut parser = W13a10ValueParser { array: &mut array };
+        let value = parser.parse_value(&mut cur, &mut err).expect("array");
+        assert_eq!(value, W13a10Value::Array(vec![W13a10Value::Nil]));
+        assert!(err.is_ok());
+        assert_eq!(cur.position(), 9);
+    }
+
+    #[test]
+    fn document_status_classifies_empty_trailing_and_complete() {
+        let mut cur = W13a10Cursor::new(b"  {} ");
+        let mut err = W13a10Error::default();
+        let mut array = unsupported_array;
+        let mut parser = W13a10ValueParser { array: &mut array };
+        assert_eq!(
+            w13a10_parse_document(&mut cur, &mut err, &mut parser),
+            Some(W13a10DocumentStatus::Complete)
+        );
+        assert!(err.is_ok());
+
+        let mut cur = W13a10Cursor::new(b"   ");
+        let mut err = W13a10Error::default();
+        assert_eq!(
+            w13a10_parse_document(&mut cur, &mut err, &mut parser),
+            Some(W13a10DocumentStatus::Empty { offset: 3 })
+        );
+
+        let mut cur = W13a10Cursor::new(b"{} x");
+        let mut err = W13a10Error::default();
+        assert_eq!(
+            w13a10_parse_document(&mut cur, &mut err, &mut parser),
+            Some(W13a10DocumentStatus::Trailing { offset: 3 })
+        );
+
+        let mut cur = W13a10Cursor::new(b"");
+        let mut err = W13a10Error::default();
+        assert_eq!(
+            w13a10_parse_document(&mut cur, &mut err, &mut parser),
+            Some(W13a10DocumentStatus::Empty { offset: 0 })
+        );
+
+        let mut cur = W13a10Cursor::new(b"{");
+        let mut err = W13a10Error::default();
+        assert_eq!(w13a10_parse_document(&mut cur, &mut err, &mut parser), None);
+        assert_eq!(err, W13a10Error { code: 4, offset: 1 });
+    }
+
+    #[test]
+    fn move_record_transfers_ownership_and_clears_source() {
+        let mut src = [0u32; 14];
+        for (index, word) in src.iter_mut().enumerate() {
+            *word = 0x1000 + index as u32;
+        }
+        src[3] = 0x1c05_abcd;
+        let original = src;
+        let dst = w13a10_move_record(&mut src);
+        assert_eq!(dst, original);
+        assert_eq!(src[3], 0x0000_abcd);
+        assert_eq!(&src[4..6], &[0, 0]);
+        assert_eq!(&src[6..12], &[0, 0, 0, 0, 0, 0]);
+        assert_eq!(&src[12..14], &[0, 0]);
+        assert_eq!(&dst[4..6], &[0x1004, 0x1005]);
+    }
+
+    #[test]
+    fn string_slot_short_and_long_layouts() {
+        let slot = W13a10StringSlot::from_bytes(b"abc");
+        assert_eq!(slot.tag(), W13A10_TAG_SHORT_STRING);
+        assert_eq!(slot.short_length_byte(), Some(10));
+        assert_eq!(slot.bytes.as_slice(), b"abc");
+        assert_eq!(slot.words[3] & 0xffff_0000, 0x1c05_0000);
+
+        let thirteen = b"0123456789abc";
+        let slot = W13a10StringSlot::from_bytes(thirteen);
+        assert_eq!(slot.tag(), W13A10_TAG_SHORT_STRING);
+        assert_eq!(slot.short_length_byte(), Some(0));
+        assert_eq!(slot.bytes.as_slice(), thirteen);
+
+        let fourteen = b"0123456789abcd";
+        let slot = W13a10StringSlot::from_bytes(fourteen);
+        assert_eq!(slot.tag(), W13A10_TAG_LONG_STRING);
+        assert_eq!(slot.words[0], 14);
+        assert_eq!(slot.short_length_byte(), None);
+        assert_eq!(slot.bytes.as_slice(), fourteen);
+
+        let slot = W13a10StringSlot::from_bytes(b"");
+        assert_eq!(slot.tag(), W13A10_TAG_SHORT_STRING);
+        assert_eq!(slot.short_length_byte(), Some(13));
+        assert!(slot.bytes.is_empty());
+    }
+
+    #[test]
+    fn endpoint_store_updates_only_the_resolved_slot() {
+        let mut document = vec![(
+            b"data".to_vec(),
+            W13a10StoredValue::Table(vec![(b"endpoint".to_vec(), W13a10StoredValue::Nil)]),
+        )];
+        assert!(w13a10_store_endpoint(&mut document, b"new value"));
+        let W13a10StoredValue::Table(data) = &document[0].1 else {
+            panic!("data table");
+        };
+        let W13a10StoredValue::String(slot) = &data[0].1 else {
+            panic!("endpoint string");
+        };
+        assert_eq!(slot.bytes.as_slice(), b"new value");
+        assert_eq!(slot.tag(), W13A10_TAG_SHORT_STRING);
+
+        let mut missing = vec![(b"other".to_vec(), W13a10StoredValue::Table(Vec::new()))];
+        assert!(!w13a10_store_endpoint(&mut missing, b"x"));
+
+        let mut not_table = vec![(
+            b"data".to_vec(),
+            W13a10StoredValue::String(W13a10StringSlot::from_bytes(b"x")),
+        )];
+        assert!(!w13a10_store_endpoint(&mut not_table, b"x"));
+
+        let mut no_endpoint = vec![(b"data".to_vec(), W13a10StoredValue::Table(Vec::new()))];
+        assert!(!w13a10_store_endpoint(&mut no_endpoint, b"x"));
+    }
+}
