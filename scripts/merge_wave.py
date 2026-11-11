@@ -6,6 +6,9 @@ Usage:
       --map 1=client.rs,2=client.rs,3=render.rs,4=runtime.rs,5=trigger.rs,\
 6=audio.rs,7=runtime.rs,8=client.rs,9=client.rs,10=client.rs
 
+  # queue mode: each batch goes to the module chosen by prepare_wave.py
+  python3 scripts/merge_wave.py --wave 15 --map auto
+
 The staging files are converted as follows:
   * leading `//!` doc comments become ordinary `//` comments;
   * inner attributes (`#![...]`) are dropped, because the batch becomes items
@@ -19,6 +22,7 @@ are removed first, which is how a batch is re-merged after a late correction.
 from __future__ import annotations
 
 import argparse
+import json
 import re
 from pathlib import Path
 
@@ -57,7 +61,20 @@ def main() -> int:
     parser.add_argument("--replace", action="store_true",
                         help="remove existing wave blocks at the end of each target")
     args = parser.parse_args()
-    mapping = parse_map(args.map)
+    if args.map == "auto":
+        summary = json.loads(
+            (Path("/tmp/opencode") / f"wave{args.wave}/summary.json").read_text()
+        )
+        mapping = {
+            int(name[5:]): entry["module"]
+            for name, entry in summary["agents"].items()
+            if "module" in entry
+        }
+        if not mapping:
+            print("summary.json has no modules; pass an explicit --map")
+            return 1
+    else:
+        mapping = parse_map(args.map)
     stage = ENGINE / "src" / f"wave{args.wave}"
     harness = ENGINE / "tests"
 

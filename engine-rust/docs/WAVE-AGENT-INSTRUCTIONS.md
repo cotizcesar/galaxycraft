@@ -21,15 +21,19 @@ and the exact commands.
 
 ## Task
 
-Translate the recoverable functions in your assigned address window into
-idiomatic, safe Rust.  Write exactly one file:
+Translate the recoverable functions in your assignment into idiomatic,
+safe Rust.  In queue mode (the default since wave 15) the assignment is an
+explicit address list chosen by `scripts/triage_corpus.py`, grouped for one
+merge target module; in window mode it is a contiguous address range.
+Write exactly one file:
 
 ```
 engine-rust/src/waveW/agentNN.rs
 ```
 
 The assignment `/tmp/opencode/waveW/agentNN.md` lists every candidate with
-its pseudocode path and the known-unrecoverable rows.  Do not edit
+its pseudocode path (and, in window mode, the known-unrecoverable rows).
+Cite only addresses from that list; the validator rejects anything else.  Do not edit
 `lib.rs`, `Cargo.toml`, a natural module, the ledger, or another agent's
 file.  The isolated harness `engine-rust/tests/waveW_agentNN.rs` compiles
 your file as an integration-test module:
@@ -42,6 +46,18 @@ mod batch;
 Use `galaxycraft::...` paths; `crate::` in the harness would refer to the
 test crate.  Prefer fully qualified calls over top-level `use` statements
 so the batch can be pasted into a library module.
+
+## Token budget
+
+- Read each candidate body once, with the `Read` tool on its path.  Do not
+  open `sim.rs`, `client.rs`, `runtime.rs` or `ai_recovered.rs` whole; use
+  `rg -n` and read small ranges when you need a neighbour helper or layout.
+- Look up a callee before modelling it: `rg -n '0x<callee>' engine-rust/src`
+  (with the callee's hex) often finds an existing Rust helper.
+- Run only your harness, with `-q`, piping through `tail`.
+- Keep the final report under 40 lines; no pseudocode in it.
+- Pseudocode boilerplate to ignore and Ghidra idioms are listed in
+  `TRANSLATION-GUIDE.md` §4.
 
 ## Rules
 
@@ -83,7 +99,8 @@ so the batch can be pasted into a library module.
    - a jump-table body whose branches Ghidra could not recover;
    - dependent on an opaque global whose layout is not visible.
    Prefer ten real translations over thirty fabricated ones.
-9. Target 15–25 translated functions when the window has enough material.
+9. Target 15–25 translated functions when the assignment has enough
+   material (queue assignments are 20 pre-filtered rows: aim for all 20).
 10. Do not copy retail assets or large pseudocode bodies into the repo.
 
 ## Verification
@@ -92,7 +109,7 @@ From `engine-rust/`:
 
 ```bash
 rustfmt --edition 2024 src/waveW/agentNN.rs
-cargo test --test waveW_agentNN
+cargo test -q --test waveW_agentNN 2>&1 | tail -15
 ```
 
 The harness compiles the library plus only your batch.  If a compile error
