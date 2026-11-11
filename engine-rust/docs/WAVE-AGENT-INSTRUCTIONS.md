@@ -76,7 +76,9 @@ so the batch can be pasted into a library module.
 
    The ledger credits an address only when it sees the literal `0x...`
    text.  Cite every implemented address, and no other address.
-4. **Ledger hygiene:** skipped addresses must be written as
+4. **Ledger hygiene:** also write any non-assigned address that appears in
+   tests or data tables with an underscore (`0x5b_b5e0`), and never use
+   `#![...]` inner attributes (the merge drops them; use item-level `#[allow]`). skipped addresses must be written as
    `FUN_00670abc` or bare hex (`670abc`), never with a `0x` prefix.
 5. Prefix every top-level item with `wWaNN_`.
 6. Put tests in the same file:

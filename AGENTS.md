@@ -23,30 +23,31 @@ wire it into the engine**.  Read this file first, then
    (`cargo test -q --test waveW_agentNN`); the full suite runs once, after
    the merge.
 
-## Current state (2026-11-11, release 0.1.2)
+## Current state (2026-11-11, after wave 15)
 
 | item | value |
 |---|---|
-| ledger `translated` | 2801 of 56128 functions |
-| `decompiled_uncited` | 52435 (only ~7.9k worth translating, see below) |
+| ledger `translated` | 2873 of 56128 functions |
+| `decompiled_uncited` | 52363 (only ~7.8k worth translating, see below) |
 | `decompile_failed` | 622 — known ceiling, do not retry |
-| tests | `cargo test --lib` 2802 pass; `cargo test` 3078 pass |
-| next wave | 15 (queue mode) |
+| tests | `cargo test --lib` 2856 pass; `cargo test` 3132 pass |
+| next wave | 16 (queue mode) |
 
 Triage of the 52435 uncited rows (`scripts/triage_corpus.py`):
 
 | category | rows | action |
 |---|---|---|
-| `clean` tier 1 (next to gameplay code) | 504 | **translate first** |
-| `clean` tier 2 (two hops from gameplay) | 6886 | translate next |
-| `clean` tier 3 (next to client/render/audio) | 539 | after tier 2 |
-| `clean` tier 4 (unrelated engine/library glue) | 15536 | only on demand |
+| `clean` tier 1 (next to gameplay code) | 351 | **translate first** |
+| `clean` tier 2 (two hops from gameplay) | 6884 | translate next |
+| `clean` tier 3 (next to client/render/audio) | 530 | after tier 2 |
+| `clean` tier 4 (unrelated engine/library glue) | 15500 | only on demand |
 | `unwind` (compiler exception funclets) | 15305 | never |
 | `fragment` (`unaff_*`/`in_*` mid-function blocks) | 6392 | never |
 | `library` (OpenGL loader, FMOD, OpenSSL, png, zlib) | 3041 | never |
 | `obfuscated` (anti-tamper, bad instruction data) | 2136 | never |
 | `trivial` (thunks, ≤ 8 bytes) | 2058 | never |
 | `hub` (CRT/allocator helpers with > 150 callers) | 38 | never |
+| `skipped` (assigned to a wave, not translatable yet) | 128 | never (`skiplist.tsv`) |
 
 ## Local data (not in git, must exist)
 
@@ -77,6 +78,7 @@ python3 scripts/decomp_ledger.py \
   --decomp ~/.cache/galaxycraft/decomp_full --source-root engine-rust \
   --tsv engine-rust/docs/decomp-ledger.tsv \
   --json ~/.cache/galaxycraft/decomp_ledger.json
+python3 scripts/record_skips.py --wave W   # untranslated rows -> skiplist.tsv
 
 # lookups
 python3 scripts/query_decomp.py --address 0xADDR       # body of one function
@@ -86,6 +88,10 @@ rg -n 'w14a03_' engine-rust/src                        # find a merged helper
 
 In opencode: `/wave W` runs the whole cycle with the `translator` subagent
 (`.opencode/commands/wave.md`, `.opencode/agents/translator.md`).
+
+Yield note: wave 15 (tier 1, 200 rows) gave +72 translated (36%).  Most
+skips end in non-returning calls or depend on unmodelled callees; that is
+expected.  Do not retry skiplist rows until a callee they need is translated.
 
 ## Hard rules
 

@@ -17,10 +17,13 @@ pseudocode, so it is safe to commit).
 Columns:
   address   0x-prefixed virtual address
   size      bytes
-  category  clean | trivial | fragment | obfuscated | unwind | library | hub
+  category  skipped | clean | trivial | fragment | obfuscated | unwind | library | hub
   tier      1..4 for `clean` rows (1 = gameplay core), `-` otherwise
   module    suggested Rust module for the merge (from cited neighbours)
   score     gameplay-neighbour count used for ordering inside a tier
+
+`skipped` rows were assigned to a wave and not translated
+(`scripts/record_skips.py`, `engine-rust/docs/skiplist.tsv`).
 
 `hub` marks CRT/allocator/security-cookie helpers called from more than
 HUB_CALLERS places (`__security_check_cookie`, `_alldiv`, `operator new`
@@ -48,6 +51,7 @@ ROOT = Path(__file__).resolve().parent.parent
 ENGINE = ROOT / "engine-rust"
 LEDGER = ENGINE / "docs/decomp-ledger.tsv"
 OUT = ENGINE / "docs/triage.tsv"
+SKIPLIST = ENGINE / "docs/skiplist.tsv"
 
 GAMEPLAY = {
     "sim.rs", "combat.rs", "orders.rs", "iscript.rs", "aiscript.rs",
@@ -135,8 +139,14 @@ def main() -> int:
     game2 = {n for a in game1 for n in neighbours(a)}
     client1 = {n for a in client_seed for n in neighbours(a)}
 
+    skipped = set()
+    if SKIPLIST.exists():
+        skipped = {int(l.split("\t")[0], 16)
+                   for l in SKIPLIST.read_text().splitlines()[1:] if l.strip()}
     out = []
     for a, cat in texts_cat.items():
+        if a in skipped:
+            cat = "skipped"
         if cat == "clean" and len(callers.get(a, ())) > HUB_CALLERS:
             cat = "hub"
         tier = "-"
