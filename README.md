@@ -155,6 +155,34 @@ scripts/package_macos.sh dist     # runs on macOS
 See [`.github/workflows/release.yml`](.github/workflows/release.yml) for the
 exact toolchain and dependency setup used by CI.
 
+## Decompilation translation
+
+The rules engine is being cross-checked against the retail 1.23.10 code:
+Ghidra pseudocode of the player's own executable (kept locally, never
+committed) is translated function by function into tested Rust, and the
+results are wired into the engine.
+
+| | |
+|---|---|
+| functions in the retail image | 56,128 |
+| translated and cited in Rust | 2,801 |
+| worth translating next (gameplay tiers 1–3) | ~7,900 |
+| not worth translating (unwind funclets, anti-tamper, libraries, thunks) | ~29,000 |
+| not decompilable with the current toolchain | 622 |
+
+Work goes in waves of ten parallel agents fed from a call-graph priority
+queue (`scripts/triage_corpus.py`).  Start with [AGENTS.md](AGENTS.md), then
+[`engine-rust/docs/TRANSLATION-GUIDE.md`](engine-rust/docs/TRANSLATION-GUIDE.md);
+[`RESUME.md`](RESUME.md) restores the local corpus on a new machine.
+
+```bash
+python3 scripts/triage_corpus.py
+python3 scripts/prepare_wave.py --wave 15 --queue engine-rust/docs/triage.tsv
+# ten translators, then:
+python3 scripts/validate_wave.py --wave 15
+python3 scripts/merge_wave.py --wave 15 --map auto
+```
+
 ## Repository layout
 
 | Path | Contents |
@@ -164,9 +192,11 @@ exact toolchain and dependency setup used by CI.
 | `engine-rust/third_party/` | Vendored minifb and PKWARE DCL decoder |
 | `engine-rust/packaging/` | Desktop entry, AppStream metadata, Flatpak manifest and macOS plist |
 | `engine-rust/fixtures/` | Fixture generator documentation; only synthetic data is tracked |
-| `engine-rust/docs/` | Reverse-engineering evidence and change notes |
+| `engine-rust/docs/` | Translation guide, wave log, reverse-engineering evidence and change notes |
 | `engine-rust/tools/` | Fixture, oracle and table-inspection helpers |
-| `scripts/` | Packaging, two-machine LAN and retail-recording timeline tools |
+| `engine-rust/docs/decomp-ledger.tsv`, `triage.tsv` | Per-function translation status and priority queue (addresses only) |
+| `scripts/` | Decompilation/wave pipeline, packaging, two-machine LAN and retail-recording timeline tools |
+| `AGENTS.md`, `.opencode/` | Instructions, subagent and `/wave` command for coding agents |
 
 ## Data and copyright
 

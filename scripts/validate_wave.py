@@ -2,7 +2,11 @@
 """Validate a prepared translation wave before merging.
 
 Usage:
-  python3 scripts/validate_wave.py --wave 15 --start 0x684000
+  python3 scripts/validate_wave.py --wave 15                 # queue mode
+  python3 scripts/validate_wave.py --wave 15 --start 0x684000  # window mode
+
+Queue mode reads the per-agent address lists from
+`/tmp/opencode/waveNN/summary.json` written by `prepare_wave.py --queue`.
 
 Checks:
   * every staging file exists and is not a placeholder;
@@ -15,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import re
 import sys
 from collections import defaultdict
@@ -28,7 +33,8 @@ LEDGER = ENGINE / "docs/decomp-ledger.tsv"
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--wave", type=int, required=True)
-    parser.add_argument("--start", type=lambda s: int(s, 0), required=True)
+    parser.add_argument("--start", type=lambda s: int(s, 0))
+    parser.add_argument("--out", type=Path, default=Path("/tmp/opencode"))
     parser.add_argument("--count", type=int, default=10)
     parser.add_argument("--span", type=lambda s: int(s, 0), default=0x2000)
     args = parser.parse_args()
@@ -38,13 +44,31 @@ def main() -> int:
         for row in csv.DictReader(f, delimiter="\t"):
             ledger[int(row["address"], 16)] = row
 
+    owned: dict[int, set[int]] = {}
+    summary_path = args.out / f"wave{args.wave}/summary.json"
+    if args.start is None:
+        if not summary_path.exists():
+            parser.error(f"no --start and no {summary_path}")
+        summary = json.loads(summary_path.read_text())
+        for name, entry in summary.get("agents", {}).items():
+            if "addresses" in entry:
+                owned[int(name[5:])] = {int(a, 16) for a in entry["addresses"]}
+        args.count = len(summary.get("agents", {}))
+        if not owned:
+            parser.error(f"{summary_path} is a window-mode summary; pass --start")
+
     seen: dict[int, list[int]] = defaultdict(list)
     problems = 0
     stage = ENGINE / "src" / f"wave{args.wave}"
     for i in range(args.count):
         n = i + 1
-        start = args.start + i * args.span
-        end = start + args.span
+        if owned:
+            mine = owned.get(n, set())
+            inside = mine.__contains__
+        else:
+            start = args.start + i * args.span
+            end = start + args.span
+            inside = lambda a, s=start, e=end: s <= a < e  # noqa: E731
         path = stage / f"agent{n:02d}.rs"
         if not path.exists():
             print(f"agent{n:02d}: MISSING")
@@ -60,8 +84,8 @@ def main() -> int:
             for a in re.findall(r"0x([0-9a-fA-F]{6,8})", text)
             if 0x00401000 <= int(a, 16) < 0x00D30000
         })
-        window = [a for a in addrs if start <= a < end]
-        outside = [a for a in addrs if not (start <= a < end)]
+        window = [a for a in addrs if inside(a)]
+        outside = [a for a in addrs if not inside(a)]
         unknown = [a for a in window if a not in ledger]
         already = [
             a for a in window

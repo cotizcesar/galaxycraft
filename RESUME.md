@@ -3,6 +3,12 @@
 The Rust code, ledger and translation pipeline are in this git repository.
 The decompiled corpus is a local cache and is **not** in git.
 
+The 2026-11-11 backups live in `~/Documents/galaxycraft-backup/`
+(`galaxycraft-decompilation-only-*.tar.zst` with the 56,128-body corpus,
+`optional-full-backup/` with the Ghidra project and runtime PE).  Restore
+the full one with `scripts/restore_work_cache.sh`, then run the
+decompilation-only `restore_to_home.sh` on top.
+
 ## 1. Copy the cache backup before formatting
 
 The current backup is created at:
@@ -46,21 +52,27 @@ Current stop point:
 
 ```text
 ledger translated: 2801
-next window:       0x00684000
-next wave:         15
-lib tests:         2802
+next wave:         15 (queue mode)
+lib tests:         2802 (full suite 3078)
 ```
 
+Fixture-backed tests need the generated fixtures and assets
+(`engine-rust/fixtures/README.md`); without them ~760 lib tests fail with
+`ShortFile ... units.dat`.
+
+Follow [AGENTS.md](AGENTS.md) and
+`engine-rust/docs/TRANSLATION-GUIDE.md`:
+
 ```bash
-python3 scripts/prepare_wave.py --wave 15 --start 0x684000
-# launch ten agents using engine-rust/docs/WAVE-AGENT-INSTRUCTIONS.md
-python3 scripts/validate_wave.py --wave 15 --start 0x684000
-python3 scripts/merge_wave.py --wave 15 --map 1=client.rs,...
+python3 scripts/triage_corpus.py
+python3 scripts/prepare_wave.py --wave 15 --queue engine-rust/docs/triage.tsv
+# launch ten translators (opencode: /wave 15)
+python3 scripts/validate_wave.py --wave 15
+python3 scripts/merge_wave.py --wave 15 --map auto
 cd engine-rust && cargo fmt && cargo test --lib && cargo clippy --all-targets -- -D warnings
 ```
 
-Then regenerate the ledger exactly as documented in
-`engine-rust/docs/TRANSLATION-PIPELINE.md`.
+Then regenerate the ledger exactly as documented in `AGENTS.md`.
 
 ## Important repository rules
 

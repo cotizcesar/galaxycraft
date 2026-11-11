@@ -86,6 +86,11 @@ not spend a wave on them again.
 
 ## Running one ten-agent wave
 
+> Since wave 15 waves use **queue mode** (`scripts/triage_corpus.py` +
+> `prepare_wave.py --queue`, `validate_wave.py --wave W`, `merge_wave.py
+> --map auto`).  See `TRANSLATION-GUIDE.md`.  The window-mode steps below
+> still work and are kept for reference.
+
 1. Prepare the assignments and isolated harnesses:
 
    ```bash

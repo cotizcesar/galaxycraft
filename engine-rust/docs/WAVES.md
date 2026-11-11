@@ -1,0 +1,8 @@
+# Wave log
+
+One line per merged wave.  Append; do not rewrite history.  Format:
+`Wave W (date, mode): +N translated (ledger A -> B), lib tests T, notes`.
+
+- Wave 13 (2026-11-10, window): +174 translated (ledger 2444 -> 2620), modules render/runtime/ai_recovered/sim/trigger/client.
+- Wave 14 (2026-11-11, window): +181 translated (ledger 2620 -> 2801), lib tests 2802.
+- 2026-11-11: switched to triage queue mode (`scripts/triage_corpus.py`); next wave 15 starts from tier 1.
