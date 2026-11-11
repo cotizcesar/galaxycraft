@@ -2379,3 +2379,1111 @@ mod tests_wave18_agent03 {
         assert_eq!(t.flags, 0);
     }
 }
+
+// ===========================================================================
+// Merged from src/wave19/agent02.rs
+// ===========================================================================
+// Wave 19 translation batch 02: small pure helpers (path.rs target).
+
+/// `0x00748d80`: returns `false` only when the flag word is zero and
+/// `code` is outside `0x80..=0x83`, otherwise `true`.
+pub fn w19a02_code_or_flag_allowed(flag: u32, code: u32) -> bool {
+    !(flag == 0 && code.wrapping_sub(0x80) > 3)
+}
+
+/// `0x00748ee0`: fetches a 16-byte record (four words) for `code`.  When
+/// `mode_two` (global byte == 2) the code `0x80..=0x83` is remapped to
+/// `0x0c..=0x0f`, the byte at `code * 0x24 + 10` (read through `row_byte`)
+/// minus one selects the 8-entry table row (negative -> 7).  Otherwise
+/// `fallback(code)` supplies the record.
+pub fn w19a02_record_for_code(
+    mode_two: bool,
+    code: u32,
+    row_byte: impl Fn(u32) -> u8,
+    table: &[[u32; 4]; 8],
+    fallback: impl FnOnce(u32) -> [u32; 4],
+) -> [u32; 4] {
+    if !mode_two {
+        return fallback(code);
+    }
+    let mut code = code;
+    if (0x80..0x84).contains(&code) {
+        code = (code & 0xffff_ff7f) + 0xc;
+    }
+    let mut idx = i32::from(row_byte(code)) - 1;
+    if idx < 0 {
+        idx = 7;
+    }
+    table[(idx & 7) as usize]
+}
+
+/// `0x007824f0`: true when `active` holds and the y coordinate `y`
+/// lies within `[top + 2 + off, bottom - 3 + off]` (all signed 16-bit).
+pub fn w19a02_y_in_inset_band(active: bool, top: i16, bottom: i16, off: i16, y: i16) -> bool {
+    if !active {
+        return false;
+    }
+    let lo = i32::from(top) + 2 + i32::from(off);
+    let hi = i32::from(bottom) - 3 + i32::from(off);
+    lo <= i32::from(y) && i32::from(y) <= hi
+}
+
+/// `0x00749610`: chooses the small cue index (2..=6) from the sprite
+/// kind `kind` and flag word `flags`; the two predicate flags map to 5/4.
+pub fn w19a02_cue_index(is_a: bool, is_b: bool, kind: i16, flags: u32) -> u32 {
+    if is_a {
+        return 5;
+    }
+    if is_b {
+        return 4;
+    }
+    if matches!(kind, 1 | 2 | 3 | 0xd) {
+        return 3;
+    }
+    if matches!(kind, 9..=11) {
+        if (flags as i32) < 0 {
+            return 4;
+        }
+        if flags & 0x4000_0000 != 0 {
+            return 6;
+        }
+        if flags & 0x2000_0000 != 0 {
+            return 3;
+        }
+    }
+    2
+}
+
+/// `0x00785620`: resolves a table value from two selector bytes
+/// (`0xff` = none -> -1) through `table` and returns the matching
+/// candidate id from `candidates` (`(valid, id)` pairs in list order), or
+/// `0xffff` when none matches.  Value `0xe5` yields to the second choice.
+pub fn w19a02_resolve_candidate(
+    sel_a: u8,
+    sel_b: u8,
+    table: &[i16; 256],
+    candidates: &[(bool, i16)],
+) -> u16 {
+    let mut a = table[sel_a as usize];
+    let b = if sel_b == 0xff {
+        -1
+    } else {
+        table[sel_b as usize]
+    };
+    if a == -1 || (b != -1 && a == 0xe5) {
+        a = b;
+    }
+    if candidates.iter().any(|&(valid, id)| valid && id == a) {
+        a as u16
+    } else {
+        0xffff
+    }
+}
+
+#[cfg(test)]
+mod tests_wave19_agent02 {
+    use super::*;
+
+    #[test]
+    fn allowed() {
+        assert!(w19a02_code_or_flag_allowed(1, 0));
+        assert!(w19a02_code_or_flag_allowed(0, 0x80));
+        assert!(w19a02_code_or_flag_allowed(0, 0x83));
+        assert!(!w19a02_code_or_flag_allowed(0, 0x84));
+        assert!(!w19a02_code_or_flag_allowed(0, 0x7f));
+    }
+
+    #[test]
+    fn record() {
+        let mut t = [[0u32; 4]; 8];
+        for (i, r) in t.iter_mut().enumerate() {
+            *r = [i as u32; 4];
+        }
+        let f = |c: u32| [c; 4];
+        assert_eq!(w19a02_record_for_code(false, 5, |_| 3, &t, f), [5; 4]);
+        assert_eq!(w19a02_record_for_code(true, 5, |_| 3, &t, f), [2; 4]);
+        assert_eq!(w19a02_record_for_code(true, 5, |_| 0, &t, f), [7; 4]);
+        assert_eq!(
+            w19a02_record_for_code(true, 0x81, |c| if c == 13 { 8 } else { 1 }, &t, f),
+            [7; 4]
+        );
+    }
+
+    #[test]
+    fn band() {
+        assert!(!w19a02_y_in_inset_band(false, 0, 100, 0, 50));
+        assert!(w19a02_y_in_inset_band(true, 0, 100, 10, 12));
+        assert!(!w19a02_y_in_inset_band(true, 0, 100, 10, 11));
+        assert!(w19a02_y_in_inset_band(true, 0, 100, 10, 107));
+        assert!(!w19a02_y_in_inset_band(true, 0, 100, 10, 108));
+    }
+
+    #[test]
+    fn cue() {
+        assert_eq!(w19a02_cue_index(true, true, 0, 0), 5);
+        assert_eq!(w19a02_cue_index(false, true, 0, 0), 4);
+        assert_eq!(w19a02_cue_index(false, false, 0xd, 0), 3);
+        assert_eq!(w19a02_cue_index(false, false, 9, 0x8000_0000), 4);
+        assert_eq!(w19a02_cue_index(false, false, 10, 0x4000_0000), 6);
+        assert_eq!(w19a02_cue_index(false, false, 11, 0x2000_0000), 3);
+        assert_eq!(w19a02_cue_index(false, false, 9, 0), 2);
+        assert_eq!(w19a02_cue_index(false, false, 5, 0), 2);
+    }
+
+    #[test]
+    fn resolve() {
+        let mut t = [-1i16; 256];
+        t[1] = 0xe5;
+        t[2] = 7;
+        t[3] = 9;
+        let c = [(true, 7), (false, 9)];
+        assert_eq!(w19a02_resolve_candidate(1, 2, &t, &c), 7);
+        assert_eq!(w19a02_resolve_candidate(0, 2, &t, &c), 7);
+        assert_eq!(w19a02_resolve_candidate(3, 0xff, &t, &c), 0xffff);
+        assert_eq!(w19a02_resolve_candidate(0, 0xff, &t, &c), 0xffff);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave19/agent03.rs
+// ===========================================================================
+// Wave 19 translation batch 03: dialog/listbox/scrollbar geometry helpers.
+//
+// Dialog records use the retail layout: `+4/+6/+8/+10` i16 bounds
+// (left, top, right, bottom), `+0x30` flags, `+0x3c` control type.
+
+/// `0x00957300`: maps a key/event code to a compact index; unknown codes map to 0.
+pub fn w19a03_event_code_index(code: u32) -> u32 {
+    match code {
+        3 => 1,
+        4 => 2,
+        5 => 3,
+        6 => 4,
+        7 => 5,
+        8 => 8,
+        0xe => 9,
+        0xf => 10,
+        0x10 => 0xb,
+        0x11 => 0xc,
+        0x15 => 0xd,
+        0x16 => 0xe,
+        0x17 => 0xf,
+        0x18 => 0x10,
+        0x19 => 0x11,
+        0x1b => 0x12,
+        0x1c => 0x13,
+        0x1d => 0x14,
+        0x1e => 0x15,
+        0x1f => 0x17,
+        _ => 0,
+    }
+}
+
+/// `0x009767d0`: writes `[l - m, t - m, r + m, b + m]` into `out`.
+pub fn w19a03_inflate_rect(out: &mut [i32; 4], l: i32, t: i32, r: i32, b: i32, margin: i32) {
+    out[0] = l.wrapping_sub(margin);
+    out[1] = t.wrapping_sub(margin);
+    out[2] = r.wrapping_add(margin);
+    out[3] = b.wrapping_add(margin);
+}
+
+/// Listbox fields read by `w19a03_listbox_hit_index`.
+#[derive(Clone, Copy, Debug, Default)]
+#[allow(non_camel_case_types)]
+pub struct w19a03_ListBox {
+    pub left: i16,
+    pub top: i16,
+    pub right: i16,
+    pub bottom: i16,
+    pub flags: u32,
+    pub ctrl_type: i16,
+    pub count: u8,         // +0x60
+    pub row_height: u8,    // +0x63
+    pub visible_rows: u8,  // +0x64
+    pub first_visible: u8, // +0x67
+    pub selected: u8,      // +0x68
+    pub type13_flags: u8,  // +0x66
+}
+
+/// `0x009792b0`: maps a mouse position (`mx`, `my`) to a row index.  Clears
+/// flag `0x40000000` unless inside the interior x range, in which case it
+/// sets it.  Result is clamped to `count - 1`.
+pub fn w19a03_listbox_hit_index(lb: &mut w19a03_ListBox, mx: i16, my: i16) -> u8 {
+    let header = if lb.ctrl_type == 0xd && lb.type13_flags & 1 == 0 {
+        lb.row_height as i32 + lb.top as i32
+    } else {
+        lb.top as i32
+    };
+    let mut idx: u8;
+    if (my as i32) < header {
+        let (sel, first) = (lb.selected, lb.first_visible);
+        lb.flags &= 0xbfff_ffff;
+        idx = first;
+        if sel <= first {
+            idx = sel.saturating_sub(1);
+        }
+    } else if lb.bottom < my {
+        idx = lb.selected;
+        lb.flags &= 0xbfff_ffff;
+        let last_vis = (lb.first_visible as i32 - 1) + lb.visible_rows as i32;
+        if (idx as i32) < last_vis {
+            idx = (lb.visible_rows.wrapping_sub(1)).wrapping_add(lb.first_visible);
+        } else if (idx as i32) < lb.count as i32 - 1 {
+            idx += 1;
+        }
+    } else {
+        if lb.left < mx && mx < lb.right {
+            lb.flags |= 0x4000_0000;
+        }
+        let rh = lb.row_height as i32;
+        let q = if rh == 0 {
+            0
+        } else {
+            ((my as i32 - header) as i16 as i32) / rh
+        };
+        idx = (q as u8).wrapping_add(lb.first_visible);
+    }
+    let last = lb.count.wrapping_sub(1);
+    if idx < lb.count { idx } else { last }
+}
+
+/// `0x00982690`: scrollbar track length.  `g` supplies the retail globals
+/// `[dd74, dd78, dd88, dd8c, ddcc, ddd0]` (caller-supplied widths).
+/// Type 6 is horizontal, all other types vertical.
+pub fn w19a03_scrollbar_length(flags: u32, ctrl_type: i16, bounds: [i16; 4], g: [i32; 6]) -> i16 {
+    let [l, t, r, b] = bounds;
+    let [g74, g78, g88, g8c, gcc, gd0] = g;
+    let small = flags & 0x400_0000 != 0;
+    let v = if ctrl_type != 6 {
+        if small {
+            (b as i32 - t as i32) - gd0 + 1
+        } else {
+            ((b as i32 + g74 * -2) - t as i32) - g8c - 5
+        }
+    } else if small {
+        (r as i32 - l as i32) - gcc + 1
+    } else {
+        ((r as i32 + g78 * -2) - l as i32) - g88 - 1
+    };
+    v as i16
+}
+
+/// `0x00983010`: decrements the repeat counter at `+0x61`.  When it hits 0
+/// it is reloaded with 3 (or 1 when `mask & 0x60000000 != 0`) and the caller
+/// must run the step callback; the returned flag is true when the callback
+/// must be followed by the non-returning stop (`mask & flags != 0`).
+/// Returns `(fire, stop)`.
+pub fn w19a03_repeat_tick(counter: &mut u8, mask: u32, flags: u32) -> (bool, bool) {
+    *counter = counter.wrapping_sub(1);
+    if *counter != 0 {
+        return (false, false);
+    }
+    *counter = if mask & 0x6000_0000 == 0 { 3 } else { 1 };
+    (true, mask & flags != 0)
+}
+
+/// `0x0097b260`: palette/state index passed to the draw-state setter.
+/// `is_a`/`is_b` are the results of the two predicate callees.
+pub fn w19a03_draw_state_index(is_a: bool, is_b: bool, ctrl_type: i16, flags: u32) -> u32 {
+    if is_a {
+        return 5;
+    }
+    if is_b {
+        return 4;
+    }
+    if matches!(ctrl_type, 1 | 2 | 3 | 0xd) {
+        return 3;
+    }
+    if matches!(ctrl_type, 9..=11) {
+        if (flags as i32) < 0 {
+            return 4;
+        }
+        if flags & 0x4000_0000 != 0 {
+            return 6;
+        }
+        if flags & 0x2000_0000 != 0 {
+            return 3;
+        }
+    }
+    2
+}
+
+/// `0x0097b490`: when `pred` is true, sets the draw color and runs `draw`.
+pub fn w19a03_draw_if(pred: bool, color: u8, color_slot: &mut u8, draw: impl FnOnce()) {
+    if pred {
+        *color_slot = color;
+        draw();
+    }
+}
+
+/// `0x0097b4c0`: two-pass frame: returns `(color, rect)` pairs, first the
+/// rect inset by 1 in `color`, then the full rect in `outer_color`.
+pub fn w19a03_frame_rects(bounds: [i16; 4], color: u8, outer_color: u8) -> [(u8, [i16; 4]); 2] {
+    let [l, t, r, b] = bounds;
+    [
+        (color, [l + 1, t + 1, r - 1, b - 1]),
+        (outer_color, [l, t, r, b]),
+    ]
+}
+
+/// `0x00981530`: collects the dialog and its visible children overlapping
+/// `area = [x0, y0, x1, y1]` (retail `param_2` ints `[0]=x0,[1]=y0,[2]=x1,[3]=y1`).
+/// Children are `(bounds, visible, parent_offset)`; returns `None` when the
+/// dialog itself does not overlap, else the picked child indices.
+pub fn w19a03_collect_overlapping(
+    dialog: [i16; 4],
+    children: &[([i16; 4], bool, (i16, i16))],
+    area: [i32; 4],
+) -> Option<Vec<usize>> {
+    if !(dialog[0] as i32 <= area[2]
+        && dialog[1] as i32 <= area[3]
+        && area[0] <= dialog[2] as i32
+        && area[1] <= dialog[3] as i32)
+    {
+        return None;
+    }
+    let mut out = Vec::new();
+    for (i, (b, visible, (ox, oy))) in children.iter().enumerate() {
+        if !*visible {
+            continue;
+        }
+        let (ox, oy) = (*ox as i32, *oy as i32);
+        if b[0] as i32 + ox <= area[2]
+            && b[1] as i32 + oy <= area[3]
+            && area[0] <= b[2] as i32 + ox
+            && area[1] <= b[3] as i32 + oy
+        {
+            out.push(i);
+        }
+    }
+    Some(out)
+}
+
+/// `0x00981f80`: horizontal slider/bar draw ops `(glyph, x)` for a dialog
+/// whose x-origin is `left`.  `g = [dd78, dd84]` are the cap and tile widths.
+/// Returns an empty list when the bar is too narrow.  `flags & 0x4000000`
+/// delegates to `0x009821e0` (returned as `None`).
+pub fn w19a03_bar_draw_ops(
+    flags: u32,
+    left: u16,
+    right: i16,
+    dd78: u16,
+    dd84: u16,
+    is_a: bool,
+) -> Option<Vec<(u8, i32)>> {
+    if flags & 0x400_0000 != 0 {
+        return None;
+    }
+    let cap = dd78 as i32;
+    let tile = dd84 as i32;
+    let l = left as i32;
+    if (right as i32 - left as i16 as i32) < (tile + cap) * 2 {
+        return Some(Vec::new());
+    }
+    let n = !is_a as u8;
+    let mut ops = Vec::new();
+    ops.push((
+        if flags & 0x4000_0000 == 0 {
+            0x16 + n
+        } else {
+            0x17 + n
+        },
+        l,
+    ));
+    let mut off = cap;
+    ops.push((0x20, l + off));
+    let mut cnt = (right as i32 - 2 * cap - left as i16 as i32) / tile - 2;
+    while cnt != 0 {
+        off += tile;
+        ops.push((0x21, l + off));
+        cnt -= 1;
+    }
+    ops.push((0x22, l + off + tile));
+    let x = (cap + off + tile) as i16 as i32 + l;
+    ops.push((
+        if flags & 0x2000_0000 == 0 {
+            0x19 + n
+        } else {
+            0x1a + n
+        },
+        x,
+    ));
+    Some(ops)
+}
+
+#[cfg(test)]
+mod tests_wave19_agent03 {
+    use super::*;
+
+    #[test]
+    fn event_map() {
+        assert_eq!(w19a03_event_code_index(3), 1);
+        assert_eq!(w19a03_event_code_index(8), 8);
+        assert_eq!(w19a03_event_code_index(0x1f), 0x17);
+        assert_eq!(w19a03_event_code_index(0x20), 0);
+        assert_eq!(w19a03_event_code_index(9), 0);
+    }
+
+    #[test]
+    fn inflate() {
+        let mut r = [0; 4];
+        w19a03_inflate_rect(&mut r, 10, 20, 30, 40, 3);
+        assert_eq!(r, [7, 17, 33, 43]);
+    }
+
+    fn lb() -> w19a03_ListBox {
+        w19a03_ListBox {
+            left: 0,
+            top: 10,
+            right: 100,
+            bottom: 90,
+            flags: 0,
+            ctrl_type: 1,
+            count: 20,
+            row_height: 10,
+            visible_rows: 8,
+            first_visible: 2,
+            selected: 5,
+            type13_flags: 0,
+        }
+    }
+
+    #[test]
+    fn hit_index() {
+        let mut l = lb();
+        assert_eq!(w19a03_listbox_hit_index(&mut l, 50, 35), 4);
+        assert_ne!(l.flags & 0x4000_0000, 0);
+        let mut l = lb();
+        assert_eq!(w19a03_listbox_hit_index(&mut l, 50, 0), 2); // above: first_visible
+        let mut l = lb();
+        l.selected = 1;
+        assert_eq!(w19a03_listbox_hit_index(&mut l, 50, 0), 0);
+        let mut l = lb();
+        assert_eq!(w19a03_listbox_hit_index(&mut l, 50, 200), 9); // below: last visible
+        let mut l = lb();
+        l.selected = 12;
+        assert_eq!(w19a03_listbox_hit_index(&mut l, 50, 200), 13);
+        let mut l = lb();
+        assert_eq!(w19a03_listbox_hit_index(&mut l, 50, 89), 9);
+        let mut l = lb();
+        l.count = 3;
+        assert_eq!(w19a03_listbox_hit_index(&mut l, 50, 85), 2);
+    }
+
+    #[test]
+    fn scroll_len() {
+        let b = [0, 0, 200, 100];
+        let g = [2, 3, 4, 5, 6, 7];
+        assert_eq!(w19a03_scrollbar_length(0x400_0000, 1, b, g), 94);
+        assert_eq!(w19a03_scrollbar_length(0, 1, b, g), 100 - 4 - 5 - 5);
+        assert_eq!(w19a03_scrollbar_length(0x400_0000, 6, b, g), 195);
+        assert_eq!(w19a03_scrollbar_length(0, 6, b, g), 200 - 6 - 4 - 1);
+    }
+
+    #[test]
+    fn repeat() {
+        let mut c = 2;
+        assert_eq!(w19a03_repeat_tick(&mut c, 0, 0), (false, false));
+        assert_eq!(w19a03_repeat_tick(&mut c, 0, 1), (true, false));
+        assert_eq!(c, 3);
+        let mut c = 1;
+        assert_eq!(
+            w19a03_repeat_tick(&mut c, 0x2000_0000, 0x2000_0000),
+            (true, true)
+        );
+        assert_eq!(c, 1);
+    }
+
+    #[test]
+    fn state_index() {
+        assert_eq!(w19a03_draw_state_index(true, true, 0, 0), 5);
+        assert_eq!(w19a03_draw_state_index(false, true, 0, 0), 4);
+        assert_eq!(w19a03_draw_state_index(false, false, 0xd, 0), 3);
+        assert_eq!(w19a03_draw_state_index(false, false, 9, 0x8000_0000), 4);
+        assert_eq!(w19a03_draw_state_index(false, false, 10, 0x4000_0000), 6);
+        assert_eq!(w19a03_draw_state_index(false, false, 11, 0x2000_0000), 3);
+        assert_eq!(w19a03_draw_state_index(false, false, 11, 0), 2);
+        assert_eq!(w19a03_draw_state_index(false, false, 5, 0), 2);
+    }
+
+    #[test]
+    fn draw_if_and_frame() {
+        let mut slot = 0u8;
+        let mut hit = false;
+        w19a03_draw_if(false, 9, &mut slot, || hit = true);
+        assert!(!hit && slot == 0);
+        w19a03_draw_if(true, 9, &mut slot, || hit = true);
+        assert!(hit && slot == 9);
+        let f = w19a03_frame_rects([0, 0, 10, 20], 1, 2);
+        assert_eq!(f[0], (1, [1, 1, 9, 19]));
+        assert_eq!(f[1], (2, [0, 0, 10, 20]));
+    }
+
+    #[test]
+    fn overlap() {
+        let kids = [
+            ([0, 0, 10, 10], true, (100, 100)),
+            ([0, 0, 10, 10], false, (0, 0)),
+            ([0, 0, 10, 10], true, (0, 0)),
+        ];
+        assert_eq!(
+            w19a03_collect_overlapping([0, 0, 50, 50], &kids, [5, 5, 20, 20]),
+            Some(vec![2])
+        );
+        assert_eq!(
+            w19a03_collect_overlapping([0, 0, 50, 50], &kids, [60, 0, 70, 5]),
+            None
+        );
+    }
+
+    #[test]
+    fn bar_ops() {
+        assert!(w19a03_bar_draw_ops(0x400_0000, 0, 100, 4, 8, true).is_none());
+        assert_eq!(w19a03_bar_draw_ops(0, 0, 10, 4, 8, true), Some(vec![]));
+        let ops = w19a03_bar_draw_ops(0, 0, 40, 4, 8, false).unwrap();
+        assert_eq!(ops[0], (0x17, 0));
+        assert_eq!(ops[1], (0x20, 4));
+        assert_eq!(ops[2], (0x21, 12));
+        assert_eq!(ops[3], (0x21, 20));
+        assert_eq!(ops[4], (0x22, 28));
+        assert_eq!(ops[5], (0x1a, 32));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave19/agent04.rs
+// ===========================================================================
+// Wave 19 translation batch 04: block variance kernels (w x h luma blocks).
+
+/// Shared body of the variance kernels: returns `(variance, sse)` where
+/// `variance = sse - (sum * sum) / (w * h)` (the retail 64-bit signed divide
+/// helper is a plain truncating division).
+pub fn w19a04_variance(
+    src: &[u8],
+    src_stride: usize,
+    refp: &[u8],
+    ref_stride: usize,
+    w: usize,
+    h: usize,
+) -> (i32, i32) {
+    let mut sum: i32 = 0;
+    let mut sse: i32 = 0;
+    for y in 0..h {
+        for x in 0..w {
+            let d = src[y * src_stride + x] as i32 - refp[y * ref_stride + x] as i32;
+            sum = sum.wrapping_add(d);
+            sse = sse.wrapping_add(d.wrapping_mul(d));
+        }
+    }
+    let n = (w * h) as i64;
+    let sq = (sum as i64) * (sum as i64);
+    ((sse as i64 - sq / n) as i32, sse)
+}
+
+/// `0x00a35d50`: 16x16 block variance; returns `(variance, sse)` (divisor 256).
+pub fn w19a04_variance_16x16(
+    src: &[u8],
+    src_stride: usize,
+    refp: &[u8],
+    ref_stride: usize,
+) -> (i32, i32) {
+    w19a04_variance(src, src_stride, refp, ref_stride, 16, 16)
+}
+
+/// `0x00a35e00`: 16x32 block variance; returns `(variance, sse)` (divisor 512).
+pub fn w19a04_variance_16x32(
+    src: &[u8],
+    src_stride: usize,
+    refp: &[u8],
+    ref_stride: usize,
+) -> (i32, i32) {
+    w19a04_variance(src, src_stride, refp, ref_stride, 16, 32)
+}
+
+/// `0x00a35eb0`: 16x8 block variance; returns `(variance, sse)` (divisor 128).
+pub fn w19a04_variance_16x8(
+    src: &[u8],
+    src_stride: usize,
+    refp: &[u8],
+    ref_stride: usize,
+) -> (i32, i32) {
+    w19a04_variance(src, src_stride, refp, ref_stride, 16, 8)
+}
+
+/// `0x00a35f60`: 32x16 block variance; returns `(variance, sse)` (divisor 512).
+pub fn w19a04_variance_32x16(
+    src: &[u8],
+    src_stride: usize,
+    refp: &[u8],
+    ref_stride: usize,
+) -> (i32, i32) {
+    w19a04_variance(src, src_stride, refp, ref_stride, 32, 16)
+}
+
+/// `0x00a36010`: 32x32 block variance; returns `(variance, sse)` (divisor 1024).
+pub fn w19a04_variance_32x32(
+    src: &[u8],
+    src_stride: usize,
+    refp: &[u8],
+    ref_stride: usize,
+) -> (i32, i32) {
+    w19a04_variance(src, src_stride, refp, ref_stride, 32, 32)
+}
+
+/// `0x00a360c0`: 32x64 block variance; returns `(variance, sse)` (divisor 2048).
+pub fn w19a04_variance_32x64(
+    src: &[u8],
+    src_stride: usize,
+    refp: &[u8],
+    ref_stride: usize,
+) -> (i32, i32) {
+    w19a04_variance(src, src_stride, refp, ref_stride, 32, 64)
+}
+
+/// `0x00a362b0`: 64x32 block variance; returns `(variance, sse)` (divisor 2048).
+pub fn w19a04_variance_64x32(
+    src: &[u8],
+    src_stride: usize,
+    refp: &[u8],
+    ref_stride: usize,
+) -> (i32, i32) {
+    w19a04_variance(src, src_stride, refp, ref_stride, 64, 32)
+}
+
+/// `0x00a36360`: 64x64 block variance; returns `(variance, sse)` (divisor 4096).
+pub fn w19a04_variance_64x64(
+    src: &[u8],
+    src_stride: usize,
+    refp: &[u8],
+    ref_stride: usize,
+) -> (i32, i32) {
+    w19a04_variance(src, src_stride, refp, ref_stride, 64, 64)
+}
+
+/// `0x00a36170`: 4x4 block variance; returns `(variance, sse)` (divisor 16).
+pub fn w19a04_variance_4x4(
+    src: &[u8],
+    src_stride: usize,
+    refp: &[u8],
+    ref_stride: usize,
+) -> (i32, i32) {
+    w19a04_variance(src, src_stride, refp, ref_stride, 4, 4)
+}
+
+/// `0x00a36210`: 4x8 block variance; returns `(variance, sse)` (divisor 32).
+pub fn w19a04_variance_4x8(
+    src: &[u8],
+    src_stride: usize,
+    refp: &[u8],
+    ref_stride: usize,
+) -> (i32, i32) {
+    w19a04_variance(src, src_stride, refp, ref_stride, 4, 8)
+}
+
+/// `0x00a36520`: 8x4 block variance; returns `(variance, sse)` (divisor 32).
+pub fn w19a04_variance_8x4(
+    src: &[u8],
+    src_stride: usize,
+    refp: &[u8],
+    ref_stride: usize,
+) -> (i32, i32) {
+    w19a04_variance(src, src_stride, refp, ref_stride, 8, 4)
+}
+
+/// `0x00a36620`: 8x8 block variance; returns `(variance, sse)` (divisor 64).
+pub fn w19a04_variance_8x8(
+    src: &[u8],
+    src_stride: usize,
+    refp: &[u8],
+    ref_stride: usize,
+) -> (i32, i32) {
+    w19a04_variance(src, src_stride, refp, ref_stride, 8, 8)
+}
+
+/// `0x00a8fab0`: byte RGB to float RGBA in `[0,1]`, alpha fixed at 1.0.
+pub fn w19a04_rgb_to_float(out: &mut [f32; 4], r: u8, g: u8, b: u8) {
+    out[3] = 1.0;
+    out[0] = r as f32 / 255.0;
+    out[1] = g as f32 / 255.0;
+    out[2] = b as f32 / 255.0;
+}
+
+#[cfg(test)]
+mod tests_wave19_agent04 {
+    use super::*;
+
+    fn exp(a: &[u8], b: &[u8], n: usize) -> (i32, i32) {
+        let mut sum = 0i64;
+        let mut sse = 0i64;
+        for i in 0..n {
+            let d = a[i] as i64 - b[i] as i64;
+            sum += d;
+            sse += d * d;
+        }
+        ((sse - sum * sum / n as i64) as i32, sse as i32)
+    }
+
+    #[test]
+    fn variance_kernels() {
+        let a: Vec<u8> = (0..4096).map(|i| (i * 7 % 251) as u8).collect();
+        let b: Vec<u8> = (0..4096).map(|i| (i * 13 % 241) as u8).collect();
+        let (v, s) = w19a04_variance_16x16(&a, 16, &b, 16);
+        assert_eq!((v, s), exp(&a, &b, 256));
+        let (v, s) = w19a04_variance_16x32(&a, 16, &b, 16);
+        assert_eq!((v, s), exp(&a, &b, 512));
+        let (v, s) = w19a04_variance_16x8(&a, 16, &b, 16);
+        assert_eq!((v, s), exp(&a, &b, 128));
+        let (v, s) = w19a04_variance_32x16(&a, 32, &b, 32);
+        assert_eq!((v, s), exp(&a, &b, 512));
+        let (v, s) = w19a04_variance_32x32(&a, 32, &b, 32);
+        assert_eq!((v, s), exp(&a, &b, 1024));
+        let (v, s) = w19a04_variance_32x64(&a, 32, &b, 32);
+        assert_eq!((v, s), exp(&a, &b, 2048));
+        let (v, s) = w19a04_variance_64x32(&a, 64, &b, 64);
+        assert_eq!((v, s), exp(&a, &b, 2048));
+        let (v, s) = w19a04_variance_64x64(&a, 64, &b, 64);
+        assert_eq!((v, s), exp(&a, &b, 4096));
+        let (v, s) = w19a04_variance_4x4(&a, 4, &b, 4);
+        assert_eq!((v, s), exp(&a, &b, 16));
+        let (v, s) = w19a04_variance_4x8(&a, 4, &b, 4);
+        assert_eq!((v, s), exp(&a, &b, 32));
+        let (v, s) = w19a04_variance_8x4(&a, 8, &b, 8);
+        assert_eq!((v, s), exp(&a, &b, 32));
+        let (v, s) = w19a04_variance_8x8(&a, 8, &b, 8);
+        assert_eq!((v, s), exp(&a, &b, 64));
+    }
+
+    #[test]
+    fn variance_constant_diff_is_zero() {
+        let a = [10u8; 16];
+        let b = [3u8; 16];
+        assert_eq!(w19a04_variance_4x4(&a, 4, &b, 4), (0, 16 * 49));
+    }
+
+    #[test]
+    fn strided_rows() {
+        let a = [1u8, 2, 0, 0, 3, 4, 0, 0, 5, 6, 0, 0, 7, 8, 0, 0];
+        let b = [0u8; 16];
+        let (v, s) = w19a04_variance_4x4(&a, 4, &b, 4);
+        assert_eq!(s, 1 + 4 + 9 + 16 + 25 + 36 + 49 + 64);
+        assert_eq!(v, s - 36 * 36 / 16);
+    }
+
+    #[test]
+    fn rgb() {
+        let mut o = [0.0f32; 4];
+        w19a04_rgb_to_float(&mut o, 255, 0, 51);
+        assert_eq!(o, [1.0, 0.0, 0.2, 1.0]);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave19/agent05.rs
+// ===========================================================================
+// Wave 19 translation batch 05: CRT time/stat helpers and wait-timeout
+// conversions (merge target `path.rs`).
+
+/// Cumulative day table for a non-leap year (CRT `_days`, base -1).
+pub const W19A05_DAYS: [i32; 13] = [-1, 30, 58, 89, 119, 150, 180, 211, 242, 272, 303, 333, 364];
+/// Cumulative day table for a leap year (CRT `_lpdays`, base -1).
+pub const W19A05_LPDAYS: [i32; 13] = [-1, 30, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334, 365];
+
+/// Seconds between 1601-01-01 and 1970-01-01 in 100 ns units.
+const W19A05_FILETIME_EPOCH: i64 = 0x019d_b1de_d53e_8000;
+
+fn w19a05_leap_days(year: i32) -> i32 {
+    // Days from 1900 baseline used by the year split (CRT helper).
+    let y1 = year.wrapping_sub(1);
+    (y1.wrapping_add((y1 >> 31) & 3) >> 2) - 17 + ((year.wrapping_add(299)) / 400 - y1 / 100)
+}
+
+fn w19a05_is_leap(year: i32) -> bool {
+    if year % 4 == 0 && year % 100 != 0 {
+        return true;
+    }
+    year.wrapping_add(0x76c) % 400 == 0
+}
+
+/// `0x00b2b5b0`: seconds-to-minutes conversion.  When the 64-bit input is
+/// zero the current time (`now`, a 64-bit tick count) is substituted; the
+/// result is `t / 60` (signed 64-bit division).
+pub fn w19a05_ticks_to_minutes(t: i64, now: impl FnOnce() -> i64) -> i64 {
+    let t = if t == 0 { now() } else { t };
+    t / 0x3c
+}
+
+/// Microsecond conversion shared by the wait helpers: `t / 1_000_000`.
+fn w19a05_to_micro_units(t: i64) -> i64 {
+    t / 1_000_000
+}
+
+/// `0x00c54580`: waits for a stream to reach the stored position.  Returns
+/// `true` when the stream is already at or past `target` (`+0x10`, 64-bit);
+/// otherwise seeks (`seek(target_lo, target_hi, handle)`) and returns
+/// whether `wait(handle, timeout / 1e6)` returned 0.  `pos` is vtable
+/// slot `+0x20`.
+pub fn w19a05_wait_for_position(
+    target: u64,
+    handle: u32,
+    timeout: i64,
+    pos: impl FnOnce() -> u64,
+    seek: impl FnOnce(u32, u32, u32),
+    wait: impl FnOnce(u32, u32) -> i32,
+) -> bool {
+    if target <= pos() {
+        return true;
+    }
+    seek(target as u32, (target >> 32) as u32, handle);
+    wait(handle, w19a05_to_micro_units(timeout) as u32) == 0
+}
+
+/// Clamp used by the three wait wrappers: low 32 bits of the quotient,
+/// or `0xffffffff` when the quotient does not fit zero high bits.
+fn w19a05_micro_clamped(t: i64) -> u32 {
+    let q = w19a05_to_micro_units(t);
+    if (q >> 32) as i32 != 0 {
+        0xffff_ffff
+    } else {
+        q as u32
+    }
+}
+
+/// `0x00c665b0`: converts a 64-bit duration to microsecond units (clamped
+/// to `u32::MAX`) and passes it to the OS sleep call.
+pub fn w19a05_sleep_micro(t: i64, sleep: impl FnOnce(u32)) {
+    sleep(w19a05_micro_clamped(t));
+}
+
+/// `0x00c66660`: same clamp as `w19a05_sleep_micro`; returns whether
+/// `wait(handle, units)` returned 0.
+pub fn w19a05_wait_handle_micro(handle: u32, t: i64, wait: impl FnOnce(u32, u32) -> i32) -> bool {
+    wait(handle, w19a05_micro_clamped(t)) == 0
+}
+
+/// `0x00c686e0`: same clamp; returns whether `call(a, b, units, 0)` is
+/// non-zero.
+pub fn w19a05_wait_two_micro(
+    a: u32,
+    b: u32,
+    t: i64,
+    call: impl FnOnce(u32, u32, u32, u32) -> i32,
+) -> bool {
+    call(a, b, w19a05_micro_clamped(t), 0) != 0
+}
+
+/// `0x00c9d4b8`: `timespec_get`.  `base` must be 1 (TIME_UTC) and
+/// `filetime` is the current FILETIME (100 ns since 1601).  Returns
+/// `(tv_sec, tv_nsec)` or `None` (base != 1 or time beyond 32-bit range).
+pub fn w19a05_timespec_get(base: i32, filetime: u64) -> Option<(i32, i32)> {
+    if base != 1 {
+        return None;
+    }
+    let t = (filetime as i64).wrapping_sub(W19A05_FILETIME_EPOCH);
+    let nsec = (t % 10_000_000) as i32;
+    if t < 0x004c_4b24_e140_4000 {
+        Some(((t / 10_000_000) as i32, nsec.wrapping_mul(100)))
+    } else {
+        None
+    }
+}
+
+/// `0x00c9c7c8`: splits a 64-bit seconds value into whole years since 1900
+/// (returned) leaving the seconds-within-year in `*t`.  Sets `*leap` to 1
+/// when the resulting year is a leap year.
+pub fn w19a05_split_year(t: &mut i64, leap: &mut u8) -> i32 {
+    let years = (*t / 0x01e1_3380) as i32;
+    let mut year = years.wrapping_add(0x46);
+    let days = w19a05_leap_days(year) as i64;
+    *t = *t - years as i64 * 0x01e1_3380 - days * 0x15180;
+    if *t < 0 {
+        *t += 0x01e1_3380;
+        year = years.wrapping_add(0x45);
+        if w19a05_is_leap(year) {
+            *t += 0x15180;
+            *leap = 1;
+        }
+    } else if w19a05_is_leap(year) {
+        *leap = 1;
+    }
+    year
+}
+
+/// `0x00c9c67c`: CRT `_gmtime64_s`.  Returns the `tm` as
+/// `[sec, min, hour, mday, mon, year, wday, yday, isdst]` plus the status
+/// (0 or EINVAL = 0x16).  On error every field is -1.
+pub fn w19a05_gmtime(time: i64) -> ([i32; 9], u32) {
+    let mut tm = [-1i32; 9];
+    if !(-43200..0x7_9358_e1d0).contains(&time) {
+        return (tm, 0x16);
+    }
+    let mut t = time;
+    let mut leap = 0u8;
+    tm[5] = w19a05_split_year(&mut t, &mut leap);
+    let yday = (t / 0x15180) as i32;
+    tm[7] = yday;
+    let mut rem = t - yday as i64 * 0x15180;
+    let table = if leap == 0 {
+        &W19A05_DAYS
+    } else {
+        &W19A05_LPDAYS
+    };
+    let mut m = 1;
+    while table[m] < yday {
+        m += 1;
+    }
+    tm[4] = m as i32 - 1;
+    tm[3] = yday - table[m - 1];
+    tm[6] = ((time / 0x15180) as i32 + 4) % 7;
+    let hour = (rem / 0xe10) as i32;
+    tm[2] = hour;
+    rem -= hour as i64 * 0xe10;
+    let min = (rem / 0x3c) as i32;
+    tm[1] = min;
+    tm[0] = rem as i32 - min * 0x3c;
+    tm[8] = 0;
+    (tm, 0)
+}
+
+/// `0x00b905c0`: Win32 error to errno map used by `_stat` when the file
+/// attribute query fails (access/sharing 5,0x20,0x21,0x24 -> EACCES 13;
+/// 8 -> ENOMEM 12; 0x6f -> ERANGE 0x26; anything else ENOENT 2).
+pub fn w19a05_stat_errno(last_error: u32) -> u32 {
+    match last_error {
+        5 | 0x20 | 0x21 | 0x24 => 13,
+        8 => 12,
+        0x6f => 0x26,
+        _ => 2,
+    }
+}
+
+/// `0x00b905c0`: fills the 0x30-byte stat record (as 12 words) from
+/// `WIN32_FILE_ATTRIBUTE_DATA`: attributes, creation/access/write FILETIMEs
+/// and the low size.  Word 1 = 0x1000000, word 2 = 1 (nlink), the mode is
+/// the u16 at byte 6 (dir 0x4100 else 0x8100, `|0x80` when not read-only);
+/// words 6..8, 8..10, 10..12 are atime, mtime, ctime in Unix seconds.
+pub fn w19a05_stat_fill(
+    attrs: u32,
+    creation: u64,
+    access: u64,
+    write: u64,
+    size_low: u32,
+) -> [u32; 12] {
+    let mut s = [0u32; 12];
+    let mut mode: u16 = if attrs & 0x10 == 0 { 0x8100 } else { 0x4100 };
+    if attrs & 1 == 0 {
+        mode |= 0x80;
+    }
+    s[1] = 0x100_0000;
+    s[1] = (s[1] & 0x0000_ffff) | ((mode as u32) << 16);
+    s[2] = 1;
+    s[5] = size_low;
+    let conv = |ft: u64| ((ft as i64).wrapping_sub(W19A05_FILETIME_EPOCH) / 10_000_000) as u64;
+    for (i, ft) in [access, write, creation].into_iter().enumerate() {
+        let v = conv(ft);
+        s[6 + 2 * i] = v as u32;
+        s[7 + 2 * i] = (v >> 32) as u32;
+    }
+    s
+}
+
+#[cfg(test)]
+mod tests_wave19_agent05 {
+    use super::*;
+
+    #[test]
+    fn minutes_and_now() {
+        assert_eq!(w19a05_ticks_to_minutes(120, || 0), 2);
+        assert_eq!(w19a05_ticks_to_minutes(0, || 600), 10);
+    }
+
+    #[test]
+    fn wait_wrappers() {
+        let mut got = 0;
+        w19a05_sleep_micro(5_000_000, |u| got = u);
+        assert_eq!(got, 5);
+        w19a05_sleep_micro(i64::MAX, |u| got = u);
+        assert_eq!(got, u32::MAX);
+        assert!(w19a05_wait_handle_micro(1, 3_000_000, |h, u| (h + u)
+            as i32
+            - 4));
+        assert!(w19a05_wait_two_micro(
+            1,
+            2,
+            2_000_000,
+            |a, b, u, z| (a + b + u + z) as i32
+        ));
+    }
+
+    #[test]
+    fn wait_position() {
+        assert!(w19a05_wait_for_position(
+            5,
+            9,
+            0,
+            || 7,
+            |_, _, _| panic!(),
+            |_, _| 1
+        ));
+        let mut seeked = None;
+        let r = w19a05_wait_for_position(
+            0x1_0000_0002,
+            9,
+            4_000_000,
+            || 0,
+            |l, h, hd| seeked = Some((l, h, hd)),
+            |h, u| {
+                assert_eq!((h, u), (9, 4));
+                0
+            },
+        );
+        assert!(r);
+        assert_eq!(seeked, Some((2, 1, 9)));
+    }
+
+    #[test]
+    fn timespec() {
+        assert_eq!(w19a05_timespec_get(2, 0), None);
+        let ft = (W19A05_FILETIME_EPOCH + 3 * 10_000_000 + 5) as u64;
+        assert_eq!(w19a05_timespec_get(1, ft), Some((3, 500)));
+        assert_eq!(w19a05_timespec_get(1, i64::MAX as u64), None);
+    }
+
+    #[test]
+    fn gmtime_epoch_and_leap() {
+        let (tm, rc) = w19a05_gmtime(0);
+        assert_eq!(rc, 0);
+        assert_eq!(tm, [0, 0, 0, 1, 0, 70, 4, 0, 0]);
+        // 2000-03-01 12:34:56 UTC = 951914096
+        let (tm, rc) = w19a05_gmtime(951_914_096);
+        assert_eq!(rc, 0);
+        assert_eq!(tm, [56, 34, 12, 1, 2, 100, 3, 60, 0]);
+        let (tm, rc) = w19a05_gmtime(-1);
+        assert_eq!((rc, tm[5], tm[3]), (0, 69, 31));
+        let (tm, rc) = w19a05_gmtime(-50000);
+        assert_eq!((rc, tm), (0x16, [-1; 9]));
+        assert_eq!(w19a05_gmtime(0x7_9358_e1d0).1, 0x16);
+    }
+
+    #[test]
+    fn split_year_flags() {
+        let mut t = 951_914_096;
+        let mut leap = 0;
+        assert_eq!(w19a05_split_year(&mut t, &mut leap), 100);
+        assert_eq!(leap, 1);
+        assert_eq!(t, 951_914_096 - 946_684_800);
+    }
+
+    #[test]
+    fn stat_helpers() {
+        assert_eq!(w19a05_stat_errno(5), 13);
+        assert_eq!(w19a05_stat_errno(8), 12);
+        assert_eq!(w19a05_stat_errno(0x6f), 0x26);
+        assert_eq!(w19a05_stat_errno(2), 2);
+        let ft = (W19A05_FILETIME_EPOCH + 10 * 10_000_000) as u64;
+        let s = w19a05_stat_fill(0x10, ft, ft, ft, 77);
+        assert_eq!(s[1] >> 16, 0x4180);
+        assert_eq!((s[2], s[5], s[6], s[8], s[10]), (1, 77, 10, 10, 10));
+        let s = w19a05_stat_fill(1, ft, ft, ft, 0);
+        assert_eq!(s[1] >> 16, 0x8100);
+    }
+}

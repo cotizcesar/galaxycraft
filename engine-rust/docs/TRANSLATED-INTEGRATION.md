@@ -130,3 +130,12 @@ counterparts found this wave:
 `runtime.rs` and `sim.rs` (UI widget geometry, STL vector/hash/string
 helpers, colour palettes).  No counterpart in the rules core: the helpers
 model retail containers and UI records and stay auditable reference code.
+
+## Wave 19 (2026-11-11, triage queue, tier 2)
+
++86 exact ledger functions (ledger 3130 -> 3216) in `client.rs`, `path.rs`,
+`runtime.rs` and `sim.rs` (video block-variance kernels, STL/stream helpers,
+UI list boxes, CRT time helpers, megatile lookups).  No new rules-core
+counterpart; the helpers stay auditable reference code.  Two helpers that
+mapped network provider ids (Battle.net) were removed: that code is out of
+scope.
