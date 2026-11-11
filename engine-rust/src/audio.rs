@@ -2940,3 +2940,103 @@ mod tests_wave14_agent06 {
         );
     }
 }
+
+// ===========================================================================
+// Merged from src/wave31/agent01.rs
+// ===========================================================================
+// Wave 31 agent 01: command packet builders and a table lookup.
+
+/// Builds a 2-byte command packet `[opcode, arg]`.
+fn w31a01_pkt2(opcode: u8, arg: u8) -> [u8; 2] {
+    [opcode, arg]
+}
+
+/// Builds a 3-byte command packet `[opcode, arg_lo, arg_hi]`.
+fn w31a01_pkt3(opcode: u8, arg: u16) -> [u8; 3] {
+    let b = arg.to_le_bytes();
+    [opcode, b[0], b[1]]
+}
+
+/// `0x00572120`: 1-based index of `wanted` in the table, scanning while the
+/// index is below `0x2f3` (or `0x3e7` when `extended`); 0 when absent or 0.
+pub fn w31a01_find_index(table: &[u32], wanted: u32, extended: bool) -> u32 {
+    if wanted == 0 {
+        return 0;
+    }
+    let limit: u32 = if extended { 0xf4 } else { 0 } + 0x2f3;
+    let mut i: u32 = 0;
+    loop {
+        let next = i + 1;
+        if table.get(i as usize).copied() == Some(wanted) {
+            return next;
+        }
+        i = next;
+        if next >= limit {
+            return 0;
+        }
+    }
+}
+
+/// `0x0072baf0`: packet opcode 0x1f with a 16-bit argument (3 bytes).
+pub fn w31a01_pkt_1f(arg: u16) -> [u8; 3] {
+    w31a01_pkt3(0x1f, arg)
+}
+/// `0x0072c520`: packet opcode 0x2d with a byte argument (2 bytes).
+pub fn w31a01_pkt_2d(arg: u8) -> [u8; 2] {
+    w31a01_pkt2(0x2d, arg)
+}
+/// `0x0072c540`: packet opcode 0x22 with a byte argument (2 bytes).
+pub fn w31a01_pkt_22(arg: u8) -> [u8; 2] {
+    w31a01_pkt2(0x22, arg)
+}
+/// `0x0072c920`: packet opcode 0x1e with a byte argument (2 bytes).
+pub fn w31a01_pkt_1e(arg: u8) -> [u8; 2] {
+    w31a01_pkt2(0x1e, arg)
+}
+/// `0x0072e6f0`: packet opcode 0x25 with a byte argument (2 bytes).
+pub fn w31a01_pkt_25(arg: u8) -> [u8; 2] {
+    w31a01_pkt2(0x25, arg)
+}
+/// `0x0072e760`: packet opcode 0x28 with a byte argument (2 bytes).
+pub fn w31a01_pkt_28(arg: u8) -> [u8; 2] {
+    w31a01_pkt2(0x28, arg)
+}
+/// `0x0072e780`: packet opcode 0x32 with a byte argument (2 bytes).
+pub fn w31a01_pkt_32(arg: u8) -> [u8; 2] {
+    w31a01_pkt2(0x32, arg)
+}
+/// `0x0072e7a0`: packet opcode 0x35 with a 16-bit argument (3 bytes).
+pub fn w31a01_pkt_35(arg: u16) -> [u8; 3] {
+    w31a01_pkt3(0x35, arg)
+}
+
+#[cfg(test)]
+mod tests_wave31_agent01 {
+    use super::*;
+
+    #[test]
+    fn packets() {
+        assert_eq!(w31a01_pkt_1f(0x1234), [0x1f, 0x34, 0x12]);
+        assert_eq!(w31a01_pkt_35(0xabcd), [0x35, 0xcd, 0xab]);
+        assert_eq!(w31a01_pkt_2d(7), [0x2d, 7]);
+        assert_eq!(w31a01_pkt_22(7), [0x22, 7]);
+        assert_eq!(w31a01_pkt_1e(7), [0x1e, 7]);
+        assert_eq!(w31a01_pkt_25(7), [0x25, 7]);
+        assert_eq!(w31a01_pkt_28(7), [0x28, 7]);
+        assert_eq!(w31a01_pkt_32(7), [0x32, 7]);
+    }
+
+    #[test]
+    fn find_index() {
+        let mut t = vec![0u32; 0x400];
+        t[0] = 5;
+        t[0x2f2] = 9;
+        t[0x3e6] = 11;
+        assert_eq!(w31a01_find_index(&t, 0, false), 0);
+        assert_eq!(w31a01_find_index(&t, 5, false), 1);
+        assert_eq!(w31a01_find_index(&t, 9, false), 0x2f3);
+        assert_eq!(w31a01_find_index(&t, 11, false), 0);
+        assert_eq!(w31a01_find_index(&t, 11, true), 0x3e7);
+        assert_eq!(w31a01_find_index(&t, 77, true), 0);
+    }
+}
