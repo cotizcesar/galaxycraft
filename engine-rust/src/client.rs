@@ -63019,3 +63019,1040 @@ mod tests_wave21_agent02 {
         assert_eq!(w21a02_select_handle_7_8(8, 4, 0), None);
     }
 }
+
+// ===========================================================================
+// Merged from src/wave22/agent01.rs
+// ===========================================================================
+// Wave 22 translation batch 01: JSON string scanner and hash-bucket helper.
+
+/// Result of [`w22a01_parse_json_string`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct W22a01StringResult {
+    /// Position of the cursor after the scan (index into the input).
+    pub pos: usize,
+    /// Parse error code (0 = ok), stored at parser `+0x18`.
+    pub error: u32,
+    /// Error offset, stored at parser `+0x1c`.
+    pub error_offset: usize,
+    /// Decoded bytes without the trailing NUL terminator.
+    pub bytes: Vec<u8>,
+}
+
+fn w22a01_hex4(src: &[u8], pos: &mut usize) -> Option<u32> {
+    let mut v = 0u32;
+    for _ in 0..4 {
+        let c = src.get(*pos).copied().unwrap_or(0);
+        let d = match c {
+            b'0'..=b'9' => c - b'0',
+            b'A'..=b'F' => c - b'A' + 10,
+            b'a'..=b'f' => c - b'a' + 10,
+            _ => return None,
+        };
+        v = v * 16 + d as u32;
+        *pos += 1;
+    }
+    Some(v)
+}
+
+fn w22a01_push_utf8(out: &mut Vec<u8>, cp: u32) {
+    match char::from_u32(cp) {
+        Some(ch) => {
+            let mut b = [0u8; 4];
+            out.extend_from_slice(ch.encode_utf8(&mut b).as_bytes());
+        }
+        None => out.push(b'?'),
+    }
+}
+
+/// `0x0061d100`: scans a JSON string body.  `src[start]` is the opening
+/// quote.  `escape_table` is the 256-entry simple-escape table (retail
+/// table `d3ad78`; zero means "not a simple escape").  Handles `\uXXXX`
+/// with surrogate pairs.  Error codes: 8 bad hex, 9 bad surrogate, 10
+/// unknown escape, 11 unterminated, 12 control char, 0x10 when
+/// `validate` (the retail validator `61ef80`) rejects the decoded text.
+pub fn w22a01_parse_json_string(
+    src: &[u8],
+    start: usize,
+    escape_table: &[u8; 256],
+    validate: impl Fn(&[u8]) -> bool,
+) -> W22a01StringResult {
+    let mut out: Vec<u8> = Vec::new();
+    let mut pos = start + 1;
+    let mut error = 0u32;
+    let mut err_off = 0usize;
+    let at = |p: usize| src.get(p).copied().unwrap_or(0);
+    loop {
+        let c = at(pos);
+        if c == b'\\' {
+            let esc_off = pos;
+            let e = at(pos + 1);
+            let t = escape_table[e as usize];
+            if t != 0 {
+                out.push(t);
+                pos += 2;
+                continue;
+            }
+            if e != b'u' {
+                error = 10;
+                err_off = esc_off;
+                pos += 1;
+                break;
+            }
+            pos += 2;
+            let Some(cp) = w22a01_hex4(src, &mut pos) else {
+                error = 8;
+                err_off = esc_off;
+                break;
+            };
+            if cp.wrapping_sub(0xd800) >= 0x400 {
+                w22a01_push_utf8(&mut out, cp);
+                continue;
+            }
+            if at(pos) == b'\\' && at(pos + 1) == b'u' {
+                pos += 2;
+                match w22a01_hex4(src, &mut pos) {
+                    None => {
+                        error = 8;
+                        err_off = esc_off;
+                    }
+                    Some(lo) if lo.wrapping_sub(0xdc00) < 0x400 => {
+                        let full = (((cp - 0xd800) * 0x400) | (lo - 0xdc00)) + 0x10000;
+                        w22a01_push_utf8(&mut out, full);
+                        continue;
+                    }
+                    Some(_) => {
+                        error = 9;
+                        err_off = esc_off;
+                    }
+                }
+            } else {
+                error = 9;
+                err_off = esc_off;
+            }
+            break;
+        }
+        if c == b'"' {
+            pos += 1;
+            break;
+        }
+        if c < 0x20 {
+            error = if c == 0 { 0xb } else { 0xc };
+            err_off = pos;
+            break;
+        }
+        out.push(c);
+        pos += 1;
+    }
+    if error == 0 && !validate(&out) {
+        error = 0x10;
+        err_off = pos;
+    }
+    W22a01StringResult {
+        pos,
+        error,
+        error_offset: err_off,
+        bytes: out,
+    }
+}
+
+/// `0x0060aaf0`: bucket index of the 32-bit hash map (finalizer mix of the
+/// key, masked with `capacity - 1`) and chain search.  `nodes[i] =
+/// (next, key)` with `next` an index; `buckets[b]` is the chain head.
+/// Returns the node index holding `key`, or `None` (retail then aborts).
+pub fn w22a01_hash_bucket_find(
+    capacity: u32,
+    buckets: &[Option<usize>],
+    nodes: &[(Option<usize>, u32)],
+    key: u32,
+) -> Option<usize> {
+    let mut h = (key >> 16 ^ key).wrapping_mul(0x85eb_ca6b);
+    h = (h >> 13 ^ h).wrapping_mul(0xc2b2_ae35);
+    h = (h >> 16 ^ h) & capacity.wrapping_sub(1);
+    let mut cur = *buckets.get(h as usize)?;
+    while let Some(i) = cur {
+        let (next, k) = *nodes.get(i)?;
+        if k == key {
+            return Some(i);
+        }
+        cur = next;
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests_wave22_agent01 {
+    use super::*;
+
+    fn table() -> [u8; 256] {
+        let mut t = [0u8; 256];
+        t[b'n' as usize] = b'\n';
+        t[b'"' as usize] = b'"';
+        t[b'\\' as usize] = b'\\';
+        t
+    }
+
+    fn run(s: &str) -> W22a01StringResult {
+        w22a01_parse_json_string(s.as_bytes(), 0, &table(), |_| true)
+    }
+
+    #[test]
+    fn json_string_basic_and_escapes() {
+        let b = '\\';
+        let r = run(&format!("\"a{b}nb{b}u00e9\""));
+        assert_eq!(r.error, 0);
+        assert_eq!(r.bytes, [b'a', b'\n', b'b', 0xc3, 0xa9]);
+        assert_eq!(r.pos, 12);
+    }
+
+    #[test]
+    fn json_string_surrogates_and_errors() {
+        let b = '\\';
+        let r = run(&format!("\"{b}ud83d{b}ude00\""));
+        assert_eq!(r.bytes, [0xf0, 0x9f, 0x98, 0x80]);
+        let r = run(&format!("\"{b}ud83dx\""));
+        assert_eq!((r.error, r.error_offset), (9, 1));
+        assert_eq!(run(&format!("\"{b}q\"")).error, 10);
+        assert_eq!(run(&format!("\"{b}u12g4\"")).error, 8);
+        let r = run("\"ab");
+        assert_eq!((r.error, r.error_offset), (0xb, 3));
+        assert_eq!(run("\"a\x01\"").error, 0xc);
+        let r = w22a01_parse_json_string(b"\"a\"", 0, &table(), |_| false);
+        assert_eq!(r.error, 0x10);
+    }
+
+    #[test]
+    fn hash_bucket_lookup() {
+        let key = 0x1234_5678u32;
+        let mut h = (key >> 16 ^ key).wrapping_mul(0x85eb_ca6b);
+        h = (h >> 13 ^ h).wrapping_mul(0xc2b2_ae35);
+        let b = ((h >> 16 ^ h) & 7) as usize;
+        let mut buckets = vec![None; 8];
+        buckets[b] = Some(0);
+        let nodes = [(Some(1), 99), (None, key)];
+        assert_eq!(w22a01_hash_bucket_find(8, &buckets, &nodes, key), Some(1));
+        assert_eq!(w22a01_hash_bucket_find(8, &buckets, &nodes, 5), None);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave22/agent02.rs
+// ===========================================================================
+// Wave 22 translation batch 02: client-side introsort and a 8-slot table.
+
+/// Heap sift used by the sort below (same shape as the adjust-heap helper
+/// of the introsort): sifts `value` into the heap rooted at `top` of the
+/// first `len` elements of `v`.
+fn w22a02_adjust_heap(v: &mut [u32], top: isize, len: isize, value: u32) {
+    let mut hole = top;
+    let mut child;
+    loop {
+        child = hole * 2;
+        let right = child + 2;
+        if len <= right {
+            // `right` is out of range; fall through with `child` = left - 1.
+            if right == len {
+                v[hole as usize] = v[(right - 1) as usize];
+                hole = child + 1;
+            }
+            break;
+        }
+        child += 1;
+        if v[(right - 1) as usize] <= v[right as usize] {
+            child = right;
+        }
+        v[hole as usize] = v[child as usize];
+        hole = child;
+    }
+    if hole > top {
+        loop {
+            let parent = (hole - 1) >> 1;
+            let pv = v[parent as usize];
+            if value <= pv {
+                break;
+            }
+            v[hole as usize] = pv;
+            hole = parent;
+            if top >= parent {
+                break;
+            }
+        }
+    }
+    v[hole as usize] = value;
+}
+
+/// `0x00631430`: introsort over `v[begin..end]` (u32 keys).  Ranges of up
+/// to 32 elements, or an exhausted `depth`, fall back to insertion sort
+/// (<= 32) or heap sort; otherwise a three-way partition around the pivot
+/// chosen by `median(v, begin, end)` (the unresolved callee returns the
+/// pivot index) and the left part recurses with `depth / 2`.
+pub fn w22a02_introsort(
+    v: &mut [u32],
+    begin: usize,
+    end: usize,
+    depth: i32,
+    median: &dyn Fn(&[u32], usize, usize) -> usize,
+) {
+    let mut b = begin;
+    let mut depth = depth;
+    loop {
+        let n = end - b;
+        if !(n > 32 && depth >= 1) {
+            if n < 33 {
+                for i in b + 1..end {
+                    let key = v[i];
+                    let mut j = i;
+                    while j != b && key < v[j - 1] {
+                        v[j] = v[j - 1];
+                        j -= 1;
+                    }
+                    v[j] = key;
+                }
+            } else {
+                let cnt = n as isize;
+                if cnt > 1 {
+                    let s = &mut v[b..end];
+                    let mut h = (cnt >> 1) - 1;
+                    let val = s[h as usize];
+                    w22a02_adjust_heap(s, h, cnt, val);
+                    while h != 0 {
+                        let val = s[(h - 1) as usize];
+                        h -= 1;
+                        w22a02_adjust_heap(s, h, cnt, val);
+                    }
+                    let mut e = cnt;
+                    while e > 1 {
+                        let val = s[(e - 1) as usize];
+                        e -= 1;
+                        s[e as usize] = s[0];
+                        w22a02_adjust_heap(s, 0, e, val);
+                    }
+                }
+            }
+            return;
+        }
+        let start = b;
+        let last = end - 1;
+        let m = median(v, b, end);
+        v.swap(m, last);
+        let mut hi_eq = last;
+        let mut lo_eq = b;
+        let mut i = b;
+        let mut j = last;
+        let pivot;
+        let old_i;
+        loop {
+            let p = v[last];
+            while v[i] < p {
+                i += 1;
+            }
+            loop {
+                j -= 1;
+                if v[j] <= p || j == b {
+                    break;
+                }
+            }
+            let vi = v[i];
+            if j <= i {
+                pivot = p;
+                old_i = vi;
+                break;
+            }
+            v[i] = v[j];
+            v[j] = vi;
+            let mut p2 = v[last];
+            if v[i] == p2 {
+                v.swap(lo_eq, i);
+                p2 = v[last];
+                lo_eq += 1;
+            }
+            let vj = v[j];
+            if vj == p2 {
+                hi_eq -= 1;
+                v[j] = v[hi_eq];
+                v[hi_eq] = vj;
+            }
+            i += 1;
+        }
+        v[i] = pivot;
+        v[last] = old_i;
+        let mut lo = b;
+        let mut k = i;
+        loop {
+            k -= 1;
+            if lo_eq <= lo + 1 {
+                break;
+            }
+            v.swap(lo, k);
+            lo += 1;
+        }
+        let mut f = i;
+        let mut r = last - 1;
+        loop {
+            f += 1;
+            if hi_eq >= r {
+                break;
+            }
+            v.swap(f, r);
+            r -= 1;
+        }
+        depth >>= 1;
+        w22a02_introsort(v, start, k + 1, depth, median);
+        b = f;
+    }
+}
+
+/// `0x00635940`: reads byte 0 of record `index` in the 8-slot table whose
+/// base is the global at faa424; record stride is `0x4e8`.  `table`
+/// starts at that global.  `None` when out of range.
+pub fn w22a02_slot_flag(table: &[u8], index: usize) -> Option<u8> {
+    table.get(index.checked_mul(0x4e8)?).copied()
+}
+
+/// `0x006356b0`: clears the `0x2740`-byte (8 x `0x4e8`) slot table at the
+/// global faa1f8 to zero.
+pub fn w22a02_clear_slot_table(table: &mut [u8]) {
+    let n = table.len().min(0x2740);
+    table[..n].fill(0);
+}
+
+#[cfg(test)]
+mod tests_wave22_agent02 {
+    use super::*;
+
+    fn mid(_: &[u32], b: usize, e: usize) -> usize {
+        b + (e - b) / 2
+    }
+
+    fn sorted_check(mut v: Vec<u32>, depth: i32) {
+        let mut want = v.clone();
+        want.sort();
+        let n = v.len();
+        w22a02_introsort(&mut v, 0, n, depth, &mid);
+        assert_eq!(v, want);
+    }
+
+    #[test]
+    fn introsort_sorts() {
+        let mut x = 12345u32;
+        let mut rnd = |m: u32| {
+            x = x.wrapping_mul(1664525).wrapping_add(1013904223);
+            (x >> 8) % m
+        };
+        for &(n, m) in &[
+            (0usize, 5u32),
+            (1, 5),
+            (10, 5),
+            (33, 1000),
+            (200, 7),
+            (500, 100000),
+        ] {
+            let v: Vec<u32> = (0..n).map(|_| rnd(m)).collect();
+            sorted_check(v.clone(), 20);
+            sorted_check(v, 0);
+        }
+        sorted_check((0..300).collect(), 20);
+        sorted_check((0..300).rev().collect(), 20);
+        sorted_check(vec![4; 100], 20);
+    }
+
+    #[test]
+    fn slot_table() {
+        let mut t = vec![0u8; 0x2740];
+        t[0x4e8 * 3] = 9;
+        assert_eq!(w22a02_slot_flag(&t, 3), Some(9));
+        assert_eq!(w22a02_slot_flag(&t, 8), None);
+        w22a02_clear_slot_table(&mut t);
+        assert_eq!(w22a02_slot_flag(&t, 3), Some(0));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave22/agent03.rs
+// ===========================================================================
+// Wave 22 translation batch 03.
+//
+// Records are `0x4e8` bytes wide; the caller passes a byte slice that starts
+// at address `0x00faa000` (the DAT base is an assumption of this helper).
+
+/// Record stride of the table at `0x00faa000`.
+pub const W22A03_STRIDE: usize = 0x4e8;
+/// Offset of the byte read by the getter (`DAT_00faa41a`).
+pub const W22A03_OFF_FLAG_A: usize = 0x41a;
+/// Offset of the byte set by the setter (`DAT_00faa426`).
+pub const W22A03_OFF_FLAG_B: usize = 0x426;
+/// Offset of the record sub-block address (`DAT_00faa428`).
+pub const W22A03_OFF_SUB: usize = 0x428;
+
+/// `0x00635bc0`: sets the flag byte at +0x426 of record `index` to 1.
+/// Returns false when out of range.
+pub fn w22a03_set_flag(table: &mut [u8], index: usize) -> bool {
+    match table.get_mut(index * W22A03_STRIDE + W22A03_OFF_FLAG_B) {
+        Some(b) => {
+            *b = 1;
+            true
+        }
+        None => false,
+    }
+}
+
+/// `0x00635f40`: returns the byte at +0x41a of record `index`.
+pub fn w22a03_get_flag(table: &[u8], index: usize) -> Option<u8> {
+    table
+        .get(index * W22A03_STRIDE + W22A03_OFF_FLAG_A)
+        .copied()
+}
+
+/// `0x00635f80`: returns the byte offset of the +0x428 sub-block of record
+/// `index` inside the table.
+pub fn w22a03_sub_offset(index: usize) -> usize {
+    index * W22A03_STRIDE + W22A03_OFF_SUB
+}
+
+/// `0x00650c8f`: true only when the AL flag is non-zero and the callee
+/// (`probe`) returns non-zero.
+pub fn w22a03_flag_and_probe(flag: u8, probe: impl FnOnce() -> i32) -> bool {
+    flag != 0 && probe() != 0
+}
+
+#[cfg(test)]
+mod tests_wave22_agent03 {
+    use super::*;
+
+    #[test]
+    fn flags() {
+        let mut t = vec![0u8; W22A03_STRIDE * 3];
+        assert!(w22a03_set_flag(&mut t, 2));
+        assert_eq!(t[2 * 0x4e8 + 0x426], 1);
+        assert!(!w22a03_set_flag(&mut t, 3));
+        t[0x4e8 + 0x41a] = 7;
+        assert_eq!(w22a03_get_flag(&t, 1), Some(7));
+        assert_eq!(w22a03_get_flag(&t, 3), None);
+    }
+
+    #[test]
+    fn sub_offset() {
+        assert_eq!(w22a03_sub_offset(0), 0x428);
+        assert_eq!(w22a03_sub_offset(2), 0x9d0 + 0x428);
+    }
+
+    #[test]
+    fn probe() {
+        assert!(!w22a03_flag_and_probe(0, || 1));
+        assert!(!w22a03_flag_and_probe(1, || 0));
+        assert!(w22a03_flag_and_probe(1, || 5));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave22/agent04.rs
+// ===========================================================================
+// Wave 22 agent 04 (queue, merge target `client.rs`).
+
+/// `0x00657250`: clears the global word at 0x00fd7b98 (returns the new value).
+pub fn w22a04_clear_flag(flag: &mut u32) {
+    *flag = 0;
+}
+
+/// Outcome of `0x00658030`.
+#[derive(Debug, PartialEq, Eq)]
+pub enum W22a04Dispatch {
+    /// Entry `+0x134` was non-zero: the retail path calls a non-returning helper.
+    NoReturn,
+    /// Player slot >= 8: nothing happens.
+    Ignored,
+    /// Called the sink with `(table[player] + index * 0x34, 1)`.
+    Called,
+}
+
+/// `0x00658030`: if `entry[0x134] != 0` the retail code diverges; else when the
+/// byte at `+0x4c` is < 8 it picks `tables[player]`, computes a 16-bit index
+/// via `index_fn(a, b)` and calls `sink(base + (idx & 0xffff) * 0x34, 1)`.
+pub fn w22a04_dispatch_slot(
+    entry: &[u8],
+    tables: &[u32; 8],
+    a: u32,
+    b: u32,
+    index_fn: impl Fn(u32, u32) -> u32,
+    mut sink: impl FnMut(u32, u32),
+) -> W22a04Dispatch {
+    let word = |o: usize| u32::from_le_bytes([entry[o], entry[o + 1], entry[o + 2], entry[o + 3]]);
+    if word(0x134) != 0 {
+        return W22a04Dispatch::NoReturn;
+    }
+    let player = entry[0x4c] as usize;
+    if player >= 8 {
+        return W22a04Dispatch::Ignored;
+    }
+    let idx = index_fn(a, b) & 0xffff;
+    sink(tables[player].wrapping_add(idx.wrapping_mul(0x34)), 1);
+    W22a04Dispatch::Called
+}
+
+/// Base virtual address of the modelled window for `0x00659590`.
+pub const W22A04_POOL_BASE: u32 = 0x00fd_7b80;
+/// Size in bytes of the window (through the last write at 0x00fdf8e4+4).
+pub const W22A04_POOL_LEN: usize = 0x00fd_f8e8 - 0x00fd_7b80;
+
+fn w22a04_put32(mem: &mut [u8], addr: u32, v: u32) {
+    let o = (addr - W22A04_POOL_BASE) as usize;
+    mem[o..o + 4].copy_from_slice(&v.to_le_bytes());
+}
+
+fn w22a04_put16(mem: &mut [u8], addr: u32, v: u16) {
+    let o = (addr - W22A04_POOL_BASE) as usize;
+    mem[o..o + 2].copy_from_slice(&v.to_le_bytes());
+}
+
+/// `0x00659590`: initialises the 0x20-byte-stride pool at 0x00fd7ba0 (entries
+/// 0x20..0x7ce0) and the list-head block at 0x00fdf880..0x00fdf8e8.  `mem` is
+/// a window of `W22A04_POOL_LEN` bytes starting at `W22A04_POOL_BASE`.
+/// Sizes of the 0x00fdf8ac.. zero stores are assumed to be 4 bytes.
+pub fn w22a04_init_pool(mem: &mut [u8]) {
+    let b = W22A04_POOL_BASE;
+    for (a, v) in [
+        (0xfd7ba4u32, 0u32),
+        (0xfd7bb0, 0),
+        (0xfd7bb4, 0),
+        (0xfd7bb8, 0),
+        (0xfd7bbc, 0),
+        (0xfd7ba0, 0xfd7bc0),
+        (0xfd7bac, 0),
+    ] {
+        w22a04_put32(mem, a, v);
+    }
+    mem[(0xfd7ba8 - b) as usize] = 0;
+    let mut off = 0x20u32;
+    while off < 0x7ce0 {
+        w22a04_put32(mem, 0xfd7ba4 + off, 0xfd7b80 + off);
+        w22a04_put32(mem, 0xfd7ba0 + off, 0xfd7bc0 + off);
+        mem[(0xfd7ba8 + off - b) as usize] = 0;
+        w22a04_put32(mem, 0xfd7bac + off, 0);
+        w22a04_put32(mem, 0xfd7bb0 + off, 0);
+        w22a04_put32(mem, 0xfd7bb4 + off, 0);
+        w22a04_put16(mem, 0xfd7bb8 + off, 0);
+        w22a04_put32(mem, 0xfd7bbc + off, 0);
+        off += 0x20;
+    }
+    w22a04_put32(mem, 0xfdf884, 0xfdf860);
+    w22a04_put32(mem, 0xfdf880, 0);
+    mem[(0xfdf888 - b) as usize] = 0;
+    for a in [0xfdf88cu32, 0xfdf890, 0xfdf894, 0xfdf898, 0xfdf89c] {
+        w22a04_put32(mem, a, 0);
+    }
+    w22a04_put32(mem, 0xfdf8a0, 0xfd7ba0);
+    w22a04_put32(mem, 0xfdf8a8, 0xfd7ba0);
+    for a in (0xfdf8acu32..=0xfdf8e4).step_by(8) {
+        w22a04_put32(mem, a, 0);
+    }
+    for a in [
+        0xfdf8b0u32,
+        0xfdf8b8,
+        0xfdf8c0,
+        0xfdf8c8,
+        0xfdf8d0,
+        0xfdf8d8,
+        0xfdf8e0,
+    ] {
+        w22a04_put32(mem, a, 0xfd7ba0);
+    }
+}
+
+#[cfg(test)]
+mod tests_wave22_agent04 {
+    use super::*;
+
+    fn rd(mem: &[u8], a: u32) -> u32 {
+        let o = (a - W22A04_POOL_BASE) as usize;
+        u32::from_le_bytes([mem[o], mem[o + 1], mem[o + 2], mem[o + 3]])
+    }
+
+    #[test]
+    fn clear_flag() {
+        let mut f = 7;
+        w22a04_clear_flag(&mut f);
+        assert_eq!(f, 0);
+    }
+
+    #[test]
+    fn dispatch() {
+        let tables = [0x1000u32; 8];
+        let mut e = vec![0u8; 0x140];
+        e[0x4c] = 3;
+        let mut got = None;
+        let r = w22a04_dispatch_slot(
+            &e,
+            &tables,
+            1,
+            2,
+            |_, _| 0x1_0002,
+            |p, f| got = Some((p, f)),
+        );
+        assert_eq!(r, W22a04Dispatch::Called);
+        assert_eq!(got, Some((0x1000 + 2 * 0x34, 1)));
+        e[0x4c] = 8;
+        assert_eq!(
+            w22a04_dispatch_slot(&e, &tables, 0, 0, |_, _| 0, |_, _| {}),
+            W22a04Dispatch::Ignored
+        );
+        e[0x134] = 1;
+        assert_eq!(
+            w22a04_dispatch_slot(&e, &tables, 0, 0, |_, _| 0, |_, _| {}),
+            W22a04Dispatch::NoReturn
+        );
+    }
+
+    #[test]
+    fn pool_init() {
+        let mut m = vec![0xffu8; W22A04_POOL_LEN];
+        w22a04_init_pool(&mut m);
+        assert_eq!(rd(&m, 0xfd7ba0), 0xfd7bc0);
+        assert_eq!(rd(&m, 0xfd7ba4 + 0x20), 0xfd7b80 + 0x20);
+        assert_eq!(rd(&m, 0xfd7ba0 + 0x20), 0xfd7bc0 + 0x20);
+        assert_eq!(rd(&m, 0xfd7ba4 + 0x7cc0), 0xfd7b80 + 0x7cc0);
+        assert_eq!(rd(&m, 0xfdf884), 0xfdf860);
+        assert_eq!(rd(&m, 0xfdf8a8), 0xfd7ba0);
+        assert_eq!(rd(&m, 0xfdf8e0), 0xfd7ba0);
+        assert_eq!(rd(&m, 0xfdf8e4), 0);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave22/agent06.rs
+// ===========================================================================
+// Wave 22 translation batch 06 (staging).
+
+/// `0x00687f30` (chunk planning only): the stream writer splits `size`
+/// bytes into 0x2000-byte chunks; returns `(chunk_count, header_bytes,
+/// chunk_lengths)` where the header is `size + (chunks + 2) * 4`.
+/// Returns `None` for `size == 0` (the routine returns 0 immediately).
+pub fn w22a06_plan_stream_chunks(size: u32) -> Option<(u32, u32, Vec<u32>)> {
+    if size == 0 {
+        return None;
+    }
+    let mut chunks = size >> 13;
+    if size != chunks << 13 {
+        chunks += 1;
+    }
+    let header = size.wrapping_add((chunks + 2).wrapping_mul(4));
+    let mut lens = Vec::with_capacity(chunks as usize);
+    for i in 0..chunks {
+        lens.push((size - i * 0x2000).min(0x2000));
+    }
+    Some((chunks, header, lens))
+}
+
+/// Integer hash shared by `0x00689080` and `0x00689da0`: a two-round
+/// multiply/xor-shift mixer (constants 0x85ebca6b, 0xc2b2ae35).
+pub fn w22a06_hash_u32(key: u32) -> u32 {
+    let mut h = (key >> 16 ^ key).wrapping_mul(0x85eb_ca6b);
+    h = (h >> 13 ^ h).wrapping_mul(0xc2b2_ae35);
+    h >> 16 ^ h
+}
+
+/// Unique-key hash set with bucket chains (max load factor 1.0).
+#[derive(Debug, Clone, PartialEq)]
+pub struct W22a06Set {
+    pub bucket_count: u32,
+    pub buckets: Vec<Vec<u32>>,
+    pub size: u32,
+    pub max_load: f32,
+}
+
+impl W22a06Set {
+    fn insert_unique(&mut self, key: u32) {
+        if self.buckets.is_empty() {
+            return;
+        }
+        let idx = (w22a06_hash_u32(key) & (self.bucket_count - 1)) as usize;
+        if !self.buckets[idx].contains(&key) {
+            self.buckets[idx].push(key);
+            self.size += 1;
+        }
+    }
+}
+
+/// `0x00689080`: constructs the set with `bucket_count` (power of two)
+/// buckets, size 0, load factor 1.0, then inserts each key of `keys`
+/// (12-byte source stride in retail; key is the first dword) skipping
+/// duplicates.
+pub fn w22a06_set_build(keys: &[u32], bucket_count: u32) -> W22a06Set {
+    let mut s = W22a06Set {
+        bucket_count,
+        buckets: vec![Vec::new(); bucket_count as usize],
+        size: 0,
+        max_load: 1.0,
+    };
+    for &k in keys {
+        s.insert_unique(k);
+    }
+    s
+}
+
+/// `0x00689da0`: assignment; no-op on self. Clears every bucket and the
+/// size, then inserts each source key in bucket order, skipping duplicates.
+pub fn w22a06_set_assign(dst: &mut W22a06Set, src: &W22a06Set) {
+    for b in dst.buckets.iter_mut() {
+        b.clear();
+    }
+    dst.size = 0;
+    for b in &src.buckets {
+        for &k in b {
+            dst.insert_unique(k);
+        }
+    }
+}
+
+/// `0x00691a10`: picks an entry of the seven-slot (stride 0x70) name table
+/// at 0xf06cc8: first entry whose name equals `wanted`; else the last entry
+/// named "Default"; else entry 0.
+pub fn w22a06_select_entry(names: &[&str], wanted: &str) -> usize {
+    let mut default = None;
+    for (i, n) in names.iter().take(7).enumerate() {
+        if *n == wanted {
+            return i;
+        }
+        if *n == "Default" {
+            default = Some(i);
+        }
+    }
+    default.unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests_wave22_agent06 {
+    use super::*;
+
+    #[test]
+    fn chunks() {
+        assert_eq!(w22a06_plan_stream_chunks(0), None);
+        let (c, h, l) = w22a06_plan_stream_chunks(0x2001).unwrap();
+        assert_eq!((c, h, l), (2, 0x2001 + 16, vec![0x2000, 1]));
+        assert_eq!(w22a06_plan_stream_chunks(0x2000).unwrap().0, 1);
+    }
+
+    #[test]
+    fn set_build_and_assign() {
+        assert_eq!(w22a06_hash_u32(0), 0);
+        let s = w22a06_set_build(&[1, 2, 2, 3], 8);
+        assert_eq!(s.size, 3);
+        assert_eq!(s.max_load, 1.0);
+        let mut d = w22a06_set_build(&[9, 10], 4);
+        w22a06_set_assign(&mut d, &s);
+        assert_eq!(d.size, 3);
+        let before = d.clone();
+        let same = d.clone();
+        w22a06_set_assign(&mut d, &same);
+        assert_eq!(d.size, before.size);
+    }
+
+    #[test]
+    fn select() {
+        let n = ["A", "Default", "B", "Default"];
+        assert_eq!(w22a06_select_entry(&n, "B"), 2);
+        assert_eq!(w22a06_select_entry(&n, "X"), 3);
+        assert_eq!(w22a06_select_entry(&["A"], "X"), 0);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave22/agent07.rs
+// ===========================================================================
+// Wave 22 translation batch 07.
+
+/// `0x00695b50`: min of two per-slot u32 tables selected by `kind`
+/// (0 -> 0x3054/0x30b4, 1 -> 0x30e4/0x3144, 2 -> 0x3174/0x31d4, stride 4,
+/// relative to the unmasked state base).  Other kinds return 0.
+pub fn w22a07_min_pair(base: &[u8], kind: u8, slot: u8) -> u32 {
+    let (a, b) = match kind {
+        0 => (0x3054usize, 0x30b4usize),
+        1 => (0x30e4, 0x3144),
+        2 => (0x3174, 0x31d4),
+        _ => return 0,
+    };
+    let rd = |o: usize| {
+        let p = o + slot as usize * 4;
+        u32::from_le_bytes([base[p], base[p + 1], base[p + 2], base[p + 3]])
+    };
+    rd(a).min(rd(b))
+}
+
+/// `0x0069a6e0`: true when the (opaque) check at 0x74_8d60 is zero, the
+/// per-player flag byte (state + 0xe544 + player*0xc + unit byte at +0x4c)
+/// is zero and global DAT_011a4580 is zero.
+pub fn w22a07_flag_clear(check_nonzero: bool, flag_byte: u8, global: u32) -> bool {
+    !check_nonzero && flag_byte == 0 && global == 0
+}
+
+/// Murmur-style finalizer used by the hash lookup at `0x006a9b00`.
+pub fn w22a07_hash(key: u32) -> u32 {
+    let h = (key >> 16 ^ key).wrapping_mul(0x85eb_ca6b);
+    let h = (h >> 13 ^ h).wrapping_mul(0xc2b2_ae35);
+    h >> 16 ^ h
+}
+
+/// `0x006a9b00`: bucket-chain lookup.  `buckets.len()` is a power of two
+/// (empty table is the original's error path -> `None`); each bucket lists
+/// chain keys in order.  Returns (bucket, position) of the first match.
+pub fn w22a07_hash_find(buckets: &[Vec<u32>], key: u32) -> Option<(usize, usize)> {
+    if buckets.is_empty() {
+        return None;
+    }
+    let b = (w22a07_hash(key) as usize) & (buckets.len() - 1);
+    buckets[b].iter().position(|&k| k == key).map(|p| (b, p))
+}
+
+/// `0x006bb610`: first dword of the record returned by the helper.
+pub fn w22a07_rec_first(rec: &[u32]) -> u32 {
+    rec[0]
+}
+
+/// `0x006bb620`: second dword of the record returned by the helper.
+pub fn w22a07_rec_second(rec: &[u32]) -> u32 {
+    rec[1]
+}
+
+/// `0x006bbcd0`: forwards its argument to the byte-returning helper.
+pub fn w22a07_forward_byte(arg: u32, f: impl Fn(u32) -> u8) -> u8 {
+    f(arg)
+}
+
+/// `0x006c06e0`: clears the u16 mask, and unless the 0x74_8d60 check is
+/// set scans the 8 flag bytes (stride 1, loop counter step 0x24 below
+/// 0x120) returning the first nonzero index (the original tail-calls
+/// 0x74_8d40 with it).
+pub fn w22a07_first_flagged(mask: &mut u16, check_nonzero: bool, flags: &[u8]) -> Option<u8> {
+    *mask = 0;
+    if check_nonzero {
+        return None;
+    }
+    flags.iter().take(8).position(|&f| f != 0).map(|i| i as u8)
+}
+
+#[cfg(test)]
+mod tests_wave22_agent07 {
+    use super::*;
+
+    #[test]
+    fn min_pair() {
+        let mut b = vec![0u8; 0x3300];
+        b[0x3054 + 8..0x3054 + 12].copy_from_slice(&5u32.to_le_bytes());
+        b[0x30b4 + 8..0x30b4 + 12].copy_from_slice(&3u32.to_le_bytes());
+        assert_eq!(w22a07_min_pair(&b, 0, 2), 3);
+        assert_eq!(w22a07_min_pair(&b, 1, 2), 0);
+        assert_eq!(w22a07_min_pair(&b, 3, 2), 0);
+    }
+
+    #[test]
+    fn flag() {
+        assert!(w22a07_flag_clear(false, 0, 0));
+        assert!(!w22a07_flag_clear(true, 0, 0));
+        assert!(!w22a07_flag_clear(false, 1, 0));
+        assert!(!w22a07_flag_clear(false, 0, 1));
+    }
+
+    #[test]
+    fn hash_lookup() {
+        assert_eq!(w22a07_hash(0), 0);
+        let mut t = vec![Vec::new(); 8];
+        let b = w22a07_hash(77) as usize & 7;
+        t[b].push(1000);
+        t[b].push(77);
+        assert_eq!(w22a07_hash_find(&t, 77), Some((b, 1)));
+        assert_eq!(w22a07_hash_find(&t, 78), None);
+        assert_eq!(w22a07_hash_find(&[], 1), None);
+    }
+
+    #[test]
+    fn small() {
+        assert_eq!(w22a07_rec_first(&[4, 9]), 4);
+        assert_eq!(w22a07_rec_second(&[4, 9]), 9);
+        assert_eq!(w22a07_forward_byte(3, |x| x as u8 + 1), 4);
+        let mut m = 7u16;
+        assert_eq!(w22a07_first_flagged(&mut m, false, &[0, 0, 2, 0]), Some(2));
+        assert_eq!(m, 0);
+        assert_eq!(w22a07_first_flagged(&mut m, true, &[1]), None);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave22/agent08.rs
+// ===========================================================================
+// Wave 22 translation batch 08.
+
+/// `0x0097a370`: the index guard before the two-step slot update; the update
+/// runs when `index < count` (byte compare, `count` read at offset `0x60`) or
+/// when the index byte is the `0xff` sentinel.
+pub fn w22a08_slot_update_guard(index: u32, count_at_0x60: u8) -> bool {
+    let b = index as u8;
+    b < count_at_0x60 || b == 0xff
+}
+
+/// `0x006cd480`: releases a block only when the pointer is non-null; returns
+/// whether the release callback was invoked.
+pub fn w22a08_release_if_nonnull(ptr: usize, mut release: impl FnMut(usize)) -> bool {
+    if ptr == 0 {
+        return false;
+    }
+    release(ptr);
+    true
+}
+
+/// `0x006cd300`: repacks a loaded frame-table blob.  Layout: three `u16`
+/// header words (first word low 15 bits = entry count), then `count` entries
+/// of 8 bytes, then a tail.  Returns the rebuilt copy (header + entries +
+/// tail), or `None` when the blob is empty, has no entries, or is shorter
+/// than its header (`count * 8 + 6`).
+pub fn w22a08_repack_frame_table(src: &[u8]) -> Option<Vec<u8>> {
+    if src.len() < 6 {
+        return None;
+    }
+    let first = u16::from_le_bytes([src[0], src[1]]);
+    if first == 0 {
+        return None;
+    }
+    let count = (first & 0x7fff) as usize;
+    let hdr = count * 8 + 6;
+    if hdr > src.len() {
+        return None;
+    }
+    let mut out = vec![0u8; src.len()];
+    out[..hdr].copy_from_slice(&src[..hdr]);
+    out[hdr..].copy_from_slice(&src[hdr..]);
+    Some(out)
+}
+
+#[cfg(test)]
+mod tests_wave22_agent08 {
+    use super::*;
+
+    #[test]
+    fn guard() {
+        assert!(w22a08_slot_update_guard(2, 3));
+        assert!(!w22a08_slot_update_guard(3, 3));
+        assert!(w22a08_slot_update_guard(0x1ff, 0));
+        assert!(!w22a08_slot_update_guard(0x100, 0));
+    }
+
+    #[test]
+    fn release() {
+        let mut got = vec![];
+        assert!(!w22a08_release_if_nonnull(0, |p| got.push(p)));
+        assert!(w22a08_release_if_nonnull(7, |p| got.push(p)));
+        assert_eq!(got, vec![7]);
+    }
+
+    #[test]
+    fn repack() {
+        let mut b = vec![0u8; 6 + 16 + 3];
+        b[0] = 2;
+        for (i, v) in b.iter_mut().enumerate().skip(1) {
+            *v = i as u8;
+        }
+        b[0] = 2;
+        b[1] = 0;
+        assert_eq!(w22a08_repack_frame_table(&b), Some(b.clone()));
+        assert_eq!(w22a08_repack_frame_table(&b[..10]), None);
+        assert_eq!(w22a08_repack_frame_table(&[0, 0, 0, 0, 0, 0]), None);
+        assert_eq!(w22a08_repack_frame_table(&[]), None);
+    }
+}

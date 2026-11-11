@@ -154,3 +154,11 @@ code.
 and `runtime.rs`: MSVC STL container/tree helpers, hash buckets, image and
 tile records, string records, UI sub-pel helpers.  No rules-core
 counterpart; the helpers stay auditable reference code.
+
+## Wave 22 (2026-11-11, triage queue, tier 2, 30 agents)
+
++140 exact ledger functions (ledger 3432 -> 3572) in `client.rs` and
+`runtime.rs`: introsort, JSON string scanner, hash/bucket helpers, vector and
+string-record plans, CRT/time helpers, frame-table repack.  No rules-core
+counterpart; the helpers stay auditable reference code.  Tier 1 of the
+triage queue is now empty.

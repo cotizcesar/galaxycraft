@@ -40612,3 +40612,3212 @@ mod tests_wave21_agent20 {
         assert_eq!(d[1][..5], [7, 9, 0, 0, 3]);
     }
 }
+
+// ===========================================================================
+// Merged from src/wave22/agent09.rs
+// ===========================================================================
+// Wave 22 agent 09: small wrappers recovered from the 0x60xxxx range.
+
+/// Argument block built by the wrappers `0x00608520` and `0x00608630`
+/// before calling the shared logger-style helper (flags word is always 0).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct W22a09Args {
+    pub words: [u32; 5],
+}
+
+/// Result of the wrapper: string length (without NUL), selector constant,
+/// flags (always 0) and the copied argument block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct W22a09Call {
+    pub len: usize,
+    pub selector: u32,
+    pub flags: u32,
+    pub args: W22a09Args,
+}
+
+/// `0x00608520`: measures the C string, copies two words from `a`, one
+/// from `b` and one from `c` (slots 0,1,2,4 of the block) and calls the
+/// helper with selector `0x23d`.
+pub fn w22a09_wrap_23d(text: &[u8], a: [u32; 2], b: u32, c: u32) -> W22a09Call {
+    let len = text.iter().position(|&x| x == 0).unwrap_or(text.len());
+    W22a09Call {
+        len,
+        selector: 0x23d,
+        flags: 0,
+        args: W22a09Args {
+            words: [a[0], a[1], b, 0, c],
+        },
+    }
+}
+
+/// `0x00608630`: like the previous wrapper with selector `0x3d` and a
+/// three-word block (two words from `a`, one from `b`).
+pub fn w22a09_wrap_3d(text: &[u8], a: [u32; 2], b: u32) -> W22a09Call {
+    let len = text.iter().position(|&x| x == 0).unwrap_or(text.len());
+    W22a09Call {
+        len,
+        selector: 0x3d,
+        flags: 0,
+        args: W22a09Args {
+            words: [a[0], a[1], b, 0, 0],
+        },
+    }
+}
+
+/// State written by `0x00603f50`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct W22a09Globals {
+    pub g_3964: u32,
+    pub g_3960: u32,
+    pub w_b51e: u32,
+    pub w_b522: u32,
+}
+
+/// `0x00603f50`: stores both parameters, clears the word at offset
+/// `b51e`, stores the value returned by the timer helper at `b522`.
+pub fn w22a09_set_globals(p1: u32, p2: u32, helper_ret: u32) -> W22a09Globals {
+    W22a09Globals {
+        g_3964: p1,
+        g_3960: p2,
+        w_b51e: 0,
+        w_b522: helper_ret,
+    }
+}
+
+#[cfg(test)]
+mod tests_wave22_agent09 {
+    use super::*;
+
+    #[test]
+    fn wrappers() {
+        let c = w22a09_wrap_23d(b"abc\0def", [1, 2], 3, 4);
+        assert_eq!((c.len, c.selector, c.flags), (3, 0x23d, 0));
+        assert_eq!(c.args.words, [1, 2, 3, 0, 4]);
+        let d = w22a09_wrap_3d(b"", [5, 6], 7);
+        assert_eq!((d.len, d.selector), (0, 0x3d));
+        assert_eq!(d.args.words[..3], [5, 6, 7]);
+    }
+
+    #[test]
+    fn globals() {
+        let g = w22a09_set_globals(1, 2, 9);
+        assert_eq!((g.g_3964, g.g_3960, g.w_b51e, g.w_b522), (1, 2, 0, 9));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave22/agent10.rs
+// ===========================================================================
+// Wave 22 translation batch 10.
+
+/// `0x006238e0`: calls the helper with both arguments and returns the
+/// first argument unchanged.
+pub fn w22a10_call_return_first<T: Copy, U>(first: T, second: U, helper: impl FnOnce(T, U)) -> T {
+    helper(first, second);
+    first
+}
+
+/// Result of a small-vector tidy: whether the heap block must be released.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub struct W22a10Tidy {
+    /// Element range `[0, len)` that was handed to the destructor, if any.
+    pub destroyed: Option<usize>,
+    /// True when the capacity field is non-negative (heap block owned).
+    pub free_heap: bool,
+}
+
+/// `0x0061d820`: if the `active` flag is set, destroys `len` elements
+/// (stride `0x1c`) and, when `cap >= 0`, requests the heap free; always
+/// clears the flag.
+pub fn w22a10_tidy_stride1c(
+    active: &mut bool,
+    len: u32,
+    cap: i32,
+    destroy: impl FnOnce(usize),
+) -> W22a10Tidy {
+    let mut out = W22a10Tidy {
+        destroyed: None,
+        free_heap: false,
+    };
+    if *active {
+        let n = len as usize;
+        destroy(n);
+        out.destroyed = Some(n);
+        out.free_heap = cap >= 0;
+    }
+    *active = false;
+    out
+}
+
+/// `0x00625250`: destroys `len` elements (stride `0xc`) and reports whether
+/// the heap block must be freed (`cap >= 0`).
+pub fn w22a10_tidy_stride0c(len: u32, cap: i32, destroy: impl FnOnce(usize)) -> W22a10Tidy {
+    let n = len as usize;
+    destroy(n);
+    W22a10Tidy {
+        destroyed: Some(n),
+        free_heap: cap >= 0,
+    }
+}
+
+#[cfg(test)]
+mod tests_wave22_agent10 {
+    use super::*;
+
+    #[test]
+    fn first_arg_returned() {
+        let mut seen = (0, 0);
+        assert_eq!(w22a10_call_return_first(5, 9, |a, b| seen = (a, b)), 5);
+        assert_eq!(seen, (5, 9));
+    }
+
+    #[test]
+    fn stride1c() {
+        let mut a = false;
+        let r = w22a10_tidy_stride1c(&mut a, 3, 0, |_| panic!());
+        assert_eq!(r.destroyed, None);
+        let mut a = true;
+        let mut got = 0;
+        let r = w22a10_tidy_stride1c(&mut a, 3, -1, |n| got = n);
+        assert_eq!((got, r.free_heap, a), (3, false, false));
+        let mut a = true;
+        assert!(w22a10_tidy_stride1c(&mut a, 0, 0, |_| {}).free_heap);
+    }
+
+    #[test]
+    fn stride0c() {
+        assert_eq!(
+            w22a10_tidy_stride0c(2, 0, |_| {}),
+            W22a10Tidy {
+                destroyed: Some(2),
+                free_heap: true
+            }
+        );
+        assert!(!w22a10_tidy_stride0c(2, -5, |_| {}).free_heap);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave22/agent11.rs
+// ===========================================================================
+// Wave 22 agent 11: per-slot record accessors (stride 0x4e8, base 0x00faa400).
+
+/// Record stride of the slot table.
+pub const W22A11_STRIDE: u32 = 0x4e8;
+/// Table base address.
+pub const W22A11_BASE: u32 = 0x00faa400;
+
+fn w22a11_addr(base: u32, idx: i32) -> u32 {
+    base.wrapping_add((idx as u32).wrapping_mul(W22A11_STRIDE))
+}
+
+/// `0x00634a60`: address of field at table+0xf8 for slot `idx`.
+pub fn w22a11_field_f8_addr(idx: i32) -> u32 {
+    w22a11_addr(0x00faa4f8, idx)
+}
+/// `0x00634a80`: address of field at table+0xd0 for slot `idx`.
+pub fn w22a11_field_d0_addr(idx: i32) -> u32 {
+    w22a11_addr(0x00faa4d0, idx)
+}
+/// `0x00634aa0`: address of field at table+0xa8 for slot `idx`.
+pub fn w22a11_field_a8_addr(idx: i32) -> u32 {
+    w22a11_addr(0x00faa4a8, idx)
+}
+/// `0x006352c0`: address of field at table+0x1c0 for slot `idx`.
+pub fn w22a11_field_1c0_addr(idx: i32) -> u32 {
+    w22a11_addr(0x00faa5c0, idx)
+}
+/// `0x006352e0`: address of field at table+0x198 for slot `idx`.
+pub fn w22a11_field_198_addr(idx: i32) -> u32 {
+    w22a11_addr(0x00faa598, idx)
+}
+/// `0x00635300`: address of field at table+0x170 for slot `idx`.
+pub fn w22a11_field_170_addr(idx: i32) -> u32 {
+    w22a11_addr(0x00faa570, idx)
+}
+/// `0x00635320`: address of field at table+0x148 for slot `idx`.
+pub fn w22a11_field_148_addr(idx: i32) -> u32 {
+    w22a11_addr(0x00faa548, idx)
+}
+
+/// `0x00635450`: sets the byte at record+0x25 to 1.
+pub fn w22a11_set_flag25(rec: &mut [u8]) {
+    rec[0x25] = 1;
+}
+
+/// `0x00635890`: always returns 0 (all branches removed as unreachable).
+pub fn w22a11_always_zero() -> u32 {
+    0
+}
+
+/// `0x00635960`: 1 when byte +0x0b is non-zero and bit 0x800 of the u16 at +0x10 is set.
+pub fn w22a11_has_flag800(rec: &[u8]) -> u32 {
+    let w = u16::from_le_bytes([rec[0x10], rec[0x11]]);
+    u32::from(rec[0x0b] != 0 && w & 0x800 != 0)
+}
+
+/// `0x006359b0`: true when the byte at record+0x26 is zero.
+pub fn w22a11_byte26_is_zero(rec: &[u8]) -> bool {
+    rec[0x26] == 0
+}
+
+/// `0x00635b50`: sets the byte at record+0x24 to 0x18.
+pub fn w22a11_set_byte24(rec: &mut [u8]) {
+    rec[0x24] = 0x18;
+}
+
+/// `0x00635ca0`: stores the u32 `src` (read from decoded global + 0xe608) at record+0x1c.
+pub fn w22a11_copy_u32_1c(rec: &mut [u8], src: u32) {
+    rec[0x1c..0x20].copy_from_slice(&src.to_le_bytes());
+}
+
+#[cfg(test)]
+mod tests_wave22_agent11 {
+    use super::*;
+
+    #[test]
+    fn addrs() {
+        assert_eq!(w22a11_field_f8_addr(0), 0x00faa4f8);
+        assert_eq!(w22a11_field_d0_addr(1), 0x00faa4d0 + 0x4e8);
+        assert_eq!(w22a11_field_a8_addr(2), 0x00faa4a8 + 0x9d0);
+        assert_eq!(w22a11_field_1c0_addr(0), 0x00faa5c0);
+        assert_eq!(w22a11_field_198_addr(0), 0x00faa598);
+        assert_eq!(w22a11_field_170_addr(0), 0x00faa570);
+        assert_eq!(w22a11_field_148_addr(1), 0x00faa548 + 0x4e8);
+        assert_eq!(w22a11_always_zero(), 0);
+    }
+
+    #[test]
+    fn bytes() {
+        let mut r = vec![0u8; 0x4e8];
+        assert!(w22a11_byte26_is_zero(&r));
+        w22a11_set_flag25(&mut r);
+        w22a11_set_byte24(&mut r);
+        assert_eq!((r[0x25], r[0x24]), (1, 0x18));
+        r[0x26] = 1;
+        assert!(!w22a11_byte26_is_zero(&r));
+        w22a11_copy_u32_1c(&mut r, 0x01020304);
+        assert_eq!(r[0x1c], 4);
+        assert_eq!(r[0x1f], 1);
+    }
+
+    #[test]
+    fn flag800() {
+        let mut r = vec![0u8; 0x4e8];
+        r[0x11] = 0x08;
+        assert_eq!(w22a11_has_flag800(&r), 0);
+        r[0x0b] = 1;
+        assert_eq!(w22a11_has_flag800(&r), 1);
+        r[0x11] = 0;
+        assert_eq!(w22a11_has_flag800(&r), 0);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave22/agent12.rs
+// ===========================================================================
+// Wave 22 agent 12: small runtime helpers.
+
+/// Stride of the per-player/slot record table read by `0x00635fa0`.
+pub const W22A12_SLOT_STRIDE: usize = 0x4e8;
+/// Offset of the u16 field inside a slot record (table base + 0x416 vs record base).
+pub const W22A12_SLOT_FIELD_OFFSET: usize = 0x416;
+
+/// `0x00635fa0`: returns the u16 at `table[index * 0x4e8 + 0x416]` (little endian),
+/// or `None` when out of range.
+pub fn w22a12_slot_u16(table: &[u8], index: usize) -> Option<u16> {
+    let off = index
+        .checked_mul(W22A12_SLOT_STRIDE)?
+        .checked_add(W22A12_SLOT_FIELD_OFFSET)?;
+    let b = table.get(off..off.checked_add(2)?)?;
+    Some(u16::from_le_bytes([b[0], b[1]]))
+}
+
+/// `0x0063a703`: calls the caller-supplied helper and returns 1.
+pub fn w22a12_call_then_true(mut helper: impl FnMut()) -> u32 {
+    helper();
+    1
+}
+
+/// Empty MSVC small string header: `[data_ptr, len, cap, inline bytes...]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct W22a12EmptyString {
+    pub data_ptr: u32,
+    pub len: u32,
+    pub cap: u32,
+    pub inline0: u8,
+}
+
+/// `0x00649cc0` and `0x0064c130`: initialise an empty small string located at
+/// address `self_addr`: pointer to its inline buffer (`self_addr + 12`), length 0,
+/// capacity `0x8000000f`, first inline byte 0.  The trailing non-returning
+/// call in the retail body is not modelled.
+pub fn w22a12_init_empty_string(self_addr: u32) -> W22a12EmptyString {
+    W22a12EmptyString {
+        data_ptr: self_addr.wrapping_add(12),
+        len: 0,
+        cap: 0x8000_000f,
+        inline0: 0,
+    }
+}
+
+#[cfg(test)]
+mod tests_wave22_agent12 {
+    use super::*;
+
+    #[test]
+    fn slot_u16() {
+        let mut t = vec![0u8; 2 * W22A12_SLOT_STRIDE];
+        let o = W22A12_SLOT_STRIDE + W22A12_SLOT_FIELD_OFFSET;
+        t[o] = 0x34;
+        t[o + 1] = 0x12;
+        assert_eq!(w22a12_slot_u16(&t, 1), Some(0x1234));
+        assert_eq!(w22a12_slot_u16(&t, 2), None);
+        assert_eq!(w22a12_slot_u16(&t, usize::MAX), None);
+    }
+
+    #[test]
+    fn call_true() {
+        let mut n = 0;
+        assert_eq!(w22a12_call_then_true(|| n += 1), 1);
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn empty_string() {
+        let s = w22a12_init_empty_string(0x100);
+        assert_eq!(
+            (s.data_ptr, s.len, s.cap, s.inline0),
+            (0x10c, 0, 0x8000_000f, 0)
+        );
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave22/agent13.rs
+// ===========================================================================
+// Wave 22 translation batch 13.
+//
+// Window: queue: 20 addresses, module `runtime.rs`.
+// Implemented: 0x006515b0, 0x006517b0.
+
+/// 0x006515b0: map two coordinate pairs through `pack` (FUN_0075d720) and
+/// forward `(param_1, pack(p2,p3), pack(p4,p5))` to `sink` (FUN_006515e0).
+/// Note the retail order: the second pair is packed first.
+pub fn w22a13_pack_pairs<R>(
+    param_1: u32,
+    param_2: i32,
+    param_3: i32,
+    param_4: i32,
+    param_5: i32,
+    mut pack: impl FnMut(i32, i32) -> u16,
+    sink: impl FnOnce(u32, u16, u16) -> R,
+) -> R {
+    let b = pack(param_4, param_5);
+    let a = pack(param_2, param_3);
+    sink(param_1, a, b)
+}
+
+/// 0x006517b0: pack both objects via `pack` (FUN_0075d7b0) and forward with
+/// the byte at offset 0x4c of the first object (`kind`) to `sink`.
+pub fn w22a13_pack_objects<R>(
+    first: i32,
+    first_kind: u8,
+    second: i32,
+    mut pack: impl FnMut(i32) -> u16,
+    sink: impl FnOnce(u8, u16, u16) -> R,
+) -> R {
+    let b = pack(second);
+    let a = pack(first);
+    sink(first_kind, a, b)
+}
+
+#[cfg(test)]
+mod tests_wave22_agent13 {
+    use super::*;
+
+    #[test]
+    fn pairs_order_and_forward() {
+        let mut calls = vec![];
+        let r = w22a13_pack_pairs(
+            7,
+            1,
+            2,
+            3,
+            4,
+            |x, y| {
+                calls.push((x, y));
+                (x * 10 + y) as u16
+            },
+            |p, a, b| (p, a, b),
+        );
+        assert_eq!(r, (7, 12, 34));
+        assert_eq!(calls, vec![(3, 4), (1, 2)]);
+    }
+
+    #[test]
+    fn objects_order_and_forward() {
+        let mut calls = vec![];
+        let r = w22a13_pack_objects(
+            5,
+            9,
+            6,
+            |x| {
+                calls.push(x);
+                x as u16
+            },
+            |k, a, b| (k, a, b),
+        );
+        assert_eq!(r, (9, 5, 6));
+        assert_eq!(calls, vec![6, 5]);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave22/agent14.rs
+// ===========================================================================
+// Wave 22 agent 14: small guard predicates and the TilePage constructor.
+
+/// `0x0065bf20`: TilePage constructor field init.  Dword layout of the
+/// object: [0]=vftable (not modelled), [1..=3]=0, [8..=0xd]=0, [0xf]=2,
+/// byte at dword 0x10 = 0.  The call at dword 4.. (sub-constructor) is
+/// supplied by the caller through `init_sub`.
+pub fn w22a14_tilepage_init(obj: &mut [u32; 0x11], init_sub: impl FnOnce(&mut [u32; 0x11])) {
+    obj[1] = 0;
+    obj[2] = 0;
+    obj[3] = 0;
+    init_sub(obj);
+    for i in 8..=0xd {
+        obj[i] = 0;
+    }
+    obj[0xf] = 2;
+    obj[0x10] = (obj[0x10] & !0xff) as u32;
+}
+
+/// `0x0065f7a0`: returns `(result, must_abort)`; the retail code calls a
+/// non-returning handler when `flag_a == 0 && flag_b != 0`, else returns 1.
+pub fn w22a14_guard_flags(flag_a: u8, flag_b: u8) -> (u32, bool) {
+    if flag_a == 0 && flag_b != 0 {
+        (0, true)
+    } else {
+        (1, false)
+    }
+}
+
+/// `0x00658e14`: true when the table entry at `idx & 0xffff` has bit 1
+/// clear (the retail code then calls a non-returning error routine).
+pub fn w22a14_entry_bit1_clear(table: &[u8], idx: u32) -> bool {
+    table
+        .get((idx & 0xffff) as usize)
+        .is_some_and(|v| v & 2 == 0)
+}
+
+/// `0x00667040`: true when both arguments are non-zero (the non-returning
+/// path); otherwise the retail code calls the error routine with code 0x57.
+pub fn w22a14_both_nonzero(a: i32, b: i32) -> (bool, u32) {
+    if a != 0 && b != 0 {
+        (true, 0)
+    } else {
+        (false, 0x57)
+    }
+}
+
+/// `0x006586a0`: true when the pointer-sized member is non-zero (then the
+/// non-returning release call with code 0x7d04 is made).
+pub fn w22a14_member_set(member: i32) -> Option<u32> {
+    if member != 0 { Some(0x7d04) } else { None }
+}
+
+/// `0x00658f10`: true when the probe result is non-zero (non-returning
+/// call follows).
+pub fn w22a14_probe_nonzero(probe: i32) -> bool {
+    probe != 0
+}
+
+#[cfg(test)]
+mod tests_wave22_agent14 {
+    use super::*;
+
+    #[test]
+    fn tilepage() {
+        let mut o = [0xffff_ffffu32; 0x11];
+        w22a14_tilepage_init(&mut o, |o| o[4] = 7);
+        assert_eq!(o[1..4], [0, 0, 0]);
+        assert_eq!(o[4], 7);
+        assert_eq!(o[8..=0xd], [0; 6]);
+        assert_eq!(o[0xf], 2);
+        assert_eq!(o[0x10], 0xffff_ff00);
+    }
+
+    #[test]
+    fn guards() {
+        assert_eq!(w22a14_guard_flags(0, 1), (0, true));
+        assert_eq!(w22a14_guard_flags(1, 1), (1, false));
+        assert_eq!(w22a14_guard_flags(0, 0), (1, false));
+        assert!(w22a14_entry_bit1_clear(&[0, 2], 0));
+        assert!(!w22a14_entry_bit1_clear(&[0, 2], 1));
+        assert!(!w22a14_entry_bit1_clear(&[0], 0x10000 + 5));
+        assert_eq!(w22a14_both_nonzero(1, 1), (true, 0));
+        assert_eq!(w22a14_both_nonzero(1, 0), (false, 0x57));
+        assert_eq!(w22a14_member_set(0), None);
+        assert_eq!(w22a14_member_set(3), Some(0x7d04));
+        assert!(w22a14_probe_nonzero(1) && !w22a14_probe_nonzero(0));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave22/agent15.rs
+// ===========================================================================
+// Wave 22 batch 15 (runtime glue).
+// Addresses cited below are the only ones implemented.
+
+/// Outcome of the `0x006670e0` argument check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum W22a15Check {
+    /// Both arguments non-zero: the retail code calls a non-returning helper.
+    Abort,
+    /// Otherwise the function calls the error setter with this code (0x57).
+    Error(u32),
+}
+
+/// `0x006670e0`: when both arguments are non-zero the original aborts
+/// (non-returning call); otherwise it reports error code `0x57`.
+pub fn w22a15_check_args(a: i32, b: i32) -> W22a15Check {
+    if a != 0 && b != 0 {
+        W22a15Check::Abort
+    } else {
+        W22a15Check::Error(0x57)
+    }
+}
+
+/// `0x00669580`: initialises a circular list header at word address
+/// `self_addr`: next = self, prev = self, size = 0.  Returns the three words.
+/// `a != b` in the original triggers a non-returning helper; reported as
+/// `Err(())`.
+pub fn w22a15_list_head_init(self_addr: u32, a: i32, b: i32) -> Result<[u32; 3], ()> {
+    if a != b {
+        return Err(());
+    }
+    Ok([self_addr, self_addr, 0])
+}
+
+/// `0x0066f490`: constructor image: 14 dwords of the object with
+/// `[0..4]=0`, halfword at byte 0xe = 3, `[11]=0x400`.
+pub fn w22a15_route_ctor_init() -> [u32; 14] {
+    let mut w = [0u32; 14];
+    // Halfword at offset 0xe is the high half of dword 3 on little endian.
+    w[3] = 3 << 16;
+    w[11] = 0x400;
+    w
+}
+
+#[cfg(test)]
+mod tests_wave22_agent15 {
+    use super::*;
+
+    #[test]
+    fn check_args() {
+        assert_eq!(w22a15_check_args(1, 1), W22a15Check::Abort);
+        assert_eq!(w22a15_check_args(0, 1), W22a15Check::Error(0x57));
+        assert_eq!(w22a15_check_args(1, 0), W22a15Check::Error(0x57));
+    }
+
+    #[test]
+    fn list_head() {
+        assert_eq!(w22a15_list_head_init(0x100, 2, 2), Ok([0x100, 0x100, 0]));
+        assert!(w22a15_list_head_init(0x100, 1, 2).is_err());
+    }
+
+    #[test]
+    fn ctor() {
+        let w = w22a15_route_ctor_init();
+        assert_eq!(w[3], 0x0003_0000);
+        assert_eq!(w[11], 0x400);
+        assert_eq!(w[0], 0);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave22/agent16.rs
+// ===========================================================================
+// Wave 22 agent 16 (queue, module `runtime.rs`).
+
+fn w22a16_cstr(buf: &[u8], at: usize) -> &[u8] {
+    let end = buf[at..]
+        .iter()
+        .position(|&b| b == 0)
+        .map_or(buf.len(), |n| at + n);
+    &buf[at..end]
+}
+
+fn w22a16_eol_len(buf: &[u8], at: usize) -> usize {
+    if buf[at] == b'\r' && buf.get(at + 1) == Some(&b'\n') {
+        2
+    } else {
+        1
+    }
+}
+
+/// `0x00678f70`: in-place line compactor over a NUL-terminated text
+/// buffer.  `rd` is the read cursor (`*param_1`), `start` receives the
+/// output start (`*param_2`, `None` when nothing was produced).  With no
+/// `key`, comment lines (`;`/`#`) are kept and, when `strip_ws` is set,
+/// blank lines before a comment collapse into `\n` padding; with a key a
+/// line stops the scan when `less` says neither `line < key` nor
+/// `key < line`.  `less` models the string comparer `FUN_00677890`.
+/// Returns the retail bool result.
+pub fn w22a16_compact_lines(
+    buf: &mut [u8],
+    rd: &mut usize,
+    start: &mut Option<usize>,
+    key: Option<&[u8]>,
+    strip_ws: bool,
+    less: &dyn Fn(&[u8], &[u8]) -> bool,
+) -> bool {
+    let mut wr = *rd;
+    *start = Some(wr);
+    let first_rd = *rd;
+    let mut local5 = buf[*rd];
+    let _ = first_rd;
+    loop {
+        if key.is_none() {
+            let b = buf[*rd];
+            if b != b';' && b != b'#' {
+                let finish = |buf: &mut [u8],
+                              rd: &mut usize,
+                              start: &mut Option<usize>,
+                              wr: usize,
+                              local5: u8| {
+                    if *start == Some(*rd) {
+                        *start = None;
+                        return false;
+                    }
+                    buf[wr - 1] = 0;
+                    if key.is_some() && local5 != 0 {
+                        buf[*rd] = local5;
+                        *rd += w22a16_eol_len(buf, *rd);
+                    }
+                    true
+                };
+                if !strip_ws {
+                    return finish(buf, rd, start, wr, local5);
+                }
+                let mut p = *rd;
+                let mut nl = 0usize;
+                loop {
+                    let c = buf[p];
+                    if !matches!(c, b' ' | b'\t' | b'\r' | b'\n') {
+                        break;
+                    }
+                    let mut step = 1;
+                    if c == b'\n' || c == b'\r' {
+                        nl += 1;
+                        if c == b'\r' && buf[p + 1] == b'\n' {
+                            step = 2;
+                        }
+                    }
+                    p += step;
+                }
+                let c = buf[p];
+                if c != b';' && c != b'#' {
+                    return finish(buf, rd, start, wr, local5);
+                }
+                for i in 0..nl {
+                    buf[wr + i] = b'\n';
+                }
+                wr += nl;
+                *rd = p;
+                continue;
+            }
+        }
+        let line_rd = *rd;
+        let mut p = line_rd;
+        while !matches!(buf[p], 0 | b'\n' | b'\r') {
+            p += 1;
+        }
+        *rd = p;
+        let len = p - line_rd;
+        if wr < line_rd {
+            buf.copy_within(line_rd..p, wr);
+        }
+        local5 = buf[p];
+        buf[p] = 0;
+        if let Some(k) = key {
+            let line = w22a16_cstr(buf, wr).to_vec();
+            if !less(&line, k) && !less(k, &line) {
+                // retail jumps to the finish block
+                if *start == Some(*rd) {
+                    *start = None;
+                    return false;
+                }
+                buf[wr - 1] = 0;
+                if local5 != 0 {
+                    buf[*rd] = local5;
+                    *rd += w22a16_eol_len(buf, *rd);
+                }
+                return true;
+            }
+        }
+        if local5 == 0 {
+            return true;
+        }
+        buf[p] = local5;
+        *rd = p + w22a16_eol_len(buf, p);
+        buf[wr + len] = b'\n';
+        wr += len + 1;
+    }
+}
+
+#[cfg(test)]
+mod tests_wave22_agent16 {
+    use super::*;
+
+    fn lt(a: &[u8], b: &[u8]) -> bool {
+        a < b
+    }
+
+    #[test]
+    fn compacts_comment_only_text() {
+        let mut b = b"; a\r\n# b\0\0\0\0\0\0\0".to_vec();
+        let (mut rd, mut st) = (0, None);
+        assert!(w22a16_compact_lines(
+            &mut b, &mut rd, &mut st, None, false, &lt
+        ));
+        assert_eq!(st, Some(0));
+        assert_eq!(&b[..7], b"; a\n# b");
+    }
+
+    #[test]
+    fn non_comment_first_line_yields_none() {
+        let mut b = b"abc\0".to_vec();
+        let (mut rd, mut st) = (0, None);
+        assert!(!w22a16_compact_lines(
+            &mut b, &mut rd, &mut st, None, false, &lt
+        ));
+        assert_eq!(st, None);
+    }
+
+    #[test]
+    fn blank_lines_before_comment_collapse() {
+        let mut b = b" \n\n;x\0\0\0\0\0\0".to_vec();
+        let (mut rd, mut st) = (0, None);
+        assert!(w22a16_compact_lines(
+            &mut b, &mut rd, &mut st, None, true, &lt
+        ));
+        assert_eq!(&b[..2], b"\n\n");
+    }
+
+    #[test]
+    fn key_equal_line_stops() {
+        let mut b = b"a\nk\0\0".to_vec();
+        let (mut rd, mut st) = (0, None);
+        assert!(w22a16_compact_lines(
+            &mut b,
+            &mut rd,
+            &mut st,
+            Some(b"k"),
+            false,
+            &lt
+        ));
+        assert_eq!(st, Some(0));
+        assert_eq!(b[1], 0);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave22/agent17.rs
+// ===========================================================================
+// Wave 22 agent 17 translations.
+
+/// `0x00684590`: message filter.  A record whose 16-bit kind (offset 0x10)
+/// is 6 is swallowed and returns 1.  Kind 0xe with a zero first word first
+/// runs `on_kind_e`; every other record (and kind 0xe) is forwarded to
+/// `default_handler`, whose result is returned.
+pub fn w22a17_filter_message(
+    first_word: i32,
+    kind: u16,
+    mut on_kind_e: impl FnMut(),
+    default_handler: impl FnOnce() -> u32,
+) -> u32 {
+    if kind == 6 {
+        return 1;
+    }
+    if kind == 0xe && first_word == 0 {
+        on_kind_e();
+    }
+    default_handler()
+}
+
+#[cfg(test)]
+mod tests_wave22_agent17 {
+    use super::*;
+
+    #[test]
+    fn filter_message_paths() {
+        let mut calls = 0;
+        assert_eq!(w22a17_filter_message(0, 6, || calls += 1, || 9), 1);
+        assert_eq!(calls, 0);
+        assert_eq!(w22a17_filter_message(0, 0xe, || calls += 1, || 9), 9);
+        assert_eq!(calls, 1);
+        assert_eq!(w22a17_filter_message(1, 0xe, || calls += 1, || 7), 7);
+        assert_eq!(w22a17_filter_message(0, 5, || calls += 1, || 3), 3);
+        assert_eq!(calls, 1);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave22/agent18.rs
+// ===========================================================================
+// Wave 22 translation batch 18 (runtime helpers).
+
+/// `0x00687580`: placement check.  `table` holds `(dx, dy)` i16 pairs
+/// indexed by `kind`; each is divided by 32 rounding toward zero.  Returns 3
+/// when `x`/`y` (low 16 bits, signed) are negative or the footprint exceeds
+/// the map size (`map_w`, `map_h`, fields at +0xe4/+0xe6); otherwise the max
+/// of the two caller-supplied checks (`check_a` = FUN_00686bf0 result,
+/// `check_b` = FUN_00686490 result).
+pub fn w22a18_placement_check(
+    table: &[(i16, i16)],
+    kind: u32,
+    x: u32,
+    y: u32,
+    map_w: u16,
+    map_h: u16,
+    check_a: impl FnOnce() -> i32,
+    check_b: impl FnOnce() -> i32,
+) -> i32 {
+    let (dx, dy) = table
+        .get((kind & 0xffff) as usize)
+        .copied()
+        .unwrap_or((0, 0));
+    let sx = (dx as i32 + ((dx as i32 >> 31) & 0x1f)) >> 5;
+    let sy = (dy as i32 + ((dy as i32 >> 31) & 0x1f)) >> 5;
+    let (sx, sy) = (sx as i16 as i32, sy as i16 as i32);
+    let (x, y) = (x as u16 as i16 as i32, y as u16 as i16 as i32);
+    if x >= 0 && y >= 0 && sx + x <= map_w as i32 && sy + y <= map_h as i32 {
+        let a = check_a();
+        let b = check_b();
+        return b.max(a);
+    }
+    3
+}
+
+/// `0x00687b60`: reads a little-endian u32 from a stream through `read`
+/// (which fills a slice and returns the byte count).  Loops while the count
+/// is not a multiple of 4 (a zero read fails); fewer than 4 bytes total is
+/// "Premature end of stream".
+pub fn w22a18_stream_read_u32(
+    mut read: impl FnMut(&mut [u8]) -> usize,
+) -> Result<u32, &'static str> {
+    let mut buf = [0u8; 4];
+    let mut n = read(&mut buf);
+    while n & 3 != 0 {
+        if n > 4 {
+            return Err("Premature end of stream");
+        }
+        let m = read(&mut buf[n..]);
+        if m == 0 {
+            return Err("Premature end of stream");
+        }
+        n += m;
+    }
+    if n > 3 {
+        Ok(u32::from_le_bytes(buf))
+    } else {
+        Err("Premature end of stream")
+    }
+}
+
+/// `0x00687bd0`: writes 4 bytes through `write` (returns bytes accepted),
+/// retrying on partial writes; zero progress or nothing written fails with
+/// "Stream rejected write operation".
+pub fn w22a18_stream_write_u32(
+    data: [u8; 4],
+    mut write: impl FnMut(&[u8]) -> usize,
+) -> Result<(), &'static str> {
+    let mut n = write(&data);
+    while n & 3 != 0 {
+        if n > 4 {
+            return Err("Stream rejected write operation");
+        }
+        let m = write(&data[n..]);
+        if m == 0 {
+            return Err("Stream rejected write operation");
+        }
+        n += m;
+    }
+    if n > 3 {
+        Ok(())
+    } else {
+        Err("Stream rejected write operation")
+    }
+}
+
+/// `0x006881a0`: runs `codec(capacity)` which returns `(status, out_len)`.
+/// When status is 0 and `out_len < capacity`, returns `(out_len, true)`
+/// (the codec's own buffer is selected); else `(capacity, false)` (the
+/// input buffer is kept).
+pub fn w22a18_pick_compressed(capacity: u32, codec: impl FnOnce(u32) -> (i32, u32)) -> (u32, bool) {
+    let (status, out) = codec(capacity);
+    if status == 0 && out < capacity {
+        (out, true)
+    } else {
+        (capacity, false)
+    }
+}
+
+#[cfg(test)]
+mod tests_wave22_agent18 {
+    use super::*;
+
+    #[test]
+    fn placement() {
+        let t = [(64i16, -33i16), (0, 0)];
+        assert_eq!(w22a18_placement_check(&t, 0, 0, 0, 10, 10, || 1, || 5), 5);
+        assert_eq!(w22a18_placement_check(&t, 0, 0, 0, 10, 10, || 7, || 5), 7);
+        assert_eq!(
+            w22a18_placement_check(&t, 0, 0xffff, 0, 10, 10, || 1, || 1),
+            3
+        );
+        assert_eq!(w22a18_placement_check(&t, 0, 9, 0, 10, 10, || 1, || 1), 3);
+        assert_eq!(w22a18_placement_check(&t, 0, 8, 1, 10, 10, || 1, || 2), 2);
+    }
+
+    #[test]
+    fn read_u32() {
+        let src = [1u8, 2, 3, 4];
+        let mut pos = 0;
+        let v = w22a18_stream_read_u32(|b| {
+            let n = b.len().min(1).min(src.len() - pos);
+            b[..n].copy_from_slice(&src[pos..pos + n]);
+            pos += n;
+            n
+        });
+        assert_eq!(v, Ok(0x04030201));
+        assert!(w22a18_stream_read_u32(|_| 0).is_err());
+    }
+
+    #[test]
+    fn write_u32() {
+        let mut out = Vec::new();
+        let r = w22a18_stream_write_u32([9, 8, 7, 6], |d| {
+            out.push(d[0]);
+            1
+        });
+        assert!(r.is_ok());
+        assert_eq!(out.len(), 4);
+        assert!(w22a18_stream_write_u32([0; 4], |_| 0).is_err());
+    }
+
+    #[test]
+    fn pick() {
+        assert_eq!(w22a18_pick_compressed(100, |_| (0, 50)), (50, true));
+        assert_eq!(w22a18_pick_compressed(100, |_| (0, 100)), (100, false));
+        assert_eq!(w22a18_pick_compressed(100, |_| (1, 10)), (100, false));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave22/agent19.rs
+// ===========================================================================
+// Wave 22 agent 19 (runtime container helpers).
+
+/// `0x006907f0`: initialises a circular list sentinel node: both links point
+/// to the node itself (`node[0] = node[1] = self_id`) and the size slot
+/// (`node[2]`) is zeroed.  The trailing allocation call is not modelled.
+pub fn w22a19_list_sentinel_init(node: &mut [u32; 3], self_id: u32) {
+    node[0] = self_id;
+    node[1] = self_id;
+    node[2] = 0;
+}
+
+/// `0x00695640`: push_back of a 12-byte element into a vector laid out as
+/// `{ptr, len, cap_flags}` (capacity is `cap_flags & 0x7fffffff`).  `src`
+/// is the byte offset of the argument relative to the buffer start divided
+/// by 12 (computed by the original so an element aliasing the buffer is
+/// copied from its pre-growth slot).  Returns `false` when the vector is
+/// full (the original takes the reallocation path, not modelled here).
+pub fn w22a19_vec12_push_back(
+    data: &mut Vec<[u32; 3]>,
+    len: &mut u32,
+    cap_flags: u32,
+    src: u32,
+    value: [u32; 3],
+) -> bool {
+    let cap = cap_flags & 0x7fff_ffff;
+    if *len == cap {
+        return false;
+    }
+    let item = if src < *len {
+        data[src as usize]
+    } else {
+        value
+    };
+    let at = *len as usize;
+    if data.len() <= at {
+        data.resize(at + 1, [0; 3]);
+    }
+    data[at] = item;
+    *len += 1;
+    true
+}
+
+/// Growth size used on the full path of `0x00695640`: half of the current
+/// capacity (bits 1..30 of `cap_flags`), at least 1.
+pub fn w22a19_vec12_grow_step(cap_flags: u32) -> u32 {
+    let _cap = cap_flags & 0x7fff_ffff;
+    let half = (cap_flags >> 1) & 0x3fff_ffff;
+    if half > 0 { half } else { 1 }
+}
+
+#[cfg(test)]
+mod tests_wave22_agent19 {
+    use super::*;
+
+    #[test]
+    fn sentinel() {
+        let mut n = [9, 9, 9];
+        w22a19_list_sentinel_init(&mut n, 0x10);
+        assert_eq!(n, [0x10, 0x10, 0]);
+    }
+
+    #[test]
+    fn push_back_paths() {
+        let mut d = vec![[1, 2, 3], [4, 5, 6]];
+        let mut len = 2;
+        assert!(!w22a19_vec12_push_back(&mut d, &mut len, 2, 99, [0; 3]));
+        d.reserve(4);
+        assert!(w22a19_vec12_push_back(&mut d, &mut len, 4, 1, [7, 7, 7]));
+        assert_eq!(d[2], [4, 5, 6]);
+        assert!(w22a19_vec12_push_back(&mut d, &mut len, 4, 50, [7, 8, 9]));
+        assert_eq!(d[3], [7, 8, 9]);
+        assert_eq!(len, 4);
+    }
+
+    #[test]
+    fn grow_step() {
+        assert_eq!(w22a19_vec12_grow_step(0), 1);
+        assert_eq!(w22a19_vec12_grow_step(8), 4);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave22/agent20.rs
+// ===========================================================================
+// Wave 22 agent 20: small runtime helpers.
+
+/// `0x00696370`: ostream-style write of `(ptr,len)`.  `len == 0` is a no-op.
+/// If the stream state is clear, `put` is called; a short write sets bit 1
+/// (badbit); a non-clear state just ORs bit 1.  Returns the new state.
+pub fn w22a20_stream_write(state: u32, len: u32, put: impl FnOnce(u32) -> u64) -> u32 {
+    if len == 0 {
+        return state;
+    }
+    if state == 0 {
+        if put(len) != len as u64 {
+            return state | 1;
+        }
+        state
+    } else {
+        state | 1
+    }
+}
+
+/// `0x00696470`: intrusive list head init: next and prev point to self and the
+/// size is zero.  Returns `(next, prev, size)`.
+pub fn w22a20_list_head_init(this: u32) -> (u32, u32, u32) {
+    (this, this, 0)
+}
+
+/// `0x006969c0`: owned-pointer reset.  Low bit of `word` tags an external
+/// buffer.  When the pointer is non-null, `destroy` runs; the word becomes 1.
+/// Returns `None` when a tagged (heap) block would need freeing (non-returning
+/// free path in the original), else the new word.
+pub fn w22a20_owned_reset(word: u32, mut destroy: impl FnMut(u32)) -> Option<u32> {
+    let ptr = if word & 1 != 0 { word & !1 } else { word };
+    if ptr == 0 {
+        return Some(word);
+    }
+    destroy(ptr);
+    if word & 1 != 0 {
+        return None;
+    }
+    Some(1)
+}
+
+/// `0x006984d0`: scan a 64-entry `(name, key)` table for `key`, only when
+/// `blocked` is false, the flag mask lacks `0x2000_0000` and `key != 0`.
+pub fn w22a20_lookup_key64(
+    blocked: bool,
+    flags: u32,
+    key: i16,
+    table: &[(u32, i16)],
+) -> Option<u32> {
+    w22a20_lookup_key(blocked, flags, key, table, 0x40)
+}
+
+/// `0x00698530`: same lookup as `0x006984d0` with a one-entry table.
+pub fn w22a20_lookup_key1(
+    blocked: bool,
+    flags: u32,
+    key: i16,
+    table: &[(u32, i16)],
+) -> Option<u32> {
+    w22a20_lookup_key(blocked, flags, key, table, 1)
+}
+
+fn w22a20_lookup_key(
+    blocked: bool,
+    flags: u32,
+    key: i16,
+    table: &[(u32, i16)],
+    count: usize,
+) -> Option<u32> {
+    if blocked || flags & 0x2000_0000 != 0 || key == 0 {
+        return None;
+    }
+    table.iter().take(count).find(|e| e.1 == key).map(|e| e.0)
+}
+
+/// `0x006993c0`: length of the text before the first `'>'` in `s`.
+pub fn w22a20_len_until_gt(s: &[u8]) -> Option<usize> {
+    s.iter().position(|&b| b == b'>')
+}
+
+/// `0x00699450`: string capacity growth.  Low 31 bits of `flags` hold the
+/// capacity, the top bit is preserved.  Returns the new flags word when a
+/// grow is needed (1.5x, at least `want`), else `None`.
+pub fn w22a20_grow_capacity(flags: u32, want: u32) -> Option<u32> {
+    let cap = flags & 0x7fff_ffff;
+    if cap >= want {
+        return None;
+    }
+    let mut n = ((flags >> 1) & 0x3fff_ffff).wrapping_add(cap);
+    if n < want {
+        n = want;
+    }
+    Some((flags & 0x8000_0000) | (n & 0x7fff_ffff))
+}
+
+#[cfg(test)]
+mod tests_wave22_agent20 {
+    use super::*;
+
+    #[test]
+    fn stream_write() {
+        assert_eq!(w22a20_stream_write(0, 0, |_| panic!()), 0);
+        assert_eq!(w22a20_stream_write(0, 4, |n| n as u64), 0);
+        assert_eq!(w22a20_stream_write(0, 4, |_| 2), 1);
+        assert_eq!(w22a20_stream_write(4, 4, |_| panic!()), 5);
+    }
+
+    #[test]
+    fn list_head() {
+        assert_eq!(w22a20_list_head_init(7), (7, 7, 0));
+    }
+
+    #[test]
+    fn owned_reset() {
+        let mut n = 0;
+        assert_eq!(w22a20_owned_reset(0, |_| n += 1), Some(0));
+        assert_eq!(w22a20_owned_reset(0x100, |_| n += 1), Some(1));
+        assert_eq!(w22a20_owned_reset(0x101, |_| n += 1), None);
+        assert_eq!(n, 2);
+    }
+
+    #[test]
+    fn lookup() {
+        let t = [(10, 5), (11, 6)];
+        assert_eq!(w22a20_lookup_key64(false, 0, 6, &t), Some(11));
+        assert_eq!(w22a20_lookup_key64(true, 0, 6, &t), None);
+        assert_eq!(w22a20_lookup_key64(false, 0x2000_0000, 6, &t), None);
+        assert_eq!(w22a20_lookup_key64(false, 0, 0, &t), None);
+        assert_eq!(w22a20_lookup_key1(false, 0, 6, &t), None);
+        assert_eq!(w22a20_lookup_key1(false, 0, 5, &t), Some(10));
+    }
+
+    #[test]
+    fn len_and_grow() {
+        assert_eq!(w22a20_len_until_gt(b"ab>c"), Some(2));
+        assert_eq!(w22a20_len_until_gt(b"abc"), None);
+        assert_eq!(w22a20_grow_capacity(15, 10), None);
+        assert_eq!(w22a20_grow_capacity(0x8000_000f, 16), Some(0x8000_0016));
+        assert_eq!(w22a20_grow_capacity(15, 100), Some(100));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave22/agent21.rs
+// ===========================================================================
+// Wave 22 agent 21: image-resampler ring/cache helpers and menu flag glue.
+
+/// `0x0069a8c0`: sets the flag at `DAT_01165f09` to 1, then runs the refresh.
+pub fn w22a21_set_flag_and_refresh(flag: &mut bool, refresh: impl FnOnce()) {
+    *flag = true;
+    refresh();
+}
+
+/// `0x0069bd50`: clears the flag at `DAT_01165f09`, then runs the refresh.
+pub fn w22a21_clear_flag_and_refresh(flag: &mut bool, refresh: impl FnOnce()) {
+    *flag = false;
+    refresh();
+}
+
+/// `0x0069e4e0`: records a new value (skipped when unchanged and `force` is
+/// zero); when the derived key changes, calls `on_key_change`, then `refresh`.
+/// Returns whether anything was updated.
+pub fn w22a21_update_value(
+    value: &mut i32,
+    key: &mut i32,
+    new_value: i32,
+    force: u8,
+    derive_key: impl FnOnce() -> i32,
+    on_key_change: impl FnOnce(),
+    refresh: impl FnOnce(),
+) -> bool {
+    if *value == new_value && force == 0 {
+        return false;
+    }
+    *value = new_value;
+    let k = derive_key();
+    if *key != k {
+        *key = k;
+        on_key_change();
+    }
+    refresh();
+    true
+}
+
+/// `0x0069e6b0`: the 19-entry table must be non-zero everywhere except index
+/// 10 (which is skipped) for the flag to become true; `enable == 0` clears it.
+pub fn w22a21_all_slots_filled(enable: u8, table: &[u8; 19]) -> bool {
+    if enable == 0 {
+        return false;
+    }
+    (0..19).all(|i| i == 10 || table[i] != 0)
+}
+
+/// `0x0069e760`: growth step of a flagged vector.  `cap_word` keeps the
+/// capacity in its low 31 bits; returns the new word when a grow is needed
+/// (new capacity = max(requested, cap + cap/2)), or `None`.
+pub fn w22a21_grow_capacity(cap_word: u32, requested: u32) -> Option<u32> {
+    if (cap_word & 0x7fff_ffff) >= requested {
+        return None;
+    }
+    let mut new_cap = ((cap_word >> 1) & 0x3fff_ffff).wrapping_add(cap_word & 0x7fff_ffff);
+    if new_cap < requested {
+        new_cap = requested;
+    }
+    Some(((cap_word ^ new_cap) & 0x7fff_ffff) ^ cap_word)
+}
+
+/// Ring-buffer cursor of the resampler (offsets 0xa4/0xa8/0xac/0xb0).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct W22a21Ring {
+    /// 0xa4: slot count.
+    pub slots: i32,
+    /// 0xa8: first buffered row.
+    pub first_row: i32,
+    /// 0xac: last buffered row.
+    pub last_row: i32,
+    /// 0xb0: slot of the first row, negative when empty.
+    pub head_slot: i32,
+}
+
+/// `0x0069e840`: appends `row` as the last row and returns the slot index
+/// whose `row_bytes` bytes the original then zeroes.
+pub fn w22a21_ring_push_row(ring: &mut W22a21Ring, row: i32) -> i32 {
+    ring.last_row = row;
+    if ring.head_slot < 0 {
+        ring.head_slot = 0;
+        ring.first_row = row;
+        0
+    } else {
+        ((ring.head_slot - ring.first_row) + row) % ring.slots
+    }
+}
+
+/// `0x006a01a0`: drains ring rows below `target` through `process(row, slot)`
+/// (only for rows inside `0..height`).  `buf_base` is returned when nothing
+/// was drained, matching the original's return value.
+pub fn w22a21_ring_drain(
+    ring: &mut W22a21Ring,
+    height: i32,
+    target: i32,
+    buf_base: i32,
+    mut process: impl FnMut(i32, i32),
+) -> i32 {
+    let mut ret = buf_base;
+    if ring.head_slot >= 0 && ring.first_row < target {
+        let mut slot = ring.head_slot;
+        loop {
+            let row = ring.first_row;
+            if (0..height).contains(&row) {
+                process(row, slot);
+            }
+            ret = ring.first_row;
+            if ret == ring.last_row {
+                break;
+            }
+            ring.first_row = ret + 1;
+            let next = ring.head_slot + 1;
+            slot = next % ring.slots;
+            ring.head_slot = slot;
+            if target <= ring.first_row {
+                return next / ring.slots;
+            }
+        }
+        ring.head_slot = -1;
+        ring.first_row = 0;
+        ring.last_row = 0;
+    }
+    ret
+}
+
+/// Inputs of the buffer-size computation at `0x0069f340`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct W22a21Dims {
+    pub off4: i32,
+    pub off8: i32,
+    pub off14: i32,
+    pub off18: i32,
+    pub scale_x: f32,
+    pub scale_y: f32,
+    pub kind_x: i32,
+    pub kind_y: i32,
+    pub channels: i32,
+}
+
+/// Derived sizes written back by `0x0069f340`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct W22a21Sizes {
+    pub w98: i32,
+    pub h9c: i32,
+    pub ring_slots: i32,
+    pub bc: i32,
+    pub c0: i32,
+    pub c4: i32,
+    pub c8: i32,
+    pub cc: i32,
+    pub d0: i32,
+    pub d4: i32,
+    pub d8: i32,
+    pub total: i32,
+}
+
+/// `0x0069f340`: computes the scratch buffer sizes; `support(kind, scale)`
+/// and `taps(kind, scale)` stand for the two filter helpers.
+pub fn w22a21_buffer_sizes(
+    d: &W22a21Dims,
+    support: impl Fn(i32, f32) -> i32,
+    taps: impl Fn(i32, f32) -> i32,
+) -> W22a21Sizes {
+    let sx = support(d.kind_x, d.scale_x);
+    let sy = support(d.kind_y, d.scale_y);
+    let w98 = if d.scale_x <= 1.0 {
+        d.off4 + (support(d.kind_x, d.scale_x) / 2) * 2
+    } else {
+        d.off14
+    };
+    let h9c = if d.scale_y <= 1.0 {
+        d.off8 + (support(d.kind_y, d.scale_y) / 2) * 2
+    } else {
+        d.off18
+    };
+    let ring_slots = sy + 1;
+    let bc = w98 * 8;
+    let c0 = taps(d.kind_x, d.scale_x) * w98 * 4;
+    let c4 = h9c << 3;
+    let c8 = taps(d.kind_y, d.scale_y) * h9c * 4;
+    let mut d0 = d.channels * d.off14 * 4;
+    let cc = (d.off4 + (sx / 2) * 2) * d.channels * 4;
+    let d4 = ring_slots * d.channels * d.off14 * 4;
+    let mut d8 = d0;
+    if d.scale_y <= 1.0 {
+        d8 = 0;
+    } else {
+        d0 = 0;
+    }
+    let total = d4 + d8 + cc + c4 + c0 + c8 + bc;
+    W22a21Sizes {
+        w98,
+        h9c,
+        ring_slots,
+        bc,
+        c0,
+        c4,
+        c8,
+        cc,
+        d0,
+        d4,
+        d8,
+        total,
+    }
+}
+
+#[cfg(test)]
+mod tests_wave22_agent21 {
+    use super::*;
+
+    #[test]
+    fn flags() {
+        let mut f = false;
+        let mut n = 0;
+        w22a21_set_flag_and_refresh(&mut f, || n += 1);
+        assert!(f);
+        w22a21_clear_flag_and_refresh(&mut f, || n += 1);
+        assert!(!f && n == 2);
+    }
+
+    #[test]
+    fn update_value() {
+        let (mut v, mut k) = (5, 1);
+        assert!(!w22a21_update_value(
+            &mut v,
+            &mut k,
+            5,
+            0,
+            || 9,
+            || {},
+            || {}
+        ));
+        let log = std::cell::Cell::new(0);
+        assert!(w22a21_update_value(
+            &mut v,
+            &mut k,
+            5,
+            1,
+            || 9,
+            || log.set(log.get() + 1),
+            || log.set(log.get() + 10)
+        ));
+        assert_eq!((k, log.get()), (9, 11));
+    }
+
+    #[test]
+    fn slots() {
+        let mut t = [1u8; 19];
+        t[10] = 0;
+        assert!(w22a21_all_slots_filled(1, &t));
+        assert!(!w22a21_all_slots_filled(0, &t));
+        t[3] = 0;
+        assert!(!w22a21_all_slots_filled(1, &t));
+    }
+
+    #[test]
+    fn grow() {
+        assert_eq!(w22a21_grow_capacity(10, 10), None);
+        assert_eq!(w22a21_grow_capacity(10, 11), Some(15));
+        assert_eq!(w22a21_grow_capacity(0x8000_0004, 100), Some(0x8000_0064));
+    }
+
+    #[test]
+    fn ring() {
+        let mut r = W22a21Ring {
+            slots: 4,
+            first_row: 0,
+            last_row: 0,
+            head_slot: -1,
+        };
+        assert_eq!(w22a21_ring_push_row(&mut r, 7), 0);
+        assert_eq!(r.first_row, 7);
+        assert_eq!(w22a21_ring_push_row(&mut r, 9), 2);
+        let mut seen = vec![];
+        let ret = w22a21_ring_drain(&mut r, 100, 8, 55, |a, b| seen.push((a, b)));
+        assert_eq!(seen, vec![(7, 0)]);
+        assert_eq!(ret, 0);
+        assert_eq!(r.first_row, 8);
+        let mut r2 = W22a21Ring {
+            slots: 4,
+            first_row: 0,
+            last_row: 1,
+            head_slot: 0,
+        };
+        assert_eq!(w22a21_ring_drain(&mut r2, 5, 10, 0, |_, _| {}), 1);
+        assert_eq!(r2.head_slot, -1);
+        assert_eq!(w22a21_ring_drain(&mut r2, 5, 10, 55, |_, _| {}), 55);
+    }
+
+    #[test]
+    fn sizes() {
+        let d = W22a21Dims {
+            off4: 10,
+            off8: 20,
+            off14: 16,
+            off18: 32,
+            scale_x: 0.5,
+            scale_y: 2.0,
+            kind_x: 1,
+            kind_y: 2,
+            channels: 4,
+        };
+        let s = w22a21_buffer_sizes(&d, |_, _| 4, |_, _| 3);
+        assert_eq!((s.w98, s.h9c, s.ring_slots), (14, 32, 5));
+        assert_eq!((s.d0, s.d8), (0, 256));
+        assert_eq!(s.cc, 14 * 4 * 4);
+        assert_eq!(s.total, s.d4 + s.d8 + s.cc + s.c4 + s.c0 + s.c8 + s.bc);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave22/agent22.rs
+// ===========================================================================
+// Wave 22 agent 22: eud array/memory-view helpers.
+
+/// `0x006a3940`: applies `value` to `*out` by mode.  Mode 0 stores
+/// directly; otherwise `fetch` (virtual slot +8) must succeed first, then
+/// mode 1 adds and mode -1 saturating-subtracts (clamps to 0 unless
+/// `value < *out`).  Other modes leave the fetched value.
+pub fn w22a22_apply_mode(
+    out: &mut u32,
+    value: u32,
+    mode: i32,
+    fetch: impl FnOnce(&mut u32) -> bool,
+) -> bool {
+    if mode == 0 {
+        *out = value;
+        return true;
+    }
+    if !fetch(out) {
+        return false;
+    }
+    if mode == 1 {
+        *out = out.wrapping_add(value);
+    } else if mode == -1 {
+        *out = if value < *out { *out - value } else { 0 };
+    }
+    true
+}
+
+/// `0x006a7a80`: reads a u32 at `offset` of `buf` (the view's base pointer,
+/// `None` when unset -> false).  `|base - offset|` < 4 bytes gives a
+/// partial copy into a zeroed word.
+pub fn w22a22_read_word(buf: Option<&[u8]>, base: u32, offset: u32) -> Option<u32> {
+    let buf = buf?;
+    let dist = base.abs_diff(offset) as usize;
+    let off = offset as usize;
+    let mut w = [0u8; 4];
+    let n = dist.min(4);
+    w[..n].copy_from_slice(buf.get(off..off + n)?);
+    Some(u32::from_le_bytes(w))
+}
+
+/// `0x006a7cb0`: read-modify-write of a u32 at `offset` (modes 0 set,
+/// 1 add, -1 saturating subtract to 0).  Distances under 4 bytes only
+/// round-trip that many bytes.  Returns false when no buffer.
+pub fn w22a22_write_word(
+    buf: Option<&mut [u8]>,
+    base: u32,
+    offset: u32,
+    value: u32,
+    mode: i32,
+) -> bool {
+    let Some(buf) = buf else { return false };
+    let dist = (base.abs_diff(offset) as usize).min(4);
+    let off = offset as usize;
+    let Some(slot) = buf.get_mut(off..off + 4) else {
+        return false;
+    };
+    let mut cur = u32::from_le_bytes([slot[0], slot[1], slot[2], slot[3]]);
+    if dist < 4 {
+        cur &= if dist == 0 {
+            0
+        } else {
+            u32::MAX >> (32 - 8 * dist)
+        };
+    }
+    let new = match mode {
+        0 => value,
+        1 => cur.wrapping_add(value),
+        -1 => {
+            if value < cur {
+                cur - value
+            } else {
+                0
+            }
+        }
+        _ => cur,
+    };
+    slot[..4].copy_from_slice(&new.to_le_bytes());
+    true
+}
+
+/// Tree node for `w22a22_find_range`: child links, key and the range
+/// record `(start, len)` the node points at.
+#[derive(Clone, Copy, Debug)]
+pub struct W22a22Node {
+    pub left: Option<usize>,
+    pub right: Option<usize>,
+    pub key: u32,
+    pub start: u32,
+    pub len: u32,
+}
+
+/// `0x006a7d50`: lower-bound search by `key` (`root`); an exact key hit
+/// returns that node; else the predecessor (`prev`, the tree decrement
+/// helper; `None` = header) is returned if `start <= key < start+len`.
+pub fn w22a22_find_range(
+    nodes: &[W22a22Node],
+    root: Option<usize>,
+    first: Option<usize>,
+    key: u32,
+    prev: impl Fn(Option<usize>) -> Option<usize>,
+) -> Option<usize> {
+    let mut best: Option<usize> = None;
+    let mut cur = root;
+    while let Some(i) = cur {
+        if nodes[i].key < key {
+            cur = nodes[i].right;
+        } else {
+            best = Some(i);
+            cur = nodes[i].left;
+        }
+    }
+    if let Some(b) = best
+        && nodes[b].start == key
+    {
+        return Some(b);
+    }
+    if best != first {
+        let p = prev(best)?;
+        let n = &nodes[p];
+        if n.start <= key && key < n.start.wrapping_add(n.len) {
+            return Some(p);
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests_wave22_agent22 {
+    use super::*;
+
+    #[test]
+    fn apply_mode() {
+        let mut v = 5;
+        assert!(w22a22_apply_mode(&mut v, 9, 0, |_| false));
+        assert_eq!(v, 9);
+        assert!(!w22a22_apply_mode(&mut v, 1, 1, |_| false));
+        assert!(w22a22_apply_mode(&mut v, 3, 1, |_| true));
+        assert_eq!(v, 12);
+        assert!(w22a22_apply_mode(&mut v, 20, -1, |_| true));
+        assert_eq!(v, 0);
+        let mut v = 10;
+        w22a22_apply_mode(&mut v, 4, -1, |_| true);
+        assert_eq!(v, 6);
+    }
+
+    #[test]
+    fn read_word() {
+        let b = [1u8, 2, 3, 4, 5, 6, 7, 8];
+        assert_eq!(w22a22_read_word(None, 0, 0), None);
+        assert_eq!(w22a22_read_word(Some(&b), 100, 0), Some(0x04030201));
+        assert_eq!(w22a22_read_word(Some(&b), 2, 0), Some(0x0201));
+        assert_eq!(w22a22_read_word(Some(&b), 1, 1), Some(0));
+    }
+
+    #[test]
+    fn write_word() {
+        let mut b = [0u8; 8];
+        assert!(!w22a22_write_word(None, 0, 0, 1, 0));
+        assert!(w22a22_write_word(Some(&mut b), 100, 4, 7, 0));
+        assert!(w22a22_write_word(Some(&mut b), 100, 4, 3, 1));
+        assert_eq!(&b[4..], &[10, 0, 0, 0]);
+        assert!(w22a22_write_word(Some(&mut b), 100, 4, 99, -1));
+        assert_eq!(&b[4..], &[0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn find_range() {
+        let n = |key, left, right, start, len| W22a22Node {
+            left,
+            right,
+            key,
+            start,
+            len,
+        };
+        let nodes = [
+            n(10, None, None, 10, 5),
+            n(20, Some(0), Some(2), 20, 10),
+            n(40, None, None, 40, 4),
+        ];
+        let prev = |i: Option<usize>| match i {
+            None => Some(2),
+            Some(1) => Some(0),
+            Some(2) => Some(1),
+            _ => None,
+        };
+        assert_eq!(
+            w22a22_find_range(&nodes, Some(1), Some(0), 20, prev),
+            Some(1)
+        );
+        assert_eq!(
+            w22a22_find_range(&nodes, Some(1), Some(0), 25, prev),
+            Some(1)
+        );
+        assert_eq!(w22a22_find_range(&nodes, Some(1), Some(0), 35, prev), None);
+        assert_eq!(w22a22_find_range(&nodes, Some(1), Some(0), 5, prev), None);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave22/agent23.rs
+// ===========================================================================
+// Wave 22 agent 23: partial-buffer adapter flags and owned-pointer reset.
+
+/// Fields written by the partial-buffer adapter constructor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct W22a23PartialBuffer {
+    /// Slot 1: data buffer handle.
+    pub buffer: u32,
+    /// Slot 2: flags.
+    pub flags: u32,
+    /// Slot 3: secondary buffer handle.
+    pub secondary: u32,
+    /// Slot 5: capacity.
+    pub capacity: u32,
+    /// Slot 6: owner/context parameter.
+    pub owner: u32,
+}
+
+/// `0x006a94c0`: partial-buffer adapter constructor.  Base flags are 4 when
+/// `flag7` or a caller secondary buffer exists, else 6.  Without `flag7` the
+/// secondary is the caller's and bit 0x20000 is cleared; with it the
+/// secondary comes from `alloc_secondary` and 0x20000 is set.  A zero
+/// `buffer` is allocated through `alloc_buffer(capacity)` and sets bit 1.
+#[allow(clippy::too_many_arguments)]
+pub fn w22a23_partial_buffer_init(
+    owner: u32,
+    capacity: u32,
+    flags_in: u32,
+    secondary_in: u32,
+    buffer_in: u32,
+    flag7: bool,
+    alloc_secondary: impl FnOnce(u32) -> u32,
+    alloc_buffer: impl FnOnce(u32) -> u32,
+) -> W22a23PartialBuffer {
+    let base: u32 = if flag7 || secondary_in != 0 { 4 } else { 6 };
+    let mut flags = base | flags_in;
+    let secondary;
+    if !flag7 {
+        secondary = secondary_in;
+        flags = base | (flags_in & 0xfffd_ffff);
+    } else {
+        secondary = alloc_secondary(owner);
+        flags |= 0x20000;
+    }
+    let mut buffer = buffer_in;
+    if buffer == 0 {
+        buffer = alloc_buffer(capacity);
+        flags |= 1;
+    }
+    W22a23PartialBuffer {
+        buffer,
+        flags,
+        secondary,
+        capacity,
+        owner,
+    }
+}
+
+/// `0x006a98c0`: takes the pointer out of `src` (leaving 0), stores it in
+/// `dst` and returns the previous `dst` value when non-zero (to be freed).
+pub fn w22a23_take_owned(dst: &mut i32, src: &mut i32) -> Option<i32> {
+    let incoming = *src;
+    *src = 0;
+    let old = std::mem::replace(dst, incoming);
+    if old != 0 { Some(old) } else { None }
+}
+
+#[cfg(test)]
+mod tests_wave22_agent23 {
+    use super::*;
+
+    #[test]
+    fn partial_buffer_flags() {
+        let r = w22a23_partial_buffer_init(9, 64, 0x2_0000, 5, 7, false, |_| 99, |_| 77);
+        assert_eq!(r.flags, 4);
+        assert_eq!((r.secondary, r.buffer), (5, 7));
+        let r = w22a23_partial_buffer_init(9, 64, 0, 0, 0, false, |_| 99, |c| c + 1);
+        assert_eq!(r.flags, 7);
+        assert_eq!(r.buffer, 65);
+        let r = w22a23_partial_buffer_init(9, 64, 8, 0, 3, true, |o| o + 100, |_| 0);
+        assert_eq!(r.flags, 0x2000c);
+        assert_eq!(r.secondary, 109);
+    }
+
+    #[test]
+    fn take_owned() {
+        let (mut a, mut b) = (5, 6);
+        assert_eq!(w22a23_take_owned(&mut a, &mut b), Some(5));
+        assert_eq!((a, b), (6, 0));
+        assert_eq!(w22a23_take_owned(&mut b, &mut a), None);
+        assert_eq!((a, b), (0, 6));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave22/agent24.rs
+// ===========================================================================
+// Wave 22 agent 24: list-header reset and slot-init helpers.
+
+/// Result of resetting a circular list header.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum W22a24Reset {
+    /// The list was already empty (old `+4` link pointed at the header).
+    Empty,
+    /// Old first link; `node_ptr` is the value at `link + 8`.
+    HadNode { link: u32, node_ptr: u32 },
+}
+
+/// `0x006ad170`: resets a circular list header at `self_addr` (words
+/// `[0]=[1]=self_addr`, `[2]=0`) and reports the previous `+4` link.
+/// `node_of_link` reads the word at `link + 8`.
+pub fn w22a24_reset_list_header(
+    header: &mut [u32; 3],
+    self_addr: u32,
+    node_of_link: impl Fn(u32) -> u32,
+) -> W22a24Reset {
+    let old = header[1];
+    header[1] = self_addr;
+    header[0] = self_addr;
+    header[2] = 0;
+    if old == self_addr {
+        return W22a24Reset::Empty;
+    }
+    W22a24Reset::HadNode {
+        link: old,
+        node_ptr: node_of_link(old),
+    }
+}
+
+/// Buffers to release for one node in `0x006ad1c0`, in release order,
+/// followed by the node itself (size `0x170`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct W22a24NodeFrees {
+    pub buffers: Vec<u32>,
+    pub node: u32,
+    pub node_size: u32,
+}
+
+/// `0x006ad1c0`: resets the header like `0x006ad170`, then (when a node
+/// exists) frees the non-null pointers at node offsets `0x16c`, `0x164`,
+/// `0x15c`, then the node (size `0x170`).  `None` when the list was empty
+/// or the node pointer is null (the original calls a non-returning
+/// helper in the latter case).
+pub fn w22a24_destroy_list_plan(
+    header: &mut [u32; 3],
+    self_addr: u32,
+    node_of_link: impl Fn(u32) -> u32,
+    read_u32: impl Fn(u32, u32) -> u32,
+) -> Option<W22a24NodeFrees> {
+    match w22a24_reset_list_header(header, self_addr, node_of_link) {
+        W22a24Reset::Empty => None,
+        W22a24Reset::HadNode { node_ptr, .. } => {
+            if node_ptr == 0 {
+                return None;
+            }
+            let buffers = [0x16cu32, 0x164, 0x15c]
+                .iter()
+                .map(|&o| read_u32(node_ptr, o))
+                .filter(|&p| p != 0)
+                .collect();
+            Some(W22a24NodeFrees {
+                buffers,
+                node: node_ptr,
+                node_size: 0x170,
+            })
+        }
+    }
+}
+
+/// Fields written by `0x006acd50`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct W22a24SlotInit {
+    /// `param_6[1]`
+    pub f1: i32,
+    /// `param_6[2]` (starts at 1, `| 0x400` when `flag`)
+    pub flags: u32,
+    /// `param_6[3]`
+    pub f3: i32,
+    /// `param_6[5]`
+    pub f5: i32,
+}
+
+/// `0x006acd50`: initialises a slot record.  Returns `None` for the two
+/// non-returning error paths (`reject` nonzero, or missing record).
+/// `alloc(param_3)` models `FUN_006b1450(param_3, 0, 1)`; the result is
+/// also stored at `owner[0x18]` (returned as the second tuple item).
+/// The `bool` is true when the virtual call at vtable `+0x10` is made.
+pub fn w22a24_slot_init(
+    param2: i32,
+    param3: i32,
+    set_flag: bool,
+    reject: bool,
+    has_record: bool,
+    alloc: impl Fn(i32) -> i32,
+) -> Option<(W22a24SlotInit, i32, bool)> {
+    if reject || !has_record {
+        return None;
+    }
+    let h = alloc(param3);
+    let mut flags = 1u32;
+    if set_flag {
+        flags |= 0x400;
+    }
+    Some((
+        W22a24SlotInit {
+            f1: h,
+            flags,
+            f3: param2,
+            f5: param3,
+        },
+        h,
+        set_flag,
+    ))
+}
+
+#[cfg(test)]
+mod tests_wave22_agent24 {
+    use super::*;
+
+    #[test]
+    fn reset_header() {
+        let mut h = [1, 7, 9];
+        assert_eq!(
+            w22a24_reset_list_header(&mut h, 100, |l| l + 1),
+            W22a24Reset::HadNode {
+                link: 7,
+                node_ptr: 8
+            }
+        );
+        assert_eq!(h, [100, 100, 0]);
+        assert_eq!(
+            w22a24_reset_list_header(&mut h, 100, |l| l),
+            W22a24Reset::Empty
+        );
+    }
+
+    #[test]
+    fn destroy_plan() {
+        let mut h = [0, 5, 0];
+        let p = w22a24_destroy_list_plan(&mut h, 1, |_| 50, |_, o| if o == 0x164 { 0 } else { o })
+            .unwrap();
+        assert_eq!(p.buffers, vec![0x16c, 0x15c]);
+        assert_eq!((p.node, p.node_size), (50, 0x170));
+        let mut h = [0, 5, 0];
+        assert!(w22a24_destroy_list_plan(&mut h, 1, |_| 0, |_, _| 1).is_none());
+        let mut h = [0, 1, 0];
+        assert!(w22a24_destroy_list_plan(&mut h, 1, |_| 3, |_, _| 1).is_none());
+    }
+
+    #[test]
+    fn slot_init() {
+        let (s, h, v) = w22a24_slot_init(3, 9, true, false, true, |x| x * 2).unwrap();
+        assert_eq!(
+            (s.f1, s.flags, s.f3, s.f5, h, v),
+            (18, 0x401, 3, 9, 18, true)
+        );
+        let (s, _, v) = w22a24_slot_init(3, 9, false, false, true, |x| x).unwrap();
+        assert_eq!((s.flags, v), (1, false));
+        assert!(w22a24_slot_init(0, 0, false, true, true, |x| x).is_none());
+        assert!(w22a24_slot_init(0, 0, false, false, false, |x| x).is_none());
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave22/agent25.rs
+// ===========================================================================
+// Wave 22 agent 25: resource-record copy-on-write and lookup helpers.
+
+/// Flag bit 11 (`0x800`) of the record flags word at record offset 8.
+pub const W22A25_FLAG_OWNED: u32 = 0x800;
+
+/// A `(start, len)` span (record offset 4 and 0x14 of a block descriptor).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct W22a25Span {
+    pub start: u32,
+    pub len: u32,
+}
+
+/// `0x006ad270`: if the owned flag (0x800) is clear, copies 600 dwords
+/// (0x960 bytes) from `src` into a fresh buffer and sets the flag.
+pub fn w22a25_clone_960(flags: &mut u32, src: &[u32]) -> Option<Vec<u32>> {
+    w22a25_clone_dwords(flags, src, 600)
+}
+
+/// `0x006ad2b0`: same as the 600-dword variant but copies 0x4f dwords (0x13c bytes).
+pub fn w22a25_clone_13c(flags: &mut u32, src: &[u32]) -> Option<Vec<u32>> {
+    w22a25_clone_dwords(flags, src, 0x4f)
+}
+
+fn w22a25_clone_dwords(flags: &mut u32, src: &[u32], n: usize) -> Option<Vec<u32>> {
+    if (*flags >> 0xb) & 1 != 0 {
+        return None;
+    }
+    let mut out = vec![0u32; n];
+    let k = n.min(src.len());
+    out[..k].copy_from_slice(&src[..k]);
+    *flags |= W22A25_FLAG_OWNED;
+    Some(out)
+}
+
+fn w22a25_in_span(s: Option<W22a25Span>, p: u32) -> bool {
+    match s {
+        Some(s) => p >= s.start && (s.len as u64 + s.start as u64) > p as u64,
+        None => false,
+    }
+}
+
+/// `0x006ae590`: tries the two cached spans (slots 0x50 and 0x54); when
+/// `p` lies in neither, runs the slow lookup `fallback` (0x6a_7d50).
+/// Returns the fallback result, or `None` when a cached span matched.
+pub fn w22a25_lookup_cached<T>(
+    slot50: Option<W22a25Span>,
+    slot54: Option<W22a25Span>,
+    p: u32,
+    fallback: impl FnOnce(u32) -> T,
+) -> Option<T> {
+    if w22a25_in_span(slot50, p) || w22a25_in_span(slot54, p) {
+        None
+    } else {
+        Some(fallback(p))
+    }
+}
+
+/// Record seen by the typed lookups: `key` (offset 4), `flags` (offset 8), `value` (offset 0xc).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct W22a25Rec {
+    pub key: u32,
+    pub flags: u32,
+    pub value: u32,
+}
+
+fn w22a25_typed(rec: Option<W22a25Rec>, p: u32, tag: u32) -> u32 {
+    match rec {
+        Some(r) if r.flags & 0xff00_0000 == tag && r.key == p => r.value,
+        _ => 0,
+    }
+}
+
+/// `0x006ae5e0`: record lookup requiring type byte 0x3e and exact key; else 0.
+pub fn w22a25_typed_3e(rec: Option<W22a25Rec>, p: u32) -> u32 {
+    w22a25_typed(rec, p, 0x3e00_0000)
+}
+
+/// `0x006ae660`: as above with type byte 0x34.
+pub fn w22a25_typed_34(rec: Option<W22a25Rec>, p: u32) -> u32 {
+    w22a25_typed(rec, p, 0x3400_0000)
+}
+
+fn w22a25_index_map(p: u32, base: u32, count: u32, stride: u32, mul: i32, add: i32) -> i32 {
+    if p == 0 {
+        return 0;
+    }
+    let end = base.wrapping_add(count.wrapping_mul(stride));
+    if base <= p && p < end {
+        ((p - base) as i32 / stride as i32)
+            .wrapping_mul(mul)
+            .wrapping_add(add)
+    } else {
+        0
+    }
+}
+
+/// `0x006ae6e0`: pointer into a 0x14-stride table mapped to `idx * mul + add`, else 0.
+pub fn w22a25_map_stride_14(p: u32, base: u32, count: u32, mul: i32, add: i32) -> i32 {
+    w22a25_index_map(p, base, count, 0x14, mul, add)
+}
+
+/// `0x006ae740`: same with stride 0x28.
+pub fn w22a25_map_stride_28(p: u32, base: u32, count: u32, mul: i32, add: i32) -> i32 {
+    w22a25_index_map(p, base, count, 0x28, mul, add)
+}
+
+/// `0x006ae7a0`: same with stride 0x150.
+pub fn w22a25_map_stride_150(p: u32, base: u32, count: u32, mul: i32, add: i32) -> i32 {
+    w22a25_index_map(p, base, count, 0x150, mul, add)
+}
+
+/// `0x006ae920`: finds the map entry (sorted by key, `tree`) with key exactly
+/// `key`, takes its span, requires
+/// `span.len <= offset`, resolves
+/// `span.start + offset` through `resolve` (0x006ae590) and returns the
+/// result plus the address.  Nonzero result required.
+pub fn w22a25_resolve_in_block(
+    tree: &[(u32, Option<W22a25Span>)],
+    key: u32,
+    offset: u32,
+    resolve: impl FnOnce(u32) -> i32,
+) -> Option<(i32, u32)> {
+    let idx = tree.partition_point(|(k, _)| *k < key);
+    let (k, span) = *tree.get(idx)?;
+    if k > key {
+        return None;
+    }
+    let span = span?;
+    if span.len > offset {
+        return None;
+    }
+    let addr = span.start.wrapping_add(offset);
+    let r = resolve(addr);
+    if r != 0 { Some((r, addr)) } else { None }
+}
+
+#[cfg(test)]
+mod tests_wave22_agent25 {
+    use super::*;
+
+    #[test]
+    fn clone_flags() {
+        let mut f = 0;
+        let src = vec![7u32; 600];
+        let v = w22a25_clone_960(&mut f, &src).unwrap();
+        assert_eq!(v.len(), 600);
+        assert_eq!(f, 0x800);
+        assert!(w22a25_clone_960(&mut f, &src).is_none());
+        let mut g = 1;
+        assert_eq!(w22a25_clone_13c(&mut g, &src).unwrap().len(), 0x4f);
+        assert_eq!(g, 0x801);
+    }
+
+    #[test]
+    fn cached_span() {
+        let s = Some(W22a25Span { start: 10, len: 5 });
+        assert_eq!(w22a25_lookup_cached(s, None, 14, |p| p), None);
+        assert_eq!(w22a25_lookup_cached(s, None, 15, |p| p), Some(15));
+        assert_eq!(w22a25_lookup_cached(None, s, 9, |p| p), Some(9));
+    }
+
+    #[test]
+    fn typed() {
+        let r = W22a25Rec {
+            key: 5,
+            flags: 0x3e00_0001,
+            value: 99,
+        };
+        assert_eq!(w22a25_typed_3e(Some(r), 5), 99);
+        assert_eq!(w22a25_typed_3e(Some(r), 6), 0);
+        assert_eq!(w22a25_typed_34(Some(r), 5), 0);
+        let r2 = W22a25Rec {
+            flags: 0x3400_0000,
+            ..r
+        };
+        assert_eq!(w22a25_typed_34(Some(r2), 5), 99);
+        assert_eq!(w22a25_typed_34(None, 5), 0);
+    }
+
+    #[test]
+    fn maps() {
+        assert_eq!(w22a25_map_stride_14(0, 100, 4, 3, 1), 0);
+        assert_eq!(w22a25_map_stride_14(100 + 0x28, 100, 4, 3, 1), 7);
+        assert_eq!(w22a25_map_stride_14(100 + 0x50, 100, 4, 3, 1), 0);
+        assert_eq!(w22a25_map_stride_28(100 + 0x28, 100, 2, 2, 0), 2);
+        assert_eq!(w22a25_map_stride_150(100 + 0x150, 100, 2, 5, 1), 6);
+        assert_eq!(w22a25_map_stride_150(99, 100, 2, 5, 1), 0);
+    }
+
+    #[test]
+    fn resolve() {
+        let t = [
+            (1, Some(W22a25Span { start: 100, len: 0 })),
+            (3, Some(W22a25Span { start: 200, len: 4 })),
+        ];
+        assert_eq!(
+            w22a25_resolve_in_block(&t, 1, 8, |a| a as i32),
+            Some((108, 108))
+        );
+        assert_eq!(w22a25_resolve_in_block(&t, 2, 8, |a| a as i32), None);
+        assert_eq!(w22a25_resolve_in_block(&t, 3, 2, |a| a as i32), None);
+        assert_eq!(w22a25_resolve_in_block(&t, 1, 8, |_| 0), None);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave22/agent26.rs
+// ===========================================================================
+// Wave 22 agent 26: runtime.rs helpers (stream word readers, small flag helpers).
+
+/// Shared tail of the word readers: reads a little-endian dword at `off`
+/// from `buf`.  When fewer than 4 bytes remain (distance `|len - off|`) the
+/// result is zero-padded with the available bytes.  `None` when `buf` is absent.
+pub fn w22a26_read_tail_word(buf: Option<&[u8]>, off: u32) -> Option<u32> {
+    let buf = buf?;
+    let len = buf.len() as u32;
+    let remain = len.abs_diff(off);
+    let mut out = [0u8; 4];
+    let n = remain.min(4) as usize;
+    for (i, b) in out.iter_mut().enumerate().take(n) {
+        *b = buf.get(off as usize + i).copied().unwrap_or(0);
+    }
+    Some(u32::from_le_bytes(out))
+}
+
+fn w22a26_swap_pair(this: &mut [u32; 2], src: (u32, u32), changed: impl FnOnce() -> u32) -> u32 {
+    let old = (this[0], this[1]);
+    this[0] = src.0;
+    this[1] = src.1;
+    if old == src { 1 } else { changed() }
+}
+
+/// `0x006b0100`: stores the pair (fields 0x10/0x14) from `src` (0x48/0x4c);
+/// returns 1 when unchanged, otherwise the result of the change callback.
+pub fn w22a26_set_pair_a(
+    this: &mut [u32; 2],
+    src: (u32, u32),
+    changed: impl FnOnce() -> u32,
+) -> u32 {
+    w22a26_swap_pair(this, src, changed)
+}
+
+/// `0x006b0140`: same as the pair setter at 6b0100 with a different change callback.
+pub fn w22a26_set_pair_b(
+    this: &mut [u32; 2],
+    src: (u32, u32),
+    changed: impl FnOnce() -> u32,
+) -> u32 {
+    w22a26_swap_pair(this, src, changed)
+}
+
+/// `0x006b0180`: same as the pair setter at 6b0100 with a third change callback.
+pub fn w22a26_set_pair_c(
+    this: &mut [u32; 2],
+    src: (u32, u32),
+    changed: impl FnOnce() -> u32,
+) -> u32 {
+    w22a26_swap_pair(this, src, changed)
+}
+
+/// `0x006b0250`: reads dword at `off`; if the cached entry `(off >> 2)` of
+/// the 8-byte-stride table has a non-zero flag its value wins, else falls
+/// back to the raw buffer read.
+pub fn w22a26_read_cached_word(table: &[(u32, u8)], buf: Option<&[u8]>, off: u32) -> Option<u32> {
+    if let Some(&(v, flag)) = table.get((off >> 2) as usize)
+        && flag != 0
+    {
+        return Some(v);
+    }
+    w22a26_read_tail_word(buf, off)
+}
+
+/// `0x006b02d0`: offset 0 yields `reg_a` (field 0x18), offset 4 yields `reg_b`
+/// (field 0x1c); anything else reads the buffer at `off - 8`.
+pub fn w22a26_read_reg_or_word(
+    reg_a: u32,
+    reg_b: u32,
+    buf: Option<&[u8]>,
+    off: u32,
+) -> Option<u32> {
+    match off {
+        0 => Some(reg_a),
+        4 => Some(reg_b),
+        _ => w22a26_read_tail_word(buf, off.wrapping_sub(8)),
+    }
+}
+
+/// `0x006b03d0`: reads `byte_count / 4` dwords starting at `start` through an
+/// aligned word reader, stitching unaligned dwords from two aligned reads.
+/// `None` when any read fails.
+pub fn w22a26_read_words(
+    start: u32,
+    byte_count: u32,
+    mut read_aligned: impl FnMut(u32) -> Option<u32>,
+) -> Option<Vec<u32>> {
+    let mut out = Vec::new();
+    let mut addr = start;
+    for _ in 0..byte_count >> 2 {
+        let base = addr & !3;
+        if addr == base {
+            out.push(read_aligned(addr)?);
+        } else {
+            let lo = read_aligned(base)?;
+            let hi = read_aligned(addr.wrapping_add(4) & !3)?;
+            let mut bytes = [0u8; 8];
+            bytes[..4].copy_from_slice(&lo.to_le_bytes());
+            bytes[4..].copy_from_slice(&hi.to_le_bytes());
+            let k = (addr - base) as usize;
+            out.push(u32::from_le_bytes([
+                bytes[k],
+                bytes[k + 1],
+                bytes[k + 2],
+                bytes[k + 3],
+            ]));
+        }
+        addr = addr.wrapping_add(4);
+    }
+    Some(out)
+}
+
+/// `0x006b0470`: offsets 0x30..=0x38 are assembled from four single-byte
+/// reads (little-endian); other offsets read the buffer.
+pub fn w22a26_read_word_or_bytes(
+    buf: Option<&[u8]>,
+    off: u32,
+    mut read_byte: impl FnMut(u32) -> u8,
+) -> Option<u32> {
+    if off.wrapping_sub(0x30) < 9 {
+        let b = [
+            read_byte(off),
+            read_byte(off + 1),
+            read_byte(off + 2),
+            read_byte(off + 3),
+        ];
+        return Some(u32::from_le_bytes(b));
+    }
+    w22a26_read_tail_word(buf, off)
+}
+
+/// `0x006b0560`: offsets at or past `limit` (field 0x18) read as zero,
+/// otherwise the buffer is read.
+pub fn w22a26_read_word_limited(limit: u32, buf: Option<&[u8]>, off: u32) -> Option<u32> {
+    if limit <= off {
+        return Some(0);
+    }
+    w22a26_read_tail_word(buf, off)
+}
+
+/// `0x006b1860`: resizes a vector of 8-byte `(u32, u8)` records; shrinking
+/// erases the tail, growing zero-fills the new records.
+pub fn w22a26_resize_records(v: &mut Vec<(u32, u8)>, new_len: usize) {
+    if new_len < v.len() {
+        v.truncate(new_len);
+    } else {
+        v.resize(new_len, (0, 0));
+    }
+}
+
+fn w22a26_flush_copy(flags: &mut u32, src: Option<&[u32]>, dst: &mut [u32], n: usize) -> bool {
+    if (*flags >> 11) & 1 == 0 {
+        return false;
+    }
+    match src {
+        Some(s) => {
+            dst[..n].copy_from_slice(&s[..n]);
+            true
+        }
+        None => {
+            *flags &= 0xffff_f7ff;
+            false
+        }
+    }
+}
+
+/// `0x006b1980`: when flag bit 11 is set and a source exists, copies 600
+/// dwords into `dst` (then the source is released); with no source clears
+/// the flag.  Returns whether a copy occurred.
+pub fn w22a26_flush_600(flags: &mut u32, src: Option<&[u32]>, dst: &mut [u32]) -> bool {
+    w22a26_flush_copy(flags, src, dst, 600)
+}
+
+/// `0x006b19d0`: same as 6b1980 but copies 0x4f dwords.
+pub fn w22a26_flush_4f(flags: &mut u32, src: Option<&[u32]>, dst: &mut [u32]) -> bool {
+    w22a26_flush_copy(flags, src, dst, 0x4f)
+}
+
+/// `0x006b1ad0`: if flag bit 14 is already set returns `(flags >> 22) << 8`;
+/// otherwise sets it and returns `((flags >> 22) << 8) | 1`, calling `on_zero`
+/// first when `byte40` is zero (the callback's own work follows).
+pub fn w22a26_mark_flag14(flags: &mut u32, byte40: u8, on_zero: impl FnOnce()) -> u32 {
+    let hi = (*flags >> 0x16) << 8;
+    if (*flags >> 14) & 1 != 0 {
+        return hi;
+    }
+    *flags |= 0x4000;
+    if byte40 == 0 {
+        on_zero();
+    }
+    hi | 1
+}
+
+#[cfg(test)]
+mod tests_wave22_agent26 {
+    use super::*;
+
+    #[test]
+    fn pair_setters() {
+        let mut p = [1, 2];
+        assert_eq!(w22a26_set_pair_a(&mut p, (1, 2), || 9), 1);
+        assert_eq!(w22a26_set_pair_b(&mut p, (3, 4), || 9), 9);
+        assert_eq!(p, [3, 4]);
+        assert_eq!(w22a26_set_pair_c(&mut p, (3, 5), || 7), 7);
+    }
+
+    #[test]
+    fn readers() {
+        let buf = [1u8, 0, 0, 0, 2, 0];
+        assert_eq!(w22a26_read_tail_word(Some(&buf), 0), Some(1));
+        assert_eq!(w22a26_read_tail_word(Some(&buf), 4), Some(2));
+        assert_eq!(w22a26_read_tail_word(None, 0), None);
+        assert_eq!(w22a26_read_cached_word(&[(5, 1)], None, 0), Some(5));
+        assert_eq!(w22a26_read_cached_word(&[(5, 0)], None, 0), None);
+        assert_eq!(w22a26_read_reg_or_word(7, 8, None, 4), Some(8));
+        assert_eq!(w22a26_read_reg_or_word(7, 8, Some(&buf), 8), Some(1));
+        assert_eq!(w22a26_read_word_limited(4, None, 4), Some(0));
+        assert_eq!(w22a26_read_word_limited(8, Some(&buf), 0), Some(1));
+        assert_eq!(
+            w22a26_read_word_or_bytes(None, 0x30, |a| a as u8),
+            Some(0x33323130)
+        );
+        assert_eq!(w22a26_read_word_or_bytes(None, 0x39, |a| a as u8), None);
+    }
+
+    #[test]
+    fn unaligned_words() {
+        let mem = [0x0403_0201u32, 0x0807_0605];
+        let r = |a: u32| mem.get((a / 4) as usize).copied();
+        assert_eq!(
+            w22a26_read_words(0, 8, r),
+            Some(vec![0x04030201, 0x08070605])
+        );
+        assert_eq!(w22a26_read_words(1, 4, r), Some(vec![0x05040302]));
+        assert_eq!(w22a26_read_words(4, 8, r), None);
+    }
+
+    #[test]
+    fn records_and_flags() {
+        let mut v = vec![(1, 1)];
+        w22a26_resize_records(&mut v, 3);
+        assert_eq!(v, [(1, 1), (0, 0), (0, 0)]);
+        w22a26_resize_records(&mut v, 1);
+        assert_eq!(v.len(), 1);
+
+        let mut f = 0x800u32;
+        let mut dst = vec![0u32; 600];
+        assert!(!w22a26_flush_600(&mut f, None, &mut dst));
+        assert_eq!(f, 0);
+        f = 0x800;
+        let src = vec![3u32; 600];
+        assert!(w22a26_flush_600(&mut f, Some(&src), &mut dst));
+        assert_eq!(dst[599], 3);
+        assert!(w22a26_flush_4f(&mut f, Some(&src), &mut dst));
+        assert!(!w22a26_flush_4f(&mut 0, Some(&src), &mut dst));
+
+        let mut fl = 0u32;
+        let mut called = false;
+        assert_eq!(w22a26_mark_flag14(&mut fl, 0, || called = true), 1);
+        assert!(called && fl == 0x4000);
+        assert_eq!(w22a26_mark_flag14(&mut fl, 0, || {}), 0);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave22/agent27.rs
+// ===========================================================================
+// Wave 22 agent 27: buffered 32-bit patch cache helpers.
+
+/// One cache slot (8 bytes in retail: value dword + loaded flag byte).
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+pub struct W22a27Slot {
+    pub value: u32,
+    pub loaded: bool,
+}
+
+fn w22a27_apply(cur: u32, value: u32, mode: i32) -> u32 {
+    match mode {
+        0 => value,
+        1 => cur.wrapping_add(value),
+        -1 => cur.saturating_sub(value),
+        _ => cur,
+    }
+}
+
+fn w22a27_span(size: u32, off: u32) -> u32 {
+    off.abs_diff(size)
+}
+
+/// `0x006b2cc0`: read-modify-write of a dword at `base[off]`.  Mode 0 stores
+/// `value`, 1 adds, -1 saturating-subtracts.  When `|size - off| < 4` only
+/// that many bytes are copied in and out (zero padded).  Returns 0 without a
+/// base, otherwise 1.
+#[allow(clippy::needless_range_loop)]
+pub fn w22a27_patch_dword(
+    base: Option<&mut [u8]>,
+    off: u32,
+    value: u32,
+    mode: i32,
+    size: u32,
+) -> u32 {
+    let Some(base) = base else { return 0 };
+    let n = w22a27_span(size, off).min(4) as usize;
+    let o = off as usize;
+    let mut tmp = [0u8; 4];
+    for i in 0..n {
+        tmp[i] = base.get(o + i).copied().unwrap_or(0);
+    }
+    let v = w22a27_apply(u32::from_le_bytes(tmp), value, mode);
+    let out = v.to_le_bytes();
+    for i in 0..n {
+        if let Some(b) = base.get_mut(o + i) {
+            *b = out[i];
+        }
+    }
+    1
+}
+
+/// Shared body of the five cache wrappers: load the slot at `off >> 2` from
+/// `base` if not loaded (return 0 if there is no base), apply the mode, then
+/// if `ok(new_value)` clear the loaded flag and flush with `0x006b2cc0`
+/// semantics; otherwise return 1.
+#[allow(clippy::needless_range_loop, clippy::too_many_arguments)]
+fn w22a27_cached(
+    base: Option<&mut [u8]>,
+    cache: &mut [W22a27Slot],
+    off: u32,
+    value: u32,
+    mode: i32,
+    size: u32,
+    ok: impl Fn(u32) -> bool,
+) -> u32 {
+    let idx = (off >> 2) as usize;
+    if !cache[idx].loaded {
+        let Some(b) = base.as_deref() else { return 0 };
+        let n = w22a27_span(size, off).min(4) as usize;
+        let mut tmp = [0u8; 4];
+        for i in 0..n {
+            tmp[i] = b.get(off as usize + i).copied().unwrap_or(0);
+        }
+        cache[idx].value = u32::from_le_bytes(tmp);
+        cache[idx].loaded = true;
+    }
+    cache[idx].value = w22a27_apply(cache[idx].value, value, mode);
+    let v = cache[idx].value;
+    if ok(v) {
+        cache[idx].loaded = false;
+        w22a27_patch_dword(base, off, v, 0, size)
+    } else {
+        1
+    }
+}
+
+/// `0x006b2110`: cached patch; flushes only when every byte of the result is < 0x12.
+pub fn w22a27_cached_bytes_lt_0x12(
+    base: Option<&mut [u8]>,
+    cache: &mut [W22a27Slot],
+    off: u32,
+    value: u32,
+    mode: i32,
+    size: u32,
+) -> u32 {
+    w22a27_cached(base, cache, off, value, mode, size, |v| {
+        v.to_le_bytes().iter().all(|&b| b < 0x12)
+    })
+}
+
+/// `0x006b2220`: cached patch; flushes only when every byte of the result is < 0xd1.
+pub fn w22a27_cached_bytes_lt_0xd1(
+    base: Option<&mut [u8]>,
+    cache: &mut [W22a27Slot],
+    off: u32,
+    value: u32,
+    mode: i32,
+    size: u32,
+) -> u32 {
+    w22a27_cached(base, cache, off, value, mode, size, |v| {
+        v.to_le_bytes().iter().all(|&b| b < 0xd1)
+    })
+}
+
+/// `0x006b2330`: cached patch; flushes only when low word < 999 and high word < 0x3e7.
+pub fn w22a27_cached_words_lt_999(
+    base: Option<&mut [u8]>,
+    cache: &mut [W22a27Slot],
+    off: u32,
+    value: u32,
+    mode: i32,
+    size: u32,
+) -> u32 {
+    w22a27_cached(base, cache, off, value, mode, size, |v| {
+        (v & 0xffff) < 999 && (v >> 16) < 0x3e7
+    })
+}
+
+/// `0x006b2420`: cached patch; flushes only when the result is <= 7.
+pub fn w22a27_cached_le_7(
+    base: Option<&mut [u8]>,
+    cache: &mut [W22a27Slot],
+    off: u32,
+    value: u32,
+    mode: i32,
+    size: u32,
+) -> u32 {
+    w22a27_cached(base, cache, off, value, mode, size, |v| v <= 7)
+}
+
+/// `0x006b2500`: cached patch; flushes only when the result is <= 0x19a.
+pub fn w22a27_cached_le_0x19a(
+    base: Option<&mut [u8]>,
+    cache: &mut [W22a27Slot],
+    off: u32,
+    value: u32,
+    mode: i32,
+    size: u32,
+) -> u32 {
+    w22a27_cached(base, cache, off, value, mode, size, |v| v <= 0x19a)
+}
+
+/// `0x006bc690`: tagged-link accessor; returns the link when its low bit is
+/// clear and it is non-zero, else 0.
+pub fn w22a27_link_or_zero(link: u32) -> u32 {
+    if link & 1 == 0 && link != 0 { link } else { 0 }
+}
+
+#[cfg(test)]
+mod tests_wave22_agent27 {
+    use super::*;
+
+    #[test]
+    fn patch_modes_and_tail() {
+        let mut m = [1u8, 0, 0, 0, 9, 9];
+        assert_eq!(w22a27_patch_dword(Some(&mut m), 0, 5, 1, 6), 1);
+        assert_eq!(m[0], 6);
+        w22a27_patch_dword(Some(&mut m), 0, 10, -1, 6);
+        assert_eq!(&m[..4], &[0, 0, 0, 0]);
+        w22a27_patch_dword(Some(&mut m), 4, 0x0101, 0, 6);
+        assert_eq!(&m[4..], &[1, 1]);
+        assert_eq!(w22a27_patch_dword(None, 0, 1, 0, 6), 0);
+    }
+
+    #[test]
+    fn cached_wrappers() {
+        let mut m = [0u8; 8];
+        let mut c = [W22a27Slot::default(); 2];
+        assert_eq!(w22a27_cached_le_7(None, &mut c, 0, 1, 0, 8), 0);
+        // accepted: flushed to memory, slot cleared
+        assert_eq!(w22a27_cached_le_7(Some(&mut m), &mut c, 0, 7, 0, 8), 1);
+        assert_eq!(m[0], 7);
+        assert!(!c[0].loaded);
+        // rejected: stays cached, memory untouched
+        w22a27_cached_le_7(Some(&mut m), &mut c, 0, 1, 1, 8);
+        assert_eq!(m[0], 7);
+        assert!(c[0].loaded && c[0].value == 8);
+        w22a27_cached_le_0x19a(Some(&mut m), &mut c, 4, 0x19a, 0, 8);
+        assert_eq!(&m[4..6], &[0x9a, 1]);
+        w22a27_cached_bytes_lt_0x12(Some(&mut m), &mut c, 4, 0x1111_1111, 0, 8);
+        assert_eq!(m[4], 0x11);
+        w22a27_cached_bytes_lt_0xd1(Some(&mut m), &mut c, 4, 0xd1, 0, 8);
+        assert_eq!(m[4], 0x11);
+        w22a27_cached_words_lt_999(Some(&mut m), &mut c, 4, 998, 0, 8);
+        assert_eq!(&m[4..6], &[0xe6, 3]);
+    }
+
+    #[test]
+    fn link() {
+        assert_eq!(w22a27_link_or_zero(0), 0);
+        assert_eq!(w22a27_link_or_zero(5), 0);
+        assert_eq!(w22a27_link_or_zero(8), 8);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave22/agent28.rs
+// ===========================================================================
+// Wave 22 agent 28: intrusive-list helpers, hash buckets and chunk windows.
+
+/// `0x006bcbc0`: clears the bits of `mask` in the flags dword at `+0xc`.
+pub fn w22a28_clear_flags(flags: u32, mask: u32) -> u32 {
+    flags & !mask
+}
+
+/// Retail list node: `next` at `+4`; a link with bit 0 set is the end marker.
+/// Here `next`/`head` are `Option<usize>` indices (None = null or tagged end).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct W22a28Node {
+    /// Byte at `+8`.
+    pub key8: u8,
+    /// Byte at `+9`.
+    pub key9: u8,
+    /// Flags byte at `+0x94`.
+    pub flags: u8,
+    /// Byte at `+0x9c`.
+    pub b9c: u8,
+    /// Byte at `+0x9d`.
+    pub b9d: u8,
+    /// Next node (`+4`).
+    pub next: Option<usize>,
+}
+
+/// `0x006bcbd0`: walks the list from `head`, calls `on_match` on the first
+/// node whose `+8` byte equals `key` and returns its index.
+pub fn w22a28_find_key8(
+    nodes: &[W22a28Node],
+    head: Option<usize>,
+    key: u8,
+    mut on_match: impl FnMut(usize),
+) -> Option<usize> {
+    let mut cur = head;
+    while let Some(i) = cur {
+        // next is read before the compare, as in retail
+        let next = nodes[i].next;
+        if nodes[i].key8 == key {
+            on_match(i);
+            return Some(i);
+        }
+        cur = next;
+    }
+    None
+}
+
+/// `0x006bcf90`: pass 1 calls `release` (`FUN_006bc750`) on the first node
+/// whose `+9` byte is `player`; pass 2 clears flag 4 (if `+0x9d == player`)
+/// and flag 2 (if `+0x9c == player`) on every node, then calls `refresh`
+/// (`FUN_006bcdb0`) on each.
+pub fn w22a28_release_player(
+    nodes: &mut [W22a28Node],
+    head: Option<usize>,
+    player: u8,
+    mut release: impl FnMut(usize),
+    mut refresh: impl FnMut(usize),
+) {
+    let mut cur = head;
+    while let Some(i) = cur {
+        if nodes[i].key9 == player {
+            release(i);
+            break;
+        }
+        cur = nodes[i].next;
+    }
+    let mut cur = head;
+    while let Some(i) = cur {
+        let next = nodes[i].next;
+        let mut f = nodes[i].flags;
+        if f & 4 != 0 && nodes[i].b9d == player {
+            f &= 0xfb;
+            nodes[i].flags = f;
+        }
+        if f & 2 != 0 && nodes[i].b9c == player {
+            nodes[i].flags = f & 0xfd;
+        }
+        refresh(i);
+        cur = next;
+    }
+}
+
+/// Transfer record fields used by `0x006bde60` / `0x006be220`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct W22a28Transfer {
+    /// `+0x0c` total length.
+    pub total: u32,
+    /// `+0x94` flags.
+    pub flags: u8,
+    /// `+0x98` bytes already sent.
+    pub sent: u32,
+    /// `+0x9d` owner.
+    pub owner: u8,
+    /// `+0xa0` received watermark.
+    pub received: u32,
+    /// `+0xa4` data buffer.
+    pub buf: Vec<u8>,
+}
+
+/// `0x006bde60`: handles a chunk packet (`[?, a, b, off:u32, len:u16, data]`,
+/// header 9 bytes).  Returns 0 always.  `lookup(a, b)` is `FUN_006bd0c0`;
+/// `reject(player, idx)` models `FUN_006be310` + `FUN_006bcdb0`.
+pub fn w22a28_handle_chunk(
+    pkt: &[u8],
+    size: u32,
+    player: u8,
+    recs: &mut [W22a28Transfer],
+    lookup: impl Fn(u8, u8) -> Option<usize>,
+    mut reject: impl FnMut(u8, usize),
+) -> u32 {
+    if size <= 8 || pkt.len() < 9 {
+        return 0;
+    }
+    let len = u16::from_le_bytes([pkt[7], pkt[8]]) as u32;
+    if size != len + 9 {
+        return 0;
+    }
+    let Some(i) = lookup(pkt[1], pkt[2]) else {
+        return 0;
+    };
+    let off = u32::from_le_bytes([pkt[3], pkt[4], pkt[5], pkt[6]]);
+    let r = &mut recs[i];
+    if off != r.total && off + len <= r.total && off == r.received {
+        r.flags |= 4;
+        r.owner = player;
+        let (o, l) = (off as usize, len as usize);
+        if r.buf.len() >= o + l && pkt.len() >= 9 + l {
+            r.buf[o..o + l].copy_from_slice(&pkt[9..9 + l]);
+        }
+    } else {
+        reject(player, i);
+    }
+    0
+}
+
+/// `0x006be220`: chunk window for sending (max 0x200).  `enabled` is the
+/// global gate.  Returns `(start, len)` of the bytes to copy and may clear
+/// flag 2 when the watermark is exceeded.
+pub fn w22a28_next_send_window(
+    enabled: bool,
+    r: &mut W22a28Transfer,
+    want: u32,
+) -> Option<(u32, u32)> {
+    if !enabled {
+        return None;
+    }
+    let mut start = r.sent;
+    let want = want.min(0x200);
+    if start >= r.total {
+        return None;
+    }
+    let mut len = if want + start <= r.total {
+        want
+    } else {
+        r.total - start
+    };
+    if r.received < len + start {
+        r.flags &= 0xfd;
+        len = 0;
+        start = r.received;
+    }
+    Some((start, len))
+}
+
+/// Bucket index for a one-byte key in `0x006bee50` / `0x006befd0`
+/// (murmur-style finalizer, `buckets` a power of two).
+pub fn w22a28_byte_bucket(key: u8, buckets: u32) -> u32 {
+    let mut u = (key as u32).wrapping_mul(0x85eb_ca6b);
+    u = (u >> 13 ^ u).wrapping_mul(0xc2b2_ae35);
+    (u >> 16 ^ u) & buckets.wrapping_sub(1)
+}
+
+/// `0x006befd0`: looks `key` up in chained buckets (`chains[b]` = keys in
+/// order).  Returns `(bucket, position)`; `None` is the retail not-found
+/// path (non-returning throw).  Empty `chains` models the lazy rehash call.
+pub fn w22a28_bucket_find(chains: &[Vec<u8>], key: u8) -> Option<(usize, usize)> {
+    if chains.is_empty() {
+        return None;
+    }
+    let b = w22a28_byte_bucket(key, chains.len() as u32) as usize;
+    chains[b].iter().position(|&k| k == key).map(|p| (b, p))
+}
+
+/// `0x006bee50`: checks that each key (stride 0x20 bytes in retail, here an
+/// iterator) is present; returns the index of the first missing key.
+pub fn w22a28_all_present(chains: &[Vec<u8>], keys: &[u8]) -> Option<usize> {
+    keys.iter()
+        .position(|&k| w22a28_bucket_find(chains, k).is_none())
+}
+
+/// `0x006bf3d0`: dispatches on the global mode flag (`DAT_011a4580`).
+pub fn w22a28_mode_dispatch<T>(
+    mode: bool,
+    arg: u32,
+    mut a: impl FnMut(u32) -> T,
+    mut b: impl FnMut(u32) -> T,
+) -> T {
+    if mode { a(arg) } else { b(arg) }
+}
+
+#[cfg(test)]
+mod tests_wave22_agent28 {
+    use super::*;
+
+    fn list() -> Vec<W22a28Node> {
+        (0..3)
+            .map(|i| W22a28Node {
+                key8: i as u8,
+                key9: 5,
+                flags: 6,
+                b9c: 5,
+                b9d: 5,
+                next: if i < 2 { Some(i + 1) } else { None },
+            })
+            .collect()
+    }
+
+    #[test]
+    fn flags_and_find() {
+        assert_eq!(w22a28_clear_flags(0xff, 0x0f), 0xf0);
+        let n = list();
+        let mut hit = 0;
+        assert_eq!(w22a28_find_key8(&n, Some(0), 2, |i| hit = i), Some(2));
+        assert_eq!(hit, 2);
+        assert_eq!(w22a28_find_key8(&n, Some(0), 9, |_| {}), None);
+    }
+
+    #[test]
+    fn release() {
+        let mut n = list();
+        let (mut rel, mut cnt) = (vec![], 0);
+        w22a28_release_player(&mut n, Some(0), 5, |i| rel.push(i), |_| cnt += 1);
+        assert_eq!(rel, vec![0]);
+        assert_eq!(cnt, 3);
+        assert!(n.iter().all(|x| x.flags == 0));
+    }
+
+    #[test]
+    fn chunk() {
+        let mut recs = vec![W22a28Transfer {
+            total: 10,
+            buf: vec![0; 10],
+            ..Default::default()
+        }];
+        let mut pkt = vec![0, 0, 0, 0, 0, 0, 0, 2, 0];
+        pkt.extend_from_slice(&[7, 8]);
+        let mut rej = 0;
+        w22a28_handle_chunk(&pkt, 11, 3, &mut recs, |_, _| Some(0), |_, _| rej += 1);
+        assert_eq!(
+            (recs[0].flags, recs[0].owner, &recs[0].buf[..2]),
+            (4, 3, &[7, 8][..])
+        );
+        assert_eq!(rej, 0);
+        recs[0].received = 99;
+        w22a28_handle_chunk(&pkt, 11, 3, &mut recs, |_, _| Some(0), |_, _| rej += 1);
+        assert_eq!(rej, 1);
+        assert_eq!(
+            w22a28_handle_chunk(&pkt, 12, 3, &mut recs, |_, _| Some(0), |_, _| rej += 1),
+            0
+        );
+        assert_eq!(rej, 1);
+    }
+
+    #[test]
+    fn window() {
+        let mut r = W22a28Transfer {
+            total: 1000,
+            received: 600,
+            flags: 2,
+            ..Default::default()
+        };
+        assert_eq!(
+            w22a28_next_send_window(true, &mut r, 0x1000),
+            Some((0, 0x200))
+        );
+        r.sent = 500;
+        assert_eq!(
+            w22a28_next_send_window(true, &mut r, 0x1000),
+            Some((600, 0))
+        );
+        assert_eq!(r.flags, 0);
+        assert_eq!(w22a28_next_send_window(false, &mut r, 1), None);
+        r.sent = 1000;
+        assert_eq!(w22a28_next_send_window(true, &mut r, 1), None);
+    }
+
+    #[test]
+    fn buckets() {
+        assert_eq!(w22a28_byte_bucket(0, 8), 0);
+        let mut chains = vec![vec![]; 8];
+        let b = w22a28_byte_bucket(7, 8) as usize;
+        chains[b].push(7);
+        assert_eq!(w22a28_bucket_find(&chains, 7), Some((b, 0)));
+        assert_eq!(w22a28_bucket_find(&chains, 9), None);
+        assert_eq!(w22a28_all_present(&chains, &[7, 9]), Some(1));
+        assert_eq!(w22a28_mode_dispatch(true, 1, |x| x + 1, |x| x + 2), 2);
+        assert_eq!(w22a28_mode_dispatch(false, 1, |x| x + 1, |x| x + 2), 3);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave22/agent29.rs
+// ===========================================================================
+// Wave 22 agent 29: small container / header helpers (runtime.rs window).
+
+/// `0x006c1d50`: pre-step of a handle release; the type-0 init hook runs only
+/// when the record kind (`+0x10`, 16 bit) is `0xe` and its first word is 0.
+pub fn w22a29_needs_init_hook(kind: i16, first_word: i32) -> bool {
+    kind == 0xe && first_word == 0
+}
+
+/// `0x006c1d80`: hash-table bucket-count target.  `size` is the element
+/// count, `current` the bucket-derived count (callee result), `load` the max
+/// load factor, `want` the caller minimum.  Result is a power of two >= 8.
+pub fn w22a29_bucket_target(size: u32, current: u32, load: f32, want: u32) -> u32 {
+    let mut n = current.wrapping_add(1);
+    if (size as f64) as f32 <= (current as f64) as f32 * load {
+        n = current;
+    }
+    if n < want {
+        n = want;
+    }
+    let mut cap = 8u32;
+    if n > 8 {
+        while cap < n {
+            cap = cap.wrapping_mul(2);
+        }
+    }
+    cap
+}
+
+/// `0x006c26e0`: collects indices `i` of a `0x3c`-stride record table for which
+/// `selectable(i)` holds, the record's word at `+0x24` is nonzero and
+/// `probe(i)` succeeds.  `records` is the table bytes.
+pub fn w22a29_collect_indices(
+    records: &[u8],
+    count: usize,
+    mut selectable: impl FnMut(usize) -> bool,
+    mut probe: impl FnMut(usize) -> bool,
+) -> Vec<u32> {
+    let mut out = Vec::new();
+    for i in 0..count {
+        if !selectable(i) {
+            continue;
+        }
+        let off = i * 0x3c + 0x24;
+        let nonzero = records.get(off..off + 4).is_some_and(|b| b != [0, 0, 0, 0]);
+        if nonzero && probe(i) {
+            out.push(i as u32);
+        }
+    }
+    out
+}
+
+/// `0x006c3ff0`: true when the 8-byte header read succeeded, read some bytes,
+/// and its magic is `0x494c4f46` ("FOLI").
+pub fn w22a29_header_magic_ok(read_ok: bool, bytes_read: u32, header: &[u8; 8]) -> bool {
+    read_ok
+        && bytes_read != 0
+        && u32::from_le_bytes([header[0], header[1], header[2], header[3]]) == 0x494c4f46
+}
+
+/// `0x006c43b0`: builds the 8-byte header written before a record
+/// (magic `0x494c4f46`, version 1).
+pub fn w22a29_build_header() -> [u8; 8] {
+    let mut h = [0u8; 8];
+    h[..4].copy_from_slice(&0x494c4f46u32.to_le_bytes());
+    h[4..].copy_from_slice(&1u32.to_le_bytes());
+    h
+}
+
+/// `0x006c4790`: resizes a vector of 16-byte elements to `new_len`.  Shrinking
+/// drops the tail; growing zero-fills (the retail call to the element ctor is
+/// reported through `on_new`).
+pub fn w22a29_resize16(v: &mut Vec<[u32; 4]>, new_len: usize, mut on_new: impl FnMut(usize)) {
+    if new_len < v.len() {
+        v.truncate(new_len);
+    } else {
+        for i in v.len()..new_len {
+            v.push([0; 4]);
+            on_new(i);
+        }
+    }
+}
+
+/// `0x006c4910`: fires only for a slot kind in `1..=4`.
+pub fn w22a29_kind_in_1_to_4(kind: u8) -> bool {
+    kind.wrapping_sub(1) < 4
+}
+
+/// `0x006c4ac0`: same `1..=4` kind test as the sibling predicate.
+pub fn w22a29_kind_in_1_to_4_b(kind: u8) -> bool {
+    kind.wrapping_sub(1) < 4
+}
+
+/// `0x006c4d80`: stores the 8-byte value then increments each of its 8 bytes
+/// (wrapping), returning the stored array.
+pub fn w22a29_store_and_bump(value: [u8; 8]) -> [u8; 8] {
+    let mut out = value;
+    for b in out.iter_mut() {
+        *b = b.wrapping_add(1);
+    }
+    out
+}
+
+/// `0x006c5860`: scans 12 slots (stride 36 bytes, id at +0, kind byte at +6
+/// relative to the id) and returns the ids with `id != -1 && kind < 4`.
+pub fn w22a29_active_slots(ids: &[i32; 12], kinds: &[u8; 12]) -> Vec<i32> {
+    ids.iter()
+        .zip(kinds)
+        .filter(|(id, k)| **id != -1 && **k < 4)
+        .map(|(id, _)| *id)
+        .collect()
+}
+
+#[cfg(test)]
+mod tests_wave22_agent29 {
+    use super::*;
+
+    #[test]
+    fn hook_and_kinds() {
+        assert!(w22a29_needs_init_hook(0xe, 0));
+        assert!(!w22a29_needs_init_hook(0xe, 1));
+        assert!(!w22a29_kind_in_1_to_4(0));
+        assert!(w22a29_kind_in_1_to_4(4));
+        assert!(!w22a29_kind_in_1_to_4_b(5));
+        assert!(w22a29_kind_in_1_to_4_b(1));
+    }
+
+    #[test]
+    fn buckets() {
+        assert_eq!(w22a29_bucket_target(0, 0, 1.0, 0), 8);
+        assert_eq!(w22a29_bucket_target(100, 10, 1.0, 0), 16);
+        assert_eq!(w22a29_bucket_target(5, 10, 1.0, 40), 64);
+    }
+
+    #[test]
+    fn collect() {
+        let mut rec = vec![0u8; 0x3c * 3];
+        rec[0x24] = 1;
+        rec[0x3c * 2 + 0x24] = 1;
+        let v = w22a29_collect_indices(&rec, 3, |i| i != 2, |_| true);
+        assert_eq!(v, vec![0]);
+    }
+
+    #[test]
+    fn header() {
+        let h = w22a29_build_header();
+        assert!(w22a29_header_magic_ok(true, 8, &h));
+        assert!(!w22a29_header_magic_ok(true, 0, &h));
+        assert!(!w22a29_header_magic_ok(false, 8, &h));
+        assert_eq!(h[4], 1);
+    }
+
+    #[test]
+    fn resize_bump_slots() {
+        let mut v = vec![[1; 4]; 2];
+        let mut n = 0;
+        w22a29_resize16(&mut v, 4, |_| n += 1);
+        assert_eq!((v.len(), n, v[3]), (4, 2, [0; 4]));
+        w22a29_resize16(&mut v, 1, |_| {});
+        assert_eq!(v.len(), 1);
+        assert_eq!(w22a29_store_and_bump([255, 0, 1, 2, 3, 4, 5, 6])[0], 0);
+        let mut ids = [-1; 12];
+        ids[3] = 7;
+        ids[4] = 9;
+        let mut k = [0u8; 12];
+        k[4] = 4;
+        assert_eq!(w22a29_active_slots(&ids, &k), vec![7]);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave22/agent30.rs
+// ===========================================================================
+/// `0x006cd4c0`: 64-bit subtraction `a - b` over (lo, hi) u32 pairs, with
+/// borrow propagated into the high word.  Returns `[lo, hi]`.
+pub fn w22a30_sub64(a: [u32; 2], b: [u32; 2]) -> [u32; 2] {
+    let lo = a[0].wrapping_sub(b[0]);
+    let hi = a[1].wrapping_sub(b[1]).wrapping_sub(u32::from(a[0] < b[0]));
+    [lo, hi]
+}
+
+/// `0x006cd550`: returns true when the signed 64-bit value `a` (lo, hi) is
+/// strictly greater than the value produced by `other` (the callee computing
+/// the comparison operand is supplied by the caller).
+pub fn w22a30_greater_than(a: [u32; 2], other: impl FnOnce() -> [u32; 2]) -> bool {
+    let b = other();
+    let (ah, bh) = (a[1] as i32, b[1] as i32);
+    !(ah < bh || (ah <= bh && a[0] <= b[0]))
+}
+
+#[cfg(test)]
+mod tests_wave22_agent30 {
+    use super::*;
+
+    #[test]
+    fn sub64_borrow() {
+        assert_eq!(w22a30_sub64([0, 1], [1, 0]), [u32::MAX, 0]);
+        assert_eq!(w22a30_sub64([5, 2], [3, 1]), [2, 1]);
+        assert_eq!(w22a30_sub64([0, 0], [1, 0]), [u32::MAX, u32::MAX]);
+    }
+
+    #[test]
+    fn greater_than_signed() {
+        assert!(w22a30_greater_than([2, 0], || [1, 0]));
+        assert!(!w22a30_greater_than([1, 0], || [1, 0]));
+        assert!(w22a30_greater_than([0, 1], || [u32::MAX, 0]));
+        assert!(!w22a30_greater_than([0, u32::MAX], || [0, 0]));
+    }
+}
