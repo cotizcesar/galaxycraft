@@ -47,6 +47,7 @@ Triage of the 52435 uncited rows (`scripts/triage_corpus.py`):
 | `obfuscated` (anti-tamper, bad instruction data) | 2136 | never |
 | `trivial` (thunks, ≤ 8 bytes) | 2058 | never |
 | `hub` (CRT/allocator helpers with > 150 callers) | 38 | never |
+| `bnet` (Battle.net / online services: login, friends, presence, matchmaking, telemetry, web) | 465 | **never implement, only marked** |
 | `skipped` (assigned to a wave, not translatable yet) | 244 | never (`skiplist.tsv`) |
 
 ## Local data (not in git, must exist)
@@ -95,6 +96,11 @@ expected.  Do not retry skiplist rows until a callee they need is translated.
 
 ## Hard rules
 
+- **Battle.net is out of scope.**  Anything that talks to Battle.net or
+  online services (login, friends, presence, matchmaking, ladder, telemetry,
+  HTTP/SSL services) is never translated or implemented: it stays marked
+  `bnet` in `triage.tsv` and the queue skips it.  If a translator meets such
+  a function anyway, skip it (`FUN_` form, reason "bnet").
 - **Ledger credit = literal `0x` + address in any `.rs`/`.md` under
   `engine-rust/`.**  Cite only addresses you implemented.  Skipped or
   mentioned addresses are written `FUN_00xxxxxx` or bare hex.  In docs use

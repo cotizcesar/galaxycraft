@@ -93,7 +93,8 @@ so the batch can be pasted into a library module.
 7. Do not wire translations into `World`, `SimUnit`, the renderer or the
    client.  They are auditable reference helpers.  Do not add save/replay
    state.
-8. Skip, with a reason, any candidate whose pseudocode is:
+8. Skip, with a reason, any candidate whose pseudocode is Battle.net /
+   online-service code (reason "bnet"; product decision), or whose pseudocode is:
    - `DECOMPILE_FAILED`, `halt_baddata`, or dominated by
      `WARNING: Control flow encountered bad instruction data`;
    - an empty/one-byte `ret`, a bare `unaff_*`/`in_*` fragment, or a

@@ -20,7 +20,8 @@ windows would burn hundreds of waves on code the Rust engine never needs.
 `scripts/triage_corpus.py` classifies all `decompiled_uncited` rows once:
 
 - **skip forever** (≈ 29k rows): `unwind`, `fragment`, `library`,
-  `obfuscated`, `trivial`, `hub`.
+  `obfuscated`, `trivial`, `hub`, and `bnet` (Battle.net / online services:
+  a product decision, marked only, never implemented).
 - **clean** rows get a tier from the call graph of the pseudocode
   (`FUN_xxxxxxxx` references) relative to addresses already cited in
   gameplay modules (`sim`, `combat`, `orders`, `iscript`, `aiscript`,

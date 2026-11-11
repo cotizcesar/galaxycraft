@@ -17,10 +17,14 @@ pseudocode, so it is safe to commit).
 Columns:
   address   0x-prefixed virtual address
   size      bytes
-  category  skipped | clean | trivial | fragment | obfuscated | unwind | library | hub
+  category  bnet | skipped | clean | trivial | fragment | obfuscated | unwind | library | hub
   tier      1..4 for `clean` rows (1 = gameplay core), `-` otherwise
   module    suggested Rust module for the merge (from cited neighbours)
   score     gameplay-neighbour count used for ordering inside a tier
+
+`bnet` rows mention Battle.net / online-service strings (login, friends,
+presence, matchmaking, telemetry, web services, SSL ...).  Product decision:
+none of it is implemented, it is only marked here and never queued.
 
 `skipped` rows were assigned to a wave and not translated
 (`scripts/record_skips.py`, `engine-rust/docs/skiplist.tsv`).
@@ -70,6 +74,14 @@ LIB = re.compile(
     re.I,
 )
 HUB_CALLERS = 150
+# Battle.net / online-service code (login, friends, presence, matchmaking,
+# telemetry, web services).  Out of scope: it is marked, never translated.
+BNET = re.compile(
+    r"bnet|battle\.?net|battlenet|blizzard|bgs\b|clientsdk|telemetry|"
+    r"matchmak|ladder|presence|friend|clan|ssl|https?://|oauth|account|"
+    r"websocket|grpc|protobuf|json-?rpc|launcher|agent\.exe|crash.?report",
+    re.I,
+)
 FRAGMENT = re.compile(r"\b(?:unaff_\w+|in_(?!ECX)\w+)")
 
 
@@ -81,6 +93,8 @@ def classify(name: str, size: int, text: str) -> str:
         return "obfuscated"
     if name.startswith("thunk_") or size <= 8:
         return "trivial"
+    if BNET.search(text):
+        return "bnet"
     if len(FRAGMENT.findall(text)) >= 3:
         return "fragment"
     if LIB.search(text):
