@@ -9,3 +9,4 @@ One line per merged wave.  Append; do not rewrite history.  Format:
 - Wave 15 (2026-11-11, queue, tier 1): +72 translated (ledger 2801 -> 2873), lib tests 2856, full suite 3132; 128 rows to skiplist.tsv.
 - Wave 16 (2026-11-11, queue, tier 1): +84 translated (ledger 2873 -> 2957), lib tests 2908, full suite 3184; 116 rows to skiplist.tsv (244 total).
 - Wave 17 (2026-11-11, queue, tiers 1-2): +93 translated (ledger 2957 -> 3050), lib tests 2958, full suite 3235; 107 rows to skiplist.tsv (351 total).
+- Wave 18 (2026-11-11, queue, tier 2): +80 translated (ledger 3050 -> 3130), lib tests 3005, full suite 3282; 120 rows to skiplist.tsv (471 total).  Agent 04 got 20 static-initialiser stubs (0 translated).

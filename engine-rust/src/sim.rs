@@ -36661,3 +36661,664 @@ mod tests_wave17_agent09 {
         );
     }
 }
+
+// ===========================================================================
+// Merged from src/wave18/agent09.rs
+// ===========================================================================
+// Wave 18 translation batch 09.  Pure helpers recovered from small
+// `sim.rs`-adjacent routines; unresolved callees are closures.
+
+/// `0x00570e20`: resets a list-header record.  When the optional limit
+/// (`*(u16*)(this+0x2c)`) exists and `this.u16@0x1a` is below it the retail
+/// code calls a non-returning handler: returned as `false` (record untouched).
+/// Otherwise the dwords at `0x1c`, `0x20`, `0x24`, `0x28` are cleared.
+pub fn w18a09_reset_list_header(this: &mut [u8], limit: Option<u16>) -> bool {
+    let cur = u16::from_le_bytes([this[0x1a], this[0x1b]]);
+    if let Some(l) = limit
+        && cur < l
+    {
+        return false;
+    }
+    for off in [0x1cusize, 0x20, 0x24, 0x28] {
+        this[off..off + 4].fill(0);
+    }
+    true
+}
+
+/// `0x005714b0`: looks up a script id in a table of `(id, value)` u16 pairs
+/// terminated by id `0xffff`.  Returns the value stored at `this+0x10`;
+/// `None` means retail's "script %d does not exist" fatal path.
+pub fn w18a09_script_lookup(table: &[u16], id: u32) -> Option<u16> {
+    let mut i = 0;
+    loop {
+        let cur = *table.get(i)?;
+        if cur as u32 == id {
+            return table.get(i + 1).copied();
+        }
+        if cur == 0xffff {
+            return None;
+        }
+        i += 2;
+    }
+}
+
+/// `0x0057b6f0`: walks the linked list headed at `this+0x20` (next pointer
+/// at node+4) and invokes `f(node)` for every node.  Nodes are 1-based ids;
+/// `next(node)` reads the link, `0` ends the walk.
+pub fn w18a09_for_each_node_a(head: u32, next: impl Fn(u32) -> u32, mut f: impl FnMut(u32)) {
+    let mut n = head;
+    while n != 0 {
+        f(n);
+        n = next(n);
+    }
+}
+
+/// `0x0057b720`: identical walk to the sibling at 57b6f0 with a different
+/// per-node callee.
+pub fn w18a09_for_each_node_b(head: u32, next: impl Fn(u32) -> u32, f: impl FnMut(u32)) {
+    w18a09_for_each_node_a(head, next, f)
+}
+
+/// `0x005882f0`: clears the guard flag, runs the two callees with
+/// `(a+1, b+1)` and `(2, 1)`, then sets the flag again.
+pub fn w18a09_with_guard(
+    a: i32,
+    b: i32,
+    flag: &mut bool,
+    mut c1: impl FnMut(i32, i32),
+    mut c2: impl FnMut(i32, i32),
+) {
+    *flag = false;
+    c1(a.wrapping_add(1), b.wrapping_add(1));
+    c2(2, 1);
+    *flag = true;
+}
+
+/// `0x00588d30`: pointer to 1-based index (stride 16): `0` stays `0`,
+/// otherwise `((p - base) >> 4) + 1` with an arithmetic shift.
+pub fn w18a09_ptr_to_index(p: i32, base: i32) -> i32 {
+    if p == 0 {
+        0
+    } else {
+        (p.wrapping_sub(base) >> 4).wrapping_add(1)
+    }
+}
+
+/// `0x005b4c40`: returns `(hi << 8) | lo` where `hi = (v >> 8) as u8` and
+/// `lo = table[v] + byte@0x8e` (wrapping u8) with `v = u16@0x64`.
+pub fn w18a09_pack_table_byte(v: u16, table: &[u8], byte8e: u8) -> u16 {
+    let lo = table[v as usize].wrapping_add(byte8e);
+    (((v >> 8) as u8 as u16) << 8) | lo as u16
+}
+
+/// `0x006876b0`: cell test on a map-flags array indexed by
+/// `width * y + x`; true when the cell has any of `want` and none of
+/// `forbid`.
+pub fn w18a09_cell_flags_match(
+    flags: &[u32],
+    width: u16,
+    x: i16,
+    y: i16,
+    want: u32,
+    forbid: u32,
+) -> bool {
+    let idx = (width as i32 * y as i32 + x as i32) as usize;
+    let v = flags[idx];
+    (want & v) != 0 && (forbid & v) == 0
+}
+
+/// `0x00687240`: footprint-fit helper.  `size` is the (x, y) i16 pair of the
+/// type (divided by 32 rounding toward zero), `flag_word` its flags.  With
+/// map dims `(w, h)`: when `x,y >= 0` and the footprint fits, returns
+/// `max(f490(~(flags>>1)&1), f860)`; otherwise `None` (retail fatal path).
+#[allow(clippy::too_many_arguments)]
+pub fn w18a09_footprint_check(
+    x: i16,
+    y: i16,
+    size: (i16, i16),
+    flag_word: u32,
+    map_w: u16,
+    map_h: u16,
+    f860: impl FnOnce(i16, i16) -> i32,
+    f490: impl FnOnce(i16, i16, u32) -> i32,
+) -> Option<i32> {
+    let sx = ((size.0 as i32 + ((size.0 as i32 >> 31) & 0x1f)) >> 5) as i16;
+    let sy = ((size.1 as i32 + ((size.1 as i32 >> 31) & 0x1f)) >> 5) as i16;
+    if x >= 0
+        && y >= 0
+        && sx as i32 + x as i32 <= map_w as i32
+        && sy as i32 + y as i32 <= map_h as i32
+    {
+        let a = f860(sx, sy);
+        let b = f490(sx, sy, !(flag_word >> 1) & 1);
+        Some(b.max(a))
+    } else {
+        None
+    }
+}
+
+/// Inputs/outputs of the mode-selector at `0x006f4cc0`.
+pub struct W18a09Mode {
+    pub pending_flag: bool,
+    pub prev_mode: u32,
+    pub net_active: bool,
+    pub flag_10350: bool,
+}
+
+/// `0x006f4cc0`: picks a menu/game mode.  Pending flag: returns the saved
+/// mode and arms `0x21`.  Else with `net_active` (or `net_count > 0`) returns
+/// 6 after `reset6`.  Otherwise `alt` closure result, param `0x3f` gives
+/// 0x12/0x20, else `probe` zero gives 0xc, else `default()`.
+pub fn w18a09_select_mode(
+    s: &mut W18a09Mode,
+    net_count: i32,
+    param: i32,
+    alt: impl FnOnce() -> Option<u32>,
+    probe_zero: impl FnOnce() -> bool,
+    default: impl FnOnce() -> u32,
+    reset6: impl FnOnce(u32),
+) -> u32 {
+    if s.pending_flag {
+        let r = s.prev_mode;
+        s.pending_flag = false;
+        s.prev_mode = 0x21;
+        return r;
+    }
+    if net_count < 1 && !s.net_active {
+        if let Some(v) = alt() {
+            return v;
+        }
+        if param == 0x3f {
+            return if s.flag_10350 { 0x20 } else { 0x12 };
+        }
+        if probe_zero() {
+            return 0xc;
+        }
+        return default();
+    }
+    reset6(6);
+    6
+}
+
+#[cfg(test)]
+mod tests_wave18_agent09 {
+    use super::*;
+
+    #[test]
+    fn reset_header() {
+        let mut b = [0xffu8; 0x30];
+        b[0x1a] = 3;
+        b[0x1b] = 0;
+        assert!(!w18a09_reset_list_header(&mut b, Some(4)));
+        assert_eq!(b[0x1c], 0xff);
+        assert!(w18a09_reset_list_header(&mut b, Some(3)));
+        assert_eq!(&b[0x1c..0x2c], &[0u8; 16]);
+        assert_eq!(b[0x2c], 0xff);
+    }
+
+    #[test]
+    fn script() {
+        let t = [5u16, 100, 9, 200, 0xffff, 0];
+        assert_eq!(w18a09_script_lookup(&t, 9), Some(200));
+        assert_eq!(w18a09_script_lookup(&t, 7), None);
+    }
+
+    #[test]
+    fn walk_and_guard() {
+        let mut seen = vec![];
+        w18a09_for_each_node_a(1, |n| if n < 3 { n + 1 } else { 0 }, |n| seen.push(n));
+        assert_eq!(seen, [1, 2, 3]);
+        let mut c = 0;
+        w18a09_for_each_node_b(0, |_| 0, |_| c += 1);
+        assert_eq!(c, 0);
+        let mut f = true;
+        let mut calls = vec![];
+        let mut calls2 = vec![];
+        w18a09_with_guard(
+            1,
+            2,
+            &mut f,
+            |a, b| calls.push((a, b)),
+            |a, b| calls2.push((a, b)),
+        );
+        assert_eq!(calls, [(2, 3)]);
+        assert_eq!(calls2, [(2, 1)]);
+        assert!(f);
+    }
+
+    #[test]
+    fn small() {
+        assert_eq!(w18a09_ptr_to_index(0, 100), 0);
+        assert_eq!(w18a09_ptr_to_index(132, 100), 3);
+        assert_eq!(w18a09_ptr_to_index(68, 100), -1);
+        assert_eq!(
+            w18a09_pack_table_byte(
+                0x0102,
+                &{
+                    let mut t = [0u8; 0x103];
+                    t[0x102] = 0xff;
+                    t
+                },
+                2
+            ),
+            0x0101
+        );
+        let fl = [0, 0b01, 0b11, 0];
+        assert!(!w18a09_cell_flags_match(&fl, 2, 0, 1, 1, 2));
+        assert!(w18a09_cell_flags_match(&fl, 2, 1, 0, 1, 2));
+    }
+
+    #[test]
+    fn footprint() {
+        let r = w18a09_footprint_check(
+            1,
+            1,
+            (64, -33),
+            0,
+            10,
+            10,
+            |_, _| 5,
+            |a, b, f| {
+                assert_eq!((a, b, f), (2, -1, 1));
+                7
+            },
+        );
+        assert_eq!(r, Some(7));
+        assert_eq!(
+            w18a09_footprint_check(9, 0, (64, 0), 2, 10, 10, |_, _| 0, |_, _, _| 0),
+            None
+        );
+        assert_eq!(
+            w18a09_footprint_check(-1, 0, (0, 0), 2, 10, 10, |_, _| 0, |_, _, _| 0),
+            None
+        );
+    }
+
+    #[test]
+    fn mode() {
+        let mut s = W18a09Mode {
+            pending_flag: true,
+            prev_mode: 9,
+            net_active: false,
+
+            flag_10350: true,
+        };
+        assert_eq!(
+            w18a09_select_mode(&mut s, 0, 0, || None, || false, || 1, |_| {}),
+            9
+        );
+        assert_eq!(s.prev_mode, 0x21);
+        assert_eq!(
+            w18a09_select_mode(&mut s, 0, 0x3f, || None, || false, || 1, |_| {}),
+            0x20
+        );
+        assert_eq!(
+            w18a09_select_mode(&mut s, 0, 1, || None, || true, || 1, |_| {}),
+            0xc
+        );
+        assert_eq!(
+            w18a09_select_mode(&mut s, 0, 1, || None, || false, || 1, |_| {}),
+            1
+        );
+        assert_eq!(
+            w18a09_select_mode(&mut s, 1, 1, || None, || false, || 1, |_| {}),
+            6
+        );
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave18/agent10.rs
+// ===========================================================================
+// Wave 18 translation batch 10: unaligned reads, region search, tile rects.
+
+/// Signed divide by 32 truncating toward zero (the `(v + (v >> 31 & 0x1f)) >> 5` idiom).
+pub fn w18a10_div32(v: i32) -> i32 {
+    (v + ((v >> 31) & 0x1f)) >> 5
+}
+
+/// `0x006b0350`: reads a little-endian u32 at an arbitrary address through an
+/// aligned-dword reader.  Aligned: one read.  Unaligned: reads the dwords at
+/// `a & !3` and `(a + 4) & !3` (both must succeed) and extracts the 4 bytes.
+pub fn w18a10_read_u32_unaligned(
+    addr: u32,
+    mut read_aligned: impl FnMut(u32) -> Option<u32>,
+) -> Option<u32> {
+    let base = addr & !3;
+    if addr == base {
+        return read_aligned(addr);
+    }
+    let lo = read_aligned(base)?;
+    let hi = read_aligned(addr.wrapping_add(4) & !3)?;
+    let wide = (lo as u64) | ((hi as u64) << 32);
+    Some((wide >> ((addr - base) * 8)) as u32)
+}
+
+/// `0x00776990`: removes `value` from one 12-entry row (u32 slots, zero
+/// terminated) of the 8-row table at stride 12.  Finds the first zero slot
+/// (`count`, 12 if none) and the last slot equal to `value`; the tail is
+/// shifted down and the final live slot cleared.  No-op if `row >= 8`,
+/// `value == 0`, the row is empty or the value is absent.
+pub fn w18a10_remove_row_entry(table: &mut [u32], row: i32, value: u32) {
+    if !(0..8).contains(&row) {
+        return;
+    }
+    let r = &mut table[row as usize * 12..row as usize * 12 + 12];
+    let count = r.iter().position(|&v| v == 0).unwrap_or(12);
+    let last = r[..count].iter().rposition(|&v| v == value);
+    let Some(last) = last else { return };
+    if value == 0 || count == 0 {
+        return;
+    }
+    let end = count - 1;
+    if last < end {
+        r.copy_within(last + 1..=end, last);
+    }
+    r[end] = 0;
+}
+
+/// `0x0078fdd0`: maps an index through a u16 table; ids 0x26 and 0x3c are
+/// replaced by `alt_26` / `alt_3c` when the map version (`+0x154`) exceeds
+/// 0x1f / 0x1b respectively; otherwise the table value is returned.
+pub fn w18a10_versioned_table_lookup(
+    table: &[u16],
+    index: u16,
+    version: u16,
+    alt_26: u16,
+    alt_3c: u16,
+) -> u16 {
+    let v = table[index as usize];
+    if v == 0x26 && version > 0x1f {
+        alt_26
+    } else if v == 0x3c && version > 0x1b {
+        alt_3c
+    } else {
+        v
+    }
+}
+
+/// `0x00983600`: visits the 9 neighbour offsets (`offsets[i] = (dx, dy)`)
+/// around `(x, y)` inside a `w` x `h` grid, calling
+/// `cb(i, cell_index, nx, ny)` for in-bounds cells and stopping at the first
+/// zero result.  Returns the index where it stopped (9 if exhausted).
+pub fn w18a10_visit_neighbours(
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    offsets: &[(i32, i32); 9],
+    mut cb: impl FnMut(u32, i32, i32, i32) -> i32,
+) -> u32 {
+    for (i, &(dx, dy)) in offsets.iter().enumerate() {
+        let nx = dx + x;
+        let ny = dy + y;
+        if nx >= 0 && nx < w && ny >= 0 && ny < h && cb(i as u32, ny * w + nx, nx, ny) == 0 {
+            return i as u32;
+        }
+    }
+    9
+}
+
+/// `0x00983810`: tile rectangle `[x0, y0, x1, y1]` touched by an object of
+/// id `id` at pixel `(px, py)`.  `wide` is the caller's flag for ids 0x83 and
+/// 0x8f (ids 0x84/0x85/0x90/0x92 force it to 1, others to 0).  Wide mode uses
+/// +-0x140 x +-200 pixels; otherwise `dims` (pixel w, h from the id table) is
+/// centred.  Min clamps to 0, max to map-1 (the max clamp is skipped when
+/// the min was negative).  Returns `(wide, rect)`.
+pub fn w18a10_object_tile_rect(
+    id: u16,
+    px: i32,
+    py: i32,
+    wide: bool,
+    dims: (i16, i16),
+    map_w: i32,
+    map_h: i32,
+) -> (bool, [i32; 4]) {
+    let wide = match id {
+        0x83 | 0x8f => wide,
+        0x84 | 0x85 | 0x90 | 0x92 => true,
+        _ => false,
+    };
+    let mut r = [0i32; 4];
+    if wide {
+        r[0] = w18a10_div32(px - 0x140);
+        r[2] = w18a10_div32(px + 0x140);
+        r[1] = w18a10_div32(py - 200);
+        r[3] = w18a10_div32(py + 200);
+    } else {
+        let tw = w18a10_div32(dims.0 as i32);
+        let th = w18a10_div32(dims.1 as i32);
+        r[0] = w18a10_div32(px) - tw / 2;
+        r[2] = tw - 1 + r[0];
+        r[1] = w18a10_div32(py) - th / 2;
+        r[3] = th - 1 + r[1];
+    }
+    if r[0] < 0 {
+        r[0] = 0;
+    } else if map_w <= r[2] {
+        r[2] = map_w - 1;
+    }
+    if r[1] < 0 {
+        r[1] = 0;
+    } else if map_h <= r[3] {
+        r[3] = map_h - 1;
+    }
+    (wide, r)
+}
+
+/// `0x00983f30`: takes the u16 at `src` (if non-zero) into `dst`, clears
+/// `src`, sets `flag = 1` and returns true; otherwise returns false.
+pub fn w18a10_take_nonzero(src: &mut u16, flag: &mut u32, dst: &mut u16) -> bool {
+    if *src == 0 {
+        return false;
+    }
+    *dst = *src;
+    *src = 0;
+    *flag = 1;
+    true
+}
+
+/// `0x0079fef0`: converts a pixel rect `[l, t, r, b]` into the tile-space
+/// arguments `[l/32, t/32, (r-l+31)/32, (b-t+31)/32]` (trunc toward zero)
+/// passed on to the indirect callee.
+pub fn w18a10_rect_to_tile_args(rect: [i32; 4]) -> [i32; 4] {
+    let w = rect[2] - rect[0] + 0x1f;
+    let h = rect[3] - rect[1] + 0x1f;
+    [
+        w18a10_div32(rect[0]),
+        w18a10_div32(rect[1]),
+        w18a10_div32(w),
+        w18a10_div32(h),
+    ]
+}
+
+/// `0x00766ec0`: moves a unit position `pos = [x, y]` (+0x18/+0x1a) into
+/// region `region`.  The position is clamped to `rect = [l, t, r, b]`, then
+/// square rings (size 1, 3, .. 15; 4 sides with per-side steps `dx`/`dy`,
+/// u16 wrapping) are scanned around its tile for a tile in-bounds
+/// (`map_tiles`) whose `region_at(px, py)` equals `region`; the hit is
+/// snapped to the tile centre (+0x10).  If none is found, `on_fail` runs
+/// (callee 0x75_d660 in the retail binary).  `*flag` (+0x1f) is set to 1
+/// and true returned in all cases.
+#[allow(clippy::too_many_arguments)]
+pub fn w18a10_move_to_region(
+    pos: &mut [i16; 2],
+    flag: &mut u8,
+    rect: [i16; 4],
+    region: i16,
+    map_tiles: (u16, u16),
+    dx: [i16; 4],
+    dy: [i16; 4],
+    mut region_at: impl FnMut(i32, i32) -> i16,
+    mut on_fail: impl FnMut(&mut [i16; 2]),
+) -> bool {
+    let y = if pos[1] < rect[1] || rect[3] < pos[1] {
+        if pos[1] < rect[1] { rect[1] } else { rect[3] }
+    } else {
+        pos[1]
+    };
+    let x = if pos[0] < rect[0] || rect[2] < pos[0] {
+        if pos[0] < rect[0] { rect[0] } else { rect[2] }
+    } else {
+        pos[0]
+    };
+    let mut tx = (w18a10_div32(x as i32) & 0xffff) as u16;
+    let mut ty = (w18a10_div32(y as i32) & 0xffff) as u16;
+    let mut n: i32 = 1;
+    while n < 0x10 {
+        for side in 0..4 {
+            for _ in 0..n {
+                if tx < map_tiles.0
+                    && ty < map_tiles.1
+                    && region_at((tx as i16 as i32) << 5, (ty as i16 as i32) << 5) == region
+                {
+                    pos[0] = (tx << 5).wrapping_add(0x10) as i16;
+                    pos[1] = (ty << 5).wrapping_add(0x10) as i16;
+                    *flag = 1;
+                    return true;
+                }
+                tx = tx.wrapping_add(dx[side] as u16);
+                ty = ty.wrapping_add(dy[side] as u16);
+            }
+            tx = tx.wrapping_sub(dx[side] as u16);
+            ty = ty.wrapping_sub(dy[side] as u16);
+        }
+        tx = tx.wrapping_sub(1);
+        ty = ty.wrapping_sub(1);
+        n += 2;
+    }
+    on_fail(pos);
+    *flag = 1;
+    true
+}
+
+#[cfg(test)]
+mod tests_wave18_agent10 {
+    use super::*;
+
+    #[test]
+    fn unaligned_read() {
+        let mem = [0x0403_0201u32, 0x0807_0605];
+        let rd = |a: u32| mem.get((a / 4) as usize).copied();
+        assert_eq!(w18a10_read_u32_unaligned(4, rd), Some(0x0807_0605));
+        assert_eq!(w18a10_read_u32_unaligned(1, rd), Some(0x0504_0302));
+        assert_eq!(w18a10_read_u32_unaligned(3, rd), Some(0x0706_0504));
+        assert_eq!(w18a10_read_u32_unaligned(5, rd), None);
+    }
+
+    #[test]
+    fn row_remove() {
+        let mut t = vec![0u32; 96];
+        t[12..16].copy_from_slice(&[5, 6, 7, 0]);
+        w18a10_remove_row_entry(&mut t, 1, 5);
+        assert_eq!(&t[12..16], &[6, 7, 0, 0]);
+        w18a10_remove_row_entry(&mut t, 1, 7);
+        assert_eq!(&t[12..16], &[6, 0, 0, 0]);
+        w18a10_remove_row_entry(&mut t, 1, 9);
+        assert_eq!(t[12], 6);
+        w18a10_remove_row_entry(&mut t, 8, 6);
+        for v in &mut t[24..36] {
+            *v = 3;
+        }
+        w18a10_remove_row_entry(&mut t, 2, 3);
+        assert_eq!(t[34], 3);
+        assert_eq!(t[35], 0);
+    }
+
+    #[test]
+    fn lookup() {
+        let mut tb = [0u16; 4];
+        tb[1] = 0x26;
+        tb[2] = 0x3c;
+        tb[3] = 7;
+        assert_eq!(w18a10_versioned_table_lookup(&tb, 1, 0x20, 100, 200), 100);
+        assert_eq!(w18a10_versioned_table_lookup(&tb, 1, 0x1f, 100, 200), 0x26);
+        assert_eq!(w18a10_versioned_table_lookup(&tb, 2, 0x1c, 100, 200), 200);
+        assert_eq!(w18a10_versioned_table_lookup(&tb, 2, 0x1b, 100, 200), 0x3c);
+        assert_eq!(w18a10_versioned_table_lookup(&tb, 3, 99, 100, 200), 7);
+    }
+
+    #[test]
+    fn neighbours() {
+        let offs = [
+            (0, 0),
+            (1, 0),
+            (-1, 0),
+            (0, 1),
+            (0, -1),
+            (1, 1),
+            (-1, -1),
+            (1, -1),
+            (-1, 1),
+        ];
+        let mut seen = vec![];
+        let r = w18a10_visit_neighbours(0, 0, 4, 4, &offs, |i, c, _, _| {
+            seen.push((i, c));
+            1
+        });
+        assert_eq!(r, 9);
+        assert_eq!(seen, vec![(0, 0), (1, 1), (3, 4), (5, 5)]);
+        let r = w18a10_visit_neighbours(2, 2, 4, 4, &offs, |i, _, _, _| (i != 2) as i32);
+        assert_eq!(r, 2);
+    }
+
+    #[test]
+    fn tile_rect() {
+        let (w, r) = w18a10_object_tile_rect(0x84, 640, 320, false, (0, 0), 64, 64);
+        assert!(w);
+        assert_eq!(r, [10, 3, 30, 16]);
+        let (w, r) = w18a10_object_tile_rect(0x10, 320, 320, true, (96, 64), 64, 64);
+        assert!(!w);
+        assert_eq!(r, [9, 9, 11, 10]);
+        let (w, r) = w18a10_object_tile_rect(0x83, 0, 0, true, (0, 0), 8, 8);
+        assert!(w);
+        assert_eq!(r, [0, 0, 10, 6]);
+        let (_, r) = w18a10_object_tile_rect(0x10, 0, 100, false, (64, 64), 64, 64);
+        assert_eq!(r[0], 0);
+    }
+
+    #[test]
+    fn take_and_args() {
+        let (mut s, mut f, mut d) = (5u16, 0u32, 0u16);
+        assert!(w18a10_take_nonzero(&mut s, &mut f, &mut d));
+        assert_eq!((s, f, d), (0, 1, 5));
+        assert!(!w18a10_take_nonzero(&mut s, &mut f, &mut d));
+        assert_eq!(w18a10_rect_to_tile_args([64, 32, 100, 96]), [2, 1, 2, 2]);
+    }
+
+    #[test]
+    fn region_move() {
+        let dx = [1, 0, -1, 0];
+        let dy = [0, 1, 0, -1];
+        let mut pos = [100, 100];
+        let mut flag = 0;
+        let ok = w18a10_move_to_region(
+            &mut pos,
+            &mut flag,
+            [0, 0, 1000, 1000],
+            7,
+            (64, 64),
+            dx,
+            dy,
+            |x, y| if (x, y) == (3 << 5, 3 << 5) { 7 } else { 0 },
+            |_| panic!(),
+        );
+        assert!(ok);
+        assert_eq!((pos, flag), ([3 * 32 + 16, 3 * 32 + 16], 1));
+        let mut pos = [5000, -5];
+        let mut flag = 0;
+        let mut failed = false;
+        w18a10_move_to_region(
+            &mut pos,
+            &mut flag,
+            [0, 0, 64, 64],
+            7,
+            (64, 64),
+            dx,
+            dy,
+            |_, _| 0,
+            |_| failed = true,
+        );
+        assert!(failed && flag == 1);
+    }
+}

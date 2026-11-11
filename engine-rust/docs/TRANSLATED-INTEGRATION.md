@@ -123,3 +123,10 @@ counterparts found this wave:
 | Address | Helper | Engine side | Test |
 |---|---|---|---|
 | `0x006e89f0` | `w17a02_trigger_file_for_mode` | lobby Greed resources / Slaughter minutes (`bin/sc_view/mp.rs`) | `retail_trigger_tests::lobby_greed_and_slaughter_options_match_the_retail_trigger_files` — each lobby option selects its shipped trigger file and the retail table accepts no other value |
+
+## Wave 18 (2026-11-11, triage queue, tier 2)
+
++80 exact ledger functions (ledger 3050 -> 3130) in `client.rs`, `path.rs`,
+`runtime.rs` and `sim.rs` (UI widget geometry, STL vector/hash/string
+helpers, colour palettes).  No counterpart in the rules core: the helpers
+model retail containers and UI records and stay auditable reference code.
