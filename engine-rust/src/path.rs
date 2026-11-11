@@ -1754,3 +1754,628 @@ mod tests_wave17_agent03 {
         assert_eq!(w17a03_scroll_hit(&r, 0, 6, &m, 10, (5, 5), no), 0);
     }
 }
+
+// ===========================================================================
+// Merged from src/wave18/agent02.rs
+// ===========================================================================
+// Wave 18 translation batch 02: player-colour lookup, HUD colour slots,
+// rect geometry and a 64-bit signed divide helper.
+//
+// Colour values are 16-byte `[u32; 4]` records (opaque float vectors);
+// palette lookups and colour maths of unresolved callees are closures.
+
+/// Context for the player colour lookup (state blob is the XOR-decoded
+/// game-state pointer base, patch 1.23.10).
+#[allow(non_camel_case_types)]
+pub struct w18a02_ColorCtx<'a> {
+    /// `DAT_0117ee68 == 2` (replay/observer-style branch).
+    pub mode2: bool,
+    /// Override table enabled flag (`DAT_00fa3588 != 0`).
+    pub override_on: bool,
+    /// Override colours, 8 entries of 16 bytes.
+    pub override_colors: &'a [[u32; 4]],
+    /// Local player slot (`DAT_00f2acf4`).
+    pub local_player: u32,
+    /// State blob: relation bytes at `(local*3+0x3951)*4 + slot`, u32 table
+    /// at `300..0x14c`, palette-index bytes at `0x2c86 + slot*8`.
+    pub blob: &'a [u8],
+}
+
+fn w18a02_blob_u32(blob: &[u8], off: usize) -> Option<u32> {
+    let b = blob.get(off..off + 4)?;
+    Some(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+}
+
+/// `0x005975c0`: colour of player `slot`.  Outside mode 2: the override
+/// table when enabled and `slot < 8`, else palette[blob[0x2c86+slot*8]].
+/// In mode 2 the slot is first remapped (2 if self, 7 if related else 0)
+/// and searched in the u32 table `300..0x14c` (8 entries); the found index
+/// (or the searched value when absent) selects the palette byte.  Returns
+/// `None` when `noreturn` (callee 0x74_8d80 true) or blob is too short.
+pub fn w18a02_player_color(
+    ctx: &w18a02_ColorCtx,
+    slot: u8,
+    noreturn: bool,
+    palette: &dyn Fn(u8) -> [u32; 4],
+) -> Option<[u32; 4]> {
+    let pal_byte = |s: u32| ctx.blob.get(0x2c86 + (s as usize & 0xff) * 8).copied();
+    if !ctx.mode2 {
+        if ctx.override_on && slot < 8 {
+            return ctx.override_colors.get(slot as usize).copied();
+        }
+        return Some(palette(pal_byte(slot as u32)?));
+    }
+    if noreturn {
+        return None;
+    }
+    let s = slot as u32;
+    let want = if ctx.local_player == s {
+        2
+    } else {
+        let off = (ctx.local_player as usize * 3 + 0x3951) * 4 + s as usize;
+        if *ctx.blob.get(off)? == 0 { 0 } else { 7 }
+    };
+    let mut found = want;
+    let mut off = 300usize;
+    let mut i = 0u32;
+    while off < 0x14c {
+        if w18a02_blob_u32(ctx.blob, off)? == want {
+            found = i;
+            break;
+        }
+        off += 4;
+        i += 1;
+    }
+    Some(palette(pal_byte(found)?))
+}
+
+/// `0x00597a30`: same as `0x005975c0` with the slot taken from the local
+/// player (`DAT_00f2acf4`, low byte).
+pub fn w18a02_local_player_color(
+    ctx: &w18a02_ColorCtx,
+    noreturn: bool,
+    palette: &dyn Fn(u8) -> [u32; 4],
+) -> Option<[u32; 4]> {
+    w18a02_player_color(ctx, ctx.local_player as u8, noreturn, palette)
+}
+
+/// `0x006ffa40`: maps a HUD colour index 0..=9 to a palette index using the
+/// six bytes stored at 0x117a418, 41b, 41e, 421, 424, 427 (in that order,
+/// `idx`).  Out of range returns `None` (caller keeps the default colour).
+pub fn w18a02_hud_palette_index(idx: &[u8; 6], which: u32) -> Option<u8> {
+    let k = match which {
+        0 | 5 => 2,
+        1 | 6 => 1,
+        2 | 7 => 0,
+        3 => 4,
+        4 | 9 => 5,
+        8 => 3,
+        _ => return None,
+    };
+    Some(idx[k])
+}
+
+/// `0x0075c1a0`: scales `value` against `total` into `0..=cap`:
+/// `total == 0` gives `fallback`; else `min(cap*value/total, cap)`
+/// (unsigned 32-bit division, as in the retail code).
+pub fn w18a02_scaled_cap(value: u32, total: u32, cap: u32, fallback: u32) -> u32 {
+    if total == 0 {
+        return fallback;
+    }
+    let scaled = cap.wrapping_mul(value) / total;
+    scaled.min(cap)
+}
+
+/// `0x00957720`: colour record for a status kind: palette entry selected by
+/// byte `+1` of the 8-byte row for `kind` (row supplied by the caller from
+/// `FUN_00957300`), plus a flag set when `kind == 5`.
+pub fn w18a02_status_color(
+    kind: i32,
+    row_palette_byte: u8,
+    palette: &dyn Fn(u8) -> [u32; 4],
+) -> ([u32; 4], bool) {
+    (palette(row_palette_byte), kind == 5)
+}
+
+/// Two-deep colour slot (current/previous) with a flag byte.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[allow(non_camel_case_types)]
+pub struct w18a02_ColorSlots {
+    pub cur: [u32; 4],
+    pub cur_flag: u8,
+    pub prev: [u32; 4],
+    pub prev_flag: u8,
+}
+
+/// `0x009583e0`: `kind == 1` restores current from previous; otherwise
+/// saves current into previous and loads `palette_color` (looked up by the
+/// caller) with flag `kind == 5`.
+pub fn w18a02_push_color(s: &mut w18a02_ColorSlots, kind: i8, palette_color: [u32; 4]) {
+    if kind == 1 {
+        s.cur = s.prev;
+        s.cur_flag = s.prev_flag;
+        return;
+    }
+    s.prev = s.cur;
+    s.prev_flag = s.cur_flag;
+    s.cur = palette_color;
+    s.cur_flag = (kind == 5) as u8;
+}
+
+/// `0x00958470`: clamps `t` to `[0,1]` (NaN gives 0), builds the blended
+/// colour via `blend(0xac, 0xf4, 0x6c, t)` and pushes it with flag 0.
+/// Returns the clamped `t`.
+pub fn w18a02_push_blend(
+    s: &mut w18a02_ColorSlots,
+    t: f32,
+    blend: &dyn Fn(u8, u8, u8, f32) -> [u32; 4],
+) -> f32 {
+    let t = if 0.0 <= t {
+        if t <= 1.0 { t } else { 1.0 }
+    } else {
+        0.0
+    };
+    let color = blend(0xac, 0xf4, 0x6c, t);
+    s.prev = s.cur;
+    s.prev_flag = s.cur_flag;
+    s.cur = color;
+    s.cur_flag = 0;
+    t
+}
+
+/// Output of `0x006995e0`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(non_camel_case_types)]
+pub struct w18a02_BarRects {
+    /// `*param_3`: (x0, y0, x1, y0 + 600).
+    pub out3: [i16; 4],
+    /// `*param_4` and the rect drawn: (x0, y2, x1, y3).
+    pub out4: [i16; 4],
+    /// Width written to the 0x11cb5ec record (`right-left+1`).
+    pub width: u16,
+    /// Constant stored beside it.
+    pub height_const: u16,
+}
+
+/// `0x006995e0`: bar geometry.  `rect` is the widget (left, top, right,
+/// bottom) = i16 at +4/+6/+8/+10, `y_off` the i16 at +0x3e, `pos` the
+/// (x, y) origin.  All arithmetic wraps in 16 bits.
+pub fn w18a02_bar_rects(rect: [i16; 4], y_off: i16, pos: [i16; 2]) -> w18a02_BarRects {
+    let [left, top, right, bottom] = rect;
+    let x0 = pos[0].wrapping_add(left);
+    let y0 = pos[1].wrapping_add(top.wrapping_sub(y_off));
+    let width = right.wrapping_sub(left).wrapping_add(1) as u16;
+    let x1 = (width as i16).wrapping_add(x0);
+    let y2 = pos[1].wrapping_add(top);
+    let y3 = bottom.wrapping_sub(top).wrapping_add(1).wrapping_add(y2);
+    w18a02_BarRects {
+        out3: [x0, y0, x1, y0.wrapping_add(600)],
+        out4: [x0, y2, x1, y3],
+        width,
+        height_const: 700,
+    }
+}
+
+/// `0x00c87550`: signed 64-bit divide (CRT `__alldiv`): quotient truncated
+/// toward zero; `None` on zero divisor (hardware fault in retail).
+pub fn w18a02_alldiv(num: i64, den: i64) -> Option<i64> {
+    if den == 0 {
+        return None;
+    }
+    let neg = (num < 0) != (den < 0);
+    let q = num.unsigned_abs() / den.unsigned_abs();
+    Some(if neg {
+        (q as i64).wrapping_neg()
+    } else {
+        q as i64
+    })
+}
+
+#[cfg(test)]
+mod tests_wave18_agent02 {
+    use super::*;
+
+    fn pal(i: u8) -> [u32; 4] {
+        [i as u32, 0, 0, 1]
+    }
+
+    #[test]
+    fn hud_palette_index_map() {
+        let t = [10, 11, 12, 13, 14, 15];
+        assert_eq!(w18a02_hud_palette_index(&t, 0), Some(12));
+        assert_eq!(w18a02_hud_palette_index(&t, 5), Some(12));
+        assert_eq!(w18a02_hud_palette_index(&t, 6), Some(11));
+        assert_eq!(w18a02_hud_palette_index(&t, 7), Some(10));
+        assert_eq!(w18a02_hud_palette_index(&t, 3), Some(14));
+        assert_eq!(w18a02_hud_palette_index(&t, 9), Some(15));
+        assert_eq!(w18a02_hud_palette_index(&t, 8), Some(13));
+        assert_eq!(w18a02_hud_palette_index(&t, 10), None);
+    }
+
+    #[test]
+    fn scaled_cap_bounds() {
+        assert_eq!(w18a02_scaled_cap(5, 0, 100, 77), 77);
+        assert_eq!(w18a02_scaled_cap(5, 10, 100, 0), 50);
+        assert_eq!(w18a02_scaled_cap(30, 10, 100, 0), 100);
+    }
+
+    #[test]
+    fn player_color_normal_and_override() {
+        let mut blob = vec![0u8; 0x4000];
+        blob[0x2c86 + 3 * 8] = 9;
+        let ov = [[7u32; 4]; 8];
+        let mut c = w18a02_ColorCtx {
+            mode2: false,
+            override_on: false,
+            override_colors: &ov,
+            local_player: 1,
+            blob: &blob,
+        };
+        assert_eq!(w18a02_player_color(&c, 3, false, &pal), Some(pal(9)));
+        c.override_on = true;
+        assert_eq!(w18a02_player_color(&c, 3, false, &pal), Some([7; 4]));
+        assert_eq!(w18a02_player_color(&c, 8, false, &pal), Some(pal(0)));
+        assert_eq!(w18a02_local_player_color(&c, false, &pal), Some([7; 4]));
+    }
+
+    #[test]
+    fn player_color_mode2() {
+        let mut blob = vec![0u8; 0x10000];
+        // table entries 300.. : index 3 holds value 2
+        blob[300 + 12] = 2;
+        blob[0x2c86 + 3 * 8] = 42;
+        // slot absent: want 0 -> found = 0 (table[0]==0 matches first)
+        blob[0x2c86] = 5;
+        let ov = [[0u32; 4]; 8];
+        let c = w18a02_ColorCtx {
+            mode2: true,
+            override_on: false,
+            override_colors: &ov,
+            local_player: 4,
+            blob: &blob,
+        };
+        // self slot: want 2, found at index 3 (table 0..2 are zero)
+        assert_eq!(w18a02_player_color(&c, 4, false, &pal), Some(pal(42)));
+        // unrelated slot: want 0, first entry matches
+        assert_eq!(w18a02_player_color(&c, 1, false, &pal), Some(pal(5)));
+        assert_eq!(w18a02_player_color(&c, 1, true, &pal), None);
+    }
+
+    #[test]
+    fn status_color_flag() {
+        assert_eq!(w18a02_status_color(5, 3, &pal), (pal(3), true));
+        assert_eq!(w18a02_status_color(4, 3, &pal), (pal(3), false));
+    }
+
+    #[test]
+    fn color_slot_push_and_restore() {
+        let mut s = w18a02_ColorSlots::default();
+        w18a02_push_color(&mut s, 5, [1; 4]);
+        assert_eq!((s.cur, s.cur_flag), ([1; 4], 1));
+        w18a02_push_color(&mut s, 2, [2; 4]);
+        assert_eq!((s.cur, s.cur_flag, s.prev), ([2; 4], 0, [1; 4]));
+        w18a02_push_color(&mut s, 1, [9; 4]);
+        assert_eq!((s.cur, s.cur_flag), ([1; 4], 1));
+    }
+
+    #[test]
+    fn push_blend_clamps() {
+        let mut s = w18a02_ColorSlots::default();
+        let b = |r: u8, g: u8, bl: u8, t: f32| [r as u32, g as u32, bl as u32, t.to_bits()];
+        assert_eq!(w18a02_push_blend(&mut s, 2.0, &b), 1.0);
+        assert_eq!(s.cur[0], 0xac);
+        assert_eq!(w18a02_push_blend(&mut s, -1.0, &b), 0.0);
+        assert_eq!(w18a02_push_blend(&mut s, f32::NAN, &b), 0.0);
+        assert_eq!(w18a02_push_blend(&mut s, 0.5, &b), 0.5);
+        assert_eq!(s.cur_flag, 0);
+    }
+
+    #[test]
+    fn bar_rects_geometry() {
+        let r = w18a02_bar_rects([10, 20, 19, 29], 5, [100, 200]);
+        assert_eq!(r.out3, [110, 215, 120, 815]);
+        assert_eq!(r.out4, [110, 220, 120, 230]);
+        assert_eq!((r.width, r.height_const), (10, 700));
+    }
+
+    #[test]
+    fn alldiv_matches_i64() {
+        for (a, b) in [
+            (7i64, 2i64),
+            (-7, 2),
+            (7, -2),
+            (-7, -2),
+            (i64::MIN, 3),
+            (1 << 40, 1 << 33),
+            (5, 1 << 35),
+        ] {
+            assert_eq!(w18a02_alldiv(a, b), Some(a / b));
+        }
+        assert_eq!(w18a02_alldiv(1, 0), None);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave18/agent03.rs
+// ===========================================================================
+// Wave 18 translation batch 03: weak-ref lock, scrollbar/widget geometry.
+
+/// `0x00535260`: shared-pointer "lock" (weak -> strong).  Copies the
+/// `(ptr, control)` pair; if a control block exists, atomically bumps its use
+/// count (`+4`) unless it is zero, in which case the pointer is cleared.
+/// Returns the new `(ptr, control_present)` pair and updates `use_count`.
+pub fn w18a03_weak_lock(
+    ptr: u32,
+    has_control: bool,
+    use_count: &std::sync::atomic::AtomicI32,
+) -> (u32, bool) {
+    use std::sync::atomic::Ordering;
+    if !has_control {
+        return (ptr, false);
+    }
+    let mut cur = use_count.load(Ordering::SeqCst);
+    loop {
+        if cur == 0 {
+            return (0, true);
+        }
+        match use_count.compare_exchange(cur, cur + 1, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => return (ptr, true),
+            Err(actual) => cur = actual,
+        }
+    }
+}
+
+/// `0x009646c0`: packs widget flag bits at `+0x30`: bit 0 = flag bit 1,
+/// bits 8.. = flags >> 9 (bit 1 of the low byte and bits 1..8 cleared).
+pub fn w18a03_flag_bits_1_and_9(flags: u32) -> u32 {
+    (((flags >> 9) << 8) | ((flags >> 1) & 0xff)) & 0xffff_ff01
+}
+
+/// `0x009651b0`: offset of event position (`+0x12`, `+0x14`) from the
+/// widget origin (`+4`, `+6`); when `+0x3c != 0` the origin comes from the
+/// parent widget (`+0x4c`), passed as `parent_origin`.
+pub fn w18a03_event_offset(
+    kind3c: i16,
+    own_origin: [i16; 2],
+    parent_origin: [i16; 2],
+    event_pos: [i16; 2],
+) -> [i16; 2] {
+    let o = if kind3c != 0 {
+        parent_origin
+    } else {
+        own_origin
+    };
+    [
+        event_pos[0].wrapping_sub(o[0]),
+        event_pos[1].wrapping_sub(o[1]),
+    ]
+}
+
+/// `0x0097b550`: rectangle geometry part: `rect = [l, t, r, b]` (i16)
+/// offset by `off = [x, y]`; returns `(left, top, right, bottom)` as the
+/// call order of the draw helper (x offset on columns 0/2, y on 1/3).
+pub fn w18a03_offset_rect(rect: [i16; 4], off: [i16; 2]) -> (i32, i32, i32, i32) {
+    (
+        rect[0] as i32 + off[0] as i32,
+        rect[1] as i32 + off[1] as i32,
+        rect[2] as i32 + off[0] as i32,
+        rect[3] as i32 + off[1] as i32,
+    )
+}
+
+/// Scrollbar fields used by the two routines below (offsets in comments).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct W18a03Scroll {
+    /// `+0x30`
+    pub flags: u32,
+    /// `+0x64`
+    pub thumb: u16,
+    /// `+0x54`
+    pub cur: i16,
+    /// `+0x56`
+    pub min: i16,
+    /// `+0x58`
+    pub max: i16,
+    /// `+0x5a`
+    pub value: i16,
+    /// `+0x5c`
+    pub mask: u32,
+    /// `+0x3c`
+    pub kind: i16,
+    /// `+4..+0xc` rect (l, t, r, b)
+    pub rect: [i16; 4],
+}
+
+/// `0x00982610`: scrollbar position.  `track_len` is the result of the
+/// length helper (callee `FUN_00982690`).  Negative flags return the stored
+/// thumb; empty range returns 0; ends return exact values; else rounds.
+pub fn w18a03_scroll_position(s: &W18a03Scroll, track_len: i16) -> u32 {
+    if (s.flags as i32) < 0 {
+        return s.thumb as u32;
+    }
+    let span = s.max.wrapping_sub(s.min);
+    if span != 0 && s.cur != s.min {
+        if s.cur == s.max {
+            return track_len as u16 as u32;
+        }
+        let num = span as i32 / 2 + (s.cur as i32 - s.min as i32) * track_len as i32;
+        return (num / span as i32) as u32;
+    }
+    0
+}
+
+/// Layout globals read by `0x00982720` (DAT values near `11cdd70`).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct W18a03Metrics {
+    pub d70: i32,
+    pub d74: i32,
+    pub d78: i32,
+    pub d88: i32,
+    pub d8c: i32,
+    pub dcc: i32,
+    pub dd0: i32,
+}
+
+/// Follow-up action of `0x00982720` for the non-drag path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum W18a03Follow {
+    None,
+    /// indirect (guarded) callback invoked
+    Callback,
+    /// notify helper `FUN_0077ed00` invoked
+    Notify,
+}
+
+/// `0x00982720`: scrollbar mouse handler.  `idx_table` is the `d7afa8`
+/// table indexed by the result of `FUN_00982d80`; `offset` is the event
+/// offset (see `w18a03_event_offset`); `len_fn` is `FUN_00982690`.
+/// Returns the follow-up action.
+pub fn w18a03_scroll_event(
+    s: &mut W18a03Scroll,
+    idx_table: &[u32],
+    idx: usize,
+    offset: [i16; 2],
+    m: &W18a03Metrics,
+    len_fn: impl Fn(&W18a03Scroll) -> i16,
+) -> W18a03Follow {
+    if s.mask == 0x8000_0000 {
+        let sticky = s.flags & 0x0400_0000;
+        let (pos, mut size, size_alt, pad);
+        if s.kind == 6 {
+            let mut lim = if sticky == 0 {
+                (s.rect[2] as i32 - (m.d88 >> 1) - m.d70 - 3) as i16
+            } else {
+                (s.rect[2] as i32 - (m.dcc >> 1)) as i16
+            };
+            if offset[0] < lim {
+                lim = offset[0];
+            }
+            pos = lim as i32 - s.rect[0] as i32;
+            pad = if sticky == 0 { m.d78 } else { 0 };
+            size = m.d88;
+            size_alt = m.dcc;
+        } else {
+            let mut lim = if sticky == 0 {
+                (s.rect[3] as i32 - (m.d8c >> 1) - m.d74 - 3) as i16
+            } else {
+                (s.rect[2] as i32 - (m.dd0 >> 1)) as i16
+            };
+            if offset[1] < lim {
+                lim = offset[1];
+            }
+            pos = lim as i32 - s.rect[1] as i32;
+            pad = if sticky == 0 { m.d74 + 2 } else { 0 };
+            size = m.d8c;
+            size_alt = m.dd0;
+        }
+        if sticky != 0 {
+            size = size_alt;
+        }
+        let v = pos
+            .wrapping_sub(((size as u32) >> 1) as i32)
+            .wrapping_sub(pad);
+        let v = v.max(0);
+        let min = s.min;
+        s.thumb = v as u16;
+        let l = len_fn(s) as i32;
+        let num = (s.max as i32 - min as i32 + 1) * v;
+        let q = if l == 0 { 0 } else { num / l };
+        s.value = (q as i16).wrapping_sub(s.cur).wrapping_add(min);
+        return W18a03Follow::None;
+    }
+    let mask = s.mask;
+    let tbl = idx_table.get(idx).copied().unwrap_or(0);
+    if mask & s.flags == 0 {
+        if tbl == mask {
+            s.flags ^= mask;
+            if s.mask & s.flags != 0 {
+                return W18a03Follow::Notify;
+            }
+            return W18a03Follow::Callback;
+        }
+    } else if tbl != mask {
+        s.flags ^= mask;
+        return W18a03Follow::Callback;
+    }
+    W18a03Follow::None
+}
+
+#[cfg(test)]
+mod tests_wave18_agent03 {
+    use super::*;
+    use std::sync::atomic::AtomicI32;
+
+    #[test]
+    fn weak_lock() {
+        let c = AtomicI32::new(2);
+        assert_eq!(w18a03_weak_lock(7, true, &c), (7, true));
+        assert_eq!(c.load(std::sync::atomic::Ordering::SeqCst), 3);
+        let z = AtomicI32::new(0);
+        assert_eq!(w18a03_weak_lock(7, true, &z), (0, true));
+        assert_eq!(w18a03_weak_lock(7, false, &z), (7, false));
+    }
+
+    #[test]
+    fn flags_and_offsets() {
+        assert_eq!(w18a03_flag_bits_1_and_9(0x2), 0x1);
+        assert_eq!(w18a03_flag_bits_1_and_9(0x200) & 0xffff_ff01, 0x100);
+        assert_eq!(w18a03_event_offset(0, [1, 2], [10, 20], [5, 5]), [4, 3]);
+        assert_eq!(w18a03_event_offset(1, [1, 2], [10, 20], [5, 5]), [-5, -15]);
+        assert_eq!(w18a03_offset_rect([1, 2, 3, 4], [10, 20]), (11, 22, 13, 24));
+    }
+
+    #[test]
+    fn position() {
+        let mut s = W18a03Scroll {
+            min: 0,
+            max: 10,
+            cur: 0,
+            ..Default::default()
+        };
+        assert_eq!(w18a03_scroll_position(&s, 100), 0);
+        s.cur = 10;
+        assert_eq!(w18a03_scroll_position(&s, 100), 100);
+        s.cur = 5;
+        assert_eq!(w18a03_scroll_position(&s, 100), 50);
+        s.flags = 0x8000_0000;
+        s.thumb = 9;
+        assert_eq!(w18a03_scroll_position(&s, 100), 9);
+    }
+
+    #[test]
+    fn event_drag_and_toggle() {
+        let m = W18a03Metrics {
+            d88: 10,
+            dcc: 10,
+            d8c: 10,
+            dd0: 10,
+            ..Default::default()
+        };
+        let mut s = W18a03Scroll {
+            mask: 0x8000_0000,
+            kind: 6,
+            rect: [0, 0, 200, 100],
+            min: 0,
+            max: 9,
+            ..Default::default()
+        };
+        let r = w18a03_scroll_event(&mut s, &[], 0, [50, 0], &m, |_| 10);
+        assert_eq!(r, W18a03Follow::None);
+        assert_eq!(s.thumb, 45);
+        assert_eq!(s.value, 450 / 10);
+        let mut t = W18a03Scroll {
+            mask: 4,
+            ..Default::default()
+        };
+        assert_eq!(
+            w18a03_scroll_event(&mut t, &[4], 0, [0, 0], &m, |_| 1),
+            W18a03Follow::Notify
+        );
+        assert_eq!(t.flags, 4);
+        assert_eq!(
+            w18a03_scroll_event(&mut t, &[0], 0, [0, 0], &m, |_| 1),
+            W18a03Follow::Callback
+        );
+        assert_eq!(t.flags, 0);
+    }
+}
