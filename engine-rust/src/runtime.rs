@@ -59791,3 +59791,3689 @@ mod tests_wave26_agent20 {
         assert_eq!(u32::from_le_bytes(c[0x18..0x1c].try_into().unwrap()), 1);
     }
 }
+
+// ===========================================================================
+// Merged from src/wave27/agent01.rs
+// ===========================================================================
+// Wave 27 translation batch 01: small UI-control and handle helpers.
+
+/// Control record fields touched by `0x0097a020` (offsets noted).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct W27a01Ctl {
+    /// +0x30 flags (bit 31 = busy/lock).
+    pub flags: u32,
+    /// +0x3c kind (0xd = scroll bar variant).
+    pub kind: i16,
+    /// +0x06 low edge.
+    pub lo: i16,
+    /// +0x0a high edge.
+    pub hi: i16,
+    /// +0x50 non-zero child pointer.
+    pub child: u32,
+    /// +0x60.
+    pub b60: u8,
+    /// +0x62.
+    pub b62: u8,
+    /// +0x63 stride.
+    pub stride: u8,
+    /// +0x64 row count.
+    pub rows: u8,
+    /// +0x65.
+    pub b65: u8,
+    /// +0x66.
+    pub b66: u8,
+    /// +0x67.
+    pub b67: u8,
+    /// +0x68.
+    pub b68: u8,
+}
+
+/// `0x0097a020`: recomputes row count and clamps for a control.  `delta`
+/// is the register-passed adjustment (`local_8`), `parent_hi` the parent's
+/// +0x0a edge; `on_kind_d` is FUN_009650f0 and `on_child` FUN_0097a450.
+pub fn w27a01_relayout(
+    c: &mut W27a01Ctl,
+    delta: i16,
+    parent_hi: i16,
+    mut on_kind_d: impl FnMut(&mut W27a01Ctl),
+    mut on_child: impl FnMut(&mut W27a01Ctl),
+) {
+    if (c.flags as i32) < 0 {
+        return;
+    }
+    if c.kind == 0xd {
+        if (parent_hi as i32) < c.hi as i32 + delta as i32 {
+            c.lo = c.lo.wrapping_sub(delta);
+            c.b66 |= 1;
+        } else {
+            c.b66 = 0;
+            c.hi = delta.wrapping_add(c.hi);
+        }
+        on_kind_d(c);
+    }
+    let stride = c.stride as i32;
+    if stride == 0 {
+        return;
+    }
+    let span = c.hi.wrapping_sub(c.lo).wrapping_add(1) as i32;
+    let q = (span / stride) as u32;
+    let prod = (c.stride as u16).wrapping_mul(q as u16);
+    c.rows = q as u8;
+    let mut size = prod as u32;
+    if (prod as i16) as i32 <= stride {
+        size = stride as u32;
+    }
+    c.hi = (size as i16).wrapping_add(c.lo);
+    let b60 = c.b60;
+    let b3;
+    if b60 == 0 {
+        b3 = 0xff;
+        c.b62 = 0xff;
+    } else {
+        let mut v = c.b62;
+        if b60 <= v && v != 0xff {
+            v = b60 - 1;
+            c.b62 = v;
+        }
+        b3 = v;
+    }
+    c.b68 = b3;
+    let diff = b60 as i32 - (q & 0xff) as i32;
+    let b4 = if diff >= 0 { diff as u8 } else { 0 };
+    c.b65 = b4;
+    if b4 < c.b67 {
+        c.b67 = b4;
+    }
+    c.flags |= 0x8000_0000;
+    if c.child != 0 {
+        on_child(c);
+    }
+    if c.kind == 0xd {
+        if c.b66 & 1 == 0 {
+            c.hi = c.hi.wrapping_sub(delta);
+        } else {
+            c.lo = c.lo.wrapping_add(delta);
+        }
+    }
+    c.flags &= 0x7fff_ffff;
+}
+
+/// `0x0097a340`: sets or releases the busy bit; releasing re-runs relayout.
+pub fn w27a01_set_lock(c: &mut W27a01Ctl, release: bool, relayout: impl FnOnce(&mut W27a01Ctl)) {
+    if !release {
+        c.flags |= 0x8000_0000;
+    } else if (c.flags as i32) < 0 {
+        c.flags &= 0x7fff_ffff;
+        relayout(c);
+    }
+}
+
+/// `0x009738c0`: top element of a stack (last of `data`), or 0 when empty.
+pub fn w27a01_stack_top(data: &[u32]) -> u32 {
+    data.last().copied().unwrap_or(0)
+}
+
+/// `0x00963ca0`: after looking an entry up, clears the "selected" bit (bit 2)
+/// of the old selection when not found, otherwise activates an entry whose
+/// bit 2 is clear.  `flags` are the +0x34 words, `selected` the +0x60 link.
+pub fn w27a01_update_selection(
+    flags: &mut [u32],
+    selected: &mut Option<usize>,
+    found: Option<usize>,
+    mut activate: impl FnMut(usize),
+) {
+    match found {
+        None => {
+            if let Some(s) = selected.take() {
+                flags[s] &= !4;
+            }
+        }
+        Some(i) => {
+            if (flags[i] >> 2) & 1 == 0 {
+                activate(i);
+            }
+        }
+    }
+}
+
+/// `0x00999640`: resolves a packed handle (bits 28..31 table, 16..27 slot,
+/// 0..15 generation) to a slot index.  `table(idx)` is FUN_00990450 and yields
+/// `Ok((slot_count, Some(ids)))`; `ids[slot]` is the dword at +0x8c.
+pub fn w27a01_resolve_handle(
+    handle: u32,
+    table: impl Fn(u32) -> Result<(usize, Option<Vec<u32>>), i32>,
+    out: Option<&mut Option<usize>>,
+) -> i32 {
+    let slot = ((handle >> 16) & 0xfff) as usize;
+    let gen_ = handle & 0xffff;
+    let Some(out) = out else { return 0x25 };
+    *out = None;
+    if gen_ != 0
+        && let Ok((count, ids)) = table(handle >> 28)
+    {
+        let Some(ids) = ids else { return 0x4f };
+        if slot < count {
+            let id = ids.get(slot).copied().unwrap_or(0);
+            if gen_ == 0xffff || id == handle {
+                *out = Some(slot);
+                return 0;
+            }
+            if 1 < (id & 0xffff).wrapping_sub(gen_) {
+                return 0xb;
+            }
+        }
+    }
+    0x24
+}
+
+#[cfg(test)]
+mod tests_wave27_agent01 {
+    use super::*;
+
+    #[test]
+    fn stack_top() {
+        assert_eq!(w27a01_stack_top(&[]), 0);
+        assert_eq!(w27a01_stack_top(&[1, 2, 9]), 9);
+    }
+
+    #[test]
+    fn selection() {
+        let mut f = [4u32, 0];
+        let mut sel = Some(0);
+        w27a01_update_selection(&mut f, &mut sel, None, |_| panic!());
+        assert_eq!((f[0], sel), (0, None));
+        let mut hit = None;
+        w27a01_update_selection(&mut f, &mut sel, Some(1), |i| hit = Some(i));
+        assert_eq!(hit, Some(1));
+        f[1] = 4;
+        w27a01_update_selection(&mut f, &mut sel, Some(1), |_| panic!());
+    }
+
+    #[test]
+    fn lock_and_relayout() {
+        let mut c = W27a01Ctl::default();
+        w27a01_set_lock(&mut c, false, |_| panic!());
+        assert_eq!(c.flags, 0x8000_0000);
+        let mut called = false;
+        w27a01_set_lock(&mut c, true, |_| called = true);
+        assert!(called && c.flags == 0);
+        c = W27a01Ctl {
+            stride: 10,
+            lo: 0,
+            hi: 34,
+            b60: 5,
+            b62: 9,
+            b67: 9,
+            ..Default::default()
+        };
+        w27a01_relayout(&mut c, 0, 0, |_| {}, |_| {});
+        assert_eq!(
+            (c.rows, c.hi, c.b62, c.b68, c.b65, c.b67),
+            (3, 30, 4, 4, 2, 2)
+        );
+        let mut l = W27a01Ctl {
+            flags: 0x8000_0000,
+            ..Default::default()
+        };
+        w27a01_relayout(&mut l, 0, 0, |_| {}, |_| {});
+        assert_eq!(l.flags, 0x8000_0000);
+    }
+
+    #[test]
+    fn handle() {
+        let h = 0x1005_0003u32;
+        let t = |_| Ok((8usize, Some(vec![0, 0, 0, 0, 0, 0x1005_0003, 0, 0])));
+        let mut o = None;
+        assert_eq!(w27a01_resolve_handle(h, t, Some(&mut o)), 0);
+        assert_eq!(o, Some(5));
+        assert_eq!(w27a01_resolve_handle(h, t, None), 0x25);
+        assert_eq!(w27a01_resolve_handle(h & !0xffff, t, Some(&mut o)), 0x24);
+        let t2 = |_| Ok((8usize, None));
+        assert_eq!(w27a01_resolve_handle(h, t2, Some(&mut o)), 0x4f);
+        let t3 = |_| Ok((8usize, Some(vec![0, 0, 0, 0, 0, 0x1005_0009, 0, 0])));
+        assert_eq!(w27a01_resolve_handle(h, t3, Some(&mut o)), 0xb);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave27/agent02.rs
+// ===========================================================================
+// Wave 27 agent 02: text/font layout globals and small record helpers.
+
+/// `0x00954880`: when the slot's first byte (stride `0x14` table) is
+/// non-zero, sets bit 0 of its second byte.
+pub fn w27a02_set_slot_flag(table: &mut [u8], index: u8) {
+    let base = index as usize * 0x14;
+    if table.get(base).copied().unwrap_or(0) != 0 {
+        if let Some(b) = table.get_mut(base + 1) {
+            *b |= 1;
+        }
+    }
+}
+
+/// `0x00955ad0`: bounds-checked row lookup.  The container has a count at
+/// offset 4 and 8-byte rows starting at offset 0xc; returns the byte offset
+/// of the row or `None` (retail returns 0).
+pub fn w27a02_row_offset(count: u32, index: u32) -> Option<usize> {
+    if count <= index {
+        None
+    } else {
+        Some(index as usize * 8 + 0xc)
+    }
+}
+
+/// `0x009576d0`: builds `[x, y, w, h]` from the packed text rectangle
+/// (`left_top`: low i16 = left, high i16 = top; `right_bottom` likewise).
+/// Retail overwrites the height with the font's byte at offset 0xb.
+pub fn w27a02_text_rect(left_top: u32, right_bottom: u32, font_height: u8) -> [i32; 4] {
+    let left = (left_top as u16 as i16) as i32;
+    let top = ((left_top >> 16) as u16 as i16) as i32;
+    let right = (right_bottom as u16 as i16) as i32;
+    let bottom = ((right_bottom >> 16) as u16 as i16) as i32;
+    let _ = bottom - top; // computed then overwritten in retail
+    [left, top, right - left, font_height as i32]
+}
+
+/// `0x00957a80`: true when `buf` (NUL-terminated) is a prefix of `other`
+/// (compares `strlen(buf)` bytes).
+pub fn w27a02_buffer_is_prefix(buf: &[u8], other: &[u8]) -> bool {
+    let n = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    other.len() >= n && buf[..n] == other[..n]
+}
+
+/// `0x00957ac0`: true when the font-mode flag equals 1.
+pub fn w27a02_font_mode_is_one(mode: u32) -> bool {
+    mode == 1
+}
+
+/// `0x00957b10`: font file path, format `font\%s.fnt`.
+pub fn w27a02_font_path(name: &str) -> String {
+    format!("font\\{name}.fnt")
+}
+
+#[cfg(test)]
+mod tests_wave27_agent02 {
+    use super::*;
+
+    #[test]
+    fn slot_flag() {
+        let mut t = vec![0u8; 0x28];
+        w27a02_set_slot_flag(&mut t, 1);
+        assert_eq!(t[0x15], 0);
+        t[0x14] = 1;
+        w27a02_set_slot_flag(&mut t, 1);
+        assert_eq!(t[0x15], 1);
+    }
+
+    #[test]
+    fn row_offset() {
+        assert_eq!(w27a02_row_offset(3, 2), Some(0x1c));
+        assert_eq!(w27a02_row_offset(3, 3), None);
+    }
+
+    #[test]
+    fn rect() {
+        let r = w27a02_text_rect(0x0005_fff0, 0x0020_0010, 12);
+        assert_eq!(r, [-16, 5, 32, 12]);
+    }
+
+    #[test]
+    fn prefix_and_mode() {
+        assert!(w27a02_buffer_is_prefix(b"ab\0", b"abc"));
+        assert!(!w27a02_buffer_is_prefix(b"abd\0", b"abc"));
+        assert!(w27a02_font_mode_is_one(1));
+        assert!(!w27a02_font_mode_is_one(0));
+        assert_eq!(w27a02_font_path("font16"), "font\\font16.fnt");
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave27/agent03.rs
+// ===========================================================================
+// Wave 27 agent 03: small runtime/state helpers (0x0095xxxx block).
+
+/// Two saved 16-byte quads plus their trailing flag words (globals
+/// `011cb6c8..011cb6f0`).  `cur` is the live pair, `prev` the history slot.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct W27a03Pair {
+    pub cur: [u32; 4],
+    pub cur_flag: u32,
+    pub prev: [u32; 4],
+    pub prev_flag: u32,
+}
+
+/// `0x009583a0`: push a new value; the old current becomes `prev`.  The
+/// flag word keeps only `flag` in its low byte (upper bytes were stack
+/// garbage in retail; modelled as zero).
+pub fn w27a03_push_pair(s: &mut W27a03Pair, quad: [u32; 4], flag: u8) {
+    s.prev_flag = s.cur_flag;
+    s.prev = s.cur;
+    s.cur_flag = u32::from(flag);
+    s.cur = quad;
+}
+
+/// `0x00958560`: swap the current and previous slots.
+pub fn w27a03_swap_pair(s: &mut W27a03Pair) {
+    std::mem::swap(&mut s.cur, &mut s.prev);
+    std::mem::swap(&mut s.cur_flag, &mut s.prev_flag);
+}
+
+/// `0x00958b60`: if the global flag is set, defer to `other(0x20, 0)`,
+/// otherwise return `byte10 >> 1` of the record.
+pub fn w27a03_half_byte10(flag_set: bool, rec: &[u8], other: impl FnOnce(u32, u32) -> f64) -> f64 {
+    if flag_set {
+        other(0x20, 0)
+    } else {
+        f64::from(rec[10] >> 1)
+    }
+}
+
+/// Outcome of [`w27a03_resize_pairs`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum W27a03Resize {
+    Unchanged,
+    Shrunk,
+    Grown,
+    /// Capacity word must be replaced by this value and storage reallocated.
+    Realloc(u32),
+}
+
+/// `0x00958bb0`: resize a vector of 8-byte elements.  Shrinking truncates
+/// (the destructor range call is modelled as truncate).  Growing fills with
+/// `(0xffffffff, 0)`; if `cap_word & 0x7fffffff < new_len` the new capacity
+/// is `max(new_len, cap + (cap >> 1 & 0x3fffffff))` merged under the high bit.
+pub fn w27a03_resize_pairs(v: &mut Vec<[u32; 2]>, cap_word: u32, new_len: u32) -> W27a03Resize {
+    let len = v.len() as u32;
+    if new_len < len {
+        v.truncate(new_len as usize);
+        W27a03Resize::Shrunk
+    } else if len < new_len {
+        if (cap_word & 0x7fff_ffff) < new_len {
+            let mut want = ((cap_word >> 1) & 0x3fff_ffff).wrapping_add(cap_word & 0x7fff_ffff);
+            if want < new_len {
+                want = new_len;
+            }
+            return W27a03Resize::Realloc(((cap_word ^ want) & 0x7fff_ffff) ^ cap_word);
+        }
+        v.resize(new_len as usize, [0xffff_ffff, 0]);
+        W27a03Resize::Grown
+    } else {
+        W27a03Resize::Unchanged
+    }
+}
+
+/// `0x00958cd0`: allocate `w * h` (two i16 at offsets 0 and 2) and store the
+/// result at offset 4.
+pub fn w27a03_alloc_grid(hdr: &mut [u8; 8], alloc: impl FnOnce(i32) -> u32) {
+    let w = i16::from_le_bytes([hdr[0], hdr[1]]);
+    let h = i16::from_le_bytes([hdr[2], hdr[3]]);
+    let p = alloc(i32::from(h).wrapping_mul(i32::from(w)));
+    hdr[4..8].copy_from_slice(&p.to_le_bytes());
+}
+
+/// `0x00958d00`: release the pointer at offset 4 when non-null.
+pub fn w27a03_free_grid(hdr: &[u8; 8], free: impl FnOnce(u32)) {
+    let p = u32::from_le_bytes([hdr[4], hdr[5], hdr[6], hdr[7]]);
+    if p != 0 {
+        free(p);
+    }
+}
+
+/// `0x00958f80`: if the mode flag is set, clear it and zero the 0x400-byte
+/// table A.
+pub fn w27a03_leave_mode(flag: &mut bool, table_a: &mut [u8]) {
+    if *flag {
+        *flag = false;
+        table_a[..0x400].fill(0);
+    }
+}
+
+/// `0x00958fe0`: if the mode flag is clear, set it and zero the 0x400-byte
+/// table B.
+pub fn w27a03_enter_mode(flag: &mut bool, table_b: &mut [u8]) {
+    if !*flag {
+        *flag = true;
+        table_b[..0x400].fill(0);
+    }
+}
+
+/// `0x009590a0`: zero the 0x80-byte table.
+pub fn w27a03_clear_small(table: &mut [u8]) {
+    table[..0x80].fill(0);
+}
+
+/// `0x00959230`: after `prepare(0)`, copy `count * 4` bytes from `src` into
+/// table B at `index * 4`.
+pub fn w27a03_copy_entries(
+    table_b: &mut [u8],
+    index: u8,
+    count: u16,
+    src: &[u8],
+    prepare: impl FnOnce(u32),
+) {
+    prepare(0);
+    let off = usize::from(index) * 4;
+    let n = usize::from(count) << 2;
+    table_b[off..off + n].copy_from_slice(&src[..n]);
+}
+
+#[cfg(test)]
+mod tests_wave27_agent03 {
+    use super::*;
+
+    #[test]
+    fn push_swap() {
+        let mut s = W27a03Pair::default();
+        w27a03_push_pair(&mut s, [1, 2, 3, 4], 7);
+        w27a03_push_pair(&mut s, [5, 6, 7, 8], 9);
+        assert_eq!(
+            (s.cur, s.cur_flag, s.prev, s.prev_flag),
+            ([5, 6, 7, 8], 9, [1, 2, 3, 4], 7)
+        );
+        w27a03_swap_pair(&mut s);
+        assert_eq!((s.cur, s.cur_flag, s.prev_flag), ([1, 2, 3, 4], 7, 9));
+    }
+
+    #[test]
+    fn half_byte() {
+        let mut r = [0u8; 16];
+        r[10] = 9;
+        assert_eq!(w27a03_half_byte10(false, &r, |_, _| 0.0), 4.0);
+        assert_eq!(w27a03_half_byte10(true, &r, |a, b| f64::from(a + b)), 32.0);
+    }
+
+    #[test]
+    fn resize() {
+        let mut v = vec![[1, 1]; 2];
+        assert_eq!(w27a03_resize_pairs(&mut v, 4, 2), W27a03Resize::Unchanged);
+        assert_eq!(w27a03_resize_pairs(&mut v, 4, 4), W27a03Resize::Grown);
+        assert_eq!(v[3], [0xffff_ffff, 0]);
+        assert_eq!(w27a03_resize_pairs(&mut v, 4, 1), W27a03Resize::Shrunk);
+        assert_eq!(v.len(), 1);
+        assert_eq!(
+            w27a03_resize_pairs(&mut v, 4, 10),
+            W27a03Resize::Realloc(10)
+        );
+        assert_eq!(w27a03_resize_pairs(&mut v, 4, 5), W27a03Resize::Realloc(6));
+    }
+
+    #[test]
+    fn grid() {
+        let mut h = [0u8; 8];
+        h[0] = 3;
+        h[2] = 0xfe;
+        h[3] = 0xff;
+        w27a03_alloc_grid(&mut h, |n| (n * 10) as u32);
+        assert_eq!(
+            u32::from_le_bytes([h[4], h[5], h[6], h[7]]),
+            (-60i32) as u32
+        );
+        let mut hit = 0;
+        w27a03_free_grid(&h, |_| hit += 1);
+        w27a03_free_grid(&[0; 8], |_| hit += 10);
+        assert_eq!(hit, 1);
+    }
+
+    #[test]
+    fn tables() {
+        let mut a = vec![1u8; 0x400];
+        let mut f = true;
+        w27a03_leave_mode(&mut f, &mut a);
+        assert!(!f && a.iter().all(|&x| x == 0));
+        let mut b = vec![1u8; 0x400];
+        w27a03_enter_mode(&mut f, &mut b);
+        assert!(f && b[0] == 0);
+        b.fill(1);
+        w27a03_enter_mode(&mut f, &mut b);
+        assert_eq!(b[0], 1);
+        let mut s = vec![1u8; 0x80];
+        w27a03_clear_small(&mut s);
+        assert!(s.iter().all(|&x| x == 0));
+        let mut seen = 9;
+        w27a03_copy_entries(&mut b, 2, 2, &[7; 8], |v| seen = v);
+        assert_eq!((seen, b[8], b[15], b[16]), (0, 7, 7, 1));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave27/agent04.rs
+// ===========================================================================
+// Wave 27 agent 04: small config/bitmap helpers.
+
+/// Default-application kinds used by `0x0095a710` (first table pass).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct W27a04Default {
+    /// 0 = store zero, 1 = store `value`, 2 = set/clear `mask` bits.
+    pub kind: u32,
+    pub mask: u32,
+    pub value: u32,
+    /// Index of the destination dword in the caller's array.
+    pub dest: usize,
+}
+
+/// `0x0095a710` (first pass): applies one default-table entry to `dests`.
+pub fn w27a04_apply_default(e: &W27a04Default, dests: &mut [u32]) {
+    let d = &mut dests[e.dest];
+    match e.kind {
+        0 => *d = 0,
+        1 => *d = e.value,
+        2 => {
+            if e.value == 0 {
+                *d &= !e.mask;
+            } else {
+                *d |= e.mask;
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Registry-backed setting kinds used by `0x0095a710` (second pass).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct W27a04Setting {
+    /// 0 = string, 1 = ranged dword, 2 = flag bit.
+    pub kind: u32,
+    pub key: u32,
+    pub min: u32,
+    pub max_or_mask: u32,
+    pub default: u32,
+    pub dest: usize,
+}
+
+/// `0x0095a710` (second pass): applies a registry-read setting.
+/// `read_str(key)` / `read_u32(key)` are the "Starcraft" registry readers;
+/// strings are only copied when shorter than `cap` (stored in `default`).
+pub fn w27a04_apply_setting(
+    s: &W27a04Setting,
+    dests: &mut [u32],
+    str_dest: &mut Vec<u8>,
+    read_str: impl Fn(u32) -> Option<Vec<u8>>,
+    read_u32: impl Fn(u32) -> Option<u32>,
+) {
+    match s.kind {
+        0 => {
+            if let Some(v) = read_str(s.key) {
+                let len = v.iter().position(|&b| b == 0).unwrap_or(v.len());
+                if (len as u32) < s.default {
+                    *str_dest = v[..len].to_vec();
+                }
+            }
+        }
+        1 => {
+            if let Some(mut v) = read_u32(s.key) {
+                if v < s.min || s.max_or_mask < v {
+                    v = s.default;
+                }
+                dests[s.dest] = v;
+            }
+        }
+        2 => {
+            if let Some(v) = read_u32(s.key) {
+                if v == 0 {
+                    dests[s.dest] &= !s.max_or_mask;
+                } else {
+                    dests[s.dest] |= s.max_or_mask;
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// `0x0095bec0`: returns byte at `+4`, optionally writing dword at `+8`.
+pub fn w27a04_get_flag_and_value(flag: u8, value: u32, out: Option<&mut u32>) -> u8 {
+    if let Some(o) = out {
+        *o = value;
+    }
+    flag
+}
+
+/// `0x0095bd70`: forwards to the loader with an optional dword that is
+/// present only when the flag byte at `+0x9c` is non-zero.
+pub fn w27a04_optional_arg(flag: u8, value: u32) -> Option<u32> {
+    if flag == 0 { None } else { Some(value) }
+}
+
+/// Decoded record of `0x00961780`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct W27a04Entry {
+    pub out4: u16,
+    pub out5: u16,
+    pub out6: u16,
+    pub out7: u16,
+    pub a: u16,
+    pub b: u16,
+    /// Offset into the table (`(dword & 0x7fffffff) + base`).
+    pub offset: u32,
+}
+
+/// `0x00961780`: reads entry `idx` (8-byte stride from byte 6) of a table
+/// whose first word is the count; an index not below the count selects 0.
+pub fn w27a04_read_entry(t: &[u8], idx: u8) -> Option<W27a04Entry> {
+    let w = |o: usize| t.get(o..o + 2).map(|b| u16::from_le_bytes([b[0], b[1]]));
+    let count = w(0)?;
+    let i = if (idx as u16) < count {
+        idx as usize
+    } else {
+        0
+    };
+    let base = 8 * i;
+    let d = t.get(base + 10..base + 14)?;
+    let dw = u32::from_le_bytes([d[0], d[1], d[2], d[3]]);
+    Some(W27a04Entry {
+        out4: *t.get(base + 6)? as u16,
+        out5: *t.get(base + 7)? as u16,
+        out6: w(2)?,
+        out7: w(4)?,
+        a: *t.get(base + 8)? as u16,
+        b: *t.get(base + 9)? as u16,
+        offset: (dw & 0x7fff_ffff),
+    })
+}
+
+/// Simple 8-bit surface: `stride` is the width word of the descriptor.
+pub struct W27a04Surface<'a> {
+    pub stride: usize,
+    pub height: usize,
+    pub pixels: &'a mut [u8],
+}
+
+/// `0x00961700`: fills the whole surface (`width * height`) with `color`.
+pub fn w27a04_fill(s: &mut W27a04Surface, color: u8) {
+    let n = (s.stride * s.height).min(s.pixels.len());
+    s.pixels[..n].fill(color);
+}
+
+/// `0x009617f0`: horizontal line of `len` pixels at (x, y).
+pub fn w27a04_hline(s: &mut W27a04Surface, x: i16, y: i16, len: u16, color: u8) {
+    let start = s.stride as isize * y as isize + x as isize;
+    for k in 0..len as isize {
+        if let Some(p) = usize::try_from(start + k)
+            .ok()
+            .and_then(|i| s.pixels.get_mut(i))
+        {
+            *p = color;
+        }
+    }
+}
+
+/// `0x00961830`: vertical line of `len` pixels at (x, y).
+pub fn w27a04_vline(s: &mut W27a04Surface, x: i16, y: u16, len: u16, color: u8) {
+    let mut pos = s.stride as isize * y as isize + x as isize;
+    for _ in 0..len {
+        if let Some(p) = usize::try_from(pos).ok().and_then(|i| s.pixels.get_mut(i)) {
+            *p = color;
+        }
+        pos += s.stride as isize;
+    }
+}
+
+/// `0x00961730`: outlines the rectangle (x, y, w, h) with `color`.
+pub fn w27a04_frame(s: &mut W27a04Surface, x: i16, y: i16, w: i16, h: i16, color: u8) {
+    w27a04_hline(s, x, y, w as u16, color);
+    w27a04_hline(s, x, h.wrapping_sub(1).wrapping_add(y), w as u16, color);
+    w27a04_vline(s, x, y as u16, h as u16, color);
+    w27a04_vline(
+        s,
+        w.wrapping_add(x).wrapping_sub(1),
+        y as u16,
+        h as u16,
+        color,
+    );
+}
+
+#[cfg(test)]
+mod tests_wave27_agent04 {
+    use super::*;
+
+    #[test]
+    fn defaults_and_settings() {
+        let mut d = [7u32, 0xff];
+        let e = |kind, dest| W27a04Default {
+            kind,
+            mask: 0xf0,
+            value: 5,
+            dest,
+        };
+        w27a04_apply_default(&e(0, 0), &mut d);
+        assert_eq!(d[0], 0);
+        w27a04_apply_default(&e(1, 0), &mut d);
+        assert_eq!(d[0], 5);
+        let mut z = W27a04Default {
+            value: 0,
+            ..e(2, 1)
+        };
+        w27a04_apply_default(&z, &mut d);
+        assert_eq!(d[1], 0x0f);
+        z.value = 1;
+        w27a04_apply_default(&z, &mut d);
+        assert_eq!(d[1], 0xff);
+
+        let mut s = Vec::new();
+        let st = W27a04Setting {
+            kind: 1,
+            key: 1,
+            min: 2,
+            max_or_mask: 4,
+            default: 3,
+            dest: 0,
+        };
+        w27a04_apply_setting(&st, &mut d, &mut s, |_| None, |_| Some(9));
+        assert_eq!(d[0], 3);
+        w27a04_apply_setting(&st, &mut d, &mut s, |_| None, |_| Some(4));
+        assert_eq!(d[0], 4);
+        let st0 = W27a04Setting {
+            kind: 0,
+            default: 4,
+            ..st
+        };
+        w27a04_apply_setting(&st0, &mut d, &mut s, |_| Some(b"abc\0".to_vec()), |_| None);
+        assert_eq!(s, b"abc");
+        w27a04_apply_setting(&st0, &mut d, &mut s, |_| Some(b"abcd\0".to_vec()), |_| None);
+        assert_eq!(s, b"abc");
+    }
+
+    #[test]
+    fn small_accessors() {
+        let mut o = 0;
+        assert_eq!(w27a04_get_flag_and_value(3, 9, Some(&mut o)), 3);
+        assert_eq!(o, 9);
+        assert_eq!(w27a04_optional_arg(0, 5), None);
+        assert_eq!(w27a04_optional_arg(1, 5), Some(5));
+    }
+
+    #[test]
+    fn entry_read() {
+        let mut t = vec![0u8; 32];
+        t[0] = 2;
+        t[2] = 11;
+        t[4] = 12;
+        t[6 + 8] = 1;
+        t[7 + 8] = 2;
+        t[8 + 8] = 3;
+        t[9 + 8] = 4;
+        t[18..22].copy_from_slice(&0x8000_0010u32.to_le_bytes());
+        let e = w27a04_read_entry(&t, 1).unwrap();
+        assert_eq!(
+            (e.out4, e.out5, e.a, e.b, e.out6, e.out7),
+            (1, 2, 3, 4, 11, 12)
+        );
+        assert_eq!(e.offset, 0x10);
+        let e0 = w27a04_read_entry(&t, 9).unwrap();
+        assert_eq!(e0.out4, 0);
+        assert!(w27a04_read_entry(&t[..4], 0).is_none());
+    }
+
+    #[test]
+    fn drawing() {
+        let mut px = vec![0u8; 36];
+        let mut s = W27a04Surface {
+            stride: 6,
+            height: 6,
+            pixels: &mut px,
+        };
+        w27a04_frame(&mut s, 1, 1, 4, 3, 9);
+        let row = |y: usize| s.pixels[y * 6..y * 6 + 6].to_vec();
+        assert_eq!(row(1), [0, 9, 9, 9, 9, 0]);
+        assert_eq!(row(2), [0, 9, 0, 0, 9, 0]);
+        assert_eq!(row(3), [0, 9, 9, 9, 9, 0]);
+        w27a04_fill(&mut s, 2);
+        assert!(s.pixels.iter().all(|&p| p == 2));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave27/agent05.rs
+// ===========================================================================
+// Wave 27 agent 05: glyph-atlas row allocator and small UI-record helpers.
+
+/// Decoded 8-byte atlas row/slot descriptor returned by `0x00961d10`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct W27a05Slot {
+    pub lo: u16,
+    pub hi: u16,
+    pub offset: u32,
+}
+
+/// `0x00961d10`: reads slot `idx` of a table with a `u16` count header and
+/// 8-byte entries starting at byte 8; an index above the count is replaced by
+/// 0.  `base_addr` is the table address added to the 31-bit offset.
+pub fn w27a05_read_slot(table: &[u8], idx: u8, base_addr: u32) -> Option<W27a05Slot> {
+    let count = u16::from_le_bytes([*table.first()?, *table.get(1)?]);
+    let i = if u16::from(idx) < count {
+        idx as usize
+    } else {
+        0
+    };
+    let o = 8 + i * 8;
+    let e = table.get(o..o + 8)?;
+    Some(W27a05Slot {
+        lo: u16::from(e[0]),
+        hi: u16::from(e[1]),
+        offset: (u32::from_le_bytes([e[2], e[3], e[4], e[5]]) & 0x7fff_ffff)
+            .wrapping_add(base_addr),
+    })
+}
+
+/// `0x00964660`: bit 5 of the flags word at record+0x34.
+pub fn w27a05_flag34_bit5(flags: u32) -> bool {
+    (flags >> 5) & 1 != 0
+}
+
+/// `0x00964690`: bit 2 of the flags word at record+0x30.
+pub fn w27a05_flag30_bit2(flags: u32) -> bool {
+    (flags >> 2) & 1 != 0
+}
+
+/// Atlas shelf allocator state (fields at +8 width, +0x0a height, +0x20 cursor).
+#[derive(Clone, Debug, Default)]
+pub struct W27a05Atlas {
+    pub width: u16,
+    pub height: i16,
+    pub cursor_y: u16,
+    /// 8-byte rows `[y, width, height, 0]`.
+    pub rows: Vec<[u16; 4]>,
+}
+
+/// `0x00962b90`: allocates a new row of height `round(h)+2` (rounding helper
+/// supplied by the caller) at the cursor; returns its index, or `None` when it
+/// would overflow the atlas height.
+pub fn w27a05_alloc_row(a: &mut W27a05Atlas, h: u16, round: impl Fn(f64) -> f32) -> Option<usize> {
+    let rh = (round(f64::from(h)) + 2.0) as u32 as u16;
+    if i32::from(a.height) < i32::from(rh) + i32::from(a.cursor_y) {
+        return None;
+    }
+    a.rows.push([a.cursor_y, a.width, rh, 0]);
+    a.cursor_y = a.cursor_y.wrapping_add(rh);
+    Some(a.rows.len() - 1)
+}
+
+#[cfg(test)]
+mod tests_wave27_agent05 {
+    use super::*;
+
+    #[test]
+    fn slot_read() {
+        let mut t = vec![0u8; 8 + 16];
+        t[0] = 2;
+        t[8 + 8] = 7;
+        t[8 + 9] = 9;
+        t[8 + 10..8 + 14].copy_from_slice(&0x8000_0010u32.to_le_bytes());
+        let s = w27a05_read_slot(&t, 1, 0x100).unwrap();
+        assert_eq!((s.lo, s.hi, s.offset), (7, 9, 0x110));
+        assert_eq!(w27a05_read_slot(&t, 5, 0).unwrap().lo, 0);
+        assert!(w27a05_read_slot(&[], 0, 0).is_none());
+    }
+
+    #[test]
+    fn flags() {
+        assert!(w27a05_flag34_bit5(0x20));
+        assert!(!w27a05_flag34_bit5(0xdf));
+        assert!(w27a05_flag30_bit2(4));
+        assert!(!w27a05_flag30_bit2(0xfb));
+    }
+
+    #[test]
+    fn rows() {
+        let mut a = W27a05Atlas {
+            width: 64,
+            height: 20,
+            ..Default::default()
+        };
+        let r = |v: f64| v as f32;
+        assert_eq!(w27a05_alloc_row(&mut a, 8, r), Some(0));
+        assert_eq!(a.rows[0], [0, 64, 10, 0]);
+        assert_eq!(a.cursor_y, 10);
+        assert_eq!(w27a05_alloc_row(&mut a, 8, r), Some(1));
+        assert_eq!(w27a05_alloc_row(&mut a, 1, r), None);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave27/agent06.rs
+// ===========================================================================
+// Wave 27 agent 06: flag setters and vector growth helpers.
+
+fn w27a06_set_bit(word: &mut u32, mask: u32, on: bool) {
+    if on {
+        *word |= mask;
+    } else {
+        *word &= !mask;
+    }
+}
+
+/// `0x00964940`: sets/clears bit 3 (0x8) of the dword at +0x34.
+pub fn w27a06_set_flag34_08(w34: &mut u32, on: bool) {
+    w27a06_set_bit(w34, 0x8, on);
+}
+
+/// `0x00964da0`: sets/clears bit 2 (0x4) of the dword at +0x34.
+pub fn w27a06_set_flag34_04(w34: &mut u32, on: bool) {
+    w27a06_set_bit(w34, 0x4, on);
+}
+
+/// `0x00964dc0`: sets/clears bit 4 (0x10) of the dword at +0x34.
+pub fn w27a06_set_flag34_10(w34: &mut u32, on: bool) {
+    w27a06_set_bit(w34, 0x10, on);
+}
+
+/// `0x00964e10`: sets/clears bit 5 (0x20) of the dword at +0x34.
+pub fn w27a06_set_flag34_20(w34: &mut u32, on: bool) {
+    w27a06_set_bit(w34, 0x20, on);
+}
+
+/// `0x00964f60`: sets/clears bit 11 (0x800) of the dword at +0x30.
+pub fn w27a06_set_flag30_800(w30: &mut u32, on: bool) {
+    w27a06_set_bit(w30, 0x800, on);
+}
+
+/// `0x00964fe0`: sets/clears bit 1 (0x2) of the dword at +0x30.
+pub fn w27a06_set_flag30_02(w30: &mut u32, on: bool) {
+    w27a06_set_bit(w30, 0x2, on);
+}
+
+/// `0x00965200`: returns bit 3 of the byte at +10 (0 or 1).
+pub fn w27a06_byte10_bit3(byte10: u8) -> u32 {
+    ((byte10 >> 3) & 1) as u32
+}
+
+/// Vector header used by the three growth helpers (`ECX` layout).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct W27a06Vec {
+    /// +0x00: allocator/proxy word (0 with null buffer is a fatal path).
+    pub proxy: u32,
+    /// +0x08: buffer start (0 = unallocated).
+    pub begin: u32,
+    /// +0x0c: used end.
+    pub end: u32,
+    /// +0x10: capacity end.
+    pub cap_end: u32,
+    /// +0x14: default capacity used when unallocated.
+    pub default_cap: u32,
+}
+
+/// Shared body of `0x009664c0`, `0x00966540` and `0x009665c0`.  `want` is
+/// the byte count requested; `realloc(old_begin, bytes)` returns the new
+/// buffer (0 when `bytes == 0`, which frees).  Returns `None` for the
+/// non-returning null-proxy path.
+fn w27a06_grow(
+    v: &mut W27a06Vec,
+    want_bytes: u32,
+    mut realloc: impl FnMut(u32, u32) -> u32,
+) -> Option<()> {
+    let old = v.begin;
+    let cur_cap = if old == 0 {
+        if v.proxy == 0 {
+            return None;
+        }
+        v.default_cap
+    } else {
+        let used = v.cap_end.wrapping_sub(old);
+        used.wrapping_add(used.wrapping_add(1) >> 1)
+    };
+    let len = v.end;
+    let mut new_cap = want_bytes.wrapping_add(len.wrapping_sub(old));
+    if new_cap <= cur_cap {
+        new_cap = cur_cap;
+    }
+    let nb = if new_cap == 0 {
+        realloc(old, 0);
+        0
+    } else {
+        realloc(old, new_cap)
+    };
+    v.begin = nb;
+    v.end = nb.wrapping_add(len.wrapping_sub(old));
+    v.cap_end = nb.wrapping_add(new_cap);
+    Some(())
+}
+
+/// `0x009664c0`: grows by `extra` bytes (element size 1).
+pub fn w27a06_grow_bytes(
+    v: &mut W27a06Vec,
+    extra: u32,
+    realloc: impl FnMut(u32, u32) -> u32,
+) -> Option<()> {
+    w27a06_grow(v, extra, realloc)
+}
+
+/// `0x00966540`: grows by `count` 4-byte elements.
+pub fn w27a06_grow_dwords(
+    v: &mut W27a06Vec,
+    count: u32,
+    realloc: impl FnMut(u32, u32) -> u32,
+) -> Option<()> {
+    w27a06_grow(v, count.wrapping_mul(4), realloc)
+}
+
+/// `0x009665c0`: grows by `count` 0x44-byte elements.
+pub fn w27a06_grow_rec44(
+    v: &mut W27a06Vec,
+    count: u32,
+    realloc: impl FnMut(u32, u32) -> u32,
+) -> Option<()> {
+    w27a06_grow(v, count.wrapping_mul(0x44), realloc)
+}
+
+#[cfg(test)]
+mod tests_wave27_agent06 {
+    use super::*;
+
+    #[test]
+    fn flags() {
+        let mut w = 0u32;
+        w27a06_set_flag34_08(&mut w, true);
+        w27a06_set_flag34_04(&mut w, true);
+        w27a06_set_flag34_10(&mut w, true);
+        w27a06_set_flag34_20(&mut w, true);
+        assert_eq!(w, 0x3c);
+        w27a06_set_flag34_08(&mut w, false);
+        w27a06_set_flag34_04(&mut w, false);
+        w27a06_set_flag34_10(&mut w, false);
+        w27a06_set_flag34_20(&mut w, false);
+        assert_eq!(w, 0);
+        let mut x = 0xffff_ffffu32;
+        w27a06_set_flag30_800(&mut x, false);
+        w27a06_set_flag30_02(&mut x, false);
+        assert_eq!(x, 0xffff_f7fd);
+        w27a06_set_flag30_800(&mut x, true);
+        w27a06_set_flag30_02(&mut x, true);
+        assert_eq!(x, 0xffff_ffff);
+    }
+
+    #[test]
+    fn bit3() {
+        assert_eq!(w27a06_byte10_bit3(0x08), 1);
+        assert_eq!(w27a06_byte10_bit3(0xf7), 0);
+    }
+
+    #[test]
+    fn grow() {
+        let mut v = W27a06Vec {
+            proxy: 0,
+            ..Default::default()
+        };
+        assert!(w27a06_grow_bytes(&mut v, 4, |_, _| 1).is_none());
+        let mut v = W27a06Vec {
+            proxy: 1,
+            default_cap: 16,
+            ..Default::default()
+        };
+        let mut calls = vec![];
+        w27a06_grow_dwords(&mut v, 8, |o, n| {
+            calls.push((o, n));
+            1000
+        })
+        .unwrap();
+        assert_eq!(calls, vec![(0, 32)]);
+        assert_eq!((v.begin, v.end, v.cap_end), (1000, 1000, 1032));
+        let mut v = W27a06Vec {
+            proxy: 1,
+            begin: 100,
+            end: 110,
+            cap_end: 120,
+            default_cap: 0,
+        };
+        w27a06_grow_bytes(&mut v, 1, |_, n| {
+            assert_eq!(n, 30);
+            200
+        })
+        .unwrap();
+        assert_eq!((v.begin, v.end, v.cap_end), (200, 210, 230));
+        let mut v = W27a06Vec {
+            proxy: 1,
+            begin: 0,
+            end: 0,
+            cap_end: 0,
+            default_cap: 0,
+        };
+        w27a06_grow_rec44(&mut v, 0, |_, n| {
+            assert_eq!(n, 0);
+            0
+        })
+        .unwrap();
+        assert_eq!(v.cap_end, 0);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave27/agent07.rs
+// ===========================================================================
+// Wave 27 agent 07: vector growth-size computations (MSVC std::vector
+// reserve-style helpers over `[owner, _, begin, end, cap_end, hint]`).
+
+/// Shared growth rule of the four helpers below.  `begin == 0` means empty
+/// storage; with a zero `owner` that path aborts (`None`), otherwise the
+/// old capacity is the `hint` field.  Otherwise old capacity grows by 1.5x.
+/// Returns the new capacity in bytes (0 means free the buffer).
+fn w27a07_grow_bytes(
+    owner: u32,
+    begin: u32,
+    end: u32,
+    cap_end: u32,
+    hint: u32,
+    count: u32,
+    stride: u32,
+) -> Option<u32> {
+    let old = if begin == 0 {
+        if owner == 0 {
+            return None;
+        }
+        hint
+    } else {
+        let cap = cap_end.wrapping_sub(begin);
+        cap.wrapping_add(cap.wrapping_add(1) >> 1)
+    };
+    let need = count
+        .wrapping_mul(stride)
+        .wrapping_sub(begin)
+        .wrapping_add(end);
+    Some(need.max(old))
+}
+
+/// `0x00966650`: new byte capacity for a 12-byte-element vector grown by
+/// `count` elements; `None` when the abort path (`owner == 0`, empty) hits.
+pub fn w27a07_grow_bytes_stride_0c(
+    owner: u32,
+    begin: u32,
+    end: u32,
+    cap_end: u32,
+    hint: u32,
+    count: u32,
+) -> Option<u32> {
+    w27a07_grow_bytes(owner, begin, end, cap_end, hint, count, 0xc)
+}
+
+/// `0x009666d0`: same as the 12-byte variant with element stride `0x24`.
+pub fn w27a07_grow_bytes_stride_24(
+    owner: u32,
+    begin: u32,
+    end: u32,
+    cap_end: u32,
+    hint: u32,
+    count: u32,
+) -> Option<u32> {
+    w27a07_grow_bytes(owner, begin, end, cap_end, hint, count, 0x24)
+}
+
+/// `0x00966750`: same growth rule with element stride `0x3c`.
+pub fn w27a07_grow_bytes_stride_3c(
+    owner: u32,
+    begin: u32,
+    end: u32,
+    cap_end: u32,
+    hint: u32,
+    count: u32,
+) -> Option<u32> {
+    w27a07_grow_bytes(owner, begin, end, cap_end, hint, count, 0x3c)
+}
+
+/// `0x009667e0`: same growth rule with element stride `0x10`.
+pub fn w27a07_grow_bytes_stride_10(
+    owner: u32,
+    begin: u32,
+    end: u32,
+    cap_end: u32,
+    hint: u32,
+    count: u32,
+) -> Option<u32> {
+    w27a07_grow_bytes(owner, begin, end, cap_end, hint, count, 0x10)
+}
+
+#[cfg(test)]
+mod tests_wave27_agent07 {
+    use super::*;
+
+    #[test]
+    fn grow_rules() {
+        // empty, no owner: abort
+        assert_eq!(w27a07_grow_bytes_stride_0c(0, 0, 0, 0, 5, 1), None);
+        // empty with owner: max(need, hint); need = 4*12 - 0 + 0
+        assert_eq!(w27a07_grow_bytes_stride_0c(1, 0, 0, 0, 5, 4), Some(48));
+        assert_eq!(w27a07_grow_bytes_stride_0c(1, 0, 0, 0, 100, 4), Some(100));
+        // non-empty: cap=100 -> 150 beats need
+        assert_eq!(
+            w27a07_grow_bytes_stride_24(1, 1000, 1010, 1100, 0, 1),
+            Some(150)
+        );
+        // need dominates: 10*0x3c - 1000 + 1010 = 610
+        assert_eq!(
+            w27a07_grow_bytes_stride_3c(1, 1000, 1010, 1100, 0, 10),
+            Some(610)
+        );
+        assert_eq!(w27a07_grow_bytes_stride_10(1, 0, 0, 0, 0, 3), Some(48));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave27/agent08.rs
+// ===========================================================================
+// Wave 27 translation batch 08: rapidjson schema-validator helpers.
+
+/// Result of the schema-stack push helpers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct W27a08Push {
+    /// New stack top offset.
+    pub new_top: u32,
+    /// Tag stored at `top - 2`.
+    pub tag: u16,
+    /// Bytes copied into a fresh allocation (0 means three slots are zeroed).
+    pub copy_len: u32,
+}
+
+fn w27a08_push(top: u32, count: u32, stride: u32, tag: u16) -> W27a08Push {
+    let len = count.wrapping_mul(stride);
+    W27a08Push {
+        new_top: top.wrapping_sub(len),
+        tag,
+        copy_len: len,
+    }
+}
+
+/// `0x0096e360`: pushes `count` 16-byte records, frame tag 4.
+pub fn w27a08_push_tag4(top: u32, count: u32) -> W27a08Push {
+    w27a08_push(top, count, 0x10, 4)
+}
+
+/// `0x0096e550`: pushes `count` 32-byte records, frame tag 3.
+pub fn w27a08_push_tag3(top: u32, count: u32) -> W27a08Push {
+    w27a08_push(top, count, 0x20, 3)
+}
+
+/// `0x0096db80`: new 0x18-byte stack descriptor `[allocator, 0, 0, 0, 0, 0x100]`;
+/// `None` when the allocator handle is null (bad-alloc path).
+pub fn w27a08_new_stack(allocator: u32) -> Option<[u32; 6]> {
+    if allocator == 0 {
+        return None;
+    }
+    Some([allocator, 0, 0, 0, 0, 0x100])
+}
+
+/// `0x0096dfc0`: initial field values of the 0x54-byte schema validator
+/// (21 dwords; vftable slots 0 and 1 are passed in).  `None` on null allocator.
+pub fn w27a08_init_validator(
+    vft0: u32,
+    vft1: u32,
+    allocator: u32,
+    doc: u32,
+    param: u32,
+    stack_buf: u32,
+) -> Option<[u32; 21]> {
+    if allocator == 0 {
+        return None;
+    }
+    let mut v = [0u32; 21];
+    v[0] = vft0;
+    v[1] = vft1;
+    v[2] = doc;
+    v[3] = param;
+    v[4] = allocator;
+    v[6] = allocator;
+    v[0xb] = 0x400;
+    v[0xc] = allocator;
+    v[0x11] = 0x100;
+    v[0x12] = stack_buf;
+    v[0x13] = stack_buf;
+    v[0x14] = 1; // low byte flag
+    Some(v)
+}
+
+/// `0x0096d9b0`: range `(start_byte, len_bytes)` of 16-byte records copied to
+/// the end of the buffer: `n = total - last`, start `last * 16`.
+pub fn w27a08_tail_copy_range(total: i32, last: i32) -> (i64, i64) {
+    let n = total.wrapping_sub(last);
+    (last as i64 * 16, n as i64 * 16)
+}
+
+/// `0x0096da90`: clones a (12-byte entry table + data blob) pair, reserving
+/// `extra_entries` entries and `extra_bytes` bytes.  Entry word 0 is an
+/// offset into the data blob and is rebased by `dst_data - src_data`; entry
+/// word 1 is the entry's data size.  Returns `(entries, data, total_alloc)`.
+/// `None` when the allocator is null.
+pub fn w27a08_clone_table(
+    has_alloc: bool,
+    src_entries: &[[u32; 3]],
+    src_data: &[u8],
+    src_data_base: u32,
+    dst_data_base: u32,
+    extra_entries: u32,
+    extra_bytes: u32,
+) -> Option<(Vec<[u32; 3]>, Vec<u8>, u32)> {
+    if !has_alloc {
+        return None;
+    }
+    let count = src_entries.len() as u32;
+    let sizes = src_entries.iter().fold(count, |a, e| a.wrapping_add(e[1]));
+    let n_entries = extra_entries.wrapping_add(count);
+    let total = sizes
+        .wrapping_add(n_entries.wrapping_mul(12))
+        .wrapping_add(extra_bytes);
+    let delta = dst_data_base.wrapping_sub(src_data_base);
+    let entries = src_entries
+        .iter()
+        .map(|e| [e[0].wrapping_add(delta), e[1], e[2]])
+        .collect();
+    let take = (sizes as usize).min(src_data.len());
+    Some((entries, src_data[..take].to_vec(), total))
+}
+
+#[cfg(test)]
+mod tests_wave27_agent08 {
+    use super::*;
+
+    #[test]
+    fn push_helpers() {
+        let p = w27a08_push_tag4(0x100, 2);
+        assert_eq!((p.new_top, p.tag, p.copy_len), (0xe0, 4, 0x20));
+        let q = w27a08_push_tag3(0x100, 0);
+        assert_eq!((q.new_top, q.tag, q.copy_len), (0x100, 3, 0));
+        assert_eq!(w27a08_push_tag3(0x100, 1).new_top, 0xe0);
+    }
+
+    #[test]
+    fn stack_and_validator() {
+        assert_eq!(w27a08_new_stack(0), None);
+        assert_eq!(w27a08_new_stack(7), Some([7, 0, 0, 0, 0, 0x100]));
+        assert!(w27a08_init_validator(1, 2, 0, 3, 4, 5).is_none());
+        let v = w27a08_init_validator(1, 2, 9, 3, 4, 5).unwrap();
+        assert_eq!(
+            (v[2], v[3], v[4], v[6], v[0xb], v[0xc], v[0x11]),
+            (3, 4, 9, 9, 0x400, 9, 0x100)
+        );
+        assert_eq!((v[0x12], v[0x13], v[0x14]), (5, 5, 1));
+    }
+
+    #[test]
+    fn tail_copy() {
+        assert_eq!(w27a08_tail_copy_range(10, 4), (64, 96));
+        assert_eq!(w27a08_tail_copy_range(4, 4), (64, 0));
+    }
+
+    #[test]
+    fn clone_table() {
+        assert!(w27a08_clone_table(false, &[], &[], 0, 0, 0, 0).is_none());
+        let e = [[100, 3, 0], [103, 2, 0]];
+        let (ents, data, total) =
+            w27a08_clone_table(true, &e, &[1, 2, 3, 4, 5, 6, 7, 8], 100, 500, 1, 4).unwrap();
+        assert_eq!(ents[0][0], 500);
+        assert_eq!(ents[1][0], 503);
+        assert_eq!(data.len(), 7);
+        assert_eq!(total, 7 + 3 * 12 + 4);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave27/agent09.rs
+// ===========================================================================
+// Wave 27 translation batch 09: rapidjson-style arena, JSON-pointer parser,
+// string value constructor and small registry/geometry helpers.
+
+/// One arena chunk: capacity and bytes used (header is 12 bytes in retail).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct W27a09Chunk {
+    pub capacity: u32,
+    pub used: u32,
+}
+
+/// Chunked bump allocator (retail layout: head chunk, default size, flag).
+#[derive(Debug, Clone, Default)]
+pub struct W27a09Arena {
+    /// Chunks in allocation order; the last one is the retail list head.
+    pub chunks: Vec<W27a09Chunk>,
+    pub default_size: u32,
+    /// Retail `+0xc` field: zero means allocation is a fatal error.
+    pub allocator_ok: bool,
+}
+
+/// `0x00972100`: bump-allocates `size` bytes (rounded up to 4) from the head
+/// chunk, else opens a new chunk of `max(default, size)`.  Returns
+/// `Ok(None)` for size 0 / failed alloc, `Ok(Some((chunk, offset)))` where
+/// offset is relative to the chunk payload (retail adds the 0xc header), or
+/// `Err(())` for the fatal path.
+pub fn w27a09_arena_alloc(
+    a: &mut W27a09Arena,
+    size: u32,
+    alloc_ok: bool,
+) -> Result<Option<(usize, u32)>, ()> {
+    if size == 0 {
+        return Ok(None);
+    }
+    let rounded = size.wrapping_add(3) & 0xffff_fffc;
+    if let Some(h) = a.chunks.last_mut()
+        && h.used.wrapping_add(rounded) <= h.capacity
+    {
+        let off = h.used;
+        h.used = off.wrapping_add(rounded);
+        return Ok(Some((a.chunks.len() - 1, off)));
+    }
+    let cap = a.default_size.max(rounded);
+    if !a.allocator_ok {
+        return Err(());
+    }
+    if cap.wrapping_add(0xc) == 0 || !alloc_ok {
+        return Ok(None);
+    }
+    a.chunks.push(W27a09Chunk {
+        capacity: cap,
+        used: rounded,
+    });
+    Ok(Some((a.chunks.len() - 1, 0)))
+}
+
+/// `0x00972190`: guarded allocation; fatal when the allocator flag (`+0x10`)
+/// is clear, `None` for a zero request.
+pub fn w27a09_guarded_alloc<T>(
+    flag: u32,
+    size: u32,
+    alloc: impl FnOnce(u32) -> T,
+) -> Result<Option<T>, ()> {
+    if flag == 0 {
+        return Err(());
+    }
+    Ok(if size != 0 { Some(alloc(size)) } else { None })
+}
+
+/// One parsed JSON-pointer token.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct W27a09Token {
+    pub name: Vec<u8>,
+    /// Array index, or `0xffff_ffff` when the token is not a canonical index.
+    pub index: u32,
+}
+
+/// Error `(code, offset)`: 1 missing leading '/', 2 bad `~` escape,
+/// 3 bad percent encoding, 4 invalid URI-fragment char.
+pub type W27a09PtrError = (u32, usize);
+
+/// `0x009724d0`: parses a JSON pointer (optionally `#` URI-fragment form)
+/// into tokens.  `decode_percent(input, pos)` models the percent decoder
+/// and returns `(decoded bytes, position after the sequence)`.
+pub fn w27a09_parse_json_pointer(
+    s: &[u8],
+    mut decode_percent: impl FnMut(&[u8], usize) -> Option<(Vec<u8>, usize)>,
+) -> Result<Vec<W27a09Token>, W27a09PtrError> {
+    let len = s.len();
+    let fragment = s.first() == Some(&b'#');
+    let mut pos = usize::from(fragment);
+    let mut out = Vec::new();
+    if pos == len {
+        return Ok(out);
+    }
+    if s[pos] != b'/' {
+        return Err((1, pos));
+    }
+    while pos < len {
+        pos += 1; // skip '/'
+        let mut name: Vec<u8> = Vec::new();
+        let mut numeric = true;
+        while pos < len && s[pos] != b'/' {
+            let mut c = s[pos];
+            let mut next = pos + 1;
+            if fragment {
+                if c == b'%' {
+                    match decode_percent(s, pos) {
+                        Some((bytes, end)) if !bytes.is_empty() => {
+                            if bytes.len() != 1 {
+                                numeric = false;
+                                name.extend_from_slice(&bytes);
+                                pos = end;
+                                continue;
+                            }
+                            c = bytes[0];
+                            next = end;
+                        }
+                        _ => return Err((3, pos)),
+                    }
+                } else if !(c.is_ascii_alphanumeric() || matches!(c, b'-' | b'.' | b'_' | b'~')) {
+                    return Err((4, pos));
+                }
+            }
+            if c == b'~' {
+                if next >= len {
+                    return Err((2, next));
+                }
+                c = match s[next] {
+                    b'0' => b'~',
+                    b'1' => b'/',
+                    _ => return Err((2, next)),
+                };
+                next += 1;
+            }
+            if !c.is_ascii_digit() {
+                numeric = false;
+            }
+            name.push(c);
+            pos = next;
+        }
+        let mut is_index = numeric && !name.is_empty();
+        if is_index && name.len() > 1 && name[0] == b'0' {
+            is_index = false;
+        }
+        let mut val = 0u32;
+        if is_index {
+            for &d in &name {
+                let n = (d as u32)
+                    .wrapping_add(val.wrapping_mul(10))
+                    .wrapping_sub(0x30);
+                if n < val {
+                    is_index = false;
+                    break;
+                }
+                val = n;
+            }
+        }
+        out.push(W27a09Token {
+            name,
+            index: if is_index { val } else { 0xffff_ffff },
+        });
+    }
+    Ok(out)
+}
+
+/// `0x00972bd0`: builds the 16-byte JSON string value.  Without `copy` the
+/// value references `ptr` (flags 0x405, len in word 0).  With `copy`,
+/// strings shorter than 14 bytes are stored inline (flags 0x1c05, byte 13 =
+/// 13 - len) otherwise `len` goes in word 0, `long_ptr` in word 2, flags
+/// 0xc05.
+pub fn w27a09_make_string_value(
+    data: &[u8],
+    ptr: u32,
+    len: u32,
+    copy: bool,
+    long_ptr: u32,
+) -> [u8; 16] {
+    let mut v = [0u8; 16];
+    if !copy {
+        v[0..4].copy_from_slice(&len.to_le_bytes());
+        v[8..12].copy_from_slice(&ptr.to_le_bytes());
+        v[14..16].copy_from_slice(&0x405u16.to_le_bytes());
+    } else if len < 0xe {
+        v[14..16].copy_from_slice(&0x1c05u16.to_le_bytes());
+        v[13] = (13 - len) as u8;
+        let n = (len as usize).min(data.len());
+        v[..n].copy_from_slice(&data[..n]);
+    } else {
+        v[0..4].copy_from_slice(&len.to_le_bytes());
+        v[14..16].copy_from_slice(&0xc05u16.to_le_bytes());
+        v[8..12].copy_from_slice(&long_ptr.to_le_bytes());
+    }
+    v
+}
+
+/// `0x009734b0`: initialises a widget record: flags |= 0x44000000, clears
+/// `+0x64`, optionally stores `param_3` at `+0x44`, clears `+0x3a`, then
+/// shifts x by `dx` (0 when `is_a`, else `base` or `base/2` unless `is_b`).
+pub fn w27a09_widget_init(rec: &mut [u8], param_3: u32, is_a: bool, is_b: bool, base: i32) {
+    let rd32 = |r: &[u8], o: usize| u32::from_le_bytes(r[o..o + 4].try_into().unwrap());
+    let rd16 = |r: &[u8], o: usize| i16::from_le_bytes(r[o..o + 2].try_into().unwrap());
+    let f = rd32(rec, 0x30) | 0x4400_0000;
+    rec[0x30..0x34].copy_from_slice(&f.to_le_bytes());
+    rec[0x64..0x68].copy_from_slice(&0u32.to_le_bytes());
+    if param_3 != 0 {
+        rec[0x44..0x48].copy_from_slice(&param_3.to_le_bytes());
+    }
+    rec[0x3a..0x3c].copy_from_slice(&0u16.to_le_bytes());
+    let mut d = 0i32;
+    if !is_a {
+        d = base;
+        if !is_b {
+            d /= 2;
+        }
+    }
+    let d16 = d as i16;
+    let x1 = rd16(rec, 4).wrapping_add(d16);
+    let x2 = x1.wrapping_add(rd16(rec, 8));
+    let y2 = rd16(rec, 6).wrapping_add(rd16(rec, 10));
+    rec[4..6].copy_from_slice(&x1.to_le_bytes());
+    rec[8..10].copy_from_slice(&x2.to_le_bytes());
+    rec[0x68..0x6a].copy_from_slice(&d16.to_le_bytes());
+    rec[10..12].copy_from_slice(&y2.to_le_bytes());
+}
+
+/// Number of slots in the registry at 0x011c_de70..0x011c_ded4.
+pub const W27A09_SLOT_COUNT: usize = 25;
+
+/// `0x009737d0`: index of the first occupied slot, if any.
+pub fn w27a09_first_occupied(slots: &[u32; W27A09_SLOT_COUNT]) -> Option<usize> {
+    slots.iter().position(|&s| s != 0)
+}
+
+/// `0x00974340`: stores `value` in an empty slot; `Err` when occupied
+/// (retail takes a non-returning error path).
+pub fn w27a09_slot_set(
+    slots: &mut [u32; W27A09_SLOT_COUNT],
+    index: usize,
+    value: u32,
+) -> Result<(), ()> {
+    if slots[index] != 0 {
+        return Err(());
+    }
+    slots[index] = value;
+    Ok(())
+}
+
+/// Destination addresses (low 32 bits) of the 30 snapshot words, in source
+/// order starting at record offset 0x148 with stride 2.
+pub const W27A09_SNAPSHOT_DEST: [u32; 30] = [
+    0x011c_dd68,
+    0x011c_dd6c,
+    0x011c_dd78,
+    0x011c_dd7c,
+    0x011c_dd70,
+    0x011c_dd74,
+    0x011c_dd80,
+    0x011c_dd84,
+    0x011c_dd88,
+    0x011c_dd8c,
+    0x011c_dd90,
+    0x011c_dd94,
+    0x011c_dd98,
+    0x011c_dd9c,
+    0x011c_dda4,
+    0x011c_dda8,
+    0x011c_dda0,
+    0x011c_ddac,
+    0x011c_ddb0,
+    0x011c_ddb4,
+    0x011c_ddb8,
+    0x011c_ddc0,
+    0x011c_ddc4,
+    0x011c_ddbc,
+    0x011c_ddc8,
+    0x011c_ddcc,
+    0x011c_ddd0,
+    0x011c_ddd4,
+    0x011c_ddd8,
+    0x011c_dddc,
+];
+
+/// `0x00974120`: copies the 30 16-bit fields at `+0x148..0x184` of the
+/// record into the snapshot globals; returns `(dest address, value)` pairs.
+/// (Skipped when the record is already the cached one; the three
+/// slot-pointer refreshes at the start are not modelled.)
+pub fn w27a09_snapshot_fields(rec: &[u8]) -> [(u32, u16); 30] {
+    let mut out = [(0u32, 0u16); 30];
+    for (i, o) in out.iter_mut().enumerate() {
+        let off = 0x148 + i * 2;
+        *o = (
+            W27A09_SNAPSHOT_DEST[i],
+            u16::from_le_bytes([rec[off], rec[off + 1]]),
+        );
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests_wave27_agent09 {
+    use super::*;
+
+    #[test]
+    fn arena() {
+        let mut a = W27a09Arena {
+            default_size: 16,
+            allocator_ok: true,
+            ..Default::default()
+        };
+        assert_eq!(w27a09_arena_alloc(&mut a, 0, true), Ok(None));
+        assert_eq!(w27a09_arena_alloc(&mut a, 5, true), Ok(Some((0, 0))));
+        assert_eq!(w27a09_arena_alloc(&mut a, 8, true), Ok(Some((0, 8))));
+        assert_eq!(w27a09_arena_alloc(&mut a, 20, true), Ok(Some((1, 0))));
+        assert_eq!(a.chunks[1].capacity, 20);
+        a.allocator_ok = false;
+        assert_eq!(w27a09_arena_alloc(&mut a, 100, true), Err(()));
+        assert_eq!(w27a09_guarded_alloc(0, 4, |n| n), Err(()));
+        assert_eq!(w27a09_guarded_alloc(1, 0, |n| n), Ok(None));
+        assert_eq!(w27a09_guarded_alloc(1, 4, |n| n), Ok(Some(4)));
+    }
+
+    #[test]
+    fn pointer() {
+        let no = |_: &[u8], _| None;
+        let t = w27a09_parse_json_pointer(b"/a/10/0/~0~1", no).unwrap();
+        assert_eq!(t.len(), 4);
+        assert_eq!(t[0].index, 0xffff_ffff);
+        assert_eq!(t[1].index, 10);
+        assert_eq!(t[2].index, 0);
+        assert_eq!(t[3].name, b"~/");
+        assert_eq!(w27a09_parse_json_pointer(b"", no).unwrap().len(), 0);
+        assert_eq!(w27a09_parse_json_pointer(b"a", no), Err((1, 0)));
+        assert_eq!(w27a09_parse_json_pointer(b"/~2", no), Err((2, 2)));
+        assert_eq!(w27a09_parse_json_pointer(b"#/a b", no), Err((4, 3)));
+        assert_eq!(w27a09_parse_json_pointer(b"#/%", no), Err((3, 2)));
+        let t = w27a09_parse_json_pointer(b"/01/", no).unwrap();
+        assert_eq!(t[0].index, 0xffff_ffff);
+        assert_eq!(t.len(), 2);
+    }
+
+    #[test]
+    fn string_value() {
+        let v = w27a09_make_string_value(b"hi", 0, 2, true, 0);
+        assert_eq!(&v[..2], b"hi");
+        assert_eq!(v[13], 11);
+        assert_eq!(u16::from_le_bytes([v[14], v[15]]), 0x1c05);
+        let v = w27a09_make_string_value(b"", 0x1234, 5, false, 0);
+        assert_eq!(u16::from_le_bytes([v[14], v[15]]), 0x405);
+        let v = w27a09_make_string_value(b"", 0, 14, true, 9);
+        assert_eq!(u16::from_le_bytes([v[14], v[15]]), 0xc05);
+    }
+
+    #[test]
+    fn widget_and_slots() {
+        let mut r = vec![0u8; 0x70];
+        r[4] = 10;
+        r[8] = 20;
+        r[6] = 3;
+        r[10] = 4;
+        w27a09_widget_init(&mut r, 7, false, false, 8);
+        assert_eq!(r[4], 14);
+        assert_eq!(r[8], 34);
+        assert_eq!(r[10], 7);
+        assert_eq!(r[0x68], 4);
+        assert_eq!(r[0x33], 0x44);
+        let mut s = [0u32; W27A09_SLOT_COUNT];
+        assert_eq!(w27a09_first_occupied(&s), None);
+        assert_eq!(w27a09_slot_set(&mut s, 3, 9), Ok(()));
+        assert_eq!(w27a09_slot_set(&mut s, 3, 9), Err(()));
+        assert_eq!(w27a09_first_occupied(&s), Some(3));
+        let mut rec = vec![0u8; 0x184];
+        rec[0x148] = 1;
+        rec[0x182] = 2;
+        let o = w27a09_snapshot_fields(&rec);
+        assert_eq!(o[0], (0x011c_dd68, 1));
+        assert_eq!(o[29], (0x011c_dddc, 2));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave27/agent10.rs
+// ===========================================================================
+// Wave 27 translation batch 10.
+
+/// `0x009763c0`: clears every entry of the 25-slot table equal to `value`
+/// and each of the four extra single cells (`extra`) equal to `value`.
+pub fn w27a10_clear_matching(slots: &mut [i32; 25], extra: &mut [i32; 4], value: i32) {
+    for s in slots.iter_mut().chain(extra.iter_mut()) {
+        if *s == value {
+            *s = 0;
+        }
+    }
+}
+
+/// Small-string header (MSVC SSO layout): data pointer slot, size, capacity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct W27a10SsoString {
+    pub size: u32,
+    pub cap: u32,
+    pub buf: [u8; 16],
+}
+
+/// `0x00977650`: initialises an empty small string (size 0, capacity
+/// `0x8000000f`, first byte 0) before the append of a 9-byte literal.
+pub fn w27a10_sso_init_empty() -> W27a10SsoString {
+    W27a10SsoString {
+        size: 0,
+        cap: 0x8000_000f,
+        buf: [0; 16],
+    }
+}
+
+/// `0x009774c0`: same empty init as the routine above; returns the string
+/// plus the C-string length (up to the first NUL) handed to the append.
+pub fn w27a10_sso_init_from_cstr(src: &[u8]) -> (W27a10SsoString, usize) {
+    let n = src.iter().position(|&b| b == 0).unwrap_or(src.len());
+    (w27a10_sso_init_empty(), n)
+}
+
+/// Shared tail of `0x00975d10` and `0x00975e50` on a window record.
+/// Returns false (the original does not return) when any pending slot is set.
+/// `delta` is the base value of the full-width step; it is halved when the
+/// record is neither of the two predicate kinds.
+fn w27a10_window_tail(
+    rec: &mut [u8; 0x6c],
+    pending: &[i32],
+    arg: i32,
+    kind_a: bool,
+    kind_b: bool,
+    step: i32,
+) -> bool {
+    if pending.iter().any(|&p| p != 0) {
+        return false;
+    }
+    let rd32 = |r: &[u8], o: usize| u32::from_le_bytes([r[o], r[o + 1], r[o + 2], r[o + 3]]);
+    let rd16 = |r: &[u8], o: usize| i16::from_le_bytes([r[o], r[o + 1]]);
+    let f = rd32(rec, 0x30) | 0x8000_0000 | 0x4400_0000;
+    rec[0x30..0x34].copy_from_slice(&f.to_le_bytes());
+    rec[0x64..0x68].fill(0);
+    if arg != 0 {
+        rec[0x44..0x48].copy_from_slice(&arg.to_le_bytes());
+    }
+    rec[0x3a..0x3c].fill(0);
+    let mut d = 0i32;
+    if !kind_a {
+        d = step;
+        if !kind_b {
+            d /= 2;
+        }
+    }
+    let d16 = d as i16;
+    let x0 = rd16(rec, 4).wrapping_add(d16);
+    rec[4..6].copy_from_slice(&x0.to_le_bytes());
+    let x1 = x0.wrapping_add(rd16(rec, 8));
+    rec[8..10].copy_from_slice(&x1.to_le_bytes());
+    rec[0x68..0x6a].copy_from_slice(&d16.to_le_bytes());
+    let y1 = rd16(rec, 6).wrapping_add(rd16(rec, 10));
+    rec[10..12].copy_from_slice(&y1.to_le_bytes());
+    true
+}
+
+/// `0x00975d10`: window-record reset (flags, optional field at +0x44, x
+/// offset adjust).  `step` is the callee value `FUN_007b30e0`.
+pub fn w27a10_window_reset(
+    rec: &mut [u8; 0x6c],
+    pending: &[i32],
+    arg: i32,
+    kind_a: bool,
+    kind_b: bool,
+    step: i32,
+) -> bool {
+    w27a10_window_tail(rec, pending, arg, kind_a, kind_b, step)
+}
+
+/// `0x00975e50`: identical body to the one above with the argument in the
+/// third parameter position.
+pub fn w27a10_window_reset3(
+    rec: &mut [u8; 0x6c],
+    pending: &[i32],
+    arg: i32,
+    kind_a: bool,
+    kind_b: bool,
+    step: i32,
+) -> bool {
+    w27a10_window_tail(rec, pending, arg, kind_a, kind_b, step)
+}
+
+#[cfg(test)]
+mod tests_wave27_agent10 {
+    use super::*;
+
+    #[test]
+    fn clear() {
+        let mut s = [0; 25];
+        s[3] = 7;
+        s[24] = 7;
+        s[5] = 8;
+        let mut e = [7, 1, 7, 0];
+        w27a10_clear_matching(&mut s, &mut e, 7);
+        assert_eq!((s[3], s[24], s[5]), (0, 0, 8));
+        assert_eq!(e, [0, 1, 0, 0]);
+    }
+
+    #[test]
+    fn sso() {
+        let s = w27a10_sso_init_empty();
+        assert_eq!((s.size, s.cap, s.buf[0]), (0, 0x8000_000f, 0));
+        assert_eq!(w27a10_sso_init_from_cstr(b"abc\0d").1, 3);
+        assert_eq!(w27a10_sso_init_from_cstr(b"").1, 0);
+    }
+
+    #[test]
+    fn window() {
+        let mut r = [0u8; 0x6c];
+        r[4] = 10;
+        r[8] = 5;
+        r[6] = 2;
+        r[10] = 3;
+        assert!(!w27a10_window_reset(&mut r, &[0, 1], 0, false, false, 8));
+        assert!(w27a10_window_reset(&mut r, &[0, 0], 9, false, false, 8));
+        assert_eq!(r[4], 14);
+        assert_eq!(r[8], 19);
+        assert_eq!(r[10], 5);
+        assert_eq!(r[0x68], 4);
+        assert_eq!(r[0x44], 9);
+        assert_eq!(r[0x33], 0xc4);
+        let mut r2 = [0u8; 0x6c];
+        assert!(w27a10_window_reset3(&mut r2, &[], 0, false, true, 8));
+        assert_eq!(r2[0x68], 8);
+        assert!(w27a10_window_reset3(&mut r2, &[], 0, true, true, 8));
+        assert_eq!(r2[0x68], 0);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave27/agent11.rs
+// ===========================================================================
+// Wave 27 translation batch 11: dialog-control helpers.
+
+/// Minimal view of a dialog control (offsets from the retail record).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct W27a11Ctl {
+    /// +0x06
+    pub left: i16,
+    /// +0x0a
+    pub right: i16,
+    /// +0x3a: index among siblings
+    pub index: i16,
+    /// +0x3c: control type
+    pub kind: i16,
+    /// +0x3e
+    pub sub: i16,
+    /// +0x50: checked/selected state
+    pub state: u32,
+    /// +0x63
+    pub height: u8,
+    /// +0x6a
+    pub min: i16,
+}
+
+/// Dialog event (`+0` code, `+4` value, `+0x10` kind).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct W27a11Event {
+    pub code: i32,
+    pub value: i32,
+    pub kind: i16,
+}
+
+/// `0x00978f30`: when the control check passes, runs the reset callback,
+/// snaps `left` to `min`, sets `right = height + min`; returns true when
+/// the global at 011ce23c must be cleared.
+pub fn w27a11_reset_extent(c: &mut W27a11Ctl, check: bool, mut reset: impl FnMut()) -> bool {
+    if !check {
+        return false;
+    }
+    reset();
+    c.left = c.min;
+    c.right = (c.height as i16).wrapping_add(c.min);
+    true
+}
+
+/// `0x00979cd0`: reads the u32 slot `idx` of a table.
+pub fn w27a11_slot(table: &[u32], idx: u8) -> Option<u32> {
+    table.get(idx as usize).copied()
+}
+
+/// `0x0097a1d0`: forwards the byte at +0x62 to the callee.
+pub fn w27a11_forward_byte62(byte62: u8, mut f: impl FnMut(u8)) {
+    f(byte62)
+}
+
+/// `0x0097c270` (table part): squares table, index `i + 255` holds `i * i`
+/// for `i` in `-255..=255` (the retail loop fills 0..=255 at +0 and the
+/// vector loop starts at -255).
+pub fn w27a11_square_table() -> [i32; 511] {
+    let mut t = [0i32; 511];
+    for (k, v) in t.iter_mut().enumerate() {
+        let i = k as i32 - 255;
+        *v = i * i;
+    }
+    t
+}
+
+fn w27a11_clamp_right(c: &mut W27a11Ctl, pad: u8) {
+    let want = (c.left as i32 + pad as i32) as i16;
+    if c.right <= want {
+        c.right = want;
+    }
+}
+
+/// `0x0097d150`: toggle-style handler for kind 0xe events.  Returns true
+/// when handled; false means fall back to the default handler.
+pub fn w27a11_toggle_event(c: &mut W27a11Ctl, e: &W27a11Event, pad: u8) -> bool {
+    if e.kind == 0xe {
+        match e.code {
+            2 => {
+                c.state ^= 1;
+                return true;
+            }
+            10 => {
+                c.sub = 0xb;
+                w27a11_clamp_right(c, pad);
+            }
+            0xb => {
+                c.state = (e.value != 0) as u32;
+                return true;
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// `0x0097d1e0`: for kind 0xe code 2 on a control with index -3 or -2,
+/// returns that index (to store in the global) and handles the event.
+pub fn w27a11_index_event(c: &W27a11Ctl, e: &W27a11Event) -> Option<i16> {
+    if e.kind == 0xe && e.code == 2 && (c.index == -3 || c.index == -2) {
+        Some(c.index)
+    } else {
+        None
+    }
+}
+
+/// `0x0097d230`: radio-style handler; selects through `select` on code 2 or
+/// code 0xb with nonzero value.  Returns true when handled.
+pub fn w27a11_radio_event(
+    c: &mut W27a11Ctl,
+    e: &W27a11Event,
+    pad: u8,
+    mut select: impl FnMut(),
+) -> bool {
+    if e.kind == 0xe {
+        match e.code {
+            2 => {
+                select();
+                return true;
+            }
+            10 => w27a11_clamp_right(c, pad),
+            0xb => {
+                if e.value == 0 {
+                    return true;
+                }
+                select();
+                return true;
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Radio group member: type, sibling index and state.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct W27a11Node {
+    pub kind: i16,
+    pub index: i16,
+    pub state: u32,
+}
+
+/// `0x0097d410`: walks backwards over kind-3 siblings from `start`, returns
+/// the first member of the group.  `find(i)` is FUN_009642f0 returning the
+/// node position with sibling index `i`.
+pub fn w27a11_group_head(
+    nodes: &[W27a11Node],
+    start: usize,
+    mut find: impl FnMut(i16) -> Option<usize>,
+) -> usize {
+    let mut head = start;
+    let mut cur = find(nodes[start].index - 1);
+    while let Some(i) = cur {
+        if nodes[i].kind != 3 {
+            break;
+        }
+        cur = find(nodes[i].index - 1);
+        head = i;
+    }
+    head
+}
+
+/// `0x0097d460`: clears every member of the group and selects `start`.
+pub fn w27a11_group_select(
+    nodes: &mut [W27a11Node],
+    start: usize,
+    mut find: impl FnMut(i16) -> Option<usize>,
+) {
+    let head = w27a11_group_head(nodes, start, &mut find);
+    nodes[head].state = 0;
+    let mut cur = find(nodes[head].index + 1);
+    while let Some(i) = cur {
+        if nodes[i].kind != 3 {
+            break;
+        }
+        nodes[i].state = 0;
+        cur = find(nodes[i].index + 1);
+    }
+    nodes[start].state = 1;
+}
+
+#[cfg(test)]
+mod tests_wave27_agent11 {
+    use super::*;
+
+    #[test]
+    fn extent_and_slots() {
+        let mut c = W27a11Ctl {
+            min: 5,
+            height: 20,
+            left: 1,
+            right: 2,
+            ..Default::default()
+        };
+        let mut n = 0;
+        assert!(!w27a11_reset_extent(&mut c, false, || n += 1));
+        assert!(w27a11_reset_extent(&mut c, true, || n += 1));
+        assert_eq!((c.left, c.right, n), (5, 25, 1));
+        assert_eq!(w27a11_slot(&[1, 2], 1), Some(2));
+        assert_eq!(w27a11_slot(&[1, 2], 2), None);
+        let mut got = 0;
+        w27a11_forward_byte62(7, |b| got = b);
+        assert_eq!(got, 7);
+    }
+
+    #[test]
+    fn squares() {
+        let t = w27a11_square_table();
+        assert_eq!(t[0], 65025);
+        assert_eq!(t[255], 0);
+        assert_eq!(t[510], 65025);
+    }
+
+    #[test]
+    fn events() {
+        let mut c = W27a11Ctl {
+            left: 10,
+            right: 5,
+            index: -3,
+            ..Default::default()
+        };
+        let ev = |code, value, kind| W27a11Event { code, value, kind };
+        assert!(w27a11_toggle_event(&mut c, &ev(2, 0, 0xe), 4));
+        assert_eq!(c.state, 1);
+        assert!(w27a11_toggle_event(&mut c, &ev(0xb, 0, 0xe), 4));
+        assert_eq!(c.state, 0);
+        assert!(!w27a11_toggle_event(&mut c, &ev(10, 0, 0xe), 4));
+        assert_eq!((c.sub, c.right), (0xb, 14));
+        assert!(!w27a11_toggle_event(&mut c, &ev(2, 0, 1), 4));
+        assert_eq!(w27a11_index_event(&c, &ev(2, 0, 0xe)), Some(-3));
+        assert_eq!(w27a11_index_event(&c, &ev(3, 0, 0xe)), None);
+        let mut n = 0;
+        assert!(w27a11_radio_event(&mut c, &ev(0xb, 0, 0xe), 0, || n += 1));
+        assert_eq!(n, 0);
+        assert!(w27a11_radio_event(&mut c, &ev(0xb, 1, 0xe), 0, || n += 1));
+        assert!(w27a11_radio_event(&mut c, &ev(2, 0, 0xe), 0, || n += 1));
+        assert_eq!(n, 2);
+        assert!(!w27a11_radio_event(&mut c, &ev(10, 0, 0xe), 0, || n += 1));
+    }
+
+    #[test]
+    fn groups() {
+        let mk = |kind, index| W27a11Node {
+            kind,
+            index,
+            state: 1,
+        };
+        let mut nodes = vec![mk(2, 0), mk(3, 1), mk(3, 2), mk(3, 3), mk(2, 4)];
+        let find = |nodes: Vec<i16>| move |i: i16| nodes.iter().position(|&x| x == i);
+        let idx: Vec<i16> = nodes.iter().map(|n| n.index).collect();
+        // node 0 (kind 2) is not part of the group: head of node 3 is node 1.
+        assert_eq!(w27a11_group_head(&nodes, 3, find(idx.clone())), 1);
+        w27a11_group_select(&mut nodes, 2, find(idx));
+        let s: Vec<u32> = nodes.iter().map(|n| n.state).collect();
+        assert_eq!(s, vec![1, 0, 1, 0, 1]);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave27/agent12.rs
+// ===========================================================================
+// Wave 27 agent 12: control/tile-map helpers.
+
+/// `0x0097fd70`: counts bytes scanning backwards from `buf[len-1]` until the
+/// predicate (callee FUN_007a7660) is true (that byte is counted) or a NUL
+/// byte / the buffer start is reached.
+pub fn w27a12_trailing_run(buf: &[u8], len: usize, mut pred: impl FnMut(u8) -> bool) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    let mut n = 0;
+    let mut i = len as isize - 1;
+    while i >= 0 {
+        let c = buf[i as usize];
+        if c == 0 {
+            break;
+        }
+        n += 1;
+        if pred(c) {
+            return n;
+        }
+        i -= 1;
+    }
+    n
+}
+
+/// `0x00980e60`: toggles the flag byte at +0x56.  `on_enable`/`on_disable`
+/// are the callee sequences; returns the new flag.
+pub fn w27a12_toggle_flag(
+    flag: &mut u8,
+    param: u8,
+    mut on_enable: impl FnMut(),
+    mut on_disable: impl FnMut(),
+) {
+    if param == 0 {
+        if *flag != 0 {
+            on_disable();
+            *flag = 0;
+        }
+    } else if *flag == 0 {
+        on_enable();
+        *flag = param;
+    }
+}
+
+/// `0x00982f20`: stores two bytes at offsets 0x60 and 0x63 of a record.
+pub fn w27a12_set_bytes(rec: &mut [u8], a: u8, b: u8) {
+    rec[0x60] = a;
+    rec[0x63] = b;
+}
+
+/// Range control fields for `0x00982f90`: value at +0x54, min +0x56, max +0x58.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct W27a12Range {
+    pub value: i16,
+    pub min: i16,
+    pub max: i16,
+}
+
+/// `0x00982f90`: sets min/max and clamps the value, invoking `notify` when
+/// the value changed.
+pub fn w27a12_set_range(r: &mut W27a12Range, min: i16, max: i16, mut notify: impl FnMut()) {
+    let same = r.min == min && r.max == max;
+    r.min = min;
+    r.max = max;
+    if same {
+        return;
+    }
+    let v = r.value;
+    let target = if v < min {
+        min
+    } else if max < v {
+        max
+    } else {
+        return;
+    };
+    if v != target {
+        r.value = target;
+        notify();
+    }
+}
+
+fn w27a12_tile_flag(map: &[u16], w: u32, h: u32, x: u32, y: u32) -> bool {
+    x < w && y < h && (map[(w * y + x) as usize] & 0x7ff0) == 0x10
+}
+
+/// `0x00983b30`: tile at (x, y) has class bits `0x10` (mask `0x7ff0`).
+pub fn w27a12_tile_is_class10(map: &[u16], w: u32, x: u32, y: u32) -> bool {
+    (map[(w * y + x) as usize] & 0x7ff0) == 0x10
+}
+
+/// `0x00983260`: number of the eight neighbours of (x, y) whose tile has
+/// class `0x10`; out-of-range neighbours count as zero (unsigned wrap).
+pub fn w27a12_neighbour_count(map: &[u16], w: u32, h: u32, x: u32, y: u32) -> u8 {
+    let mut n = 0;
+    for dy in [-1i32, 0, 1] {
+        for dx in [-1i32, 0, 1] {
+            if dx == 0 && dy == 0 {
+                continue;
+            }
+            let nx = x.wrapping_add(dx as u32);
+            let ny = y.wrapping_add(dy as u32);
+            n += w27a12_tile_flag(map, w, h, nx, ny) as u8;
+        }
+    }
+    n
+}
+
+/// `0x00983440`: pixel rectangle `[left, top, right, bottom]` around tile
+/// (tx, ty), clamped to a `w`x`h` tile map.  Upper clamp applies only when
+/// the lower bound did not need clamping (else-if in the original).
+pub fn w27a12_visible_rect(tx: i32, ty: i32, w: i32, h: i32) -> [i32; 4] {
+    let mut l = tx * 0x20 - 0x270;
+    let mut r = tx * 0x20 + 0x290;
+    let mut t = ty * 0x20 - 0x180;
+    let mut b = ty * 0x20 + 0x1a0;
+    if l < 0 {
+        l = 0;
+    } else if w * 0x20 <= r {
+        r = w * 0x20 - 1;
+    }
+    if t < 0 {
+        t = 0;
+    } else if h * 0x20 <= b {
+        b = h * 0x20 - 1;
+    }
+    [l, t, r, b]
+}
+
+/// `0x009834e0`: writes width*height to `out` when the tile buffer exists.
+pub fn w27a12_tile_count(has_buffer: bool, w: i32, h: i32, out: Option<&mut i32>) {
+    if !has_buffer {
+        return;
+    }
+    if let Some(o) = out {
+        *o = h * w;
+    }
+}
+
+#[cfg(test)]
+mod tests_wave27_agent12 {
+    use super::*;
+
+    #[test]
+    fn trailing() {
+        let b = b"ab cd";
+        assert_eq!(w27a12_trailing_run(b, 0, |_| true), 0);
+        assert_eq!(w27a12_trailing_run(b, 5, |c| c == b' '), 3);
+        assert_eq!(w27a12_trailing_run(b, 5, |_| false), 5);
+        assert_eq!(w27a12_trailing_run(b"a\0b", 3, |_| false), 1);
+    }
+
+    #[test]
+    fn toggle() {
+        let mut f = 0u8;
+        let log = std::cell::RefCell::new(vec![]);
+        w27a12_toggle_flag(
+            &mut f,
+            1,
+            || log.borrow_mut().push("on"),
+            || log.borrow_mut().push("off"),
+        );
+        assert_eq!(f, 1);
+        w27a12_toggle_flag(
+            &mut f,
+            1,
+            || log.borrow_mut().push("on"),
+            || log.borrow_mut().push("off"),
+        );
+        w27a12_toggle_flag(
+            &mut f,
+            0,
+            || log.borrow_mut().push("on"),
+            || log.borrow_mut().push("off"),
+        );
+        assert_eq!((f, log.into_inner()), (0, vec!["on", "off"]));
+    }
+
+    #[test]
+    fn bytes() {
+        let mut r = [0u8; 0x70];
+        w27a12_set_bytes(&mut r, 5, 6);
+        assert_eq!((r[0x60], r[0x63]), (5, 6));
+    }
+
+    #[test]
+    fn range() {
+        let mut r = W27a12Range {
+            value: 50,
+            min: 0,
+            max: 100,
+        };
+        let mut n = 0;
+        w27a12_set_range(&mut r, 0, 100, || n += 1);
+        assert_eq!(n, 0);
+        w27a12_set_range(&mut r, 0, 40, || n += 1);
+        assert_eq!((r.value, n), (40, 1));
+        w27a12_set_range(&mut r, 60, 80, || n += 1);
+        assert_eq!((r.value, n), (60, 2));
+        w27a12_set_range(&mut r, 10, 90, || n += 1);
+        assert_eq!((r.value, n), (60, 2));
+    }
+
+    #[test]
+    fn tiles() {
+        let mut m = vec![0u16; 9];
+        m[4] = 0x10;
+        m[0] = 0x8010;
+        assert!(w27a12_tile_is_class10(&m, 3, 1, 1));
+        assert!(w27a12_tile_is_class10(&m, 3, 0, 0));
+        assert!(!w27a12_tile_is_class10(&m, 3, 1, 0));
+        assert_eq!(w27a12_neighbour_count(&m, 3, 3, 0, 0), 1);
+        assert_eq!(w27a12_neighbour_count(&m, 3, 3, 1, 1), 1);
+        m[8] = 0x1f;
+        assert_eq!(w27a12_neighbour_count(&m, 3, 3, 1, 1), 2);
+        assert_eq!(w27a12_neighbour_count(&m, 3, 3, 2, 2), 1);
+    }
+
+    #[test]
+    fn rect() {
+        assert_eq!(w27a12_visible_rect(0, 0, 100, 100), [0, 0, 0x290, 0x1a0]);
+        assert_eq!(
+            w27a12_visible_rect(99, 99, 100, 100),
+            [99 * 32 - 0x270, 99 * 32 - 0x180, 3199, 3199]
+        );
+        let mut n = 0;
+        w27a12_tile_count(true, 4, 5, Some(&mut n));
+        assert_eq!(n, 20);
+        w27a12_tile_count(false, 4, 5, Some(&mut n));
+        assert_eq!(n, 20);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave27/agent13.rs
+// ===========================================================================
+// Wave 27 agent 13: allocator bitmap range helper and a thin wrapper.
+
+/// `0x0098a4b0`: sets (`set != 0`) or clears `count` bits starting at bit
+/// `start` of the byte bitmap `bits`; `hint` is the cached first-free-bit
+/// field (`this[9]`), `limit` is `this[4]` and `find_free(from, limit, 1)`
+/// models the neighbour search helper.  Bits are LSB-first inside a byte.
+/// The decompiler lost the code after the whole-byte memset path; this
+/// version falls through to the trailing-bit loop (uncertain).
+pub fn w27a13_bitmap_set_range(
+    bits: &mut [u8],
+    hint: &mut i32,
+    limit: i32,
+    start: i32,
+    set: bool,
+    count: i32,
+    mut find_free: impl FnMut(i32, i32, i32) -> i32,
+) {
+    let mut bit = (start & 7) as u32;
+    let mut byte = (start / 8) as usize;
+    let mut rem = count;
+    let put = |bits: &mut [u8], byte: usize, bit: u32| {
+        if set {
+            bits[byte] |= 1 << bit;
+        } else {
+            bits[byte] &= !(1u8 << bit);
+        }
+    };
+    let step = |byte: &mut usize, bit: &mut u32| {
+        *bit += 1;
+        if *bit >= 8 {
+            *bit = 0;
+            *byte += 1;
+        }
+    };
+    if start & 0x1f != 0 {
+        let mut n = 0x20 - (start & 0x1f);
+        if count < n {
+            n = count;
+        }
+        if n != 0 {
+            rem = count - n;
+            for _ in 0..n {
+                put(bits, byte, bit);
+                step(&mut byte, &mut bit);
+            }
+        }
+    }
+    let whole = rem / 8;
+    if whole != 0 {
+        let fill = if set { 0xff } else { 0 };
+        for b in &mut bits[byte..byte + whole as usize] {
+            *b = fill;
+        }
+        byte += whole as usize;
+        rem -= whole * 8;
+    }
+    for _ in 0..(rem & 0x1f).max(0) {
+        put(bits, byte, bit);
+        step(&mut byte, &mut bit);
+    }
+    if whole != 0 {
+        return;
+    }
+    if !set {
+        if start < *hint {
+            *hint = start;
+        }
+    } else {
+        if start == *hint {
+            *hint = count + start;
+        }
+        let h = *hint;
+        if bits[(h / 8) as usize] & (1 << (h & 7)) != 0 {
+            *hint = find_free(h, limit, 1);
+        }
+    }
+}
+
+/// `0x00989fc0`: forwards its four arguments to the worker with a trailing
+/// flag of `1`.
+pub fn w27a13_forward_with_flag<R>(
+    a: u32,
+    b: u32,
+    c: u32,
+    d: u32,
+    mut worker: impl FnMut(u32, u32, u32, u32, u32) -> R,
+) -> R {
+    worker(a, b, c, d, 1)
+}
+
+#[cfg(test)]
+mod tests_wave27_agent13 {
+    use super::*;
+
+    #[test]
+    fn set_and_clear_small_range() {
+        let mut bits = [0u8; 4];
+        let mut hint = 0;
+        w27a13_bitmap_set_range(&mut bits, &mut hint, 32, 2, true, 3, |f, _, _| f + 100);
+        assert_eq!(bits[0], 0b0001_1100);
+        assert_eq!(hint, 0);
+    }
+
+    #[test]
+    fn clear_lowers_hint() {
+        let mut bits = [0xffu8; 4];
+        let mut hint = 20;
+        w27a13_bitmap_set_range(&mut bits, &mut hint, 32, 4, false, 2, |_, _, _| 0);
+        assert_eq!(bits[0], 0b1100_1111);
+        assert_eq!(hint, 4);
+    }
+
+    #[test]
+    fn forward_flag() {
+        assert_eq!(
+            w27a13_forward_with_flag(1, 2, 3, 4, |a, b, c, d, e| a + b + c + d + e),
+            11
+        );
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave27/agent14.rs
+// ===========================================================================
+// Wave 27 agent 14: small object-state helpers (byte-buffer object model).
+
+/// `0x00995d10`: reads field `+0xac` of the sub-object at `+0x1c` of the
+/// object referenced from slot `+0x4c`.  Returns `(status, value)`:
+/// `0x25` for a missing out parameter, `0x24` (value 0) when the slot is
+/// empty, otherwise `0` with the value (0 when the sub-object is absent).
+pub fn w27a14_get_sub_field(
+    want_out: bool,
+    slot_present: bool,
+    sub_field_ac: Option<u32>,
+) -> (u32, u32) {
+    if !want_out {
+        return (0x25, 0);
+    }
+    if !slot_present {
+        return (0x24, 0);
+    }
+    (0, sub_field_ac.unwrap_or(0))
+}
+
+/// `0x0099ee50`: returns `0x25` when `handle` is zero, otherwise invokes the
+/// external release routine and returns 0.
+pub fn w27a14_call_if_nonzero_a(handle: u32, mut f: impl FnMut(u32)) -> u32 {
+    if handle == 0 {
+        return 0x25;
+    }
+    f(handle);
+    0
+}
+
+/// `0x0099eeb0`: same shape as the sibling routine, with a different
+/// external callee; `0x25` for a zero handle, else call and return 0.
+pub fn w27a14_call_if_nonzero_b(handle: u32, mut f: impl FnMut(u32)) -> u32 {
+    if handle == 0 {
+        return 0x25;
+    }
+    f(handle);
+    0
+}
+
+/// `0x009a0e40`: resets an object in a byte buffer (`obj` must be at least
+/// `0x1c4` bytes): stores `param_3` at `+0x164`, `param_1` at `+0x190`,
+/// `param_2` at `+0x14`/`+0x18`/`+0x1c`, clears the listed dword fields,
+/// the byte at `+0x2c` and the `0x120` bytes at `+0x2d`.
+pub fn w27a14_reset_object(obj: &mut [u8], param_1: u32, param_2: u32, param_3: u32) {
+    let mut put = |off: usize, v: u32| obj[off..off + 4].copy_from_slice(&v.to_le_bytes());
+    put(0x164, param_3);
+    put(0x190, param_1);
+    put(0x14, 0);
+    put(0x18, param_2);
+    put(0x14, param_2);
+    put(0x1c, param_2);
+    for off in [
+        0x184, 0x24, 0x20, 0x178, 0x1bc, 0x1c0, 0x15c, 0x16c, 0x170, 0x174, 0x168, 0x158, 0x160,
+        0x1b8, 0x180, 0x150, 0x154, 0x188, 0x17c,
+    ] {
+        put(off, 0);
+    }
+    obj[0x2c] = 0;
+    obj[0x2d..0x2d + 0x120].fill(0);
+}
+
+/// `0x00998310`: validity check before the (non-returning) clear.  Returns
+/// true only when the `+0x4c` slot exists, `param_2` is non-zero,
+/// `param_3 <= max_56c`, `0 <= index < count_570`, and `index` is allowed
+/// by the mode (`+0xe8`): 1 -> {0}; 2 -> {0,1}; 3 -> {0,1,4,5};
+/// 4 -> {0,1,2,4,5}; 5/7/8 -> {0..=5}; 6/9 -> index <= 7; other modes
+/// accept any index.
+pub fn w27a14_slot_index_valid(
+    slot_present: bool,
+    param_2: i32,
+    param_3: i32,
+    max_56c: i32,
+    count_570: i32,
+    index: i32,
+    mode: i32,
+) -> bool {
+    if !slot_present || param_2 == 0 || max_56c < param_3 {
+        return false;
+    }
+    if !(0 <= index && index < count_570) {
+        return false;
+    }
+    match mode {
+        1 => index == 0,
+        2 => matches!(index, 0 | 1),
+        3 => matches!(index, 0 | 1 | 4 | 5),
+        4 => matches!(index, 0 | 1 | 2 | 4 | 5),
+        5 | 7 | 8 => (0..=5).contains(&index),
+        6 | 9 => index <= 7,
+        _ => true,
+    }
+}
+
+/// `0x009957a0`: adjusts an optional float out value.  When `is_primary`
+/// (`param_1` equals the base pointer plus `0x5eb4`) the value is 1.0;
+/// otherwise it comes from `probe`, and a value <= 0 is left unchanged.
+/// Otherwise the value is scaled by `1.0 - blend()`.
+pub fn w27a14_scale_factor(
+    out: Option<&mut f32>,
+    is_primary: bool,
+    probe: impl FnOnce() -> f32,
+    blend: impl FnOnce() -> f32,
+) {
+    let Some(out) = out else { return };
+    if is_primary {
+        *out = 1.0;
+    } else {
+        *out = probe();
+        if *out <= 0.0 {
+            return;
+        }
+    }
+    *out *= 1.0 - blend();
+}
+
+/// `0x0099da90`: indexed query through an optional callback (`+0xb4`).
+/// `callback(index)` returns `(status, value, 32-byte buffer)`.  Requires
+/// `0 <= index < count`; on status 0 stores `value` and copies
+/// `min(len, 0x10)` bytes of the buffer into `buf`.  Returns true when the
+/// callback succeeded.
+#[allow(clippy::type_complexity)]
+pub fn w27a14_indexed_query(
+    callback: Option<&mut dyn FnMut(i32) -> (i32, u32, [u8; 32])>,
+    count: i32,
+    index: i32,
+    out_value: Option<&mut u32>,
+    buf: Option<&mut [u8]>,
+    len: i32,
+) -> bool {
+    let Some(cb) = callback else { return false };
+    if !(0 <= index && index < count) {
+        return false;
+    }
+    let (status, value, data) = cb(index);
+    if status != 0 {
+        return false;
+    }
+    if let Some(v) = out_value {
+        *v = value;
+    }
+    if let Some(b) = buf {
+        let n = len.clamp(0, 0x10) as usize;
+        let n = n.min(b.len());
+        b[..n].copy_from_slice(&data[..n]);
+    }
+    true
+}
+
+#[cfg(test)]
+mod tests_wave27_agent14 {
+    use super::*;
+
+    #[test]
+    fn sub_field() {
+        assert_eq!(w27a14_get_sub_field(false, true, Some(5)), (0x25, 0));
+        assert_eq!(w27a14_get_sub_field(true, false, Some(5)), (0x24, 0));
+        assert_eq!(w27a14_get_sub_field(true, true, Some(5)), (0, 5));
+        assert_eq!(w27a14_get_sub_field(true, true, None), (0, 0));
+    }
+
+    #[test]
+    fn nonzero_calls() {
+        let mut n = 0;
+        assert_eq!(w27a14_call_if_nonzero_a(0, |_| n += 1), 0x25);
+        assert_eq!(w27a14_call_if_nonzero_a(7, |h| n += h), 0);
+        assert_eq!(w27a14_call_if_nonzero_b(0, |_| n += 100), 0x25);
+        assert_eq!(w27a14_call_if_nonzero_b(1, |h| n += h), 0);
+        assert_eq!(n, 8);
+    }
+
+    #[test]
+    fn reset() {
+        let mut o = vec![0xffu8; 0x1c4];
+        w27a14_reset_object(&mut o, 1, 2, 3);
+        let g = |off: usize| u32::from_le_bytes(o[off..off + 4].try_into().unwrap());
+        assert_eq!(
+            (g(0x164), g(0x190), g(0x14), g(0x18), g(0x1c)),
+            (3, 1, 2, 2, 2)
+        );
+        assert_eq!(g(0x178), 0);
+        assert_eq!(o[0x2c], 0);
+        assert!(o[0x2d..0x14d].iter().all(|&b| b == 0));
+        assert_eq!(o[0x14d], 0xff);
+    }
+
+    #[test]
+    fn index_valid() {
+        let v = |i, m| w27a14_slot_index_valid(true, 1, 1, 4, 10, i, m);
+        assert!(v(0, 1) && !v(1, 1));
+        assert!(v(1, 2) && !v(2, 2));
+        assert!(v(5, 3) && !v(2, 3));
+        assert!(v(2, 4) && !v(3, 4));
+        assert!(v(3, 5) && !v(6, 5));
+        assert!(v(7, 6) && !v(8, 6));
+        assert!(v(9, 0));
+        assert!(!v(10, 0) && !v(-1, 0));
+        assert!(!w27a14_slot_index_valid(false, 1, 1, 4, 10, 0, 0));
+        assert!(!w27a14_slot_index_valid(true, 0, 1, 4, 10, 0, 0));
+        assert!(!w27a14_slot_index_valid(true, 1, 5, 4, 10, 0, 0));
+    }
+
+    #[test]
+    fn scale() {
+        let mut f = 9.0;
+        w27a14_scale_factor(Some(&mut f), true, || 0.0, || 0.25);
+        assert_eq!(f, 0.75);
+        w27a14_scale_factor(Some(&mut f), false, || 0.0, || 0.25);
+        assert_eq!(f, 0.0);
+        w27a14_scale_factor(Some(&mut f), false, || 2.0, || 0.5);
+        assert_eq!(f, 1.0);
+        w27a14_scale_factor(None, true, || 0.0, || 0.0);
+    }
+
+    #[test]
+    fn query() {
+        let mut cb = |i: i32| (if i == 3 { 1 } else { 0 }, 42u32, [7u8; 32]);
+        let mut v = 0;
+        let mut b = [0u8; 20];
+        assert!(w27a14_indexed_query(
+            Some(&mut cb),
+            5,
+            1,
+            Some(&mut v),
+            Some(&mut b),
+            20
+        ));
+        assert_eq!(v, 42);
+        assert_eq!(b.iter().filter(|&&x| x == 7).count(), 16);
+        assert!(!w27a14_indexed_query(Some(&mut cb), 5, 3, None, None, 0));
+        assert!(!w27a14_indexed_query(Some(&mut cb), 5, 5, None, None, 0));
+        assert!(!w27a14_indexed_query(None, 5, 0, None, None, 0));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave27/agent15.rs
+// ===========================================================================
+// Wave 27 agent 15: small library-support helpers (sound mixer timing/buffers).
+
+/// `0x009aaa00`: clamped read from a memory-backed stream.  Returns the
+/// bytes copied; `len` is limited to `size - pos`.
+pub fn w27a15_mem_read(buf: &[u8], size: u32, pos: u32, dst: &mut [u8], len: u32) -> usize {
+    let mut n = len as i64;
+    if (size as u64) < pos as u64 + len as u64 {
+        n = size as i64 - pos as i64;
+    }
+    let n = n.max(0) as usize;
+    let n = n.min(dst.len());
+    let start = pos as usize;
+    let n = n.min(buf.len().saturating_sub(start));
+    dst[..n].copy_from_slice(&buf[start..start + n]);
+    n
+}
+
+/// `0x009a81d0`: zero-fills a `0x70` byte record.
+pub fn w27a15_zero_0x70(rec: &mut [u8]) {
+    let n = rec.len().min(0x70);
+    rec[..n].fill(0);
+}
+
+/// `0x009ad480`: zero-fills a `0x84` byte global record.
+pub fn w27a15_zero_0x84(rec: &mut [u8]) {
+    let n = rec.len().min(0x84);
+    rec[..n].fill(0);
+}
+
+/// Timer record used by `0x009aa810` (offsets 0x08, 0x0c, 0x28, 0x2c, 0x30, 0x34).
+#[derive(Default, Debug, Clone, PartialEq, Eq)]
+pub struct W27a15Timer {
+    pub start: u32,
+    pub stop: u32,
+    pub active: u8,
+    pub accum: u32,
+    pub depth: u32,
+    pub enabled: bool,
+}
+
+/// `0x009aa810`: nested start/stop counter.  `flag != 0` pushes (sampling
+/// the clock on first entry), `flag == 0` pops and on reaching zero adds the
+/// elapsed time to `accum`.  `now` models the clock reader.  Returns 0.
+pub fn w27a15_timer_toggle(t: &mut W27a15Timer, flag: u8, now: &mut dyn FnMut() -> u32) -> u32 {
+    if !t.enabled {
+        return 0;
+    }
+    let depth = t.depth;
+    if flag != 0 {
+        let mut d = depth;
+        if d == 0 {
+            t.start = now();
+            d = t.depth;
+        }
+        t.active = flag;
+        t.depth = d + 1;
+        return 0;
+    }
+    t.depth = depth.wrapping_sub(1);
+    if t.depth == 0 {
+        t.stop = now();
+        if t.start < t.stop {
+            t.accum = t.accum.wrapping_add(t.stop - t.start);
+        }
+    }
+    t.active = 0;
+    0
+}
+
+/// `0x009aa8a0`: CPU-usage smoothing update.  `s` is the 14-word record
+/// (floats stored as bit patterns), `pct` the percent weight and `now` the
+/// sampled clock.  Returns 0.
+pub fn w27a15_usage_update(s: &mut [u32; 14], pct: i32, now: u32) -> u32 {
+    let w = pct as f32 / 100.0;
+    s[1] = now;
+    s[5] = now;
+    let mut f3 = if now < s[4] {
+        0.0f32
+    } else {
+        (now - s[4]) as i32 as f64 as f32
+    };
+    let mut f4 = f32::from_bits(s[6]) * w;
+    f3 += f32::from_bits(s[7]) * w;
+    s[6] = f4.to_bits();
+    s[7] = f3.to_bits();
+    if s[0] < now {
+        let d = now.wrapping_sub(s[11]).wrapping_sub(s[0]) as i32;
+        f4 += (d as f64 as f32 * 100.0) / (f3 * (1.0 - w));
+        s[6] = f4.to_bits();
+    }
+    s[4] = now;
+    s[11] = 0;
+    s[12] = 0;
+    s[9] = ((1.0 - w) * f4) as u32;
+    s[13] &= !0xff;
+    0
+}
+
+#[cfg(test)]
+mod tests_wave27_agent15 {
+    use super::*;
+
+    #[test]
+    fn mem_read_clamps() {
+        let b = [1u8, 2, 3, 4, 5];
+        let mut d = [0u8; 8];
+        assert_eq!(w27a15_mem_read(&b, 5, 3, &mut d, 8), 2);
+        assert_eq!(&d[..2], &[4, 5]);
+        assert_eq!(w27a15_mem_read(&b, 5, 0, &mut d, 3), 3);
+    }
+
+    #[test]
+    fn zero_fill() {
+        let mut a = [1u8; 0x80];
+        w27a15_zero_0x70(&mut a);
+        assert!(a[..0x70].iter().all(|&x| x == 0) && a[0x70] == 1);
+        let mut b = [1u8; 0x90];
+        w27a15_zero_0x84(&mut b);
+        assert!(b[..0x84].iter().all(|&x| x == 0) && b[0x84] == 1);
+    }
+
+    #[test]
+    fn timer_nesting() {
+        let mut t = W27a15Timer {
+            enabled: true,
+            ..Default::default()
+        };
+        let mut c = 100u32;
+        let mut clk = || {
+            c += 50;
+            c
+        };
+        w27a15_timer_toggle(&mut t, 1, &mut clk);
+        w27a15_timer_toggle(&mut t, 1, &mut clk);
+        assert_eq!(t.depth, 2);
+        w27a15_timer_toggle(&mut t, 0, &mut clk);
+        assert_eq!(t.accum, 0);
+        w27a15_timer_toggle(&mut t, 0, &mut clk);
+        assert_eq!(t.accum, 50);
+        assert_eq!(t.active, 0);
+        let mut off = W27a15Timer::default();
+        assert_eq!(w27a15_timer_toggle(&mut off, 1, &mut clk), 0);
+        assert_eq!(off.depth, 0);
+    }
+
+    #[test]
+    fn usage_update_basic() {
+        let mut s = [0u32; 14];
+        s[6] = 10.0f32.to_bits();
+        s[7] = 20.0f32.to_bits();
+        s[13] = 0x1ff;
+        w27a15_usage_update(&mut s, 50, 100);
+        assert_eq!(s[1], 100);
+        assert_eq!(s[4], 100);
+        assert_eq!(f32::from_bits(s[7]), 110.0);
+        assert_eq!(s[13], 0x100);
+        assert_eq!(s[11], 0);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave27/agent16.rs
+// ===========================================================================
+// Wave 27 translation batch 16: FMOD-style DSP unit helpers (state resets,
+// soft clipper, biquad coefficients).  Unit state is modelled as a slice of
+// 32-bit words indexed by `byte_offset / 4`.
+
+/// Zeroing request produced by a reset: `(base_word_value, byte_len)` of the
+/// buffer that the original clears with the CRT fill helper.
+pub type W27a16Fill = Option<(u32, u32)>;
+
+#[inline]
+fn w27a16_w(s: &[u32], off: usize) -> u32 {
+    s[off / 4]
+}
+
+#[inline]
+fn w27a16_set(s: &mut [u32], off: usize, v: u32) {
+    s[off / 4] = v;
+}
+
+/// `0x009ae2b0`: DSP reset.  Clears the fill counters at `0x188/0x18c`,
+/// copies the "initial" words (`0x144`, `0x154`, ...) into the live words and
+/// returns the buffer (`0x178`, length `0x184`) to zero when present.
+pub fn w27a16_reset_delay_unit(s: &mut [u32]) -> W27a16Fill {
+    w27a16_set(s, 0x18c, 0);
+    w27a16_set(s, 0x188, 0);
+    let fill = (w27a16_w(s, 0x178) != 0).then(|| (w27a16_w(s, 0x178), w27a16_w(s, 0x184)));
+    for (dst, src) in [
+        (0x140, 0x144),
+        (0x148, 0x154),
+        (0x14c, 0x158),
+        (0x150, 0x15c),
+        (0x168, 0x16c),
+        (0x170, 0x174),
+        (0x138, 0x13c),
+        (0x160, 0x164),
+        (0x19c, 0x198),
+    ] {
+        let v = w27a16_w(s, src);
+        w27a16_set(s, dst, v);
+    }
+    fill
+}
+
+/// `0x009b26f0`: DSP reset for the smaller unit variant (counters
+/// `0x168/0x16c`, buffer `0x15c` of length `0x164`).
+pub fn w27a16_reset_small_unit(s: &mut [u32]) -> W27a16Fill {
+    w27a16_set(s, 0x16c, 0);
+    w27a16_set(s, 0x168, 0);
+    let fill = (w27a16_w(s, 0x15c) != 0).then(|| (w27a16_w(s, 0x15c), w27a16_w(s, 0x164)));
+    for (dst, src) in [
+        (0x140, 0x144),
+        (0x148, 0x14c),
+        (0x138, 0x13c),
+        (0x150, 0x154),
+        (0x178, 0x174),
+    ] {
+        let v = w27a16_w(s, src);
+        w27a16_set(s, dst, v);
+    }
+    fill
+}
+
+/// `0x009b11e0`: reset of the 16-tap unit.  Clears `0x210`, rebuilds the 16
+/// words at `0x214..0x254` as `ref - tap` (0 when the tap at `0x1c0..` is
+/// zero) with `ref` at `0x20c`, and returns the buffer (`0x200`, length
+/// `0x208`) to zero when present.
+pub fn w27a16_reset_tap_unit(s: &mut [u32]) -> W27a16Fill {
+    w27a16_set(s, 0x210, 0);
+    let reference = w27a16_w(s, 0x20c);
+    for i in 0..16 {
+        let tap = w27a16_w(s, 0x214 + i * 4 - 0x15 * 4);
+        let v = if tap == 0 {
+            0
+        } else {
+            (reference as i32).wrapping_sub(tap as i32) as u32
+        };
+        w27a16_set(s, 0x214 + i * 4, v);
+    }
+    (w27a16_w(s, 0x200) != 0).then(|| (w27a16_w(s, 0x200), w27a16_w(s, 0x208)))
+}
+
+/// `0x009aff40`: clears the fill counter at `0x14c` and returns the buffer
+/// (`0x140`, length `0x148`) to zero when its pointer is non-null.
+pub fn w27a16_clear_single_buffer(s: &mut [u32]) -> W27a16Fill {
+    w27a16_set(s, 0x14c, 0);
+    (w27a16_w(s, 0x140) != 0).then(|| (w27a16_w(s, 0x140), w27a16_w(s, 0x148)))
+}
+
+/// `0x009b4e40`: clears the counters `0x15c/0x160` and returns up to two
+/// buffers to zero: (`0x144`, len `0x154`) and (`0x148`, len `0x158`).  The
+/// original returns after the first non-null buffer; the second is reported
+/// separately so the caller can apply both.
+pub fn w27a16_clear_dual_buffer(s: &mut [u32]) -> [W27a16Fill; 2] {
+    w27a16_set(s, 0x15c, 0);
+    w27a16_set(s, 0x160, 0);
+    [
+        (w27a16_w(s, 0x144) != 0).then(|| (w27a16_w(s, 0x144), w27a16_w(s, 0x154))),
+        (w27a16_w(s, 0x148) != 0).then(|| (w27a16_w(s, 0x148), w27a16_w(s, 0x158))),
+    ]
+}
+
+/// `0x009ae9b0`: soft clipper.  `amount >= 1` uses the constant 19994.682,
+/// otherwise `2a / (1 - a)`.  Interleaved `channels`; channel `c` is shaped
+/// when bit `c` of `mask` is set (`y = x(k+1)/(|x|k+1)`), else copied.  When no
+/// active channel bit is set the whole block is copied.
+pub fn w27a16_soft_clip(
+    input: &[f32],
+    output: &mut [f32],
+    frames: usize,
+    channels: usize,
+    mask: u16,
+    amount: f32,
+) {
+    let total = frames * channels;
+    if channels == 0 {
+        return;
+    }
+    let active = (1u32 << (channels as u32 & 31)).wrapping_sub(1) & mask as u32;
+    if active == 0 {
+        output[..total].copy_from_slice(&input[..total]);
+        return;
+    }
+    let k = if amount >= 1.0 {
+        19994.682
+    } else {
+        (amount + amount) / (1.0 - amount)
+    };
+    for f in 0..frames {
+        for c in 0..channels {
+            let i = f * channels + c;
+            let x = input[i];
+            output[i] = if (mask >> (c as u32 & 15)) & 1 != 0 {
+                x * (k + 1.0) / (x.abs() * k + 1.0)
+            } else {
+                x
+            };
+        }
+    }
+}
+
+/// `0x009b6630`: shelving biquad coefficients.  `gain` (param[0]) is clamped
+/// to `-10000..=0`; `freq` (param[1]) is prewarped by `tan(freq*pi/rate)`.
+/// `exp_like` models the x87 helper applied to `gain/100 * 0.057564627`.
+/// Returns `(stored_gain, [c164,c168,c16c,c170,c174])` where `stored_gain`
+/// is `gain/100` written to `0x178`.
+pub fn w27a16_shelf_coeffs(
+    gain: &mut i32,
+    freq: i32,
+    rate: i32,
+    tan_fn: impl Fn(f32) -> f32,
+    exp_fn: impl Fn(f32) -> f32,
+) -> (f32, [f32; 5]) {
+    *gain = (*gain).clamp(-10000, 0);
+    let g = *gain as f32 / 100.0;
+    let w = tan_fn((freq as f32 * std::f32::consts::PI) / rate as f32);
+    let k = exp_fn(g * 0.057564627);
+    let wk = w / k;
+    let a = 1.0 / ((wk + std::f32::consts::SQRT_2) * wk + 1.0);
+    let b0 = ((w + std::f32::consts::SQRT_2) * w + 1.0) * a;
+    let b1 = (w * w - 1.0) * a;
+    let b2 = ((w - std::f32::consts::SQRT_2) * w + 1.0) * a;
+    let a1 = (wk * wk - 1.0) * -2.0 * a;
+    let a2 = -(((wk - std::f32::consts::SQRT_2) * wk + 1.0) * a);
+    (g, [b0, b1 + b1, b2, a1, a2])
+}
+
+#[cfg(test)]
+mod tests_wave27_agent16 {
+    use super::*;
+
+    #[test]
+    fn resets() {
+        let mut s = vec![0u32; 0x80];
+        s[0x178 / 4] = 5;
+        s[0x184 / 4] = 9;
+        s[0x144 / 4] = 7;
+        s[0x188 / 4] = 3;
+        s[0x198 / 4] = 11;
+        assert_eq!(w27a16_reset_delay_unit(&mut s), Some((5, 9)));
+        assert_eq!(s[0x140 / 4], 7);
+        assert_eq!(s[0x188 / 4], 0);
+        assert_eq!(s[0x19c / 4], 11);
+
+        let mut s = vec![0u32; 0x80];
+        s[0x174 / 4] = 4;
+        assert_eq!(w27a16_reset_small_unit(&mut s), None);
+        assert_eq!(s[0x178 / 4], 4);
+
+        let mut s = vec![0u32; 0x80];
+        s[0x140 / 4] = 1;
+        s[0x148 / 4] = 2;
+        assert_eq!(w27a16_clear_single_buffer(&mut s), Some((1, 2)));
+        s[0x144 / 4] = 3;
+        s[0x154 / 4] = 4;
+        s[0x15c / 4] = 8;
+        let r = w27a16_clear_dual_buffer(&mut s);
+        assert_eq!(r, [Some((3, 4)), Some((2, 0))]);
+        assert_eq!(s[0x15c / 4], 0);
+    }
+
+    #[test]
+    fn tap_unit() {
+        let mut s = vec![0u32; 0x100];
+        s[0x20c / 4] = 100;
+        s[0x1c0 / 4] = 30;
+        s[0x200 / 4] = 1;
+        s[0x208 / 4] = 16;
+        s[0x210 / 4] = 9;
+        assert_eq!(w27a16_reset_tap_unit(&mut s), Some((1, 16)));
+        assert_eq!(s[0x214 / 4], 70);
+        assert_eq!(s[0x218 / 4], 0);
+        assert_eq!(s[0x210 / 4], 0);
+    }
+
+    #[test]
+    fn clip() {
+        let inp = [0.5f32, 0.5, -1.0, -1.0];
+        let mut out = [0.0f32; 4];
+        w27a16_soft_clip(&inp, &mut out, 2, 2, 0b01, 0.5);
+        // k = 2: 0.5*3/(1+1)=0.75
+        assert!((out[0] - 0.75).abs() < 1e-6);
+        assert_eq!(out[1], 0.5);
+        assert!((out[2] + 1.0).abs() < 1e-6);
+        w27a16_soft_clip(&inp, &mut out, 2, 2, 0, 0.5);
+        assert_eq!(out, inp);
+    }
+
+    #[test]
+    fn shelf() {
+        let mut g = 5;
+        let (sg, c) = w27a16_shelf_coeffs(&mut g, 1000, 44100, |x| x.tan(), |x| x.exp());
+        assert_eq!(g, 0);
+        assert_eq!(sg, 0.0);
+        assert!(c.iter().all(|v| v.is_finite()));
+        let mut g = -20000;
+        w27a16_shelf_coeffs(&mut g, 1000, 44100, |x| x, |x| x.exp());
+        assert_eq!(g, -10000);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave27/agent17.rs
+// ===========================================================================
+// Wave 27 agent 17: small buffer/parse helpers.
+
+/// `0x009c89c0`: decimal string to wrapping i64. A leading `-` negates; any
+/// other non-digit byte yields 0.
+pub fn w27a17_parse_i64(s: &[u8]) -> i64 {
+    let mut v: u64 = 0;
+    let mut neg = false;
+    let mut first = true;
+    for &c in s {
+        if c == 0 {
+            break;
+        }
+        if c == b'-' && first {
+            neg = true;
+        } else {
+            if !c.is_ascii_digit() {
+                return 0;
+            }
+            v = v.wrapping_mul(10).wrapping_add((c - b'0') as u64);
+        }
+        first = false;
+    }
+    if neg {
+        (v as i64).wrapping_neg()
+    } else {
+        v as i64
+    }
+}
+
+/// `0x009bfba0`: when the buffer exists and the count is positive, clears
+/// `0x14020` bytes; always returns 0.
+pub fn w27a17_clear_buffer(buf: Option<&mut [u8]>, count: i32) -> u32 {
+    if let Some(b) = buf
+        && count > 0
+    {
+        let n = 0x14020.min(b.len());
+        b[..n].fill(0);
+    }
+    0
+}
+
+/// `0x009c48f0`: sets `+0x2c4 = 0`, `+0x2c8 = 1` and clears `0x100` bytes
+/// at `+1`. `obj` must hold at least `0x2cc` bytes.
+pub fn w27a17_reset_state(obj: &mut [u8]) {
+    obj[0x2c4..0x2c8].copy_from_slice(&0u32.to_le_bytes());
+    obj[0x2c8..0x2cc].copy_from_slice(&1u32.to_le_bytes());
+    obj[1..0x101].fill(0);
+}
+
+/// `0x009cc1c0`: zeroes the dword array (`count` entries) when present and
+/// the `0x38` bytes at `+0x78` of `obj`.
+pub fn w27a17_clear_table(array: Option<&mut [u32]>, count: usize, obj: &mut [u8]) {
+    if let Some(a) = array {
+        let n = count.min(a.len());
+        a[..n].fill(0);
+    }
+    obj[0x78..0x78 + 0x38].fill(0);
+}
+
+/// `0x009c3c30`: returns the first call's result when nonzero, else the
+/// second call on `handle` when `handle != 0`, else 0.
+pub fn w27a17_first_nonzero(
+    first: impl FnOnce() -> i32,
+    handle: i32,
+    second: impl FnOnce(i32) -> i32,
+) -> i32 {
+    let r = first();
+    if r != 0 {
+        return r;
+    }
+    if handle != 0 { second(handle) } else { 0 }
+}
+
+#[cfg(test)]
+mod tests_wave27_agent17 {
+    use super::*;
+
+    #[test]
+    fn parse() {
+        assert_eq!(w27a17_parse_i64(b"123"), 123);
+        assert_eq!(w27a17_parse_i64(b"-45"), -45);
+        assert_eq!(w27a17_parse_i64(b"4-5"), 0);
+        assert_eq!(w27a17_parse_i64(b"x"), 0);
+        assert_eq!(w27a17_parse_i64(b""), 0);
+    }
+
+    #[test]
+    fn clears() {
+        let mut b = vec![1u8; 0x14100];
+        assert_eq!(w27a17_clear_buffer(Some(&mut b), 0), 0);
+        assert_eq!(b[0], 1);
+        w27a17_clear_buffer(Some(&mut b), 1);
+        assert_eq!(b[0x14020 - 1], 0);
+        assert_eq!(b[0x14020], 1);
+        let mut o = vec![9u8; 0x300];
+        w27a17_reset_state(&mut o);
+        assert_eq!((o[0], o[1], o[0x100], o[0x101]), (9, 0, 0, 9));
+        assert_eq!((o[0x2c4], o[0x2c8]), (0, 1));
+        let mut a = [5u32; 4];
+        let mut o = vec![7u8; 0xc0];
+        w27a17_clear_table(Some(&mut a), 3, &mut o);
+        assert_eq!(a, [0, 0, 0, 5]);
+        assert_eq!((o[0x77], o[0x78], o[0xaf], o[0xb0]), (7, 0, 0, 7));
+    }
+
+    #[test]
+    fn first_nonzero() {
+        assert_eq!(w27a17_first_nonzero(|| 3, 1, |_| 9), 3);
+        assert_eq!(w27a17_first_nonzero(|| 0, 1, |h| h + 8), 9);
+        assert_eq!(w27a17_first_nonzero(|| 0, 0, |_| 9), 0);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave27/agent18.rs
+// ===========================================================================
+// Wave 27 translation batch 18: audio output helpers (WAV header writer and
+// multichannel float downmix).
+
+/// `0x009d4cd0`: folds interleaved float frames into one sample per frame.
+/// `out_count` is the output length (param_1), `channels` the frame width
+/// (param_2).  One channel is a plain copy of `out_count` floats; six and
+/// eight channels only process `out_count >> 2` blocks of four frames
+/// (the remainder is untouched); every other width sums each frame, with a
+/// zero seed (zero when `channels <= 0`).
+pub fn w27a18_downmix(out: &mut [f32], input: &[f32], out_count: usize, channels: i32) {
+    if channels == 1 {
+        out[..out_count].copy_from_slice(&input[..out_count]);
+        return;
+    }
+    if channels == 6 || channels == 8 {
+        let ch = channels as usize;
+        for i in 0..(out_count >> 2) * 4 {
+            let f = &input[i * ch..i * ch + ch];
+            let mut s = f[0] + f[1];
+            for v in &f[2..] {
+                s += *v;
+            }
+            out[i] = s;
+        }
+        return;
+    }
+    for i in 0..out_count {
+        out[i] = 0.0;
+        if channels > 0 {
+            let ch = channels as usize;
+            let mut s = 0.0f32;
+            for v in &input[i * ch..i * ch + ch] {
+                s += *v;
+            }
+            out[i] = s;
+        }
+    }
+}
+
+/// `0x009d0680`: builds the 68-byte RIFF/WAVE header written before the PCM
+/// data: "RIFF", size `data_bytes + 0x38`, "WAVE", "fmt " (0x28), a 40-byte
+/// WAVEFORMATEXTENSIBLE, "data", `data_bytes`.  `is_float` is format kind 5.
+/// The tag is 0xfffe (extensible, GUID data1 3 for float / 1) only when
+/// float with more than two channels, otherwise 3 (float) or 1 (PCM) with
+/// zeroed extension fields.  The "WAVE" tag literal is read from a global
+/// (assumed ASCII "WAVE").
+pub fn w27a18_wav_header(
+    channels: i32,
+    sample_rate: i32,
+    bits: i32,
+    data_bytes: i32,
+    is_float: bool,
+) -> Vec<u8> {
+    let tag: u16 = if is_float && channels > 2 {
+        0xfffe
+    } else if is_float {
+        3
+    } else {
+        1
+    };
+    let avg = {
+        let x = bits.wrapping_mul(sample_rate).wrapping_mul(channels);
+        x.wrapping_add((x >> 31) & 7) >> 3
+    };
+    let block = {
+        let x = bits.wrapping_mul(channels);
+        x.wrapping_add((x >> 31) & 7) >> 3
+    };
+    let mut fmt = [0u8; 40];
+    fmt[0..2].copy_from_slice(&tag.to_le_bytes());
+    fmt[2..4].copy_from_slice(&(channels as u16).to_le_bytes());
+    fmt[4..8].copy_from_slice(&sample_rate.to_le_bytes());
+    fmt[8..12].copy_from_slice(&avg.to_le_bytes());
+    fmt[12..14].copy_from_slice(&(block as u16).to_le_bytes());
+    fmt[14..16].copy_from_slice(&(bits as u16).to_le_bytes());
+    if tag == 0xfffe {
+        fmt[16..18].copy_from_slice(&0x16u16.to_le_bytes());
+        fmt[18..20].copy_from_slice(&(bits as u16).to_le_bytes());
+        let d1: u32 = if is_float { 3 } else { 1 };
+        fmt[24..28].copy_from_slice(&d1.to_le_bytes());
+        fmt[28..32].copy_from_slice(&0x0010_0000u32.to_le_bytes());
+        fmt[32..36].copy_from_slice(&0xaa00_0080u32.to_le_bytes());
+        fmt[36..40].copy_from_slice(&0x719b_3800u32.to_le_bytes());
+    }
+    let mut out = Vec::with_capacity(68);
+    out.extend_from_slice(b"RIFF");
+    out.extend_from_slice(&data_bytes.wrapping_add(0x38).to_le_bytes());
+    out.extend_from_slice(b"WAVE");
+    out.extend_from_slice(b"fmt ");
+    out.extend_from_slice(&0x28u32.to_le_bytes());
+    out.extend_from_slice(&fmt);
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&data_bytes.to_le_bytes());
+    out
+}
+
+#[cfg(test)]
+mod tests_wave27_agent18 {
+    use super::*;
+
+    #[test]
+    fn downmix_modes() {
+        let inp: Vec<f32> = (0..48).map(|x| x as f32).collect();
+        let mut o = [9.0f32; 8];
+        w27a18_downmix(&mut o, &inp, 3, 1);
+        assert_eq!(&o[..4], &[0.0, 1.0, 2.0, 9.0]);
+        w27a18_downmix(&mut o, &inp, 5, 6);
+        assert_eq!(o[0], 15.0);
+        assert_eq!(o[3], 18.0 * 6.0 + 15.0);
+        assert_eq!(o[4], 9.0);
+        w27a18_downmix(&mut o, &inp, 2, 2);
+        assert_eq!(&o[..2], &[1.0, 5.0]);
+        w27a18_downmix(&mut o, &inp, 2, 0);
+        assert_eq!(&o[..2], &[0.0, 0.0]);
+        let mut o8 = [0.0f32; 4];
+        w27a18_downmix(&mut o8, &inp, 4, 8);
+        assert_eq!(o8[1], (8..16).sum::<i32>() as f32);
+    }
+
+    #[test]
+    fn wav_header() {
+        let h = w27a18_wav_header(2, 44100, 16, 1000, false);
+        assert_eq!(h.len(), 68);
+        assert_eq!(&h[0..4], b"RIFF");
+        assert_eq!(u32::from_le_bytes(h[4..8].try_into().unwrap()), 1000 + 0x38);
+        assert_eq!(u16::from_le_bytes(h[20..22].try_into().unwrap()), 1);
+        assert_eq!(u32::from_le_bytes(h[28..32].try_into().unwrap()), 176400);
+        assert_eq!(u16::from_le_bytes(h[32..34].try_into().unwrap()), 4);
+        let e = w27a18_wav_header(6, 48000, 32, 8, true);
+        assert_eq!(u16::from_le_bytes(e[20..22].try_into().unwrap()), 0xfffe);
+        assert_eq!(u32::from_le_bytes(e[44..48].try_into().unwrap()), 3);
+        let f = w27a18_wav_header(2, 48000, 32, 8, true);
+        assert_eq!(u16::from_le_bytes(f[20..22].try_into().unwrap()), 3);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave27/agent19.rs
+// ===========================================================================
+// Wave 27 translation batch 19 (audio/mixer glue helpers).
+
+/// `0x009dd2a0`: validates a channel count (`1` or `2`) against the
+/// capacity; on success the destination (`count * stride * 4` bytes) is
+/// zeroed and `0` is returned, otherwise the error code `0x25` is returned.
+pub fn w27a19_clear_channels(dst: &mut [u8], capacity: i32, channels: i32, stride: i32) -> u32 {
+    if (channels.wrapping_sub(1) as u32) < 2 && channels <= capacity {
+        let n = (capacity as i64 * stride as i64 * 4).max(0) as usize;
+        let n = n.min(dst.len());
+        dst[..n].fill(0);
+        return 0;
+    }
+    0x25
+}
+
+/// Parsed GUID record produced by `0x009df520`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct W27a19Guid {
+    pub data1: u32,
+    pub data2: u16,
+    pub data3: u16,
+    pub data4: [u8; 8],
+}
+
+fn w27a19_wide(src: &[u8], off: usize, chars: usize) -> Vec<u16> {
+    (0..chars)
+        .map(|i| {
+            let p = off + i * 2;
+            u16::from_le_bytes([
+                src.get(p).copied().unwrap_or(0),
+                src.get(p + 1).copied().unwrap_or(0),
+            ])
+        })
+        .collect()
+}
+
+/// `0x009df520`: parses a wide-character GUID string (`src` bytes) into a
+/// GUID.  Fields are 8, 4, 4, 2, 2 and six 2-char hex groups taken at byte
+/// offsets `0x24`, `0x36`, `0x40`, `0x4a`, `0x4e` and `0x54 + 4*i`.  The
+/// unresolved radix parser is supplied as `parse(text, radix)`.
+pub fn w27a19_parse_guid(src: &[u8], parse: &dyn Fn(&[u16], u32) -> u32) -> W27a19Guid {
+    let mut g = W27a19Guid {
+        data1: parse(&w27a19_wide(src, 0x24, 8), 16),
+        data2: parse(&w27a19_wide(src, 0x36, 4), 16) as u16,
+        data3: parse(&w27a19_wide(src, 0x40, 4), 16) as u16,
+        ..Default::default()
+    };
+    g.data4[0] = parse(&w27a19_wide(src, 0x4a, 2), 16) as u8;
+    g.data4[1] = parse(&w27a19_wide(src, 0x4e, 2), 16) as u8;
+    for i in 0..6 {
+        g.data4[2 + i] = parse(&w27a19_wide(src, 0x54 + 4 * i, 2), 16) as u8;
+    }
+    g
+}
+
+#[cfg(test)]
+mod tests_wave27_agent19 {
+    use super::*;
+
+    #[test]
+    fn clear_channels_bounds() {
+        let mut b = [1u8; 64];
+        assert_eq!(w27a19_clear_channels(&mut b, 2, 2, 2), 0);
+        assert_eq!(b[..16], [0; 16]);
+        assert_eq!(b[16], 1);
+        assert_eq!(w27a19_clear_channels(&mut b, 2, 3, 2), 0x25);
+        assert_eq!(w27a19_clear_channels(&mut b, 1, 2, 2), 0x25);
+        assert_eq!(w27a19_clear_channels(&mut b, 2, 0, 2), 0x25);
+    }
+
+    #[test]
+    fn parse_guid_fields() {
+        let s = "{00112233-4455-6677-8899-AABBCCDDEEFF}";
+        let mut raw = vec![0u8; 0x24 - 2];
+        for c in s.encode_utf16() {
+            raw.extend_from_slice(&c.to_le_bytes());
+        }
+        raw.extend_from_slice(&[0; 8]);
+        let p =
+            |t: &[u16], r: u32| u32::from_str_radix(&String::from_utf16_lossy(t), r).unwrap_or(0);
+        let g = w27a19_parse_guid(&raw, &p);
+        assert_eq!(g.data1, 0x0011_2233);
+        assert_eq!(g.data2, 0x4455);
+        assert_eq!(g.data3, 0x6677);
+        assert_eq!(g.data4[0], 0x88);
+        assert_eq!(g.data4[1], 0x99);
+        assert_eq!(g.data4[7], 0xFF);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave27/agent20.rs
+// ===========================================================================
+// Wave 27 translation batch 20: audio-library helpers (stream length math,
+// Vorbis identification header).
+
+/// `0x009e17b0` (tail computation): divisor selected from the codec mode
+/// field at `+0x560` of the stream record.  Modes 1..=3 give `8 * mode`,
+/// 4 and 5 give 32, everything else 0.
+pub fn w27a20_bits_per_unit(mode: u32) -> u32 {
+    match mode {
+        1 => 8,
+        2 => 0x10,
+        3 => 0x18,
+        4 | 5 => 0x20,
+        _ => 0,
+    }
+}
+
+/// `0x009e17b0`: computes `(bytes * 8) / bits_per_unit / channels`.  `kind`
+/// is the field at `+0x5790` (values 2, 7..=9 and 1000 force a divisor of
+/// 2); otherwise `field_570` is used.  Returns `None` on division by zero.
+pub fn w27a20_stream_length(bytes: u32, mode: u32, kind: i32, field_570: u32) -> Option<u32> {
+    let per = w27a20_bits_per_unit(mode) as u64;
+    let channels: u64 = if kind < 10 {
+        if kind < 7 && kind != 2 {
+            field_570 as u64
+        } else {
+            2
+        }
+    } else if kind == 1000 {
+        2
+    } else {
+        field_570 as u64
+    };
+    let bits = (bytes << 3) as u64;
+    if per == 0 || channels == 0 {
+        return None;
+    }
+    Some(((bits / per) / channels) as u32)
+}
+
+/// Parsed Vorbis identification fields (`0x009e4540`).
+#[derive(Debug, Default, PartialEq, Eq, Clone, Copy)]
+pub struct W27a20VorbisInfo {
+    pub version: i32,
+    pub channels: i32,
+    pub rate: i32,
+    pub bitrate_upper: i32,
+    pub bitrate_nominal: i32,
+    pub bitrate_lower: i32,
+    pub blocksize0: i32,
+    pub blocksize1: i32,
+}
+
+/// `0x009e4540` (packet type 1 branch): after the 8-bit type and the
+/// six-byte `"vorbis"` magic, reads version(32, must be 0), channels(8),
+/// rate, upper, nominal, lower (32 each), two 4-bit block sizes and the
+/// framing bit.  Returns `None` when the magic, version, sizes or framing
+/// are invalid.  `read(bits)` is the bit reader (`FUN_009f02c0`).
+pub fn w27a20_parse_vorbis_ident(mut read: impl FnMut(u32) -> i32) -> Option<W27a20VorbisInfo> {
+    if read(8) != 1 {
+        return None;
+    }
+    let magic: Vec<u8> = (0..6).map(|_| read(8) as u8).collect();
+    if magic != b"vorbis" {
+        return None;
+    }
+    let mut info = W27a20VorbisInfo {
+        version: read(32),
+        ..Default::default()
+    };
+    if info.version != 0 {
+        return None;
+    }
+    info.channels = read(8);
+    info.rate = read(32);
+    info.bitrate_upper = read(32);
+    info.bitrate_nominal = read(32);
+    info.bitrate_lower = read(32);
+    info.blocksize0 = 1i32 << (read(4) & 0x1f);
+    info.blocksize1 = 1i32 << (read(4) & 0x1f);
+    if info.rate > 0
+        && info.channels > 0
+        && info.blocksize0 > 0x3f
+        && info.blocksize0 <= info.blocksize1
+        && info.blocksize1 < 0x2001
+        && read(1) != 1
+    {
+        Some(info)
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests_wave27_agent20 {
+    use super::*;
+
+    #[test]
+    fn length_math() {
+        assert_eq!(w27a20_bits_per_unit(3), 0x18);
+        assert_eq!(w27a20_bits_per_unit(9), 0);
+        assert_eq!(w27a20_stream_length(1000, 2, 2, 5), Some(8000 / 16 / 2));
+        assert_eq!(w27a20_stream_length(1000, 4, 3, 5), Some(8000 / 32 / 5));
+        assert_eq!(w27a20_stream_length(1000, 4, 1000, 5), Some(125));
+        assert_eq!(w27a20_stream_length(1000, 0, 2, 5), None);
+        assert_eq!(w27a20_stream_length(1000, 4, 3, 0), None);
+    }
+
+    #[test]
+    fn vorbis_ident() {
+        let mut v: Vec<i32> = vec![1];
+        v.extend(b"vorbis".iter().map(|&b| b as i32));
+        v.extend([0, 2, 44100, 0, 128000, 0, 8, 11, 0]);
+        let mut it = v.clone().into_iter();
+        let i = w27a20_parse_vorbis_ident(|_| it.next().unwrap()).unwrap();
+        assert_eq!(
+            (i.channels, i.rate, i.blocksize0, i.blocksize1),
+            (2, 44100, 256, 2048)
+        );
+        let mut bad = v;
+        bad[0] = 3;
+        let mut it = bad.into_iter();
+        assert!(w27a20_parse_vorbis_ident(|_| it.next().unwrap()).is_none());
+    }
+}

@@ -18,3 +18,4 @@ One line per merged wave.  Append; do not rewrite history.  Format:
 - Wave 24 (2026-11-11, queue, tiers 2-3, 50 agents in batches of <=20 concurrent): +251 translated (ledger 3713 -> 3964), lib tests 3533, full suite 3810; 749 rows to skiplist.tsv (2437 total).
 - Wave 25 (2026-11-11, queue, tiers 2-3): 59 of 100 prepared agents launched (max 20 concurrent), +223 translated (ledger 3964 -> 4187), lib tests 3691, full suite 3968; 957 rows to skiplist.tsv (3394 total).  The 41 unlaunched assignments were left in the queue (not skiplisted).  Yield ~19%.
 - Wave 26 (2026-11-11, queue, tiers 2-3, 20 agents): +95 translated (ledger 4187 -> 4282), lib tests 3764, full suite 4041; 305 rows to skiplist.tsv (3699 total).
+- Wave 27 (2026-11-11, queue, tiers 2-3, 20 agents): +115 translated (ledger 4282 -> 4397), lib tests 3835, full suite 4112; 285 rows to skiplist.tsv (3984 total).
