@@ -194,3 +194,10 @@ deleting-destructor wrappers.  No rules-core counterpart.  Battle.net rows
 and RC4 primitives (tested against the standard vectors), 32-bit-word bignum
 helpers, a PCX RLE decoder, a code bit-packer, stream seek and a command
 dispatcher over a hooks trait.  No rules-core counterpart.
+
+## Wave 27 (2026-11-11, triage queue, tiers 2-3, 20 agents)
+
++115 exact ledger functions (ledger 4282 -> 4397) in `runtime.rs`: rapidjson
+schema-validator helpers, FMOD DSP unit helpers, audio stream length/bitrate
+and WAV/Vorbis header routines, vector-growth plans, UI event rectangle
+helpers.  No rules-core counterpart.
