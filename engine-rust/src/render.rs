@@ -3016,15 +3016,18 @@ pub fn w13a01_page_blit(
 // Tile-set accessors
 // ===========================================================================
 
-/// `0x0065c910`: the second dword of the tile-set object behind the wrapper.
+/// `0x0065c910`: the number of pages in the tile-set object behind the
+/// wrapper.
 ///
 /// ```c
 /// return *(u32 *)(*in_ECX + 4);
 /// ```
 ///
-/// `this->[0]` is a `TileSet *`; the returned word is `TileSet + 0x04`.
-pub fn w13a01_tileset_word_04(tileset: &W13A01Tileset) -> u32 {
-    tileset.field_04
+/// `this->[0]` is a `TileSet *`; `TileSet + 0x04` is the live page count,
+/// i.e. the length of the page vector whose begin/capacity words sit at
+/// `+0x00`/`+0x08`.
+pub fn w13a01_tileset_page_count(tileset: &W13A01Tileset) -> u32 {
+    tileset.pages.len() as u32
 }
 
 /// `0x0065c920`: the tile edge length divided by the wrapper's slot 9.
@@ -3593,9 +3596,10 @@ mod tests_wave13_agent01 {
     fn tileset_word_and_tile_size_accessors() {
         // 0x0065c910 / 0x0065cb00 / 0x0065c920
         let mut set = palette_tileset();
-        set.field_04 = 0x1234_5678;
+        set.pages.push(W13A01TilePage::default());
+        set.pages.push(W13A01TilePage::default());
         set.tile_size = 0x20;
-        assert_eq!(w13a01_tileset_word_04(&set), 0x1234_5678);
+        assert_eq!(w13a01_tileset_page_count(&set), 2);
         assert_eq!(w13a01_tileset_tile_size(&set), 0x20);
         assert_eq!(w13a01_tileset_scaled_tile_size(&set, 4), 8);
         assert_eq!(w13a01_tileset_scaled_tile_size(&set, 0), 0x20);
