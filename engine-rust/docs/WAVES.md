@@ -14,3 +14,4 @@ One line per merged wave.  Append; do not rewrite history.  Format:
 - Wave 20 (2026-11-11, queue, tier 2): +92 translated (ledger 3216 -> 3308), lib tests 3111, full suite 3388; 108 rows to skiplist.tsv (693 total).
 - Wave 21 (2026-11-11, queue, tier 2, 20 agents): +124 translated (ledger 3308 -> 3432), lib tests 3192, full suite 3469; 276 rows to skiplist.tsv (969 total).  Agent 19 got 20 destructor stubs (0 translated).
 - Wave 22 (2026-11-11, queue, tier 2, 30 agents requested, 20 concurrent max): +140 translated (ledger 3432 -> 3572), lib tests 3287, full suite 3564; 460 rows to skiplist.tsv (1429 total).  Tier 1 is now empty; yield 23%.
+- Wave 23 (2026-11-11, queue, tiers 2-3, 20 agents): +141 translated (ledger 3572 -> 3713), lib tests 3380, full suite 3657; 259 rows to skiplist.tsv (1688 total).

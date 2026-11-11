@@ -43821,3 +43821,3077 @@ mod tests_wave22_agent30 {
         assert!(!w22a30_greater_than([0, u32::MAX], || [0, 0]));
     }
 }
+
+// ===========================================================================
+// Merged from src/wave23/agent05.rs
+// ===========================================================================
+/// `0x006dfa60`: returns the product of a per-index lookup (called with
+/// index 6) and the 32-bit field at offset `0x14c` of the unmasked global
+/// block.  The callee and the block are caller-supplied; arithmetic wraps
+/// like the original 32-bit `imul`.
+pub fn w23a05_scaled_field(lookup6: i32, block: &[u8]) -> Option<i32> {
+    let b = block.get(0x14c..0x150)?;
+    let f = i32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+    Some(f.wrapping_mul(lookup6))
+}
+
+#[cfg(test)]
+mod tests_wave23_agent05 {
+    use super::*;
+
+    #[test]
+    fn scaled_field_multiplies_and_bounds() {
+        let mut blk = vec![0u8; 0x150];
+        blk[0x14c..0x150].copy_from_slice(&7i32.to_le_bytes());
+        assert_eq!(w23a05_scaled_field(6, &blk), Some(42));
+        assert_eq!(w23a05_scaled_field(6, &blk[..0x14f]), None);
+        blk[0x14c..0x150].copy_from_slice(&i32::MAX.to_le_bytes());
+        assert_eq!(w23a05_scaled_field(2, &blk), Some(-2));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave23/agent06.rs
+// ===========================================================================
+// Wave 23 translation batch 06: small runtime/record helpers.
+
+/// `0x006e28e0`: push-back of a `u16` into a Microsoft-style vector
+/// (`size` at +4, capacity word at +8 with the top bit as a flag).  Returns
+/// `true` if pushed; `false` when the vector is full (the retail code then
+/// tail-calls the grow routine, which is not modelled).
+pub fn w23a06_vec_u16_push(data: &mut [u16], size: &mut u32, cap_word: u32, value: u16) -> bool {
+    let cap = cap_word & 0x7fff_ffff;
+    if *size == cap && cap < cap.wrapping_add(1) {
+        return false;
+    }
+    match data.get_mut(*size as usize) {
+        Some(slot) => {
+            *slot = value;
+            *size += 1;
+            true
+        }
+        None => false,
+    }
+}
+
+/// `0x006e2c40`: true when the global flag is clear and the record byte at
+/// +0x4c equals the current player id byte.
+pub fn w23a06_owner_matches(flag: u32, record_byte_4c: u8, current: u8) -> bool {
+    flag == 0 && record_byte_4c == current
+}
+
+/// `0x006e3e70`: rounds the value returned by the callee down to a multiple
+/// of 1000.
+pub fn w23a06_round_down_1000(value: u32) -> u32 {
+    (value / 1000) * 1000
+}
+
+/// `0x006e3f10`: byte at +0x57 of the 0xb0-stride record, zero-extended
+/// (upper bytes come from the table pointer in retail; modelled as 0).
+pub fn w23a06_record_byte_57(table: &[u8], index: usize) -> Option<u32> {
+    table.get(index * 0xb0 + 0x57).map(|&b| u32::from(b))
+}
+
+/// `0x006e3f30`: whether the byte at +0x56 of the 0xb0-stride record is
+/// non-zero.
+pub fn w23a06_record_flag_56(table: &[u8], index: usize) -> Option<bool> {
+    table.get(index * 0xb0 + 0x56).map(|&b| b != 0)
+}
+
+/// `0x006e5be0`: reads the first dword through a pointer.
+pub fn w23a06_first_dword(p: &[u32]) -> Option<u32> {
+    p.first().copied()
+}
+
+/// `0x006e5c00`: builds a flag word from a message header (`kind` at +0,
+/// `arg` at +1, `word` at +2); `online` ORs in 0x80.
+pub fn w23a06_message_flags(kind: u8, arg: u8, word: u16, online: bool) -> u32 {
+    let mut v = 0u32;
+    if kind == 9 {
+        if word == 2 {
+            v = 0x10;
+        }
+    } else if kind == 0x80 && arg != 0 {
+        let hi = u32::from(arg) << 24;
+        v = hi | 0x80_0020;
+        if word == 2 {
+            v = hi | 0x80_0030;
+        }
+    }
+    if online {
+        v |= 0x80;
+    }
+    v
+}
+
+#[cfg(test)]
+mod tests_wave23_agent06 {
+    use super::*;
+
+    #[test]
+    fn push() {
+        let mut d = [0u16; 2];
+        let mut n = 0;
+        assert!(w23a06_vec_u16_push(&mut d, &mut n, 2, 7));
+        assert_eq!((d[0], n), (7, 1));
+        n = 2;
+        assert!(!w23a06_vec_u16_push(&mut d, &mut n, 2, 1));
+    }
+
+    #[test]
+    fn small_predicates() {
+        assert!(w23a06_owner_matches(0, 3, 3));
+        assert!(!w23a06_owner_matches(1, 3, 3));
+        assert_eq!(w23a06_round_down_1000(2999), 2000);
+        let mut t = vec![0u8; 0xb0 * 2];
+        t[0xb0 + 0x57] = 9;
+        t[0xb0 + 0x56] = 1;
+        assert_eq!(w23a06_record_byte_57(&t, 1), Some(9));
+        assert_eq!(w23a06_record_flag_56(&t, 1), Some(true));
+        assert_eq!(w23a06_record_flag_56(&t, 0), Some(false));
+        assert_eq!(w23a06_record_flag_56(&t, 5), None);
+        assert_eq!(w23a06_first_dword(&[4]), Some(4));
+    }
+
+    #[test]
+    fn flags() {
+        assert_eq!(w23a06_message_flags(9, 0, 2, false), 0x10);
+        assert_eq!(w23a06_message_flags(9, 0, 1, true), 0x80);
+        assert_eq!(w23a06_message_flags(0x80, 2, 2, false), 0x0280_0030);
+        assert_eq!(w23a06_message_flags(0x80, 2, 0, false), 0x0280_0020);
+        assert_eq!(w23a06_message_flags(0x80, 0, 2, false), 0);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave23/agent07.rs
+// ===========================================================================
+// Wave 23 agent 07: small state predicates and a quantity helper.
+
+/// `0x006e7c80`: true when the state byte at the global equals 4.
+pub fn w23a07_state_is_4(state: u8) -> bool {
+    state == 4
+}
+
+/// `0x006e7de0`: true when the state byte at the global equals 5.
+pub fn w23a07_state_is_5(state: u8) -> bool {
+    state == 5
+}
+
+/// `0x006e7e00`: true when `kind` is `0x80` (signed -0x80) and `flag` is non-zero.
+pub fn w23a07_kind_80_flagged(kind: u8, flag: u8) -> bool {
+    kind == 0x80 && flag != 0
+}
+
+/// `0x006e7e50`: true when `kind` is in `0x11..=0x16`.
+pub fn w23a07_kind_in_11_16(kind: u8) -> bool {
+    kind.wrapping_sub(0x11) < 6
+}
+
+/// `0x006e9130` (amount part only): computes the adjusted quantity from the
+/// base value (`+0xc`), operand (`+0x14`) and mode byte (`+0x1b`): mode 7
+/// replaces with the operand, 8 adds (wrapping), 9 subtracts saturating at 0,
+/// any other mode keeps the base.
+pub fn w23a07_apply_mode(mode: u8, base: u32, operand: u32) -> u32 {
+    match mode {
+        7 => operand,
+        8 => base.wrapping_add(operand),
+        9 => base.saturating_sub(operand),
+        _ => base,
+    }
+}
+
+#[cfg(test)]
+mod tests_wave23_agent07 {
+    use super::*;
+
+    #[test]
+    fn predicates() {
+        assert!(w23a07_state_is_4(4) && !w23a07_state_is_4(5));
+        assert!(w23a07_state_is_5(5) && !w23a07_state_is_5(4));
+        assert!(w23a07_kind_80_flagged(0x80, 1) && !w23a07_kind_80_flagged(0x80, 0));
+        assert!(!w23a07_kind_80_flagged(0x7f, 1));
+    }
+
+    #[test]
+    fn range() {
+        assert!(!w23a07_kind_in_11_16(0x10));
+        assert!(w23a07_kind_in_11_16(0x11) && w23a07_kind_in_11_16(0x16));
+        assert!(!w23a07_kind_in_11_16(0x17));
+    }
+
+    #[test]
+    fn modes() {
+        assert_eq!(w23a07_apply_mode(7, 10, 3), 3);
+        assert_eq!(w23a07_apply_mode(8, 10, 3), 13);
+        assert_eq!(w23a07_apply_mode(9, 10, 3), 7);
+        assert_eq!(w23a07_apply_mode(9, 2, 3), 0);
+        assert_eq!(w23a07_apply_mode(1, 10, 3), 10);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave23/agent08.rs
+// ===========================================================================
+// Wave 23 translation batch 08.
+//
+// Window: queue: 20 addresses, module `runtime.rs`.
+
+/// `0x006ebb40`: when the handle is non-zero, stores state 3 and invokes
+/// the callback with the handle.  Returns the new state if it was written.
+pub fn w23a08_signal_handle(
+    handle: u32,
+    state: &mut u32,
+    mut notify: impl FnMut(u32),
+) -> Option<u32> {
+    if handle != 0 {
+        *state = 3;
+        notify(handle);
+        Some(3)
+    } else {
+        None
+    }
+}
+
+/// `0x006ecf10`: guarded append.  Accepted only when `count < 0xfa` and the
+/// record's flag byte (offset 4) matches `flag_global != 0`.  The 0x34-dword
+/// (0xd0 byte) payload is copied to offset 8 of a 0xd8-byte slot; returns the
+/// slot and the incremented count.
+pub fn w23a08_append_record(
+    count: u32,
+    flag_global: u8,
+    record: &[u8],
+) -> Option<([u8; 0xd8], u32)> {
+    if count >= 0xfa || record.len() < 0xd0 {
+        return None;
+    }
+    // byte 4 of the source record is the flag
+    if record.len() < 8 || (record[4] != 0) != (flag_global != 0) {
+        return None;
+    }
+    let mut slot = [0u8; 0xd8];
+    slot[8..8 + 0xd0].copy_from_slice(&record[..0xd0]);
+    Some((slot, count + 1))
+}
+
+/// Ghidra's "node pointer" test: odd or zero values are treated as null.
+fn w23a08_node(raw: u32) -> Option<u32> {
+    if raw & 1 == 1 || raw == 0 {
+        None
+    } else {
+        Some(raw)
+    }
+}
+
+/// Outcome of `0x006ecfd0`.
+#[derive(Debug, PartialEq, Eq)]
+pub enum W23a08Walk {
+    /// Index byte is 0xff or the list head is null: the fallback branch.
+    Fallback,
+    /// Head valid: node reached after `index` `next` steps (None if the
+    /// chain ended early).
+    Active(Option<u32>),
+}
+
+/// `0x006ecfd0`: selects the branch from the index byte at offset 0x62 and
+/// the list head, walking `index` links (`next(node)` reads offset 4).
+pub fn w23a08_select_walk(index: u8, head: u32, next: impl Fn(u32) -> u32) -> W23a08Walk {
+    let Some(mut node) = w23a08_node(head) else {
+        return W23a08Walk::Fallback;
+    };
+    if index == 0xff {
+        return W23a08Walk::Fallback;
+    }
+    for _ in 0..index {
+        match w23a08_node(next(node)) {
+            Some(n) => node = n,
+            None => return W23a08Walk::Active(None),
+        }
+    }
+    W23a08Walk::Active(Some(node))
+}
+
+/// `0x006ed640`: true when the index byte (offset 0x62) is not 0xff, the
+/// head is valid, and walking `index` links ends on a valid node (the
+/// retail code then raises its error path).
+pub fn w23a08_walk_hits(index: u8, head: u32, next: impl Fn(u32) -> u32) -> bool {
+    if index == 0xff {
+        return false;
+    }
+    let Some(mut node) = w23a08_node(head) else {
+        return false;
+    };
+    let mut left = index;
+    loop {
+        if left == 0 {
+            break;
+        }
+        match w23a08_node(next(node)) {
+            Some(n) => node = n,
+            None => return false,
+        }
+        left -= 1;
+    }
+    true
+}
+
+/// `0x006ede80`: decimal text of `(scale * value) / 1000` (unsigned,
+/// 32-bit wrapping product), as produced by the 9-char itoa buffer.
+pub fn w23a08_scaled_ms_text(scale: i32, value: i32) -> String {
+    ((scale.wrapping_mul(value) as u32) / 1000).to_string()
+}
+
+/// `0x006f08d0`: true when `id` is found in the zero-terminated byte list
+/// or in the signed-char vector.
+pub fn w23a08_id_in_lists(id: u16, terminated: &[u8], vector: &[i8]) -> bool {
+    terminated
+        .iter()
+        .take_while(|&&b| b != 0)
+        .any(|&b| u16::from(b) == id)
+        || vector.iter().any(|&c| i32::from(c) == i32::from(id))
+}
+
+/// `0x006f0090`: bounded concatenation.  `dst` holds a C string in a buffer
+/// of `cap` bytes; `src` is appended truncated to `cap - 1` total.
+/// Returns the resulting length.
+pub fn w23a08_bounded_cat(dst: &mut Vec<u8>, src: &[u8], cap: usize) -> usize {
+    let cur = dst.iter().position(|&b| b == 0).unwrap_or(dst.len());
+    dst.truncate(cur);
+    if cur != cap {
+        let srclen = src.iter().position(|&b| b == 0).unwrap_or(src.len());
+        let end = (cur + srclen).min(cap.saturating_sub(1));
+        if end > cur {
+            dst.extend_from_slice(&src[..end - cur]);
+        }
+    }
+    dst.len()
+}
+
+#[cfg(test)]
+mod tests_wave23_agent08 {
+    use super::*;
+
+    #[test]
+    fn signal() {
+        let mut st = 0;
+        let mut got = 0;
+        assert_eq!(w23a08_signal_handle(0, &mut st, |h| got = h), None);
+        assert_eq!((st, got), (0, 0));
+        assert_eq!(w23a08_signal_handle(9, &mut st, |h| got = h), Some(3));
+        assert_eq!((st, got), (3, 9));
+    }
+
+    #[test]
+    fn append() {
+        let mut rec = [7u8; 0xd0];
+        rec[4] = 1;
+        let (slot, n) = w23a08_append_record(5, 1, &rec).unwrap();
+        assert_eq!(n, 6);
+        assert_eq!(slot[8], 7);
+        assert_eq!(slot[0], 0);
+        assert!(w23a08_append_record(0xfa, 1, &rec).is_none());
+        assert!(w23a08_append_record(0xf9, 0, &rec).is_none());
+    }
+
+    #[test]
+    fn walks() {
+        let next = |n: u32| n + 2;
+        assert_eq!(w23a08_select_walk(0xff, 4, next), W23a08Walk::Fallback);
+        assert_eq!(w23a08_select_walk(1, 3, next), W23a08Walk::Fallback);
+        assert_eq!(w23a08_select_walk(2, 4, next), W23a08Walk::Active(Some(8)));
+        assert_eq!(
+            w23a08_select_walk(2, 4, |n| n + 1),
+            W23a08Walk::Active(None)
+        );
+        assert_eq!(w23a08_select_walk(0, 4, next), W23a08Walk::Active(Some(4)));
+        let chain = |n: u32| if n < 10 { n + 2 } else { 0 };
+        assert_eq!(
+            w23a08_select_walk(3, 4, chain),
+            W23a08Walk::Active(Some(10))
+        );
+        assert!(w23a08_walk_hits(0, 4, chain));
+        assert!(w23a08_walk_hits(3, 4, chain));
+        assert!(!w23a08_walk_hits(4, 4, chain));
+        assert!(!w23a08_walk_hits(0xff, 4, chain));
+        assert!(!w23a08_walk_hits(0, 0, chain));
+    }
+
+    #[test]
+    fn text() {
+        assert_eq!(w23a08_scaled_ms_text(24, 1000), "24");
+        assert_eq!(w23a08_scaled_ms_text(999, 1), "0");
+    }
+
+    #[test]
+    fn lists() {
+        assert!(w23a08_id_in_lists(5, &[3, 5, 0, 9], &[]));
+        assert!(!w23a08_id_in_lists(9, &[3, 5, 0, 9], &[]));
+        assert!(w23a08_id_in_lists(7, &[], &[1, 7]));
+        assert!(!w23a08_id_in_lists(0x107, &[], &[7]));
+    }
+
+    #[test]
+    fn cat() {
+        let mut d = b"ab\0xx".to_vec();
+        assert_eq!(w23a08_bounded_cat(&mut d, b"cdef\0", 5), 4);
+        assert_eq!(d, b"abcd");
+        let mut d = b"abc".to_vec();
+        assert_eq!(w23a08_bounded_cat(&mut d, b"zz", 10), 5);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave23/agent09.rs
+// ===========================================================================
+// Wave 23 translation batch 09: popup/error-dialog helpers (pure reference).
+
+/// `0x006f1380`: counts entries of a 4-`u16` stride table whose first word is
+/// non-zero and whose second word is `<= limit`; the table ends when the
+/// next entry's second word is 0.  Returns `(count, error)` where `error`
+/// is true when more than one entry matched (the original then raises).
+pub fn w23a09_count_matching(table: &[u16], limit: u32) -> (u32, bool) {
+    let mut count = 0u32;
+    let mut i = 0usize;
+    let mut second = match table.get(1) {
+        Some(&v) => v,
+        None => return (0, false),
+    };
+    if second == 0 {
+        return (0, false);
+    }
+    loop {
+        if u32::from(second) <= limit && table.get(i).copied().unwrap_or(0) != 0 {
+            count += 1;
+        }
+        second = table.get(i + 5).copied().unwrap_or(0);
+        i += 4;
+        if second == 0 {
+            break;
+        }
+    }
+    (count, count > 1)
+}
+
+/// `0x006f0ef0`: clamps a message length to the 0xfe-byte buffer copy size
+/// (strlen of the C string, at most 0xfe).
+pub fn w23a09_clamped_len(msg: &[u8]) -> usize {
+    let n = msg.iter().position(|&b| b == 0).unwrap_or(msg.len());
+    n.min(0xfe)
+}
+
+/// `0x006f2030`: copies the NUL-terminated name into the 0x100-byte message
+/// buffer and builds the popup path `<base>\pOPopup.pcx`; error code is 0xe,
+/// kind 8.  Returns `(name_copy, popup_path)`.
+pub fn w23a09_popup_o_paths(name: &[u8], base_dir: &[u8]) -> (Vec<u8>, Vec<u8>) {
+    w23a09_popup_paths(name, base_dir, b"\\pOPopup.pcx")
+}
+
+/// `0x006f2330`: same as the O-popup builder but with the suffix
+/// `\pDPopup.pcx` (little-endian dwords); code 0x14,
+/// kind 0xc.
+pub fn w23a09_popup_d_paths(name: &[u8], base_dir: &[u8]) -> (Vec<u8>, Vec<u8>) {
+    w23a09_popup_paths(name, base_dir, b"\\pDPopup.pcx")
+}
+
+fn w23a09_popup_paths(name: &[u8], base_dir: &[u8], suffix: &[u8]) -> (Vec<u8>, Vec<u8>) {
+    let n = name.iter().position(|&b| b == 0).unwrap_or(name.len());
+    let b = base_dir
+        .iter()
+        .position(|&c| c == 0)
+        .unwrap_or(base_dir.len());
+    let mut path = base_dir[..b].to_vec();
+    path.extend_from_slice(suffix);
+    (name[..n].to_vec(), path)
+}
+
+/// Outcome of `0x006f1d30`.
+#[derive(Debug, PartialEq, Eq)]
+pub enum W23a09PopupChoice {
+    /// Second string present: both strings are stored, error code 0x13, kind 0x14.
+    Dual { first: Vec<u8>, second: Vec<u8> },
+    /// Otherwise delegates to the single-name popup (the 0x006f2030 body).
+    Single,
+}
+
+/// `0x006f1d30`: if `second` is non-empty both strings are latched and the
+/// dual-name popup (code 0x13) is raised, otherwise the single-name path runs.
+pub fn w23a09_choose_popup(first: &[u8], second: Option<&[u8]>) -> W23a09PopupChoice {
+    let cut = |s: &[u8]| s.iter().position(|&b| b == 0).unwrap_or(s.len());
+    match second {
+        Some(s) if !s.is_empty() && s[0] != 0 => W23a09PopupChoice::Dual {
+            first: first[..cut(first)].to_vec(),
+            second: s[..cut(s)].to_vec(),
+        },
+        _ => W23a09PopupChoice::Single,
+    }
+}
+
+/// `0x006f3460`: child-control index for the first button handler:
+/// `param + 0xf`.
+pub fn w23a09_child_index_a(param: u8) -> i32 {
+    i32::from(param) + 0xf
+}
+
+/// `0x006f34d0`: child-control index for the second button handler:
+/// `param + 0xf`.
+pub fn w23a09_child_index_b(param: u8) -> i32 {
+    i32::from(param) + 0xf
+}
+
+/// `0x006f0e40`: dispatch on message kind (`kind`): `< 2` runs `default`,
+/// then sets the flag from `state == 0` and returns 1; `0xf` runs `other`
+/// and returns 1; anything else returns `default`'s result.
+pub fn w23a09_dispatch(
+    kind: u16,
+    mut default: impl FnMut() -> u32,
+    mut other: impl FnMut(),
+    state: u32,
+    mut set_flag: impl FnMut(bool),
+) -> u32 {
+    if kind < 2 {
+        default();
+        set_flag(state == 0);
+        1
+    } else if kind == 0xf {
+        other();
+        1
+    } else {
+        default()
+    }
+}
+
+/// `0x006f3500` (tail): releases the dialog slot.  `dialog` is the 0x968-byte
+/// block: clears bit 0 of the byte at `0x164 + 0x20 * dialog[0x967]`, clears
+/// bit 0 of the dword at `0x948`, zeroes `dialog[0x967]`.  Returns the new
+/// owner pointer value (`shared` when it is non-zero and even, else 0).
+pub fn w23a09_release_slot(dialog: Option<&mut [u8]>, shared: u32) -> u32 {
+    if let Some(d) = dialog {
+        let idx = 0x164 + usize::from(d[0x967]) * 0x20;
+        d[idx] &= 0xfe;
+        d[0x948] &= 0xfe;
+        d[0x967] = 0;
+    }
+    if shared & 1 == 0 && shared != 0 {
+        shared
+    } else {
+        0
+    }
+}
+
+#[cfg(test)]
+mod tests_wave23_agent09 {
+    use super::*;
+
+    #[test]
+    fn count_matching() {
+        // entries: [a,1,_,_] [b,2,..] terminator second=0
+        let t = [1u16, 1, 0, 0, 1, 2, 0, 0, 0, 0, 0, 0];
+        assert_eq!(w23a09_count_matching(&t, 2), (2, true));
+        assert_eq!(w23a09_count_matching(&t, 1), (1, false));
+        assert_eq!(w23a09_count_matching(&[0, 0], 5), (0, false));
+        assert_eq!(w23a09_count_matching(&[], 5), (0, false));
+    }
+
+    #[test]
+    fn clamp() {
+        assert_eq!(w23a09_clamped_len(b"abc\0def"), 3);
+        assert_eq!(w23a09_clamped_len(&[b'x'; 400]), 0xfe);
+    }
+
+    #[test]
+    fn popups() {
+        let (n, p) = w23a09_popup_o_paths(b"nm\0zz", b"C:\\SC\0");
+        assert_eq!(n, b"nm");
+        assert_eq!(p, b"C:\\SC\\pOPopup.pcx");
+        let (_, p) = w23a09_popup_d_paths(b"a", b"D");
+        assert_eq!(p, b"D\\pDPopup.pcx");
+        assert_eq!(&1346662492u32.to_le_bytes(), b"\\pDP");
+        assert_eq!(
+            w23a09_choose_popup(b"a", Some(b"b")),
+            W23a09PopupChoice::Dual {
+                first: b"a".to_vec(),
+                second: b"b".to_vec()
+            }
+        );
+        assert_eq!(
+            w23a09_choose_popup(b"a", Some(b"")),
+            W23a09PopupChoice::Single
+        );
+        assert_eq!(w23a09_choose_popup(b"a", None), W23a09PopupChoice::Single);
+    }
+
+    #[test]
+    fn child_index() {
+        assert_eq!(w23a09_child_index_a(0), 15);
+        assert_eq!(w23a09_child_index_b(3), 18);
+    }
+
+    #[test]
+    fn dispatch() {
+        let mut flag = None;
+        assert_eq!(w23a09_dispatch(1, || 7, || {}, 0, |b| flag = Some(b)), 1);
+        assert_eq!(flag, Some(true));
+        assert_eq!(w23a09_dispatch(0xf, || 7, || {}, 1, |_| {}), 1);
+        assert_eq!(w23a09_dispatch(5, || 7, || {}, 1, |_| {}), 7);
+    }
+
+    #[test]
+    fn release() {
+        let mut d = vec![0xffu8; 0x968];
+        d[0x967] = 2;
+        assert_eq!(w23a09_release_slot(Some(&mut d), 0x100), 0x100);
+        assert_eq!(d[0x164 + 0x40], 0xfe);
+        assert_eq!(d[0x948], 0xfe);
+        assert_eq!(d[0x967], 0);
+        assert_eq!(w23a09_release_slot(None, 1), 0);
+        assert_eq!(w23a09_release_slot(None, 0), 0);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave23/agent10.rs
+// ===========================================================================
+// Wave 23 translation batch 10: dialog init-handler decisions and small
+// list helpers from the runtime module window.
+
+/// Action chosen by a dialog event handler for the common "bitmap backed
+/// dialog" pattern.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum W23a10DialogAction {
+    /// Release the cached bitmap (if loaded), clear the dialog image pointer.
+    ReleaseBitmap { free_loaded: bool },
+    /// Load the bitmap if not yet loaded, set image pointer, then init.
+    InitBitmap { load_needed: bool },
+    /// Fall through to the default dialog handler.
+    Default,
+    /// Handler consumed the event; no default handler.
+    Consumed,
+}
+
+/// `0x006f5d60`: pInset dialog handler decision.  `event_type` is the
+/// 16-bit value at event+0x10, `code` is the first event dword.
+/// `child_ptr` / `child_field_14` model `*(dlg+0x40)` and `*(*(dlg+0x40)+0x14)`.
+pub fn w23a10_inset_dialog_action(
+    event_type: i16,
+    code: i32,
+    bitmap_loaded: bool,
+    child_ptr: u32,
+    child_field_14: u32,
+) -> W23a10DialogAction {
+    if event_type == 0xe {
+        match code {
+            1 => {
+                return W23a10DialogAction::ReleaseBitmap {
+                    free_loaded: bitmap_loaded,
+                };
+            }
+            10 => {
+                return W23a10DialogAction::InitBitmap {
+                    load_needed: !bitmap_loaded,
+                };
+            }
+            0xd if child_ptr == 0 || child_field_14 == 0 => {
+                return W23a10DialogAction::Consumed;
+            }
+            _ => {}
+        }
+    }
+    W23a10DialogAction::Default
+}
+
+/// `0x006f8350`: scorebox dialog handler decision.  Same shape as the inset
+/// handler but code 0xd is not special and the default handler always runs
+/// after the init/release branches (`follow_default` is always true).
+pub fn w23a10_scorebox_dialog_action(
+    event_type: i16,
+    code: i32,
+    bitmap_loaded: bool,
+) -> (W23a10DialogAction, bool) {
+    if event_type == 0xe {
+        match code {
+            1 => {
+                return (
+                    W23a10DialogAction::ReleaseBitmap {
+                        free_loaded: bitmap_loaded,
+                    },
+                    true,
+                );
+            }
+            10 => {
+                return (
+                    W23a10DialogAction::InitBitmap {
+                        load_needed: !bitmap_loaded,
+                    },
+                    true,
+                );
+            }
+            _ => {}
+        }
+    }
+    (W23a10DialogAction::Default, true)
+}
+
+/// Outcome of the untab dialog handler.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum W23a10UntabAction {
+    Release {
+        free_loaded: bool,
+    },
+    /// `handler_is_alt` selects `UNK_006f5f50` (dialog+0x3a == 6) over
+    /// `UNK_006f8a90` for the dialog+0x48 callback.
+    Init {
+        load_needed: bool,
+        handler_is_alt: bool,
+    },
+    /// Calls `func_0x6f_6c60(dialog)` and skips the default handler.
+    CloseOnly,
+    /// Calls `func_0x6f_6c60(dialog)` and then the default handler.
+    CloseThenDefault,
+    Default,
+}
+
+/// `0x006f8b60`: untab dialog handler decision.  `dialog_kind` is the u16 at
+/// dialog+0x3a; `is_dialog_slot3` tells whether the dialog equals child 3 of
+/// itself (case 0xd); `param1` is the second event dword (case 0xb).
+pub fn w23a10_untab_dialog_action(
+    event_type: i16,
+    code: i32,
+    param1: i32,
+    bitmap_loaded: bool,
+    dialog_kind: u16,
+    is_dialog_slot3: bool,
+) -> W23a10UntabAction {
+    if event_type != 0xe {
+        return W23a10UntabAction::Default;
+    }
+    match code {
+        1 => W23a10UntabAction::Release {
+            free_loaded: bitmap_loaded,
+        },
+        2 => W23a10UntabAction::CloseOnly,
+        10 => W23a10UntabAction::Init {
+            load_needed: !bitmap_loaded,
+            handler_is_alt: dialog_kind == 6,
+        },
+        0xb => {
+            if param1 == 0 {
+                W23a10UntabAction::Default
+            } else {
+                W23a10UntabAction::CloseOnly
+            }
+        }
+        0xd if is_dialog_slot3 => W23a10UntabAction::CloseThenDefault,
+        _ => W23a10UntabAction::Default,
+    }
+}
+
+/// `0x006f6b90`: stores `value` in the global at 011_79c60; returns the new
+/// global value.
+pub fn w23a10_set_global(slot: &mut u32, value: u32) -> u32 {
+    *slot = value;
+    *slot
+}
+
+/// `0x006f7100`: when the player-slot count is not positive, the routine
+/// walks 8 rows of 6 control ids starting at 0xd (ids base+0..base+5, base =
+/// 0xd + row*6) and hides each.  Returns the ids visited in order.
+pub fn w23a10_row_control_ids(slot_count: i32) -> Vec<i32> {
+    if slot_count > 0 {
+        return Vec::new();
+    }
+    let mut ids = Vec::new();
+    for row in 0..8 {
+        let base = row * 6;
+        ids.push(base + 0xd);
+        ids.push(base + 0xe);
+        for k in 0..3 {
+            ids.push(k + 0xf + base);
+        }
+        ids.push(base + 0x12);
+    }
+    ids
+}
+
+/// `0x006f8e50`: target slot computation when unlinking a 12-byte list
+/// node.  `node_addr` is the node address, `link` its second dword and
+/// `owner_prev_off` the dword at `*(first) + 4`.  Returns the address of the
+/// slot that receives `first` (even non-zero link means "relative to the
+/// node", otherwise the link with bit0 cleared is the address).
+pub fn w23a10_unlink_slot(node_addr: u32, link: u32, owner_prev_off: u32) -> u32 {
+    if link & 1 == 0 && link != 0 {
+        node_addr.wrapping_add(link.wrapping_sub(owner_prev_off))
+    } else {
+        link & 0xffff_fffe
+    }
+}
+
+/// `0x006f8520`: cursor advance for the ring in 011_78340..011_78344.
+/// Returns `(new_cursor, quotient)` where quotient is `new_cursor / stride`
+/// (None if stride is zero).  If the span is zero the cursor is unchanged.
+pub fn w23a10_ring_advance(cursor: i32, end: i32, stride: i32) -> (i32, Option<i32>) {
+    let mut new_cursor = cursor;
+    let span = end.wrapping_sub(cursor);
+    if span != 0 {
+        let mut step = span.wrapping_add((span >> 31) & 7) >> 3;
+        if step < 4 {
+            step = 4;
+        }
+        let target = step.wrapping_add(cursor);
+        new_cursor = end;
+        if target <= end {
+            new_cursor = target;
+        }
+    }
+    let q = if stride == 0 {
+        None
+    } else {
+        Some(new_cursor.wrapping_div(stride))
+    };
+    (new_cursor, q)
+}
+
+#[cfg(test)]
+mod tests_wave23_agent10 {
+    use super::*;
+
+    #[test]
+    fn inset_and_scorebox() {
+        use W23a10DialogAction as A;
+        assert_eq!(
+            w23a10_inset_dialog_action(0xe, 1, true, 1, 1),
+            A::ReleaseBitmap { free_loaded: true }
+        );
+        assert_eq!(
+            w23a10_inset_dialog_action(0xe, 10, false, 1, 1),
+            A::InitBitmap { load_needed: true }
+        );
+        assert_eq!(
+            w23a10_inset_dialog_action(0xe, 0xd, false, 0, 0),
+            A::Consumed
+        );
+        assert_eq!(
+            w23a10_inset_dialog_action(0xe, 0xd, false, 1, 5),
+            A::Default
+        );
+        assert_eq!(w23a10_inset_dialog_action(3, 1, true, 0, 0), A::Default);
+        assert_eq!(
+            w23a10_scorebox_dialog_action(0xe, 10, true),
+            (A::InitBitmap { load_needed: false }, true)
+        );
+        assert_eq!(
+            w23a10_scorebox_dialog_action(0xe, 0xd, true),
+            (A::Default, true)
+        );
+    }
+
+    #[test]
+    fn untab() {
+        use W23a10UntabAction as U;
+        assert_eq!(
+            w23a10_untab_dialog_action(1, 1, 0, true, 0, false),
+            U::Default
+        );
+        assert_eq!(
+            w23a10_untab_dialog_action(0xe, 2, 0, true, 0, false),
+            U::CloseOnly
+        );
+        assert_eq!(
+            w23a10_untab_dialog_action(0xe, 0xb, 0, true, 0, false),
+            U::Default
+        );
+        assert_eq!(
+            w23a10_untab_dialog_action(0xe, 0xb, 1, true, 0, false),
+            U::CloseOnly
+        );
+        assert_eq!(
+            w23a10_untab_dialog_action(0xe, 10, 0, false, 6, false),
+            U::Init {
+                load_needed: true,
+                handler_is_alt: true
+            }
+        );
+        assert_eq!(
+            w23a10_untab_dialog_action(0xe, 0xd, 0, true, 0, true),
+            U::CloseThenDefault
+        );
+        assert_eq!(
+            w23a10_untab_dialog_action(0xe, 0xd, 0, true, 0, false),
+            U::Default
+        );
+    }
+
+    #[test]
+    fn small_helpers() {
+        let mut g = 0;
+        assert_eq!(w23a10_set_global(&mut g, 7), 7);
+        assert!(w23a10_row_control_ids(1).is_empty());
+        let ids = w23a10_row_control_ids(0);
+        assert_eq!(ids.len(), 48);
+        assert_eq!(ids[0], 0xd);
+        assert_eq!(ids[5], 0x12);
+        assert_eq!(ids[6], 0x13);
+        assert_eq!(*ids.last().unwrap(), 0x12 + 42);
+        assert_eq!(w23a10_unlink_slot(100, 0x1001, 4), 0x1000);
+        assert_eq!(w23a10_unlink_slot(100, 0, 4), 0);
+        assert_eq!(w23a10_unlink_slot(100, 20, 4), 116);
+    }
+
+    #[test]
+    fn ring() {
+        assert_eq!(w23a10_ring_advance(5, 5, 2), (5, Some(2)));
+        assert_eq!(w23a10_ring_advance(0, 80, 4), (10, Some(2)));
+        assert_eq!(w23a10_ring_advance(0, 8, 0), (4, None));
+        assert_eq!(w23a10_ring_advance(0, 2, 1), (2, Some(2)));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave23/agent11.rs
+// ===========================================================================
+// Wave 23 translation batch 11 (runtime glue helpers).
+
+/// `0x006fbd60`: eases `*cur` toward `target`: the step is a quarter of the
+/// difference (truncating toward zero), or the whole difference when it is
+/// smaller than 4 in magnitude.
+pub fn w23a11_ease_toward(cur: &mut i16, target: i16) {
+    let d = target.wrapping_sub(*cur);
+    let step = if d > 0 {
+        if d < 4 { d } else { d >> 2 }
+    } else if d < 0 {
+        if d > -4 { d } else { (d + 3) >> 2 }
+    } else {
+        return;
+    };
+    *cur = cur.wrapping_add(step);
+}
+
+/// `0x006fc480`: reads a table record.  Header: `u16` (low 15 bits = count),
+/// two `u16` copied to `out_pair`.  Entry index is `idx` when `idx < count`,
+/// else 0; entries are 8 bytes at offset 6 (two `u32`).  Returns
+/// `(first, second + base)` where `base` is the record's own address.
+pub fn w23a11_read_record(rec: &[u8], idx: u16, base: u32) -> Option<((u16, u16), (u32, u32))> {
+    let u16_at = |o: usize| rec.get(o..o + 2).map(|b| u16::from_le_bytes([b[0], b[1]]));
+    let u32_at = |o: usize| {
+        rec.get(o..o + 4)
+            .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    };
+    let count = u16_at(0)? & 0x7fff;
+    let pair = (u16_at(2)?, u16_at(4)?);
+    let e = if idx < count { idx as usize } else { 0 };
+    let a = u32_at(6 + e * 8)?;
+    let b = u32_at(10 + e * 8)?.wrapping_add(base);
+    Some((pair, (a, b)))
+}
+
+/// `0x006fa4f0`: number of bytes copied out of the NUL-terminated `src`
+/// into a buffer of `cap` bytes: `min(strlen, cap - 1)`; nothing when
+/// `cap == 0`.
+pub fn w23a11_bounded_copy_len(src: &[u8], cap: usize) -> usize {
+    if cap == 0 {
+        return 0;
+    }
+    let len = src.iter().position(|&c| c == 0).unwrap_or(src.len());
+    len.min(cap - 1)
+}
+
+/// `0x006fc200`: releases each distinct non-zero handle in `handles` once:
+/// later duplicates are zeroed before `free` is called for the first.
+pub fn w23a11_free_unique(handles: &mut [usize], mut free: impl FnMut(usize)) {
+    for i in 0..handles.len() {
+        let h = handles[i];
+        if h != 0 {
+            for x in handles[i + 1..].iter_mut() {
+                if *x == h {
+                    *x = 0;
+                }
+            }
+            free(h);
+        }
+    }
+}
+
+/// `0x006fb530`: leave-glue guard.  Only when `state == 0x3bff7ba4` does it
+/// act; returns the code passed on (0x21 if `current == requested`, else
+/// 0xc), after which the caller resets the globals.
+pub fn w23a11_leave_code(state: u32, current: i32, requested: i32) -> Option<u32> {
+    if state != 0x3bff7ba4 {
+        return None;
+    }
+    Some(if current == requested { 0x21 } else { 0xc })
+}
+
+#[cfg(test)]
+mod tests_wave23_agent11 {
+    use super::*;
+
+    #[test]
+    fn ease() {
+        let mut v = 0i16;
+        w23a11_ease_toward(&mut v, 100);
+        assert_eq!(v, 25);
+        w23a11_ease_toward(&mut v, 27);
+        assert_eq!(v, 27);
+        let mut v = 100i16;
+        w23a11_ease_toward(&mut v, 0);
+        assert_eq!(v, 75);
+        let mut v = 2i16;
+        w23a11_ease_toward(&mut v, 0);
+        assert_eq!(v, 0);
+        let mut v = 5i16;
+        w23a11_ease_toward(&mut v, 5);
+        assert_eq!(v, 5);
+    }
+
+    #[test]
+    fn record() {
+        let mut r = vec![0u8; 22];
+        r[0..2].copy_from_slice(&0x8002u16.to_le_bytes());
+        r[2..4].copy_from_slice(&7u16.to_le_bytes());
+        r[4..6].copy_from_slice(&9u16.to_le_bytes());
+        r[6..10].copy_from_slice(&1u32.to_le_bytes());
+        r[10..14].copy_from_slice(&2u32.to_le_bytes());
+        r[14..18].copy_from_slice(&3u32.to_le_bytes());
+        r[18..22].copy_from_slice(&4u32.to_le_bytes());
+        assert_eq!(w23a11_read_record(&r, 1, 100), Some(((7, 9), (3, 104))));
+        assert_eq!(w23a11_read_record(&r, 5, 100), Some(((7, 9), (1, 102))));
+        assert_eq!(w23a11_read_record(&r[..8], 0, 0), None);
+    }
+
+    #[test]
+    fn copy_len() {
+        assert_eq!(w23a11_bounded_copy_len(b"abc\0", 0), 0);
+        assert_eq!(w23a11_bounded_copy_len(b"abc\0", 2), 1);
+        assert_eq!(w23a11_bounded_copy_len(b"abc\0", 10), 3);
+    }
+
+    #[test]
+    fn free_once() {
+        let mut h = [5, 0, 5, 6, 6];
+        let mut out = vec![];
+        w23a11_free_unique(&mut h, |x| out.push(x));
+        assert_eq!(out, vec![5, 6]);
+        assert_eq!(h, [5, 0, 0, 6, 0]);
+    }
+
+    #[test]
+    fn leave() {
+        assert_eq!(w23a11_leave_code(1, 2, 2), None);
+        assert_eq!(w23a11_leave_code(0x3bff7ba4, 2, 2), Some(0x21));
+        assert_eq!(w23a11_leave_code(0x3bff7ba4, 2, 3), Some(0xc));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave23/agent12.rs
+// ===========================================================================
+// Wave 23 agent 12 translations (runtime helpers).
+
+/// `0x006fc7a0`: zeroes the `0x1b00`-byte block at offset `0xd70` of the
+/// runtime table; the caller supplies that block.
+pub fn w23a12_clear_block(block: &mut [u8]) {
+    let n = block.len().min(0x1b00);
+    block[..n].fill(0);
+}
+
+/// `0x006fcea0`: with `clear_slot_kind == 0` the original calls a
+/// non-returning helper on the slot's first dword (reported through
+/// `on_zero`); otherwise zeroes the `0x30`-byte slot `slot` of the group.
+pub fn w23a12_clear_slot(
+    group: &mut [u8],
+    slot: u8,
+    clear_slot_kind: i32,
+    on_zero: impl FnOnce(u32),
+) {
+    let off = slot as usize * 0x30;
+    if clear_slot_kind == 0 {
+        let v = group
+            .get(off..off + 4)
+            .map_or(0, |b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+        on_zero(v);
+        return;
+    }
+    if let Some(s) = group.get_mut(off..off + 0x30) {
+        s.fill(0);
+    }
+}
+
+/// `0x006fce10`: finds the smallest of 8 u16 values (scanning from index 7
+/// down, strict less-than so ties keep the higher index; 0xff if none is
+/// below 0xffff), clears slot `idx + 10` and stores `new_value` there.
+pub fn w23a12_replace_min(row: &mut [u16; 8], new_value: u16, mut clear: impl FnMut(u8)) -> u8 {
+    let mut best_idx: u8 = 0xff;
+    let mut best: u16 = 0xffff;
+    for i in (0..8usize).rev() {
+        if row[i] < best {
+            best = row[i];
+            best_idx = i as u8;
+        }
+    }
+    clear(best_idx.wrapping_add(10));
+    if let Some(r) = row.get_mut(best_idx as usize) {
+        *r = new_value;
+    }
+    best_idx
+}
+
+/// `0x006fd480`: returns 1 when the kind (low 16 bits of dword 4) is 6;
+/// when it is 0xe and dword 0 is zero first runs `pre` (`FUN_006fd4c0`),
+/// then forwards to `forward`.
+pub fn w23a12_dispatch(
+    dword0: i32,
+    kind_dword: i32,
+    pre: impl FnOnce(),
+    forward: impl FnOnce() -> u32,
+) -> u32 {
+    let kind = kind_dword as i16;
+    if kind == 6 {
+        return 1;
+    }
+    if kind == 0xe && dword0 == 0 {
+        pre();
+    }
+    forward()
+}
+
+/// `0x006fda90`: zeroes the four dwords at offset `0x10` of an object.
+pub fn w23a12_zero_fields(obj: &mut [u32; 8]) {
+    obj[4..8].fill(0);
+}
+
+/// `0x006ff830`: percentage scaling; returns the percent and stores the
+/// count rounded to a multiple of three (minimum 3) in `out`.
+pub fn w23a12_scaled_count(total: i32, part: i32, count: i32, out: &mut i32) -> i32 {
+    let pct = if total == 0 { 100 } else { part * 100 / total };
+    let mut v = pct * (count - 1) / 100;
+    if v < 3 {
+        v = 3;
+    }
+    let base = v / 3 * 3;
+    *out = match v % 3 {
+        0 => v,
+        1 => base,
+        _ => base + 3,
+    };
+    pct
+}
+
+/// `0x006fffc0`: capacity-grow policy.  `word` packs flags in the top bit
+/// and capacity in the low 31 bits.  Returns the new word when growth is
+/// required (then the original reallocates), else `None`.
+pub fn w23a12_grow_word(word: u32, wanted: u32) -> Option<u32> {
+    if (word & 0x7fff_ffff) < wanted {
+        let mut n = ((word >> 1) & 0x3fff_ffff).wrapping_add(word & 0x7fff_ffff);
+        if n < wanted {
+            n = wanted;
+        }
+        Some(((word ^ n) & 0x7fff_ffff) ^ word)
+    } else {
+        None
+    }
+}
+
+/// `0x00700350`: rearranges 52 u16 words (8 groups of 6 after a 4-word
+/// head) into `out` in reverse group order, negating some words and
+/// mapping others through `f` (`FUN_00700610`).
+pub fn w23a12_reorder(input: &[u16; 52], out: &mut [u16; 52], f: impl Fn(u16) -> u16) {
+    out[48] = f(input[0]);
+    out[49] = input[1].wrapping_neg();
+    out[50] = input[2].wrapping_neg();
+    out[51] = f(input[3]);
+    for k in 0..8usize {
+        let b = 48 - 6 * k;
+        let i = 4 + 6 * k;
+        out[b - 1] = input[i + 1];
+        out[b - 2] = input[i];
+        out[b - 3] = f(input[i + 5]);
+        out[b - 4] = input[i + 3].wrapping_neg();
+        out[b - 5] = input[i + 4].wrapping_neg();
+        out[b - 6] = f(input[i + 2]);
+    }
+}
+
+#[cfg(test)]
+mod tests_wave23_agent12 {
+    use super::*;
+
+    #[test]
+    fn clear_and_zero() {
+        let mut b = vec![1u8; 0x2000];
+        w23a12_clear_block(&mut b);
+        assert!(b[..0x1b00].iter().all(|&x| x == 0) && b[0x1b00] == 1);
+        let mut o = [1u32; 8];
+        w23a12_zero_fields(&mut o);
+        assert_eq!(o, [1, 1, 1, 1, 0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn slot_clear() {
+        let mut g = vec![7u8; 0x90];
+        w23a12_clear_slot(&mut g, 1, 1, |_| panic!());
+        assert_eq!(g[0x2f], 7);
+        assert!(g[0x30..0x60].iter().all(|&x| x == 0));
+        assert_eq!(g[0x60], 7);
+        let mut seen = 0;
+        w23a12_clear_slot(&mut g, 0, 0, |v| seen = v);
+        assert_eq!(seen, 0x0707_0707);
+    }
+
+    #[test]
+    fn min_replace() {
+        let mut r = [5, 3, 9, 3, 7, 8, 9, 9];
+        let mut cleared = 0;
+        let i = w23a12_replace_min(&mut r, 42, |s| cleared = s);
+        assert_eq!(i, 3);
+        assert_eq!(cleared, 13);
+        assert_eq!(r[3], 42);
+        let mut full = [0xffffu16; 8];
+        assert_eq!(w23a12_replace_min(&mut full, 1, |_| {}), 0xff);
+    }
+
+    #[test]
+    fn dispatch_kinds() {
+        assert_eq!(w23a12_dispatch(0, 6, || panic!(), || 9), 1);
+        let mut pre = false;
+        assert_eq!(w23a12_dispatch(0, 0xe, || pre = true, || 9), 9);
+        assert!(pre);
+        assert_eq!(w23a12_dispatch(1, 0xe, || panic!(), || 4), 4);
+    }
+
+    #[test]
+    fn scaled() {
+        let mut o = 0;
+        assert_eq!(w23a12_scaled_count(0, 5, 10, &mut o), 100);
+        assert_eq!(o, 9);
+        assert_eq!(w23a12_scaled_count(10, 1, 10, &mut o), 10);
+        assert_eq!(o, 3);
+        assert_eq!(w23a12_scaled_count(10, 5, 15, &mut o), 50);
+        assert_eq!(o, 6);
+    }
+
+    #[test]
+    fn grow() {
+        assert_eq!(w23a12_grow_word(10, 5), None);
+        assert_eq!(w23a12_grow_word(10, 100), Some(100));
+        assert_eq!(w23a12_grow_word(0x8000_0010, 17), Some(0x8000_0018));
+    }
+
+    #[test]
+    fn reorder() {
+        let mut inp = [0u16; 52];
+        for (i, v) in inp.iter_mut().enumerate() {
+            *v = i as u16 + 1;
+        }
+        let mut out = [0u16; 52];
+        w23a12_reorder(&inp, &mut out, |x| x + 100);
+        assert_eq!(out[48], 101);
+        assert_eq!(out[49], 0u16.wrapping_sub(2));
+        assert_eq!(out[47], inp[5]);
+        assert_eq!(out[46], inp[4]);
+        assert_eq!(out[45], 100 + inp[9]);
+        assert_eq!(out[0], 100 + inp[48]);
+        assert_eq!(out[5], inp[47]);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave23/agent13.rs
+// ===========================================================================
+// Wave 23 agent 13: JSON value coercions and buffer growth (runtime.rs).
+
+/// JSON value flag bits at offset `+0xe` (patch 1.23.10 layout).
+pub const W23A13_F_BOOL: u16 = 0x0008;
+/// Signed 32-bit flag.
+pub const W23A13_F_I32: u16 = 0x0020;
+/// Unsigned 32-bit flag.
+pub const W23A13_F_U32: u16 = 0x0040;
+/// 64-bit flag (bit 7).
+pub const W23A13_F_I64: u16 = 0x0080;
+/// 64-bit flag (bit 8).
+pub const W23A13_F_U64: u16 = 0x0100;
+/// Double flag.
+pub const W23A13_F_F64: u16 = 0x0200;
+
+/// Error for "Unexpected JSON type.".
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub struct W23a13BadType;
+
+fn w23a13_is64(flags: u16) -> bool {
+    flags & (W23A13_F_U64 | W23A13_F_I64) != 0
+}
+
+/// `0x00705600`: JSON value to bool.  Bool-typed values are true only when
+/// the flag word is exactly 10; numbers compare against zero.
+pub fn w23a13_as_bool(flags: u16, payload: u64, as_f64: f64) -> Result<bool, W23a13BadType> {
+    if flags & W23A13_F_BOOL != 0 {
+        return Ok(flags == 10);
+    }
+    if w23a13_is64(flags) {
+        return Ok(payload != 0);
+    }
+    if flags & (W23A13_F_U32 | W23A13_F_I32) != 0 {
+        return Ok(payload as u32 != 0);
+    }
+    if flags & W23A13_F_F64 == 0 {
+        return Err(W23a13BadType);
+    }
+    Ok(as_f64 != 0.0)
+}
+
+/// `0x007056c0`: JSON value to i64 (as raw u64); doubles truncate.
+pub fn w23a13_as_i64(flags: u16, payload: u64, as_f64: f64) -> Result<u64, W23a13BadType> {
+    if w23a13_is64(flags) {
+        return Ok(payload);
+    }
+    if flags & W23A13_F_U32 != 0 {
+        return Ok(payload as u32 as u64);
+    }
+    if flags & W23A13_F_I32 != 0 {
+        return Ok(payload as u32 as i32 as i64 as u64);
+    }
+    if flags & W23A13_F_F64 != 0 {
+        return Ok(as_f64 as i64 as u64);
+    }
+    if flags & W23A13_F_BOOL != 0 {
+        return Ok((flags == 10) as u64);
+    }
+    Err(W23a13BadType)
+}
+
+/// `0x00705770`: JSON value to u32; doubles truncate through i32.
+pub fn w23a13_as_u32(flags: u16, payload: u64, as_f64: f64) -> Result<u32, W23a13BadType> {
+    if w23a13_is64(flags) || flags & (W23A13_F_U32 | W23A13_F_I32) != 0 {
+        return Ok(payload as u32);
+    }
+    if flags & W23A13_F_F64 != 0 {
+        return Ok(as_f64 as i32 as u32);
+    }
+    if flags & W23A13_F_BOOL != 0 {
+        return Ok((flags == 10) as u32);
+    }
+    Err(W23a13BadType)
+}
+
+/// `0x00705830`: JSON value to u64; doubles in `[2^63, 2^64)` are
+/// converted via the bias-and-flip trick.
+pub fn w23a13_as_u64(flags: u16, payload: u64, as_f64: f64) -> Result<u64, W23a13BadType> {
+    if w23a13_is64(flags) {
+        return Ok(payload);
+    }
+    if flags & W23A13_F_U32 != 0 {
+        return Ok(payload as u32 as u64);
+    }
+    if flags & W23A13_F_I32 != 0 {
+        return Ok(payload as u32 as i32 as i64 as u64);
+    }
+    if flags & W23A13_F_F64 != 0 {
+        let bias = 9.223372036854776e18_f64;
+        if as_f64 >= bias && as_f64 - bias < bias {
+            return Ok(((as_f64 - bias) as i64 as u64) ^ (1u64 << 63));
+        }
+        return Ok(as_f64 as i64 as u64);
+    }
+    if flags & W23A13_F_BOOL != 0 {
+        return Ok((flags == 10) as u64);
+    }
+    Err(W23a13BadType)
+}
+
+/// `0x00704980`: new byte capacity for an 8-byte-element buffer growth.
+/// `None` when begin is null and the inline flag is zero (fatal path).
+pub fn w23a13_grow_bytes(
+    inline_flag: u32,
+    begin: u32,
+    cur: u32,
+    cap_end: u32,
+    inline_cap: u32,
+    n_elems: u32,
+) -> Option<u32> {
+    let a = if begin == 0 {
+        if inline_flag == 0 {
+            return None;
+        }
+        inline_cap
+    } else {
+        let used = cap_end.wrapping_sub(begin);
+        used.wrapping_add(used.wrapping_add(1) >> 1)
+    };
+    let b = n_elems
+        .wrapping_mul(8)
+        .wrapping_sub(begin)
+        .wrapping_add(cur);
+    Some(if b <= a { a } else { b })
+}
+
+#[cfg(test)]
+mod tests_wave23_agent13 {
+    use super::*;
+
+    #[test]
+    fn bool_coercion() {
+        assert_eq!(w23a13_as_bool(10, 0, 0.0), Ok(true));
+        assert_eq!(w23a13_as_bool(9, 1, 0.0), Ok(false));
+        assert_eq!(w23a13_as_bool(0x40, 0x1_0000_0000, 0.0), Ok(false));
+        assert_eq!(w23a13_as_bool(0x100, 0x1_0000_0000, 0.0), Ok(true));
+        assert_eq!(w23a13_as_bool(0x200, 0, 0.5), Ok(true));
+        assert_eq!(w23a13_as_bool(0x04, 0, 0.0), Err(W23a13BadType));
+    }
+
+    #[test]
+    fn i64_coercion() {
+        assert_eq!(w23a13_as_i64(0x20, 0xffff_ffff, 0.0), Ok(u64::MAX));
+        assert_eq!(w23a13_as_i64(0x40, 0xffff_ffff, 0.0), Ok(0xffff_ffff));
+        assert_eq!(w23a13_as_i64(0x200, 0, -2.7), Ok((-2i64) as u64));
+        assert_eq!(w23a13_as_i64(10, 0, 0.0), Ok(1));
+        assert_eq!(w23a13_as_i64(0, 0, 0.0), Err(W23a13BadType));
+    }
+
+    #[test]
+    fn u32_coercion() {
+        assert_eq!(w23a13_as_u32(0x100, 0x1_0000_0007, 0.0), Ok(7));
+        assert_eq!(w23a13_as_u32(0x200, 0, -1.0), Ok(u32::MAX));
+        assert_eq!(w23a13_as_u32(9, 0, 0.0), Ok(0));
+        assert_eq!(w23a13_as_u32(0, 0, 0.0), Err(W23a13BadType));
+    }
+
+    #[test]
+    fn u64_coercion() {
+        assert_eq!(w23a13_as_u64(0x20, 0xffff_fffe, 0.0), Ok(u64::MAX - 1));
+        let big = 1.5 * 9.223372036854776e18_f64;
+        assert_eq!(w23a13_as_u64(0x200, 0, big), Ok(0xC000_0000_0000_0000));
+        assert_eq!(w23a13_as_u64(0x200, 0, 12.0), Ok(12));
+        assert_eq!(w23a13_as_u64(10, 0, 0.0), Ok(1));
+        assert_eq!(w23a13_as_u64(1, 0, 0.0), Err(W23a13BadType));
+    }
+
+    #[test]
+    fn grow() {
+        assert_eq!(w23a13_grow_bytes(0, 0, 0, 0, 0, 1), None);
+        assert_eq!(w23a13_grow_bytes(1, 0, 0, 0, 100, 1), Some(100));
+        // used=16 -> 24; need 8 + (16-... ) = 8*1 - 1000 + 1016 = 24
+        assert_eq!(w23a13_grow_bytes(0, 1000, 1016, 1016, 0, 1), Some(24));
+        assert_eq!(w23a13_grow_bytes(0, 1000, 1016, 1016, 0, 4), Some(48));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave23/agent14.rs
+// ===========================================================================
+// Wave 23 agent 14: JSON value getters, JSON writer number output,
+// dtoa prettify and small tileset/table helpers.
+
+/// JSON value flag bits at record offset `0xe` (u16) shared by the getters.
+pub const W23A14_FLAG_DOUBLE: u16 = 0x200;
+pub const W23A14_FLAG_BOOL: u16 = 0x008;
+
+/// Error text raised by the retail getters for a mismatching JSON type.
+pub const W23A14_BAD_TYPE: &str = "Unexpected JSON type.";
+
+/// Shared tail of the 32-bit getters: flags 0x100/0x80/0x40/0x20 return the
+/// raw word, 0x200 converts the double through `ftol`, 0x08 is a bool where
+/// `flags == 10` means true, anything else is a type error.
+fn w23a14_get32(low: u32, flags: u16, ftol: impl FnOnce() -> u32) -> Result<u32, &'static str> {
+    if flags & 0x100 != 0 || flags & 0x80 != 0 || flags & 0x40 != 0 || flags & 0x20 != 0 {
+        return Ok(low);
+    }
+    if flags & W23A14_FLAG_DOUBLE != 0 {
+        return Ok(ftol());
+    }
+    if flags & W23A14_FLAG_BOOL != 0 {
+        return Ok((flags == 10) as u32);
+    }
+    Err(W23A14_BAD_TYPE)
+}
+
+/// `0x00705930`: JSON member as u32 (member lookup already resolved by the
+/// caller; `ftol` stands for the double-to-int conversion).
+pub fn w23a14_member_as_u32(
+    low: u32,
+    flags: u16,
+    ftol: impl FnOnce() -> u32,
+) -> Result<u32, &'static str> {
+    w23a14_get32(low, flags, ftol)
+}
+
+/// `0x00705bf0`: JSON value as u32 (same rules as the member getter).
+pub fn w23a14_value_as_u32(
+    low: u32,
+    flags: u16,
+    ftol: impl FnOnce() -> u32,
+) -> Result<u32, &'static str> {
+    w23a14_get32(low, flags, ftol)
+}
+
+/// `0x00705b40`: JSON value as u64.  0x100/0x80 return all 64 bits, 0x40
+/// zero-extends the low word, 0x20 sign-extends it.
+pub fn w23a14_value_as_u64(
+    raw: u64,
+    flags: u16,
+    ftol64: impl FnOnce() -> u64,
+) -> Result<u64, &'static str> {
+    if flags & 0x100 != 0 || flags & 0x80 != 0 {
+        return Ok(raw);
+    }
+    if flags & 0x40 != 0 {
+        return Ok(raw as u32 as u64);
+    }
+    if flags & 0x20 != 0 {
+        return Ok(raw as u32 as i32 as i64 as u64);
+    }
+    if flags & W23A14_FLAG_DOUBLE != 0 {
+        return Ok(ftol64());
+    }
+    if flags & W23A14_FLAG_BOOL != 0 {
+        return Ok((flags == 10) as u64);
+    }
+    Err(W23A14_BAD_TYPE)
+}
+
+/// One writer nesting level: value count (at `-8`) and array flag (at `-4`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct W23a14Level {
+    pub count: u32,
+    pub is_array: bool,
+}
+
+/// Writer prefix shared by the four number writers (the inlined separator
+/// logic of the retail writer): with an empty level stack only the
+/// `has_root` flag is set; otherwise a non-first value emits `,` (arrays)
+/// or `:` for odd counts / `,` for even counts (objects), then the top
+/// level count is incremented.
+pub fn w23a14_write_prefix(levels: &mut [W23a14Level], has_root: &mut bool, out: &mut Vec<u8>) {
+    match levels.last_mut() {
+        None => *has_root = true,
+        Some(top) => {
+            if top.count != 0 {
+                if top.is_array {
+                    out.push(b',');
+                } else {
+                    out.push(if top.count & 1 != 0 { b':' } else { b',' });
+                }
+            }
+            top.count += 1;
+        }
+    }
+}
+
+/// `0x007060f0`: writer Int32: prefix, optional `-`, decimal digits
+/// (negation is `!x + 1`, so `i32::MIN` prints as 2147483648 with sign).
+pub fn w23a14_write_i32(
+    levels: &mut [W23a14Level],
+    has_root: &mut bool,
+    out: &mut Vec<u8>,
+    v: i32,
+) {
+    w23a14_write_prefix(levels, has_root, out);
+    if v < 0 {
+        out.push(b'-');
+    }
+    let mag = if v < 0 {
+        (!(v as u32)).wrapping_add(1)
+    } else {
+        v as u32
+    };
+    out.extend_from_slice(mag.to_string().as_bytes());
+}
+
+/// `0x00706970`: writer Uint32.
+pub fn w23a14_write_u32(
+    levels: &mut [W23a14Level],
+    has_root: &mut bool,
+    out: &mut Vec<u8>,
+    v: u32,
+) {
+    w23a14_write_prefix(levels, has_root, out);
+    out.extend_from_slice(v.to_string().as_bytes());
+}
+
+/// `0x00705f90`: writer Int64 (sign handled via 64-bit two's complement).
+pub fn w23a14_write_i64(
+    levels: &mut [W23a14Level],
+    has_root: &mut bool,
+    out: &mut Vec<u8>,
+    v: i64,
+) {
+    w23a14_write_prefix(levels, has_root, out);
+    if v < 0 {
+        out.push(b'-');
+    }
+    let mag = if v < 0 {
+        (!(v as u64)).wrapping_add(1)
+    } else {
+        v as u64
+    };
+    out.extend_from_slice(mag.to_string().as_bytes());
+}
+
+/// `0x00706830`: writer Uint64.
+pub fn w23a14_write_u64(
+    levels: &mut [W23a14Level],
+    has_root: &mut bool,
+    out: &mut Vec<u8>,
+    v: u64,
+) {
+    w23a14_write_prefix(levels, has_root, out);
+    out.extend_from_slice(v.to_string().as_bytes());
+}
+
+/// `0x00706230`: double formatting Prettify over `buf` holding `length`
+/// digits with decimal exponent `k`.  Returns the new end index, or `None`
+/// when the layout would exceed the buffer.  `write_exp(exp, dst)` is the
+/// exponent writer (callee at 706ce0) returning the end index.
+pub fn w23a14_prettify(
+    buf: &mut [u8],
+    length: i32,
+    k: i32,
+    max_decimal_places: i32,
+    mut write_exp: impl FnMut(i32, &mut [u8]) -> usize,
+) -> Option<usize> {
+    let kk = length + k;
+    let l = length as usize;
+    if (0..=0x7fff_ffff).contains(&k) && kk < 0x16 {
+        let kk_u = kk as usize;
+        if l < kk_u {
+            for b in &mut buf[l..kk_u] {
+                *b = b'0';
+            }
+        }
+        buf[kk_u] = b'.';
+        buf[kk_u + 1] = b'0';
+        return Some(kk_u + 2);
+    }
+    if (1..0x16).contains(&kk) {
+        let kk_u = kk as usize;
+        buf.copy_within(kk_u..l, kk_u + 1);
+        buf[kk_u] = b'.';
+        return Some(l + 1);
+    }
+    if (-5..=0).contains(&kk) {
+        let off = (2 - kk) as usize;
+        buf.copy_within(0..l, off);
+        buf[0] = b'0';
+        buf[1] = b'.';
+        for b in &mut buf[2..off] {
+            *b = b'0';
+        }
+        return Some(l + off);
+    }
+    if kk < -max_decimal_places {
+        buf[0] = b'0';
+        buf[1] = b'.';
+        buf[2] = b'0';
+        return Some(3);
+    }
+    if length == 1 {
+        buf[1] = b'e';
+        return Some(write_exp(kk - 1, &mut buf[2..]) + 2);
+    }
+    buf.copy_within(1..l, 2);
+    buf[1] = b'.';
+    buf[l + 1] = b'e';
+    Some(write_exp(kk - 1, &mut buf[l + 2..]) + l + 2)
+}
+
+/// `0x00707500`: string-buffer snapshot.  `used` is end-begin of the write
+/// cursor; when it exceeds the cached length the NUL terminator is stored
+/// at `buf[used]` and the cache updated.  Returns the cached-length bytes.
+pub fn w23a14_stringbuffer_snapshot(
+    buf: &mut [u8],
+    cached_len: &mut usize,
+    used: usize,
+) -> Vec<u8> {
+    if *cached_len < used {
+        buf[used] = 0;
+        *cached_len = used;
+    }
+    buf[..*cached_len].to_vec()
+}
+
+/// `0x00708070`: builds a 256-entry byte table, filled from index 255 down
+/// to 0 by `f` (callee at 711a90).
+pub fn w23a14_build_byte_table(mut f: impl FnMut(u8) -> u8) -> Vec<u8> {
+    let mut t = vec![0u8; 256];
+    for i in (0..256usize).rev() {
+        t[i] = f(i as u8);
+    }
+    t
+}
+
+/// `0x007081c0`: resets the 256-byte remap table to identity and returns the
+/// tileset dark palette path.
+pub fn w23a14_reset_remap_and_dark_path(table: &mut [u8; 256], tileset: &str) -> String {
+    for (i, b) in table.iter_mut().enumerate() {
+        *b = i as u8;
+    }
+    format!("Tileset\\{tileset}\\dark.pcx")
+}
+
+/// `0x00708270`: zeroes `w * h * 6` bytes (6-byte map cells).
+pub fn w23a14_clear_cells(dims: (i32, i32), buf: &mut [u8]) {
+    let n = (dims.0.wrapping_mul(dims.1).wrapping_mul(6)) as usize;
+    for b in &mut buf[..n] {
+        *b = 0;
+    }
+}
+
+/// `0x00708480`: walks `count` 28-byte (7 dword) records and calls `free`
+/// with the pointer stored at dword 6 of each when non-zero.
+pub fn w23a14_free_records(ptrs: &[u32], count: usize, mut free: impl FnMut(u32)) {
+    for i in 0..count {
+        let p = ptrs[i * 7 + 6];
+        if p != 0 {
+            free(p);
+        }
+    }
+}
+
+/// `0x00708850`: zeroes a three-dword vector header (begin, end, cap).
+pub fn w23a14_vec_header_clear(h: &mut [u32; 3]) {
+    *h = [0; 3];
+}
+
+#[cfg(test)]
+mod tests_wave23_agent14 {
+    use super::*;
+
+    #[test]
+    fn getters() {
+        assert_eq!(w23a14_member_as_u32(7, 0x100, || 1), Ok(7));
+        assert_eq!(w23a14_value_as_u32(0, 0x200, || 9), Ok(9));
+        assert_eq!(w23a14_value_as_u32(0, 10, || 0), Ok(1));
+        assert_eq!(w23a14_value_as_u32(0, 9, || 0), Ok(0));
+        assert_eq!(w23a14_value_as_u32(0, 0, || 0), Err(W23A14_BAD_TYPE));
+        assert_eq!(w23a14_value_as_u64(0xffff_ffff, 0x20, || 0), Ok(u64::MAX));
+        assert_eq!(
+            w23a14_value_as_u64(0xffff_ffff, 0x40, || 0),
+            Ok(0xffff_ffff)
+        );
+        assert_eq!(w23a14_value_as_u64(5 << 40, 0x80, || 0), Ok(5 << 40));
+        assert_eq!(w23a14_value_as_u64(0, 10, || 0), Ok(1));
+    }
+
+    #[test]
+    fn writers() {
+        let mut lv = vec![W23a14Level {
+            count: 0,
+            is_array: true,
+        }];
+        let mut root = false;
+        let mut out = Vec::new();
+        w23a14_write_i32(&mut lv, &mut root, &mut out, -5);
+        w23a14_write_u32(&mut lv, &mut root, &mut out, 7);
+        w23a14_write_i64(&mut lv, &mut root, &mut out, i64::MIN);
+        w23a14_write_u64(&mut lv, &mut root, &mut out, u64::MAX);
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "-5,7,-9223372036854775808,18446744073709551615"
+        );
+        let mut lv = vec![W23a14Level {
+            count: 0,
+            is_array: false,
+        }];
+        let mut out = Vec::new();
+        for _ in 0..3 {
+            w23a14_write_u32(&mut lv, &mut root, &mut out, 1);
+        }
+        assert_eq!(out, b"1:1,1");
+        let mut none: Vec<W23a14Level> = vec![];
+        let mut r = false;
+        w23a14_write_i32(&mut none, &mut r, &mut Vec::new(), i32::MIN);
+        assert!(r);
+    }
+
+    #[test]
+    fn prettify() {
+        let mut b = [0u8; 32];
+        b[..3].copy_from_slice(b"123");
+        assert_eq!(w23a14_prettify(&mut b, 3, 2, 324, |_, _| 0), Some(7));
+        assert_eq!(&b[..7], b"12300.0");
+        let mut b = [0u8; 32];
+        b[..3].copy_from_slice(b"123");
+        assert_eq!(w23a14_prettify(&mut b, 3, -1, 324, |_, _| 0), Some(4));
+        assert_eq!(&b[..4], b"12.3");
+        let mut b = [0u8; 32];
+        b[..2].copy_from_slice(b"12");
+        assert_eq!(w23a14_prettify(&mut b, 2, -4, 324, |_, _| 0), Some(6));
+        assert_eq!(&b[..6], b"0.0012");
+        let mut b = [0u8; 32];
+        b[..1].copy_from_slice(b"5");
+        let r = w23a14_prettify(&mut b, 1, 30, 324, |e, d| {
+            assert_eq!(e, 30);
+            d[0] = b'3';
+            d[1] = b'0';
+            2
+        });
+        assert_eq!(r, Some(4));
+        assert_eq!(&b[..4], b"5e30");
+        let mut b = [0u8; 32];
+        b[0] = b'5';
+        assert_eq!(w23a14_prettify(&mut b, 1, -400, 324, |_, _| 0), Some(3));
+        assert_eq!(&b[..3], b"0.0");
+    }
+
+    #[test]
+    fn small_helpers() {
+        let mut buf = *b"abcd\0xx";
+        let mut c = 2;
+        assert_eq!(w23a14_stringbuffer_snapshot(&mut buf, &mut c, 4), b"abcd");
+        assert_eq!(c, 4);
+        let t = w23a14_build_byte_table(|i| i ^ 1);
+        assert_eq!((t[0], t[255]), (1, 254));
+        let mut tb = [9u8; 256];
+        assert_eq!(
+            w23a14_reset_remap_and_dark_path(&mut tb, "jungle"),
+            "Tileset\\jungle\\dark.pcx"
+        );
+        assert_eq!(tb[255], 255);
+        let mut cells = [1u8; 30];
+        w23a14_clear_cells((2, 2), &mut cells);
+        assert!(cells[..24].iter().all(|&b| b == 0) && cells[24] == 1);
+        let mut freed = vec![];
+        w23a14_free_records(&[0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0], 2, |p| {
+            freed.push(p)
+        });
+        assert_eq!(freed, vec![5]);
+        let mut h = [1, 2, 3];
+        w23a14_vec_header_clear(&mut h);
+        assert_eq!(h, [0; 3]);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave23/agent15.rs
+// ===========================================================================
+// Wave 23 agent 15: small runtime helpers (size gates, path clamp, list node).
+
+/// Maximum path copy length used by the path-copy helpers (`0x103`).
+pub const W23A15_PATH_COPY_MAX: usize = 0x103;
+
+/// Length clamp shared by the bounded path copies: `min(strlen, 0x103)`.
+fn w23a15_clamped_len(s: &[u8]) -> usize {
+    let n = s.iter().position(|&b| b == 0).unwrap_or(s.len());
+    n.min(W23A15_PATH_COPY_MAX)
+}
+
+/// `0x0070e100`: bounded path copy; returns the clamped byte count
+/// (`min(strlen, 0x103)`) copied from `src` into `dst`.
+pub fn w23a15_copy_path_e100(dst: &mut [u8], src: &[u8]) -> usize {
+    let n = w23a15_clamped_len(src).min(dst.len());
+    dst[..n].copy_from_slice(&src[..n]);
+    n
+}
+
+/// `0x0070f8f0`: same clamped copy into the global path buffer
+/// (offset `+0xc4c` of the state block); returns the copied count.
+pub fn w23a15_copy_path_f8f0(dst: &mut [u8], src: &[u8]) -> usize {
+    w23a15_copy_path_e100(dst, src)
+}
+
+/// `0x0070f710`: validates the 19 fixed tables in order, stopping at the first
+/// failure.  `check(table_index, size)` models the per-table validator; the
+/// sizes are `0x390, 0x1c8, 0xe4, 0x1c8 x4, 0x104 x2, 0x7a x6, 0x58 x4`.
+pub fn w23a15_validate_tables(mut check: impl FnMut(usize, u32) -> bool) -> bool {
+    const SIZES: [u32; 19] = [
+        0x390, 0x1c8, 0xe4, 0x1c8, 0x1c8, 0x1c8, 0x1c8, 0x104, 0x104, 0x7a, 0x7a, 0x7a, 0x7a, 0x7a,
+        0x7a, 0x58, 0x58, 0x58, 0x58,
+    ];
+    SIZES.iter().enumerate().all(|(i, &s)| check(i, s))
+}
+
+/// `0x0070fb50`: size gate; succeeds only when `size == 8` and the reader
+/// returns true.
+pub fn w23a15_read_exact8(size: u32, read: impl FnOnce() -> bool) -> bool {
+    size == 8 && read()
+}
+
+/// `0x0070fda0`: size gate for `0x500`-byte records.
+pub fn w23a15_read_0x500(size: u32, read: impl FnOnce() -> bool) -> bool {
+    size == 0x500 && read()
+}
+
+/// `0x0070fdd0`: size gate for `0x13ec`-byte records.
+pub fn w23a15_read_0x13ec(size: u32, read: impl FnOnce() -> bool) -> bool {
+    size == 0x13ec && read()
+}
+
+/// `0x00710900`: size gate for 4-byte values.
+pub fn w23a15_read_exact4(size: u32, read: impl FnOnce() -> bool) -> bool {
+    size == 4 && read()
+}
+
+/// `0x0070fe30`: returns the record count when `size` is a multiple of
+/// `0x960`, else `None`.
+pub fn w23a15_record_count_0x960(size: u32) -> Option<u32> {
+    (size.is_multiple_of(0x960)).then_some(size / 0x960)
+}
+
+/// `0x0070eaf0`: runs `release` only when `param == 0`.
+pub fn w23a15_release_if_zero(param: i32, release: impl FnOnce()) {
+    if param == 0 {
+        release();
+    }
+}
+
+/// Doubly linked node built by `0x007116c0` (stride `0x14`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct W23a15Node {
+    pub a: u32,
+    pub b: u32,
+    pub c: u32,
+    pub prev_index: Option<usize>,
+    pub next_index: Option<usize>,
+}
+
+/// `0x007116c0`: appends a node `{p3, p4, p2, prev, 0}` to `nodes` and links
+/// the previous tail's `next`; returns the new tail (or `head` when
+/// `p4 == 0`).
+pub fn w23a15_push_node(
+    nodes: &mut Vec<W23a15Node>,
+    head: Option<usize>,
+    p2: u32,
+    p3: u32,
+    p4: u32,
+) -> Option<usize> {
+    if p4 == 0 {
+        return head;
+    }
+    let idx = nodes.len();
+    nodes.push(W23a15Node {
+        a: p3,
+        b: p4,
+        c: p2,
+        prev_index: head,
+        next_index: None,
+    });
+    if let Some(h) = head {
+        nodes[h].next_index = Some(idx);
+    }
+    Some(idx)
+}
+
+/// `0x00711710`: releases the cached handle; returns 1 when none is held,
+/// otherwise the release result, clearing the handle.
+pub fn w23a15_release_handle(handle: &mut u32, release: impl FnOnce(u32) -> u32) -> u32 {
+    if *handle == 0 {
+        return 1;
+    }
+    let r = release(*handle);
+    *handle = 0;
+    r
+}
+
+/// `0x0070e9a0`: resets a state block (`u32` words).  With `flag` set it
+/// writes `[100] = -1`, `[99] = 0xb` and returns code `0xb`; otherwise
+/// `[1] = -1`, `[0] = 0` and returns code 0.
+pub fn w23a15_reset_state(words: &mut [u32], flag: bool) -> u32 {
+    if flag {
+        words[100] = 0xffff_ffff;
+        words[99] = 0xb;
+        0xb
+    } else {
+        words[1] = 0xffff_ffff;
+        words[0] = 0;
+        0
+    }
+}
+
+#[cfg(test)]
+mod tests_wave23_agent15 {
+    use super::*;
+
+    #[test]
+    fn path_copy_clamps() {
+        let mut d = [0u8; 0x200];
+        let src = vec![b'a'; 0x180];
+        assert_eq!(w23a15_copy_path_e100(&mut d, &src), 0x103);
+        assert_eq!(w23a15_copy_path_f8f0(&mut d, b"abc\0zz"), 3);
+    }
+
+    #[test]
+    fn tables_stop_at_first_failure() {
+        let mut seen = vec![];
+        assert!(!w23a15_validate_tables(|i, s| {
+            seen.push(s);
+            i < 2
+        }));
+        assert_eq!(seen, vec![0x390, 0x1c8, 0xe4]);
+        let mut n = 0;
+        assert!(w23a15_validate_tables(|_, _| {
+            n += 1;
+            true
+        }));
+        assert_eq!(n, 19);
+    }
+
+    #[test]
+    fn size_gates() {
+        assert!(w23a15_read_exact8(8, || true));
+        assert!(!w23a15_read_exact8(9, || true));
+        assert!(w23a15_read_0x500(0x500, || true));
+        assert!(!w23a15_read_0x500(0x500, || false));
+        assert!(w23a15_read_0x13ec(0x13ec, || true));
+        assert!(!w23a15_read_0x13ec(0, || true));
+        assert!(w23a15_read_exact4(4, || true));
+        assert!(!w23a15_read_exact4(5, || true));
+    }
+
+    #[test]
+    fn record_count() {
+        assert_eq!(w23a15_record_count_0x960(0x960 * 3), Some(3));
+        assert_eq!(w23a15_record_count_0x960(0x961), None);
+    }
+
+    #[test]
+    fn release_and_reset() {
+        let mut hit = false;
+        w23a15_release_if_zero(1, || hit = true);
+        assert!(!hit);
+        w23a15_release_if_zero(0, || hit = true);
+        assert!(hit);
+        let mut h = 0;
+        assert_eq!(w23a15_release_handle(&mut h, |_| 7), 1);
+        h = 5;
+        assert_eq!(w23a15_release_handle(&mut h, |x| x + 1), 6);
+        assert_eq!(h, 0);
+        let mut w = [0u32; 101];
+        assert_eq!(w23a15_reset_state(&mut w, true), 0xb);
+        assert_eq!((w[100], w[99]), (u32::MAX, 0xb));
+        assert_eq!(w23a15_reset_state(&mut w, false), 0);
+        assert_eq!((w[1], w[0]), (u32::MAX, 0));
+    }
+
+    #[test]
+    fn node_push() {
+        let mut v = vec![];
+        assert_eq!(w23a15_push_node(&mut v, None, 1, 2, 0), None);
+        let a = w23a15_push_node(&mut v, None, 1, 2, 3);
+        assert_eq!(a, Some(0));
+        let b = w23a15_push_node(&mut v, a, 4, 5, 6);
+        assert_eq!(b, Some(1));
+        assert_eq!(v[0].next_index, Some(1));
+        assert_eq!(v[1].prev_index, Some(0));
+        assert_eq!((v[1].a, v[1].b, v[1].c), (5, 6, 4));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave23/agent16.rs
+// ===========================================================================
+// Wave 23 agent 16: small runtime/render-glue helpers.
+
+/// `0x007142a0`: clears (`0`) the first byte of every active slot whose
+/// matching flag byte has bit 0 set.  11 slots, stride `0xda`.
+pub fn w23a16_clear_flagged_slots(slots: &mut [u8], flags: &[u8]) {
+    for i in 0..11usize {
+        let off = i * 0xda;
+        if off >= slots.len() || i >= flags.len() {
+            break;
+        }
+        if slots[off] != 0 && (flags[i] & 1) != 0 {
+            slots[off] = 0;
+        }
+    }
+}
+
+/// Result of `0x00714dc0`: arguments handed to the selected blitter.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub struct W23a16BlitPlan {
+    /// Index into the handler table (`+1` when `alt`, `+2` when clipped).
+    pub handler: u32,
+    pub tile_x: i32,
+    pub tile_y: i32,
+    pub flags: u32,
+    pub mask: u32,
+    /// Offset in dwords into the destination map layer.
+    pub dest_index: i64,
+}
+
+/// `0x00714dc0`: converts pixel coordinates to 32px tiles, picks the flag
+/// word from the tile class (`tile_class` 2 -> `0x1000000`, 1 -> `0x5000000`,
+/// else `0x7000000`) and the handler (clipped against map size).  `size` is
+/// the (w, h) row for `shape` (stride `0x1c`).  Returns `None` if
+/// `color >= 0x100` or `shape >= 12`.
+#[allow(clippy::too_many_arguments)]
+pub fn w23a16_blit_plan(
+    x: i32,
+    y: i32,
+    alt: bool,
+    color: u32,
+    shape: u32,
+    tile_class: i32,
+    size: (i32, i32),
+    map_w: u16,
+    map_h: u16,
+) -> Option<W23a16BlitPlan> {
+    if color >= 0x100 || shape >= 0xc {
+        return None;
+    }
+    let mut handler = 0u32;
+    let flags = if !alt {
+        match tile_class {
+            2 => color | 0x100_0000,
+            1 => color | 0x500_0000,
+            _ => color | 0x700_0000,
+        }
+    } else {
+        handler = 1;
+        color
+    };
+    let tx = (x + ((x >> 31) & 0x1f)) >> 5;
+    let ty = (y + ((y >> 31) & 0x1f)) >> 5;
+    let hw = size.0 / 2;
+    let hh = size.1 / 2;
+    if tx - hw < 0 || map_w as i32 <= tx + hw || ty - hh < 0 || map_h as i32 <= hh + ty {
+        handler += 2;
+    }
+    Some(W23a16BlitPlan {
+        handler,
+        tile_x: tx,
+        tile_y: ty,
+        flags,
+        mask: !((color << 8) | color),
+        dest_index: map_w as i64 * ty as i64 + tx as i64,
+    })
+}
+
+/// `0x00715f40`: on a found record, copies `table[idx]` into the u16 at
+/// `+0x3e` and ORs `bits` into the u32 at `+0x30`.  Returns whether found.
+pub fn w23a16_apply_record(rec: Option<&mut [u8]>, table: &[u16], idx: u16, bits: u32) -> bool {
+    let Some(r) = rec else { return false };
+    let v = table.get(idx as usize).copied().unwrap_or(0);
+    r[0x3e..0x40].copy_from_slice(&v.to_le_bytes());
+    let f = u32::from_le_bytes([r[0x30], r[0x31], r[0x32], r[0x33]]) | bits;
+    r[0x30..0x34].copy_from_slice(&f.to_le_bytes());
+    true
+}
+
+/// `0x00716070`: point-in-rect test.  `pt` is the converted point, `rect`
+/// is (left, top, right, bottom); false whenever `disabled`.
+pub fn w23a16_point_in_view(pt: (i32, i32), rect: (i32, i32, i32, i32), disabled: bool) -> bool {
+    if disabled {
+        return false;
+    }
+    let x = pt.0.wrapping_sub(rect.0);
+    let y = pt.1.wrapping_sub(rect.1);
+    x > -1 && y > -1 && x < rect.2.wrapping_sub(rect.0) && y < rect.3.wrapping_sub(rect.1)
+}
+
+/// `0x00716ee0`: identity-palette table init (when not in the early-out
+/// state).  Fills four 256-byte tables: `fill`, copy of `src`, and two
+/// identity ramps.
+pub fn w23a16_init_palette_tables(
+    fill: u8,
+    src: &[u8; 256],
+    t0: &mut [u8; 256],
+    t1: &mut [u8; 256],
+    t2: &mut [u8; 256],
+    t3: &mut [u8; 256],
+) {
+    for i in 0..256usize {
+        t0[i] = fill;
+        t1[i] = src[i];
+        t2[i] = i as u8;
+        t3[i] = i as u8;
+    }
+}
+
+#[cfg(test)]
+mod tests_wave23_agent16 {
+    use super::*;
+
+    #[test]
+    fn clear_slots() {
+        let mut s = vec![1u8; 11 * 0xda];
+        let mut f = [0u8; 11];
+        f[0] = 1;
+        f[10] = 3;
+        f[3] = 2;
+        w23a16_clear_flagged_slots(&mut s, &f);
+        assert_eq!((s[0], s[0xda * 3], s[0xda * 10]), (0, 1, 0));
+    }
+
+    #[test]
+    fn plan() {
+        assert!(w23a16_blit_plan(0, 0, false, 0x100, 0, 0, (2, 2), 64, 64).is_none());
+        assert!(w23a16_blit_plan(0, 0, false, 0, 12, 0, (2, 2), 64, 64).is_none());
+        let p = w23a16_blit_plan(320, 64, false, 5, 0, 2, (2, 2), 64, 64).unwrap();
+        assert_eq!(
+            (p.tile_x, p.tile_y, p.handler, p.flags),
+            (10, 2, 0, 0x100_0005)
+        );
+        assert_eq!(p.mask, !0x505);
+        assert_eq!(p.dest_index, 64 * 2 + 10);
+        let p = w23a16_blit_plan(0, 0, true, 5, 0, 0, (2, 2), 64, 64).unwrap();
+        assert_eq!((p.handler, p.flags), (3, 5));
+        let p = w23a16_blit_plan(320, 64, false, 5, 0, 1, (2, 2), 64, 64).unwrap();
+        assert_eq!(p.flags, 0x500_0005);
+        let p = w23a16_blit_plan(320, 64, false, 5, 0, 0, (2, 2), 64, 64).unwrap();
+        assert_eq!(p.flags, 0x700_0005);
+    }
+
+    #[test]
+    fn record() {
+        let mut r = vec![0u8; 0x40];
+        r[0x30] = 1;
+        assert!(w23a16_apply_record(Some(&mut r), &[7, 9], 1, 4));
+        assert_eq!(r[0x30], 5);
+        assert_eq!(r[0x3e], 9);
+        assert!(!w23a16_apply_record(None, &[], 0, 0));
+    }
+
+    #[test]
+    fn view() {
+        let r = (10, 10, 20, 20);
+        assert!(w23a16_point_in_view((10, 10), r, false));
+        assert!(!w23a16_point_in_view((20, 15), r, false));
+        assert!(!w23a16_point_in_view((9, 15), r, false));
+        assert!(!w23a16_point_in_view((15, 15), r, true));
+    }
+
+    #[test]
+    fn palette() {
+        let src = [3u8; 256];
+        let (mut a, mut b, mut c, mut d) = ([0u8; 256], [0u8; 256], [0u8; 256], [0u8; 256]);
+        w23a16_init_palette_tables(9, &src, &mut a, &mut b, &mut c, &mut d);
+        assert_eq!((a[255], b[0], c[200], d[7]), (9, 3, 200, 7));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave23/agent17.rs
+// ===========================================================================
+// Wave 23 agent 17: minimap/terrain-cache helpers (runtime.rs target).
+
+/// `0x0071b490`: returns the pixel-buffer base for plane `plane`: the shared
+/// buffer when present, otherwise the per-plane base stored at `+8 + plane*0xc`.
+pub fn w23a17_plane_base(shared: Option<u32>, plane_bases: &[u32], plane: usize) -> u32 {
+    match shared {
+        Some(v) => v,
+        None => plane_bases[plane],
+    }
+}
+
+/// `0x0071b4d0`: reads the u16 at `0x14 + ((tile >> 4 & 0x7ff) * 0x1a +
+/// (tile & 0xf)) * 2` from `table` (megatile-group lookup).
+pub fn w23a17_tile_lookup(table: &[u8], tile: u16) -> u16 {
+    let idx = ((tile >> 4 & 0x7ff) as usize * 0x1a + (tile & 0xf) as usize) * 2 + 0x14;
+    u16::from_le_bytes([table[idx], table[idx + 1]])
+}
+
+/// `0x0071b500`: address of 4-byte cell `(x, y)` in a row-major grid:
+/// `base + (y * stride + x) * 4` (wrapping 32-bit).
+pub fn w23a17_cell_addr(base: u32, x: i32, y: i32, stride: i32) -> u32 {
+    base.wrapping_add((y.wrapping_mul(stride).wrapping_add(x) as u32).wrapping_mul(4))
+}
+
+/// `0x0071b9c0`: converts `w*h` u16 tile words to bytes: for each word
+/// `v`, `out = tab3[ remap[(grid[(v & 0x7fff) * 0x10] & !1) * 0x20 + 0x37] ]`
+/// where the callers' tables are given as slices (`grid` indexed in u32 words,
+/// `remap` indexed as bytes, `tab3` as bytes).
+pub fn w23a17_convert_tiles(
+    out: &mut [u8],
+    words: &[u16],
+    w: u16,
+    h: u16,
+    grid: &[u32],
+    remap: &[u8],
+    tab3: &[u8],
+) {
+    let n = w as usize * h as usize;
+    for i in 0..n {
+        let v = words[i] as usize;
+        let g = (grid[(v & 0x7fff) * 0x10] & 0xffff_fffe) as usize;
+        out[i] = tab3[remap[g * 0x20 + 0x37] as usize];
+    }
+}
+
+/// Handler chosen by `0x00719150`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum W23a17Handler {
+    /// kind 2 (`0x71_8ee0`)
+    Kind2,
+    /// kind 3 (`0x00719730`)
+    Kind3,
+    /// kind 4 (`0x71_7670`)
+    Kind4,
+    /// any other kind: default callback
+    Default,
+}
+
+/// `0x00719150`: selects the callback by the short at `+0x3a`.
+pub fn w23a17_select_handler(kind: i16) -> W23a17Handler {
+    match kind {
+        2 => W23a17Handler::Kind2,
+        3 => W23a17Handler::Kind3,
+        4 => W23a17Handler::Kind4,
+        _ => W23a17Handler::Default,
+    }
+}
+
+/// `0x0071a590`: accumulates weighted colour channels for samples
+/// `start..end`.  `weights[i]` is the weight, `sample(i)` the index byte,
+/// `remap` the 256-byte table at `+0x418`, `palette` the u32 table at word 6.
+/// `acc = [r, g, b, weight_sum]`.
+pub fn w23a17_accumulate(
+    acc: &mut [i32; 4],
+    weights: &[i32],
+    sample: impl Fn(usize) -> u8,
+    remap: &[u8],
+    palette: &[u32],
+    start: usize,
+    end: usize,
+) {
+    for i in start..end {
+        let wt = weights[i];
+        let c = palette[remap[sample(i) as usize] as usize];
+        acc[0] = acc[0].wrapping_add(((c & 0xff) as i32).wrapping_mul(wt));
+        acc[1] = acc[1].wrapping_add(((c >> 8 & 0xff) as i32).wrapping_mul(wt));
+        acc[2] = acc[2].wrapping_add(((c >> 16 & 0xff) as i32).wrapping_mul(wt));
+        acc[3] = acc[3].wrapping_add(wt);
+    }
+}
+
+/// `0x0071a910`: sets the first `w0*h0` words of the plane-2 buffer to opaque
+/// black (`0xff000000`) and zeroes the `w1*h1` words of the main buffer.
+pub fn w23a17_clear_buffers(plane2: &mut [u32], count: usize, main: &mut [u32], main_count: usize) {
+    for v in plane2.iter_mut().take(count) {
+        *v = 0xff00_0000;
+    }
+    for v in main.iter_mut().take(main_count) {
+        *v = 0;
+    }
+}
+
+/// Result of `0x007177c0`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct W23a17Scale {
+    pub width: u16,
+    pub height: u16,
+    pub field_114: u32,
+    pub field_11c: u32,
+    pub field_120: u32,
+    /// Which blitter pair: 0 = none/guard, 1 = 0x40 case, 2 = 0x60/0x80, 3 = 0xc0/0x100.
+    pub blitters: u8,
+    /// Rect adjustments `(d4, d8, d6, d10)` as `(+x0, -x1, +y0, -y1)` offsets.
+    pub rect_delta: (i16, i16, i16, i16),
+}
+
+/// `0x007177c0`: derives the minimap scale configuration from the source
+/// size `(w, h)` (u16 at `+0xe4`/`+0xe6`).
+pub fn w23a17_scale_config(w: u16, h: u16) -> W23a17Scale {
+    let mut cw = w;
+    let ch: u16;
+    let (f114, f11c, f120, blit);
+    match w.max(h) {
+        0x40 => {
+            cw = w.wrapping_mul(2);
+            ch = h.wrapping_mul(2);
+            (f114, f11c, f120, blit) = (1, 1, 0x10, 1);
+        }
+        0x60 | 0x80 => {
+            ch = h;
+            (f114, f11c, f120, blit) = (1, 0, 0x20, 2);
+        }
+        0xc0 | 0x100 => {
+            cw = w >> 1;
+            ch = h >> 1;
+            (f114, f11c, f120, blit) = (2, 0, 0x40, 3);
+        }
+        _ => {
+            if cw <= h {
+                cw = h;
+            }
+            if cw < 0x40 {
+                (f114, f11c, f120) = (1, 1, 0x10);
+                cw = 0x40;
+            } else {
+                if cw < 0x80 {
+                    (f114, f120) = (1, 0x20);
+                } else {
+                    (f114, f120) = (2, 0x40);
+                }
+                f11c = 0;
+                cw = 0x80;
+            }
+            ch = cw;
+            blit = 0;
+        }
+    }
+    let dx = ((0x80 - cw as i32) / 2) as i16;
+    let dy = ((0x80 - ch as i32) / 2) as i16;
+    W23a17Scale {
+        width: cw,
+        height: ch,
+        field_114: f114,
+        field_11c: f11c,
+        field_120: f120,
+        blitters: blit,
+        rect_delta: (dx, dx.wrapping_neg(), dy, dy.wrapping_neg()),
+    }
+}
+
+#[cfg(test)]
+mod tests_wave23_agent17 {
+    use super::*;
+
+    #[test]
+    fn small_helpers() {
+        assert_eq!(w23a17_plane_base(Some(7), &[1, 2], 1), 7);
+        assert_eq!(w23a17_plane_base(None, &[1, 2], 1), 2);
+        assert_eq!(w23a17_cell_addr(100, 3, 2, 10), 100 + 23 * 4);
+        let mut t = vec![0u8; 0x14 + 0x1a * 2 * 4];
+        let idx = 0x14 + (0x1a + 2) * 2;
+        t[idx] = 0x34;
+        t[idx + 1] = 0x12;
+        assert_eq!(w23a17_tile_lookup(&t, 0x0012), 0x1234);
+    }
+
+    #[test]
+    fn handler() {
+        assert_eq!(w23a17_select_handler(3), W23a17Handler::Kind3);
+        assert_eq!(w23a17_select_handler(2), W23a17Handler::Kind2);
+        assert_eq!(w23a17_select_handler(4), W23a17Handler::Kind4);
+        assert_eq!(w23a17_select_handler(9), W23a17Handler::Default);
+    }
+
+    #[test]
+    fn convert() {
+        let grid = vec![0u32; 0x10 * 2];
+        let mut g = grid.clone();
+        g[0x10] = 3; // & !1 = 2
+        let mut remap = vec![0u8; 2 * 0x20 + 0x38];
+        remap[2 * 0x20 + 0x37] = 5;
+        let mut tab = vec![0u8; 8];
+        tab[5] = 99;
+        let mut out = [0u8; 2];
+        w23a17_convert_tiles(&mut out, &[1, 0], 2, 1, &g, &remap, &tab);
+        assert_eq!(out, [99, 0]);
+    }
+
+    #[test]
+    fn accumulate() {
+        let mut acc = [0; 4];
+        let remap: Vec<u8> = (0..=255).collect();
+        let mut pal = vec![0u32; 256];
+        pal[1] = 0x0030_2010;
+        w23a17_accumulate(&mut acc, &[2, 3], |_| 1, &remap, &pal, 0, 2);
+        assert_eq!(acc, [0x10 * 5, 0x20 * 5, 0x30 * 5, 5]);
+        w23a17_accumulate(&mut acc, &[2, 3], |_| 1, &remap, &pal, 1, 1);
+        assert_eq!(acc[3], 5);
+    }
+
+    #[test]
+    fn clear() {
+        let mut a = [1u32; 4];
+        let mut b = [1u32; 4];
+        w23a17_clear_buffers(&mut a, 3, &mut b, 2);
+        assert_eq!(a, [0xff00_0000, 0xff00_0000, 0xff00_0000, 1]);
+        assert_eq!(b, [0, 0, 1, 1]);
+    }
+
+    #[test]
+    fn scale() {
+        let s = w23a17_scale_config(0x40, 0x20);
+        assert_eq!(
+            (s.width, s.height, s.field_120, s.blitters),
+            (0x80, 0x40, 0x10, 1)
+        );
+        assert_eq!(s.rect_delta, (0, 0, 0x20, -0x20));
+        let s = w23a17_scale_config(0x100, 0x80);
+        assert_eq!((s.width, s.height, s.field_114), (0x80, 0x40, 2));
+        let s = w23a17_scale_config(0x80, 0x60);
+        assert_eq!((s.width, s.height, s.field_120), (0x80, 0x60, 0x20));
+        let s = w23a17_scale_config(0x30, 0x20);
+        assert_eq!(
+            (s.width, s.height, s.field_11c, s.blitters),
+            (0x40, 0x40, 1, 0)
+        );
+        let s = w23a17_scale_config(0x50, 0x20);
+        assert_eq!((s.width, s.field_114, s.field_120), (0x80, 1, 0x20));
+        let s = w23a17_scale_config(0x90, 0x20);
+        assert_eq!((s.width, s.field_114, s.field_120), (0x80, 2, 0x40));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave23/agent18.rs
+// ===========================================================================
+// Wave 23 agent 18: shared-pointer release loop, deque slot advance and
+// vftable-reset destructors of the video decoder family.
+
+/// Shared-pointer control block counters (offset +4 strong, +8 weak).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct W23a18Ctrl {
+    pub strong: i32,
+    pub weak: i32,
+}
+
+/// Outcome of releasing one reference: virtual slot +8 (dispose) and slot
+/// +0xc (destroy) invocations.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct W23a18Release {
+    pub dispose: bool,
+    pub destroy: bool,
+}
+
+/// Decrements the strong count; when it was 1 dispose runs and the weak
+/// count is decremented, destroying when that was 1 (as in the loop body
+/// of `0x0071c8e0`).
+pub fn w23a18_release_ctrl(c: &mut W23a18Ctrl) -> W23a18Release {
+    let mut r = W23a18Release::default();
+    let old = c.strong;
+    c.strong -= 1;
+    if old == 1 {
+        r.dispose = true;
+        let oldw = c.weak;
+        c.weak -= 1;
+        if oldw == 1 {
+            r.destroy = true;
+        }
+    }
+    r
+}
+
+/// `0x0071c8e0`: releases `count` entries of a block deque starting at
+/// `head` (8 slots per block, block index masked by `nblocks - 1`).  The
+/// slot at `block + 4 + (i & 7) * 8` holds an optional control block.
+/// Returns the per-entry release results (None-slots yield default).
+pub fn w23a18_release_deque(
+    blocks: &mut [Vec<Option<W23a18Ctrl>>],
+    head: u32,
+    count: u32,
+) -> Vec<W23a18Release> {
+    let mut out = Vec::new();
+    if blocks.is_empty() {
+        return out;
+    }
+    let mask = (blocks.len() as u32).wrapping_sub(1);
+    let mut i = head;
+    let end = head.wrapping_add(count);
+    while i != end {
+        let b = ((i >> 3) & mask) as usize;
+        let s = (i & 7) as usize;
+        let r = match blocks.get_mut(b).and_then(|v| v.get_mut(s)) {
+            Some(Some(c)) => w23a18_release_ctrl(c),
+            _ => W23a18Release::default(),
+        };
+        out.push(r);
+        i = i.wrapping_add(1);
+    }
+    out
+}
+
+/// Result of the deque back-slot advance.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum W23a18Slot {
+    /// Block map must grow first; carries the new block capacity.
+    Grow(u32),
+    /// Slot found: (block index, byte offset in block); size incremented.
+    Slot(u32, u32),
+    /// Block not allocated yet (allocation path).
+    Alloc(u32),
+}
+
+/// `0x0071e3c0`: deque `emplace_back` slot computation.  `map_len` is
+/// field [1], `start` field [2], `size` field [3] (incremented on success);
+/// `block_present` tells whether the block pointer is non-null.
+pub fn w23a18_deque_back_slot(
+    map_len: u32,
+    start: u32,
+    size: &mut u32,
+    block_present: impl Fn(u32) -> bool,
+) -> W23a18Slot {
+    if (start.wrapping_add(*size) & 7) == 0 && map_len <= (size.wrapping_add(8) >> 3) {
+        let mut cap = if map_len != 0 { map_len } else { 8 };
+        while cap < map_len + 1 {
+            cap = cap.wrapping_mul(2);
+        }
+        return W23a18Slot::Grow(cap);
+    }
+    let idx = size.wrapping_add(start);
+    *size += 1;
+    let block = map_len.wrapping_sub(1) & (idx >> 3);
+    if !block_present(block) {
+        return W23a18Slot::Alloc(block);
+    }
+    W23a18Slot::Slot(block, (idx & 7) * 8)
+}
+
+/// Vtable tags written by the destructors below.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum W23a18Vtable {
+    SharedPtrManager,
+    MkvReader,
+    VideoDecoder,
+}
+
+/// Destructor result: final vtable tag, whether the memory is freed
+/// (`param & 1`).
+pub type W23a18Dtor = (W23a18Vtable, bool);
+
+/// `0x0071cd30`: shared_ptr_manager scalar destructor.
+pub fn w23a18_manager_dtor(flags: u8) -> W23a18Dtor {
+    (W23a18Vtable::SharedPtrManager, flags & 1 != 0)
+}
+
+/// `0x0071cd60`: IMkvReader scalar destructor.
+pub fn w23a18_reader_dtor_a(flags: u8) -> W23a18Dtor {
+    (W23a18Vtable::MkvReader, flags & 1 != 0)
+}
+
+/// `0x0071cdd0`: IMkvReader scalar destructor (second copy).
+pub fn w23a18_reader_dtor_b(flags: u8) -> W23a18Dtor {
+    (W23a18Vtable::MkvReader, flags & 1 != 0)
+}
+
+/// `0x0071ce00`: VideoDecoder base scalar destructor.
+pub fn w23a18_video_dtor(flags: u8) -> W23a18Dtor {
+    (W23a18Vtable::VideoDecoder, flags & 1 != 0)
+}
+
+/// `0x0071cd90`: MkvDecoder scalar destructor; runs the teardown callback
+/// then resets to the VideoDecoder vtable.  Returns the teardown-call flag
+/// order via `teardown`.
+pub fn w23a18_mkv_dtor(flags: u8, teardown: impl FnOnce()) -> W23a18Dtor {
+    teardown();
+    (W23a18Vtable::VideoDecoder, flags & 1 != 0)
+}
+
+#[cfg(test)]
+mod tests_wave23_agent18 {
+    use super::*;
+
+    #[test]
+    fn release_ctrl() {
+        let mut c = W23a18Ctrl { strong: 1, weak: 1 };
+        let r = w23a18_release_ctrl(&mut c);
+        assert!(r.dispose && r.destroy);
+        let mut c = W23a18Ctrl { strong: 2, weak: 1 };
+        assert_eq!(w23a18_release_ctrl(&mut c), W23a18Release::default());
+        assert_eq!(c.strong, 1);
+        let mut c = W23a18Ctrl { strong: 1, weak: 2 };
+        let r = w23a18_release_ctrl(&mut c);
+        assert!(r.dispose && !r.destroy);
+    }
+
+    #[test]
+    fn release_deque() {
+        let c = Some(W23a18Ctrl { strong: 1, weak: 1 });
+        let mut blocks = vec![vec![c, None, c, c, c, c, c, c], vec![c; 8]];
+        let r = w23a18_release_deque(&mut blocks, 6, 4);
+        assert_eq!(r.len(), 4);
+        assert!(r.iter().all(|x| x.destroy));
+        assert!(w23a18_release_deque(&mut [], 0, 3).is_empty());
+        assert!(!w23a18_release_deque(&mut blocks, 1, 1)[0].dispose);
+    }
+
+    #[test]
+    fn back_slot() {
+        let mut size = 3;
+        assert_eq!(
+            w23a18_deque_back_slot(2, 0, &mut size, |_| true),
+            W23a18Slot::Slot(0, 24)
+        );
+        assert_eq!(size, 4);
+        let mut size = 0;
+        assert_eq!(
+            w23a18_deque_back_slot(0, 0, &mut size, |_| true),
+            W23a18Slot::Grow(8)
+        );
+        let mut size = 8;
+        assert_eq!(
+            w23a18_deque_back_slot(1, 0, &mut size, |_| true),
+            W23a18Slot::Grow(2)
+        );
+        let mut size = 1;
+        assert_eq!(
+            w23a18_deque_back_slot(2, 0, &mut size, |_| false),
+            W23a18Slot::Alloc(0)
+        );
+    }
+
+    #[test]
+    fn dtors() {
+        assert_eq!(
+            w23a18_manager_dtor(1),
+            (W23a18Vtable::SharedPtrManager, true)
+        );
+        assert_eq!(w23a18_reader_dtor_a(2), (W23a18Vtable::MkvReader, false));
+        assert_eq!(w23a18_reader_dtor_b(3), (W23a18Vtable::MkvReader, true));
+        assert_eq!(w23a18_video_dtor(0), (W23a18Vtable::VideoDecoder, false));
+        let mut ran = false;
+        assert_eq!(
+            w23a18_mkv_dtor(1, || ran = true),
+            (W23a18Vtable::VideoDecoder, true)
+        );
+        assert!(ran);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave23/agent19.rs
+// ===========================================================================
+// Wave 23 agent 19 translations (runtime glue).
+
+/// `0x00721a00`: selects the argument passed to the dispatcher: `0xb` when
+/// `flag` is non-zero, otherwise `0`.
+pub fn w23a19_dispatch_arg(flag: u8) -> u32 {
+    if flag != 0 { 0xb } else { 0 }
+}
+
+/// `0x00721d70`: scans slots 12..=15 (stride `0x24`, byte at +8) for the
+/// value `0x0c`.  Returns the slot index passed on (index + 0x74 when below
+/// 12, which never happens here) or `8` when none matches.
+pub fn w23a19_find_slot_arg(slot_bytes: &[u8; 4]) -> u32 {
+    let mut i: i32 = 0xc;
+    loop {
+        let arg = if i < 0xc { i } else { i + 0x74 };
+        if slot_bytes[(i - 0xc) as usize] == 0x0c {
+            return arg as u32;
+        }
+        i += 1;
+        if i > 0xf {
+            return 8;
+        }
+    }
+}
+
+/// Shared tail of `0x00720dc0` / `0x007210b0`: effective flag handed to the
+/// presenter. `provider_flag` is byte +4 of the object, `probe` the result
+/// of the probe call (only consulted when `provider_flag == 0`),
+/// `override_active` is the byte at 0119f5ef, `stored` the byte at 0119f5ee.
+pub fn w23a19_effective_flag(
+    provider_flag: u8,
+    probe: bool,
+    override_active: bool,
+    stored: u8,
+) -> u8 {
+    if provider_flag == 0 && !probe && !override_active {
+        0
+    } else {
+        stored
+    }
+}
+
+/// `0x00720dc0`: stores `new_value` into the global byte when different
+/// and returns the effective flag.
+pub fn w23a19_set_flag(
+    stored: &mut u8,
+    new_value: u8,
+    provider_flag: u8,
+    probe: bool,
+    override_active: bool,
+) -> u8 {
+    if new_value != *stored {
+        *stored = new_value;
+    }
+    w23a19_effective_flag(provider_flag, probe, override_active, *stored)
+}
+
+/// Result of `0x007210b0`: rectangle (x, y, w, h), new override flag and
+/// effective flag.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub struct W23a19Rect {
+    pub rect: [i32; 4],
+    pub override_active: bool,
+}
+
+/// `0x007210b0`: computes the viewport rectangle.  `explicit` is the
+/// caller rect (l, t, r, b) -> (l, t, r-l, b-t) with override set.  With
+/// `None`: if `fullscreen_like` is false the base rect is inset by
+/// (`ix`, `iy`) giving (x+ix, y+iy, w-2*ix, h-2*iy); otherwise the rect from
+/// the provider is used unchanged.  Override is cleared in both cases.
+pub fn w23a19_viewport_rect(
+    explicit: Option<[i32; 4]>,
+    fullscreen_like: bool,
+    base: [i32; 4],
+    provider_rect: [i32; 4],
+    ix: i32,
+    iy: i32,
+) -> W23a19Rect {
+    match explicit {
+        Some(r) => W23a19Rect {
+            rect: [r[0], r[1], r[2].wrapping_sub(r[0]), r[3].wrapping_sub(r[1])],
+            override_active: true,
+        },
+        None if !fullscreen_like => W23a19Rect {
+            rect: [
+                base[0].wrapping_add(ix),
+                base[1].wrapping_add(iy),
+                base[2].wrapping_sub(ix.wrapping_mul(2)),
+                base[3].wrapping_sub(iy.wrapping_mul(2)),
+            ],
+            override_active: false,
+        },
+        None => W23a19Rect {
+            rect: provider_rect,
+            override_active: false,
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests_wave23_agent19 {
+    use super::*;
+
+    #[test]
+    fn dispatch_arg() {
+        assert_eq!(w23a19_dispatch_arg(0), 0);
+        assert_eq!(w23a19_dispatch_arg(1), 0xb);
+    }
+
+    #[test]
+    fn find_slot() {
+        assert_eq!(w23a19_find_slot_arg(&[0, 0, 0x0c, 0]), 0xe + 0x74);
+        assert_eq!(w23a19_find_slot_arg(&[0x0c, 0, 0, 0]), 0xc + 0x74);
+        assert_eq!(w23a19_find_slot_arg(&[0; 4]), 8);
+    }
+
+    #[test]
+    fn flag() {
+        let mut s = 0;
+        assert_eq!(w23a19_set_flag(&mut s, 1, 0, false, false), 0);
+        assert_eq!(s, 1);
+        assert_eq!(w23a19_set_flag(&mut s, 1, 0, true, false), 1);
+        assert_eq!(w23a19_set_flag(&mut s, 1, 1, false, false), 1);
+        assert_eq!(w23a19_set_flag(&mut s, 1, 0, false, true), 1);
+    }
+
+    #[test]
+    fn rect() {
+        let e = w23a19_viewport_rect(Some([1, 2, 11, 22]), false, [0; 4], [0; 4], 0, 0);
+        assert_eq!(
+            e,
+            W23a19Rect {
+                rect: [1, 2, 10, 20],
+                override_active: true
+            }
+        );
+        let i = w23a19_viewport_rect(None, false, [0, 0, 100, 80], [9; 4], 5, 3);
+        assert_eq!(i.rect, [5, 3, 90, 74]);
+        let p = w23a19_viewport_rect(None, true, [0; 4], [1, 2, 3, 4], 5, 3);
+        assert_eq!(p.rect, [1, 2, 3, 4]);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave23/agent20.rs
+// ===========================================================================
+// Wave 23 agent 20: lobby command-packet builders and small handlers.
+
+/// Lazily allocated packet slot: the retail code allocates `len` bytes on first use.
+fn w23a20_slot(slot: &mut Option<Vec<u8>>, len: usize) -> &mut Vec<u8> {
+    slot.get_or_insert_with(|| vec![0u8; len])
+}
+
+/// `0x00722750`: stores the lobby state; state 2 also clears the companion word.
+pub fn w23a20_set_state(state: &mut u8, companion: &mut u32, value: u8) {
+    *state = value;
+    if value == 2 {
+        *companion = 0;
+    }
+}
+
+/// `0x00722950`: validity check, true when `value <= 7` (otherwise retail aborts).
+pub fn w23a20_valid_slot(value: u32) -> bool {
+    value <= 7
+}
+
+/// `0x00722b00`: when not suppressed and not host, returns the byte at `+1` and
+/// the 8 bytes at `+2` of the packet.
+pub fn w23a20_parse_info(packet: &[u8], flag: i32, is_host: bool) -> Option<(u8, [u8; 8])> {
+    if flag != 0 || is_host || packet.len() < 10 {
+        return None;
+    }
+    let mut b = [0u8; 8];
+    b.copy_from_slice(&packet[2..10]);
+    Some((packet[1], b))
+}
+
+/// `0x00722d30`: gate predicate; true when retail proceeds to the follow-up call.
+pub fn w23a20_gate(
+    is_host: bool,
+    state: u8,
+    local_ok: bool,
+    packet: &[u8],
+    blocked: impl Fn(u8) -> bool,
+) -> bool {
+    if !is_host || state <= 3 || !local_ok {
+        return false;
+    }
+    match packet.get(1) {
+        Some(&b) if b != 0 && b < 5 => !blocked(b),
+        _ => false,
+    }
+}
+
+/// Result of `0x00723df0`: the arguments for the follow-up call.
+#[derive(Debug, PartialEq, Eq)]
+pub struct W23a20Update {
+    pub slot: u8,
+    pub flags: u16,
+    pub a: u16,
+    pub b: u16,
+}
+
+/// `0x00723df0`: slot update. `lookup` returns the current flag word for a slot.
+/// `Err(())` models the retail abort when the slot byte exceeds 7.
+pub fn w23a20_slot_update(
+    state: u8,
+    suppressed: i32,
+    is_host: bool,
+    packet: &[u8],
+    lookup: impl Fn(u8) -> Option<u32>,
+) -> Result<Option<W23a20Update>, ()> {
+    if state <= 3 || suppressed != 0 || packet.len() < 8 {
+        return Ok(None);
+    }
+    let slot = packet[1];
+    if slot > 7 {
+        return Err(());
+    }
+    if is_host {
+        return Ok(None);
+    }
+    let mut flags = u16::from_le_bytes([packet[2], packet[3]]) & 0xff03;
+    if let Some(cur) = lookup(slot) {
+        flags |= cur as u16;
+    }
+    Ok(Some(W23a20Update {
+        slot,
+        flags,
+        a: u16::from_le_bytes([packet[4], packet[5]]),
+        b: u16::from_le_bytes([packet[6], packet[7]]),
+    }))
+}
+
+/// `0x00724fd0`: builds the 3-byte packet `[0x67, a, b]`.
+pub fn w23a20_pkt_67(slot: &mut Option<Vec<u8>>, a: u8, b: u8) {
+    let p = w23a20_slot(slot, 3);
+    p[0] = 0x67;
+    p[1] = a;
+    p[2] = b;
+}
+
+/// `0x00725010`: builds `[0x68, a, b]`; returns the offset `a` plus 66442 to store
+/// `b` at when `is_host` (the caller applies it and refreshes).
+pub fn w23a20_pkt_68(
+    slot: &mut Option<Vec<u8>>,
+    a: u8,
+    b: u8,
+    is_host: bool,
+) -> Option<(usize, u8)> {
+    let p = w23a20_slot(slot, 3);
+    p[0] = 0x68;
+    p[1] = a;
+    p[2] = b;
+    is_host.then(|| (a as usize + 66442, b))
+}
+
+/// `0x00725080`: builds the 2-byte packet `[0x43, a]`.
+pub fn w23a20_pkt_43(slot: &mut Option<Vec<u8>>, a: u8) {
+    let p = w23a20_slot(slot, 2);
+    p[0] = 0x43;
+    p[1] = a;
+}
+
+/// `0x00725d30`: builds the 1-byte packet `[0x39]`.
+pub fn w23a20_pkt_39(slot: &mut Option<Vec<u8>>) {
+    let p = w23a20_slot(slot, 1);
+    p[0] = 0x39;
+}
+
+/// `0x00726090`: builds `[0x41, a, b]`; `a` equal to `local_id` becomes 8.
+pub fn w23a20_pkt_41(slot: &mut Option<Vec<u8>>, a: u8, b: u8, local_id: u8) {
+    let a = if a == local_id { 8 } else { a };
+    let p = w23a20_slot(slot, 3);
+    p[0] = 0x41;
+    p[1] = a;
+    p[2] = b;
+}
+
+/// `0x007260f0`: builds the 4-byte packet `[0x38, c, a, b]`.
+pub fn w23a20_pkt_38(slot: &mut Option<Vec<u8>>, a: u8, b: u8, c: u8) {
+    let p = w23a20_slot(slot, 4);
+    p[0] = 0x38;
+    p[1] = c;
+    p[2] = a;
+    p[3] = b;
+}
+
+/// `0x00726140`: builds `[0x44, a, b]`.
+pub fn w23a20_pkt_44(slot: &mut Option<Vec<u8>>, a: u8, b: u8) {
+    let p = w23a20_slot(slot, 3);
+    p[0] = 0x44;
+    p[1] = a;
+    p[2] = b;
+}
+
+/// `0x00726180`: builds `[0x45, a, b]` (retail then calls a non-returning tail).
+pub fn w23a20_pkt_45(slot: &mut Option<Vec<u8>>, a: u8, b: u8) {
+    let p = w23a20_slot(slot, 3);
+    p[0] = 0x45;
+    p[1] = a;
+    p[2] = b;
+}
+
+#[cfg(test)]
+mod tests_wave23_agent20 {
+    use super::*;
+
+    #[test]
+    fn packets() {
+        let mut s = None;
+        w23a20_pkt_67(&mut s, 1, 2);
+        assert_eq!(s.as_deref(), Some(&[0x67, 1, 2][..]));
+        let mut s = None;
+        assert_eq!(w23a20_pkt_68(&mut s, 2, 9, true), Some((66444, 9)));
+        assert_eq!(w23a20_pkt_68(&mut s, 2, 9, false), None);
+        let mut s = None;
+        w23a20_pkt_43(&mut s, 5);
+        assert_eq!(s.unwrap(), vec![0x43, 5]);
+        let mut s = None;
+        w23a20_pkt_39(&mut s);
+        assert_eq!(s.unwrap(), vec![0x39]);
+        let mut s = None;
+        w23a20_pkt_41(&mut s, 3, 4, 3);
+        assert_eq!(s.unwrap(), vec![0x41, 8, 4]);
+        let mut s = None;
+        w23a20_pkt_38(&mut s, 1, 2, 3);
+        assert_eq!(s.unwrap(), vec![0x38, 3, 1, 2]);
+        let mut s = None;
+        w23a20_pkt_44(&mut s, 1, 2);
+        assert_eq!(s.unwrap(), vec![0x44, 1, 2]);
+        let mut s = None;
+        w23a20_pkt_45(&mut s, 1, 2);
+        assert_eq!(s.unwrap(), vec![0x45, 1, 2]);
+    }
+
+    #[test]
+    fn state_and_checks() {
+        let (mut st, mut c) = (0u8, 7u32);
+        w23a20_set_state(&mut st, &mut c, 1);
+        assert_eq!(c, 7);
+        w23a20_set_state(&mut st, &mut c, 2);
+        assert_eq!((st, c), (2, 0));
+        assert!(w23a20_valid_slot(7) && !w23a20_valid_slot(8));
+        let p = [0, 5, 1, 2, 3, 4, 5, 6, 7, 8];
+        assert_eq!(w23a20_parse_info(&p, 0, false).unwrap().0, 5);
+        assert!(w23a20_parse_info(&p, 1, false).is_none());
+        assert!(w23a20_gate(true, 4, true, &[0, 4], |_| false));
+        assert!(!w23a20_gate(true, 3, true, &[0, 4], |_| false));
+        assert!(!w23a20_gate(true, 4, true, &[0, 5], |_| false));
+        assert!(!w23a20_gate(true, 4, true, &[0, 2], |_| true));
+    }
+
+    #[test]
+    fn slot_update() {
+        let p = [0, 2, 0xff, 0xff, 1, 0, 2, 0];
+        let r = w23a20_slot_update(4, 0, false, &p, |_| Some(0x0c))
+            .unwrap()
+            .unwrap();
+        assert_eq!(r.flags, 0xff03 | 0x0c);
+        assert_eq!((r.a, r.b), (1, 2));
+        assert!(w23a20_slot_update(4, 0, false, &[0, 9, 0, 0, 0, 0, 0, 0], |_| None).is_err());
+        assert_eq!(w23a20_slot_update(3, 0, false, &p, |_| None), Ok(None));
+    }
+}

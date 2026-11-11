@@ -162,3 +162,11 @@ counterpart; the helpers stay auditable reference code.
 string-record plans, CRT/time helpers, frame-table repack.  No rules-core
 counterpart; the helpers stay auditable reference code.  Tier 1 of the
 triage queue is now empty.
+
+## Wave 23 (2026-11-11, triage queue, tiers 2-3, 20 agents)
+
++141 exact ledger functions (ledger 3572 -> 3713) in `client.rs` and
+`runtime.rs`: JSON value coercions and number writers, lobby/command packet
+builders, dialog-handler decision enums, minimap/blitter selectors, STL
+shared_ptr and deque helpers.  No rules-core counterpart; the helpers stay
+auditable reference code.

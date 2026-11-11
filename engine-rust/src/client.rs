@@ -64056,3 +64056,716 @@ mod tests_wave22_agent08 {
         assert_eq!(w22a08_repack_frame_table(&[]), None);
     }
 }
+
+// ===========================================================================
+// Merged from src/wave23/agent01.rs
+// ===========================================================================
+/// `0x006df820` (counter part): the frame-tick countdown.  A zero counter
+/// reloads to 100, then decrements; returns `(new_counter, fired)` where
+/// `fired` is true when the counter reached zero (the original then runs
+/// two follow-up calls).
+pub fn w23a01_tick_countdown(counter: u32) -> (u32, bool) {
+    let c = if counter == 0 { 100 } else { counter };
+    let c = c.wrapping_sub(1);
+    (c, c == 0)
+}
+
+/// `0x006e5350`: bucket hash used by the id hash-table.  `bucket_count`
+/// must be a power of two.
+pub fn w23a01_hash_bucket(key: u32, bucket_count: u32) -> u32 {
+    let mut h = (key >> 16 ^ key).wrapping_mul(0x85eb_ca6b);
+    h = (h >> 13 ^ h).wrapping_mul(0xc2b2_ae35);
+    (h >> 16 ^ h) & bucket_count.wrapping_sub(1)
+}
+
+/// `0x006e5350`: lookup in a chained table.  Nodes are `(next, key)`
+/// indices into `nodes`; `buckets[i]` is the head node index.  Returns the
+/// node index (payload lives at node offset 8) or `None` (original aborts).
+pub fn w23a01_hash_find(
+    buckets: &[Option<usize>],
+    nodes: &[(Option<usize>, u32)],
+    key: u32,
+) -> Option<usize> {
+    if buckets.is_empty() {
+        return None;
+    }
+    let b = w23a01_hash_bucket(key, buckets.len() as u32) as usize;
+    let mut cur = *buckets.get(b)?;
+    while let Some(i) = cur {
+        let (next, k) = *nodes.get(i)?;
+        if k == key {
+            return Some(i);
+        }
+        cur = next;
+    }
+    None
+}
+
+/// `0x006e7cb0`: true when the mode byte equals 3.
+pub fn w23a01_mode_is_3(mode: u8) -> bool {
+    mode == 3
+}
+
+/// `0x006e7dd0`: true when the mode byte equals 6.
+pub fn w23a01_mode_is_6(mode: u8) -> bool {
+    mode == 6
+}
+
+/// `0x006e7df0`: true when the state byte equals 0x0f.
+pub fn w23a01_state_is_0f(state: u8) -> bool {
+    state == 0x0f
+}
+
+/// `0x006e7d60`: true when bytes at +0x75, +0x79, +0x7f of the record are
+/// all zero.  `rec` is the caller-chosen record (default global if `None`
+/// in the original).
+pub fn w23a01_flags_clear(rec: &[u8]) -> bool {
+    rec.get(0x75) == Some(&0) && rec.get(0x79) == Some(&0) && rec.get(0x7f) == Some(&0)
+}
+
+/// `0x006e80b0`: validates a loaded buffer made of `0x960`-byte records;
+/// `check` is the per-record validator (stops at first failure).  Returns
+/// false when the load failed (`None`), else true.  Second value is the
+/// number of records accepted before stopping.
+pub fn w23a01_validate_records(
+    buf: Option<&[u8]>,
+    mut check: impl FnMut(&[u8]) -> bool,
+) -> (bool, usize) {
+    let Some(buf) = buf else { return (false, 0) };
+    let mut n = 0;
+    for rec in buf.chunks_exact(0x960) {
+        if !check(rec) {
+            break;
+        }
+        n += 1;
+    }
+    (true, n)
+}
+
+#[cfg(test)]
+mod tests_wave23_agent01 {
+    use super::*;
+
+    #[test]
+    fn countdown() {
+        assert_eq!(w23a01_tick_countdown(0), (99, false));
+        assert_eq!(w23a01_tick_countdown(1), (0, true));
+        assert_eq!(w23a01_tick_countdown(5), (4, false));
+    }
+
+    #[test]
+    fn hash_lookup() {
+        assert!(w23a01_hash_bucket(0x1234_5678, 16) < 16);
+        let b = w23a01_hash_bucket(7, 4) as usize;
+        let mut buckets = vec![None; 4];
+        buckets[b] = Some(0);
+        let nodes = [(Some(1), 3u32), (None, 7)];
+        assert_eq!(w23a01_hash_find(&buckets, &nodes, 7), Some(1));
+        assert_eq!(w23a01_hash_find(&buckets, &nodes, 9), None);
+        assert_eq!(w23a01_hash_find(&[], &nodes, 7), None);
+    }
+
+    #[test]
+    fn predicates() {
+        assert!(w23a01_mode_is_3(3) && !w23a01_mode_is_3(6));
+        assert!(w23a01_mode_is_6(6) && !w23a01_mode_is_6(3));
+        assert!(w23a01_state_is_0f(0x0f) && !w23a01_state_is_0f(0));
+        let mut r = [0u8; 0x80];
+        assert!(w23a01_flags_clear(&r));
+        r[0x79] = 1;
+        assert!(!w23a01_flags_clear(&r));
+        assert!(!w23a01_flags_clear(&[0; 4]));
+    }
+
+    #[test]
+    fn records() {
+        assert_eq!(w23a01_validate_records(None, |_| true), (false, 0));
+        let buf = vec![0u8; 0x960 * 3 + 5];
+        assert_eq!(w23a01_validate_records(Some(&buf), |_| true), (true, 3));
+        let mut k = 0;
+        assert_eq!(
+            w23a01_validate_records(Some(&buf), |_| {
+                k += 1;
+                k < 2
+            }),
+            (true, 1)
+        );
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave23/agent02.rs
+// ===========================================================================
+// Wave 23 translation batch 02: unit-table id resolution, block rebasing,
+// slot-row scans and small release helpers.
+
+/// `0x006fc4d0`: resolves each non-zero id in `ids` (count = `ids.len()`,
+/// callee 00572310 supplies it) to the value of the nearest earlier slot with
+/// the same id, written in place into `vals` (stride 4).  Zero ids map to 0.
+/// A non-zero id with no earlier match is the fatal "unit\\%s" error path;
+/// returns `Err(id & 0xffff)`.
+pub fn w23a02_resolve_ids(vals: &mut [u32], ids: &[u32]) -> Result<(), u32> {
+    for (i, &id) in ids.iter().enumerate() {
+        let v = if id == 0 {
+            0
+        } else {
+            let mut j = i as isize - 1;
+            loop {
+                if j < 0 {
+                    return Err(id & 0xffff);
+                }
+                if ids[j as usize] == id {
+                    break vals[j as usize];
+                }
+                j -= 1;
+            }
+        };
+        if let Some(slot) = vals.get_mut(i) {
+            *slot = v;
+        }
+    }
+    Ok(())
+}
+
+/// `0x006fc280` (second half): rebases one block.  Header u16 low 15 bits is
+/// the entry count `n`; entry `m` (1..=n) has a u32 at byte `8*m + 2` whose
+/// low 31 bits are an offset that becomes `(v & 0x7fffffff) + addr`.
+/// Entries are processed from the last to the first.
+pub fn w23a02_rebase_block(block: &mut [u8], addr: u32) {
+    if block.len() < 2 {
+        return;
+    }
+    let n = (u16::from_le_bytes([block[0], block[1]]) & 0x7fff) as usize;
+    for m in (1..=n).rev() {
+        let o = 8 * m + 2;
+        if o + 4 > block.len() {
+            continue;
+        }
+        let v = u32::from_le_bytes([block[o], block[o + 1], block[o + 2], block[o + 3]]);
+        let r = (v & 0x7fff_ffff).wrapping_add(addr);
+        block[o..o + 4].copy_from_slice(&r.to_le_bytes());
+    }
+}
+
+/// `0x006fc280`: after resolving ids (see 006fc4d0 logic) walks the pointer
+/// list from last to first and rebases each block once; a block whose address
+/// already appears among the earlier slots is skipped.  `rebase(i)` is called
+/// for each slot index to process, in the original order.
+pub fn w23a02_rebase_unique(addrs: &[u32], mut rebase: impl FnMut(usize)) {
+    for i in (0..addrs.len()).rev() {
+        if addrs[..i].contains(&addrs[i]) {
+            continue;
+        }
+        rebase(i);
+    }
+}
+
+/// `0x006fc650`: slot-row base byte offset: `0xd70 + (idx + game * 0x12) * 0x30`.
+pub fn w23a02_slot_row_offset(game: u32, idx: u8) -> usize {
+    0xd70 + (idx as usize + game as usize * 0x12) * 0x30
+}
+
+/// `0x006fc650`: when the net gate (`FUN_00748d60`) is 0 and `idx < 10`,
+/// returns the row's first entry when non-zero (passed to FUN_005b4d20).
+/// A row holds 12 u32 entries.
+pub fn w23a02_slot_head(gate: i32, idx: u8, row: &[u32; 12]) -> Option<u32> {
+    if gate != 0 || idx >= 10 {
+        return None;
+    }
+    if row[0] != 0 { Some(row[0]) } else { None }
+}
+
+/// `0x006fc7e0`: same as 006fc650 but takes a 32-bit parameter whose low
+/// byte is the index; the caller then always runs the 006fc940 clear.
+pub fn w23a02_slot_head_wide(gate: i32, param: u32, row: &[u32; 12]) -> Option<u32> {
+    w23a02_slot_head(gate, (param & 0xff) as u8, row)
+}
+
+/// `0x00708000`: releases the handle if non-zero via `release`, then clears it.
+pub fn w23a02_release_handle(h: &mut u32, mut release: impl FnMut(u32)) {
+    if *h != 0 {
+        release(*h);
+    }
+    *h = 0;
+}
+
+/// `0x00708030`: seven handles at stride 5 u32; each non-zero handle is
+/// released and cleared.
+pub fn w23a02_release_handles(table: &mut [u32], mut release: impl FnMut(u32)) {
+    for k in 0..7 {
+        if let Some(h) = table.get_mut(k * 5) {
+            w23a02_release_handle(h, &mut release);
+        }
+    }
+}
+
+/// `0x006f0870`: bounded append.  `len` = bounded strlen of `dst` (cap
+/// `cap`); when `len != cap`, copies `min(strlen(src), cap-1-len)` bytes of
+/// `src` at `dst[len..]` and returns that count (None when full).
+pub fn w23a02_bounded_append(dst: &mut [u8], src: &[u8], cap: usize) -> Option<usize> {
+    let len = dst
+        .iter()
+        .take(cap)
+        .position(|&b| b == 0)
+        .unwrap_or(cap.min(dst.len()));
+    if len == cap {
+        return None;
+    }
+    let slen = src.iter().position(|&b| b == 0).unwrap_or(src.len());
+    let n = slen.min((cap - 1).wrapping_sub(len));
+    let n = n.min(dst.len().saturating_sub(len));
+    dst[len..len + n].copy_from_slice(&src[..n]);
+    Some(n)
+}
+
+#[cfg(test)]
+mod tests_wave23_agent02 {
+    use super::*;
+
+    #[test]
+    fn resolve_ids_backward_search() {
+        let ids = [5, 0, 5, 7];
+        let mut v = [10, 11, 12, 13];
+        // slot 0 (id 5) has no earlier slot to match.
+        assert_eq!(w23a02_resolve_ids(&mut v, &ids), Err(5));
+        let ids = [5, 0, 5];
+        let mut v = [10, 11, 12];
+        assert_eq!(w23a02_resolve_ids(&mut v, &ids), Err(5));
+    }
+
+    #[test]
+    fn resolve_ids_ok() {
+        let ids = [0, 0, 0];
+        let mut v = [1, 2, 3];
+        assert!(w23a02_resolve_ids(&mut v, &ids).is_ok());
+        assert_eq!(v, [0, 0, 0]);
+    }
+
+    #[test]
+    fn rebase_block_entries() {
+        let mut b = vec![0u8; 26];
+        b[0] = 2;
+        b[10..14].copy_from_slice(&0x8000_0010u32.to_le_bytes());
+        b[18..22].copy_from_slice(&0x20u32.to_le_bytes());
+        w23a02_rebase_block(&mut b, 0x1000);
+        assert_eq!(u32::from_le_bytes(b[10..14].try_into().unwrap()), 0x1010);
+        assert_eq!(u32::from_le_bytes(b[18..22].try_into().unwrap()), 0x1020);
+    }
+
+    #[test]
+    fn rebase_unique_skips_dups() {
+        let mut seen = vec![];
+        w23a02_rebase_unique(&[1, 2, 1, 3], |i| seen.push(i));
+        assert_eq!(seen, vec![3, 1, 0]);
+    }
+
+    #[test]
+    fn slot_rows() {
+        assert_eq!(w23a02_slot_row_offset(0, 0), 0xd70);
+        assert_eq!(w23a02_slot_row_offset(1, 2), 0xd70 + 20 * 0x30);
+        let mut row = [0u32; 12];
+        assert_eq!(w23a02_slot_head(0, 3, &row), None);
+        row[0] = 9;
+        assert_eq!(w23a02_slot_head(0, 9, &row), Some(9));
+        assert_eq!(w23a02_slot_head(0, 10, &row), None);
+        assert_eq!(w23a02_slot_head(1, 0, &row), None);
+        assert_eq!(w23a02_slot_head_wide(0, 0x103, &row), Some(9));
+    }
+
+    #[test]
+    fn release_handles() {
+        let mut t = [0u32; 40];
+        t[0] = 1;
+        t[10] = 2;
+        t[30] = 3;
+        t[35] = 4; // index 7 is outside the seven slots
+        let mut got = vec![];
+        w23a02_release_handles(&mut t, |h| got.push(h));
+        assert_eq!(got, vec![1, 2, 3]);
+        assert_eq!((t[0], t[10], t[30], t[35]), (0, 0, 0, 4));
+        let mut h = 5;
+        w23a02_release_handle(&mut h, |_| {});
+        assert_eq!(h, 0);
+    }
+
+    #[test]
+    fn bounded_append_clamps() {
+        let mut d = *b"ab\0\0\0\0\0\0";
+        assert_eq!(w23a02_bounded_append(&mut d, b"xyz\0", 8), Some(3));
+        assert_eq!(&d[..5], b"abxyz");
+        let mut d = *b"ab\0\0";
+        assert_eq!(w23a02_bounded_append(&mut d, b"xyz\0", 4), Some(1));
+        let mut d = *b"abcd";
+        assert_eq!(w23a02_bounded_append(&mut d, b"x\0", 4), None);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave23/agent03.rs
+// ===========================================================================
+// Wave 23 translation batch 03.
+//
+// Queue window, module `client.rs`.  Most of the assignment is SEH/CRT
+// glue, path-string building, non-returning call chains or bnet; only the
+// small routines with visible logic are translated.
+
+/// Record touched by `0x00715f10` (only the two fields it writes).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct W23a03Record {
+    /// Field at offset `0x3e`.
+    pub word_3e: u16,
+    /// Flags at offset `0x30`.
+    pub flags_30: u32,
+}
+
+/// `0x00709680`: true when the cached global equals `param`.
+pub fn w23a03_matches_cached(cached: u32, param: u32) -> bool {
+    cached == param
+}
+
+/// `0x00715f10`: looks up a record (callee with selector `-2`); when found,
+/// copies `table[index]` into the `0x3e` word and ORs `flags` into `0x30`.
+/// Returns whether a record was found.
+pub fn w23a03_set_record_flags(
+    record: Option<&mut W23a03Record>,
+    table: &[u16],
+    index: u16,
+    flags: u32,
+) -> bool {
+    match record {
+        Some(r) => {
+            r.word_3e = table.get(index as usize).copied().unwrap_or(0);
+            r.flags_30 |= flags;
+            true
+        }
+        None => false,
+    }
+}
+
+/// `0x00716de0`: classifies each map tile and reports `(x, y, a, b)` through
+/// `emit` in row-major order.  `flags` holds `width * height` tile words;
+/// `mask_a`/`mask_b` are the two visibility masks, `shared` is the
+/// replay/observer switch, `mode` the second switch and `vis` the packed
+/// player mask.  `fallback` stands for the callee evaluated only when
+/// `shared` is zero.  Nothing happens when `enabled` is false.
+#[allow(clippy::too_many_arguments)]
+pub fn w23a03_classify_tiles(
+    enabled: bool,
+    width: usize,
+    height: usize,
+    flags: &[u32],
+    mask_a: u32,
+    mask_b: u32,
+    shared: u32,
+    mode: u32,
+    vis: u32,
+    mut fallback: impl FnMut() -> bool,
+    mut emit: impl FnMut(usize, usize, bool, bool),
+) {
+    if !enabled {
+        return;
+    }
+    for y in 0..height {
+        for x in 0..width {
+            let t = flags.get(y * width + x).copied().unwrap_or(0);
+            let mut a = t & mask_a == 0;
+            let mut b = t & mask_b == 0;
+            if shared != 0 || fallback() {
+                if mode == 0 {
+                    if !t & ((vis & 0xff) << 8) != 0 {
+                        if (vis as u8) & (!t as u8) == 0 {
+                            a = false;
+                            b = true;
+                        } else {
+                            a = true;
+                            b = false;
+                        }
+                    } else {
+                        a = false;
+                        b = false;
+                    }
+                } else {
+                    a = true;
+                    b = false;
+                }
+            }
+            emit(x, y, a, b);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests_wave23_agent03 {
+    use super::*;
+
+    #[test]
+    fn cached_match() {
+        assert!(w23a03_matches_cached(5, 5));
+        assert!(!w23a03_matches_cached(5, 6));
+    }
+
+    #[test]
+    fn record_flags() {
+        let mut r = W23a03Record::default();
+        assert!(w23a03_set_record_flags(Some(&mut r), &[1, 2, 3], 2, 0x10));
+        assert!(w23a03_set_record_flags(Some(&mut r), &[1, 2, 3], 1, 0x01));
+        assert_eq!(
+            r,
+            W23a03Record {
+                word_3e: 2,
+                flags_30: 0x11
+            }
+        );
+        assert!(!w23a03_set_record_flags(None, &[1], 0, 1));
+    }
+
+    fn run(t: u32, shared: u32, mode: u32, vis: u32, fb: bool) -> (bool, bool) {
+        let mut out = (false, false);
+        w23a03_classify_tiles(
+            true,
+            1,
+            1,
+            &[t],
+            1,
+            2,
+            shared,
+            mode,
+            vis,
+            || fb,
+            |_, _, a, b| out = (a, b),
+        );
+        out
+    }
+
+    #[test]
+    fn classify() {
+        assert_eq!(run(0, 0, 0, 0, false), (true, true));
+        assert_eq!(run(1, 0, 0, 0, false), (false, true));
+        assert_eq!(run(0, 1, 1, 0, false), (true, false));
+        assert_eq!(run(0, 0, 0, 0x01, true), (true, false));
+        assert_eq!(run(0, 1, 0, 0x01, false), (true, false));
+        assert_eq!(run(0, 1, 0, 0x100, false), (false, false));
+        assert_eq!(run(0x100, 1, 0, 0x101, false), (false, false));
+        assert_eq!(run(0x1ff, 1, 0, 0x101, false), (false, false));
+        assert_eq!(run(0xff, 1, 0, 0xff, false), (false, true));
+    }
+
+    #[test]
+    fn disabled_and_order() {
+        let mut n = 0;
+        w23a03_classify_tiles(
+            false,
+            2,
+            2,
+            &[0; 4],
+            0,
+            0,
+            1,
+            1,
+            0,
+            || true,
+            |_, _, _, _| n += 1,
+        );
+        assert_eq!(n, 0);
+        let mut v = vec![];
+        w23a03_classify_tiles(
+            true,
+            2,
+            2,
+            &[0; 4],
+            0,
+            0,
+            1,
+            1,
+            0,
+            || true,
+            |x, y, _, _| v.push((x, y)),
+        );
+        assert_eq!(v, vec![(0, 0), (1, 0), (0, 1), (1, 1)]);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave23/agent04.rs
+// ===========================================================================
+// Wave 23 translation batch 04: small client-side predicates and guards.
+
+/// `0x006cd9a0`: negated result of the callee (`result == 0`).
+pub fn w23a04_not_char(callee_result: u8) -> bool {
+    callee_result == 0
+}
+
+/// Outcome of the budget tick in `0x006cda20`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum W23a04Tick {
+    /// Budget still positive: returns 1.
+    Continue,
+    /// Budget exhausted, no pending request: budget restored, returns 0.
+    Idle,
+    /// Budget exhausted and the recheck flag was clear: flag set, then a
+    /// non-returning call.
+    SetFlagThenHalt,
+    /// A pending request exists (flag already set) -> non-returning call.
+    HaltFlagSet,
+    /// A pending request exists (flag clear) -> flag cleared, then
+    /// non-returning call.
+    HaltFlagClear,
+}
+
+/// `0x006cda20`: subtracts 1000 from `budget`, zeroes `*out`, and decides
+/// what to do once the budget drops below 1.  `pending` is the result of the
+/// pending-request probe (non-zero means pending); `flag` is the byte global.
+pub fn w23a04_budget_tick(
+    out: &mut u32,
+    budget: &mut i32,
+    flag: &mut bool,
+    pending: impl FnOnce() -> bool,
+) -> W23a04Tick {
+    *out = 0;
+    *budget = budget.wrapping_sub(1000);
+    if *budget >= 1 {
+        return W23a04Tick::Continue;
+    }
+    if pending() {
+        return if *flag {
+            W23a04Tick::HaltFlagSet
+        } else {
+            *flag = false;
+            W23a04Tick::HaltFlagClear
+        };
+    }
+    *budget = budget.wrapping_add(1000);
+    if !*flag {
+        *flag = true;
+        return W23a04Tick::SetFlagThenHalt;
+    }
+    W23a04Tick::Idle
+}
+
+/// `0x006cdc20`: true when `counter >= 1`, otherwise the fallback probe.
+pub fn w23a04_counter_or_probe(counter: i32, probe: impl FnOnce() -> bool) -> bool {
+    counter >= 1 || probe()
+}
+
+/// `0x0071ef40`: dispatch on the 16-bit kind at offset 0x10 of the record.
+/// Kinds 0,1,3..=9,0xf,0x18 call the helper and return 1; every other kind
+/// returns the helper's result.
+pub fn w23a04_kind_dispatch(kind: u16, call: impl FnOnce() -> u32) -> u32 {
+    let r = call();
+    match kind {
+        0 | 1 | 3..=9 | 0xf | 0x18 => 1,
+        _ => r,
+    }
+}
+
+/// `0x007208c0`: when both coordinate getters are not -1, transforms the
+/// point `(x, y)` (x from the first getter, y from the second, both as i16)
+/// and returns it; the caller then issues the two set calls.  Returns
+/// `(x, y, transformed)`.
+pub fn w23a04_cursor_point(
+    first: i32,
+    second: i32,
+    transform: impl FnOnce(i32, i32) -> (u32, u32),
+) -> Option<(i16, i16, (u32, u32))> {
+    if first == -1 || second == -1 {
+        return None;
+    }
+    let y = second as i16;
+    let x = first as i16;
+    Some((x, y, transform(x as i32, y as i32)))
+}
+
+/// `0x00724e00`: guard chain; true when the final lookup should be run.
+/// `slot` is the byte at offset 1 of the packet, `max_slot` the limit
+/// getter, `taken(slot)` the occupancy probe and `accept` the final check.
+pub fn w23a04_slot_guard(
+    have_table: bool,
+    state: u8,
+    host: bool,
+    slot: u8,
+    max_slot: u8,
+    taken: impl FnOnce(u8) -> bool,
+    accept: impl FnOnce() -> bool,
+) -> bool {
+    have_table && state > 3 && host && slot != 0 && slot <= max_slot && !taken(slot) && accept()
+}
+
+#[cfg(test)]
+mod tests_wave23_agent04 {
+    use super::*;
+
+    #[test]
+    fn not_char() {
+        assert!(w23a04_not_char(0));
+        assert!(!w23a04_not_char(1));
+    }
+
+    #[test]
+    fn tick() {
+        let (mut o, mut b, mut f) = (9, 2500, false);
+        assert_eq!(
+            w23a04_budget_tick(&mut o, &mut b, &mut f, || false),
+            W23a04Tick::Continue
+        );
+        assert_eq!((o, b), (0, 1500));
+        let (mut b, mut f) = (1000, false);
+        assert_eq!(
+            w23a04_budget_tick(&mut o, &mut b, &mut f, || false),
+            W23a04Tick::SetFlagThenHalt
+        );
+        assert_eq!((b, f), (1000, true));
+        assert_eq!(
+            w23a04_budget_tick(&mut o, &mut b, &mut f, || false),
+            W23a04Tick::Idle
+        );
+        assert_eq!(
+            w23a04_budget_tick(&mut o, &mut b, &mut f, || true),
+            W23a04Tick::HaltFlagSet
+        );
+        let mut f = true;
+        let mut b = 0;
+        let _ = &mut f;
+        f = false;
+        assert_eq!(
+            w23a04_budget_tick(&mut o, &mut b, &mut f, || true),
+            W23a04Tick::HaltFlagClear
+        );
+    }
+
+    #[test]
+    fn counter() {
+        assert!(w23a04_counter_or_probe(1, || false));
+        assert!(!w23a04_counter_or_probe(0, || false));
+        assert!(w23a04_counter_or_probe(-3, || true));
+    }
+
+    #[test]
+    fn kind() {
+        for k in [0u16, 1, 3, 4, 9, 0xf, 0x18] {
+            assert_eq!(w23a04_kind_dispatch(k, || 7), 1);
+        }
+        for k in [2u16, 0xa, 0x10, 0x19] {
+            assert_eq!(w23a04_kind_dispatch(k, || 7), 7);
+        }
+    }
+
+    #[test]
+    fn cursor() {
+        assert!(w23a04_cursor_point(-1, 2, |_, _| (0, 0)).is_none());
+        assert!(w23a04_cursor_point(1, -1, |_, _| (0, 0)).is_none());
+        assert_eq!(
+            w23a04_cursor_point(3, 4, |x, y| (x as u32, y as u32)),
+            Some((3, 4, (3, 4)))
+        );
+    }
+
+    #[test]
+    fn guard() {
+        let g = |s, m, t| w23a04_slot_guard(true, 4, true, s, m, |_| t, || true);
+        assert!(g(1, 1, false));
+        assert!(!g(0, 1, false));
+        assert!(!g(2, 1, false));
+        assert!(!g(1, 1, true));
+        assert!(!w23a04_slot_guard(true, 3, true, 1, 1, |_| false, || true));
+    }
+}
