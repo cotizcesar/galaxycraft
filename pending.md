@@ -28,9 +28,6 @@ energy, Medic heal rules and search square, Ghost paint range, the nuke's
 90 / 45 frame timers and 320 px drop, splash rings measured to unit boxes,
 `attkshiftproj`, Lockdown 131, blind / restore.  What is still open:
 
-- **Computer players and the nuke.**  A human player must build the missile
-  in the silo; a computer player still gets it on demand when its script
-  orders a strike.
 - **Cloak look.**  Retail distorts cloaked units through the palette; the
   client fades them (`render::CLOAK_KEEP`) in SD and HD.
 - **Voice lines** for selection and orders are picked at random, from

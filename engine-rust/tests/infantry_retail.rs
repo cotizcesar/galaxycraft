@@ -808,3 +808,33 @@ fn a_medic_ignores_flyers_and_disabled_units_and_pays_half_the_heal() {
     // Two frames of +8 regeneration on the Medic.
     assert_eq!(before - w.units[medic].energy_fixed(), 100 + 28 - 16);
 }
+
+#[test]
+fn a_computer_player_builds_its_missile_before_it_can_strike() {
+    let mut w = world();
+    w.players[1].is_computer = true;
+    w.players[1].minerals = 1000;
+    w.players[1].gas = 1000;
+    let cc = w.spawn_px(1, uid::COMMAND_CENTER, 300, 300).unwrap();
+    w.units[cc].completed = true;
+    for k in 0..4 {
+        let d = w
+            .spawn_px(1, uid::SUPPLY_DEPOT, 600 + 100 * k, 200)
+            .unwrap();
+        w.units[d].completed = true;
+    }
+    let silo = w.spawn_px(1, uid::NUCLEAR_SILO, 420, 320).unwrap();
+    w.units[silo].completed = true;
+    w.units[silo].addon_attached = true;
+    let ghost = w.spawn_px(1, uid::GHOST, 300, 900).unwrap();
+    let gid = w.units[ghost].id;
+    // The first request only starts the missile (and pays for it).
+    assert!(w.launch_nuke(gid, (500, 900)).is_err());
+    assert_eq!((w.players[1].minerals, w.players[1].gas), (800, 800));
+    assert!(w.nuke_strikes.is_empty());
+    for _ in 0..1600 {
+        w.step();
+    }
+    assert!(w.units[silo].nuke_ready);
+    w.launch_nuke(gid, (500, 900)).expect("armed now");
+}

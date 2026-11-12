@@ -9607,13 +9607,14 @@ impl World {
         };
         let silo_id = self.units[silo].id;
         if !self.units[silo].nuke_ready {
-            // A player has to build the missile in the silo first (200 /
-            // 200, 1500 build time).  Computer players still arm on demand:
-            // their scripts order the strike directly.
-            if !self.players[owner as usize].is_computer {
-                return Err(SimError::MissingRequirements);
+            // The missile has to be built in the silo first (200 / 200,
+            // build time 1500).  A computer player whose script asks for a
+            // strike without one starts building it and strikes on a later
+            // request, like a player would.
+            if self.players[owner as usize].is_computer {
+                let _ = self.train(silo_id, uid::NUCLEAR_MISSILE);
             }
-            self.arm_nuke(silo_id)?;
+            return Err(SimError::MissingRequirements);
         }
         self.units[silo].nuke_ready = false;
         // `0x005b4950`: the launched missile links back to its silo
