@@ -92152,3 +92152,4030 @@ mod tests_wave32_agent150 {
         );
     }
 }
+
+// ===========================================================================
+// Merged from src/wave33/agent11.rs
+// ===========================================================================
+// Wave 33 agent 11 translations.
+
+/// 0x006b0210: cached value getter; flag bit 14 of `flags` selects the cache.
+pub fn w33a11_cached_value(
+    flags: u32,
+    cache: &mut u32,
+    compute: impl FnOnce() -> u32,
+    out: &mut u32,
+) -> u32 {
+    if (flags >> 14) & 1 == 0 {
+        let v = compute();
+        *cache = v;
+        *out = v;
+    } else {
+        *out = *cache;
+    }
+    1
+}
+
+/// 0x0084f650: forward to a virtual slot (+0x5c) when the predicate holds.
+pub fn w33a11_forward_if(pred: bool, forward: impl FnOnce()) {
+    if pred {
+        forward();
+    }
+}
+
+/// 0x00cbce00: CRT `strtoull` core. Returns (value, end index, overflow).
+pub fn w33a11_strtoull(s: &[u8], base: u32) -> (u64, usize, bool) {
+    let at = |i: usize| s.get(i).copied().unwrap_or(0);
+    let mut i = 0;
+    while matches!(at(i), b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r') {
+        i += 1;
+    }
+    let sign = at(i);
+    if sign == b'-' || sign == b'+' {
+        i += 1;
+    }
+    let mut base = base;
+    let hex = at(i + 1) == b'x' || at(i + 1) == b'X';
+    if base == 0 {
+        if at(i) != b'0' {
+            base = 10;
+        } else if !hex {
+            base = 8;
+        } else {
+            base = 16;
+            i += 2;
+        }
+    } else if base == 16 && at(i) == b'0' && hex {
+        i += 2;
+    }
+    let max = u64::MAX / base as u64;
+    let rem = (u64::MAX % base as u64) as u32;
+    let mut v: u64 = 0;
+    let mut ovf = false;
+    loop {
+        let c = at(i);
+        let d = match c {
+            b'0'..=b'9' => (c - b'0') as u32,
+            b'a'..=b'z' => (c - b'a') as u32 + 10,
+            b'A'..=b'Z' => (c - b'A') as u32 + 10,
+            _ => u32::MAX,
+        };
+        if d >= base {
+            break;
+        }
+        if v < max || (v == max && d <= rem) {
+            v = v * base as u64 + d as u64;
+        } else {
+            ovf = true;
+        }
+        i += 1;
+    }
+    if ovf {
+        v = u64::MAX;
+    }
+    if sign == b'-' && !ovf {
+        v = v.wrapping_neg();
+    }
+    (v, i, ovf)
+}
+
+#[cfg(test)]
+mod tests_wave33_agent11 {
+    use super::*;
+
+    #[test]
+    fn cached() {
+        let (mut c, mut o) = (0, 0);
+        assert_eq!(w33a11_cached_value(0, &mut c, || 7, &mut o), 1);
+        assert_eq!((c, o), (7, 7));
+        assert_eq!(w33a11_cached_value(1 << 14, &mut c, || 9, &mut o), 1);
+        assert_eq!(o, 7);
+    }
+
+    #[test]
+    fn forward() {
+        let mut n = 0;
+        w33a11_forward_if(false, || n += 1);
+        w33a11_forward_if(true, || n += 1);
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn strtoull() {
+        assert_eq!(w33a11_strtoull(b"  123x", 10), (123, 5, false));
+        assert_eq!(w33a11_strtoull(b"0x1F", 0), (31, 4, false));
+        assert_eq!(w33a11_strtoull(b"017", 0), (15, 3, false));
+        assert_eq!(w33a11_strtoull(b"-1", 10).0, u64::MAX);
+        assert_eq!(
+            w33a11_strtoull(b"18446744073709551616", 10),
+            (u64::MAX, 20, true)
+        );
+        assert_eq!(w33a11_strtoull(b"18446744073709551615", 10).0, u64::MAX);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave33/agent12.rs
+// ===========================================================================
+// Wave 33 agent 12: guarded virtual-dispatch forwarders.
+
+/// `0x0084f690`: calls the predicate (`FUN_0084f6d0`) with `(a, b)`; when it
+/// returns nonzero, invokes the inner object's vtable slot `0x58` with
+/// the nine arguments (the third dereferenced from its pointer).
+pub fn w33a12_forward_slot58<P, D>(
+    a: u32,
+    b: u32,
+    c: &u32,
+    rest: [u32; 6],
+    pred: P,
+    dispatch: D,
+) -> bool
+where
+    P: FnOnce(u32, u32) -> bool,
+    D: FnOnce(u32, u32, u32, [u32; 6]),
+{
+    if pred(a, b) {
+        dispatch(a, b, *c, rest);
+        true
+    } else {
+        false
+    }
+}
+
+/// `0x0084f750`: same guard; invokes vtable slot `0x40` with `(a, b, *c)`.
+pub fn w33a12_forward_slot40<P, D>(a: u32, b: u32, c: &u32, pred: P, dispatch: D) -> bool
+where
+    P: FnOnce(u32, u32) -> bool,
+    D: FnOnce(u32, u32, u32),
+{
+    if pred(a, b) {
+        dispatch(a, b, *c);
+        true
+    } else {
+        false
+    }
+}
+
+/// `0x00850e80`: same guard; invokes vtable slot `0x48` with `(a, b, c, d)`.
+pub fn w33a12_forward_slot48<P, D>(a: u32, b: u32, c: u32, d: u32, pred: P, dispatch: D) -> bool
+where
+    P: FnOnce(u32, u32) -> bool,
+    D: FnOnce(u32, u32, u32, u32),
+{
+    if pred(a, b) {
+        dispatch(a, b, c, d);
+        true
+    } else {
+        false
+    }
+}
+
+#[cfg(test)]
+mod tests_wave33_agent12 {
+    use super::*;
+
+    #[test]
+    fn slot58() {
+        let mut got = None;
+        assert!(w33a12_forward_slot58(
+            1,
+            2,
+            &3,
+            [4, 5, 6, 7, 8, 9],
+            |_, _| true,
+            |a, b, c, r| got = Some((a, b, c, r))
+        ));
+        assert_eq!(got, Some((1, 2, 3, [4, 5, 6, 7, 8, 9])));
+        assert!(!w33a12_forward_slot58(
+            1,
+            2,
+            &3,
+            [0; 6],
+            |_, _| false,
+            |_, _, _, _| panic!()
+        ));
+    }
+
+    #[test]
+    fn slot40_48() {
+        let mut g = 0;
+        assert!(w33a12_forward_slot40(
+            1,
+            2,
+            &9,
+            |a, b| a < b,
+            |_, _, c| g = c
+        ));
+        assert_eq!(g, 9);
+        assert!(!w33a12_forward_slot40(
+            2,
+            1,
+            &9,
+            |a, b| a < b,
+            |_, _, _| panic!()
+        ));
+        assert!(w33a12_forward_slot48(
+            1,
+            2,
+            3,
+            4,
+            |_, _| true,
+            |a, b, c, d| g = a + b + c + d
+        ));
+        assert_eq!(g, 10);
+        assert!(!w33a12_forward_slot48(
+            1,
+            2,
+            3,
+            4,
+            |_, _| false,
+            |_, _, _, _| panic!()
+        ));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave33/agent13.rs
+// ===========================================================================
+// Wave 33 translation batch 13: guarded virtual-dispatch forwarders.
+
+/// `0x00850eb0`: if the membership check on `(a, b)` passes, forwards
+/// `(a, b, c)` to the inner object's vtable slot `0x64`; otherwise no-op.
+/// Returns whether the forward happened.
+pub fn w33a13_forward3(
+    contains: impl FnOnce(u32, u32) -> bool,
+    a: u32,
+    b: u32,
+    c: u32,
+    forward: impl FnOnce(u32, u32, u32),
+) -> bool {
+    if !contains(a, b) {
+        return false;
+    }
+    forward(a, b, c);
+    true
+}
+
+/// `0x00850ee0`: guarded forward of six arguments to vtable slot `0x44`.
+pub fn w33a13_forward6(
+    contains: impl FnOnce(u32, u32) -> bool,
+    args: [u32; 6],
+    forward: impl FnOnce([u32; 6]),
+) -> bool {
+    if !contains(args[0], args[1]) {
+        return false;
+    }
+    forward(args);
+    true
+}
+
+/// `0x00850f20`: guarded forward of seven arguments to vtable slot `0x4c`.
+pub fn w33a13_forward7(
+    contains: impl FnOnce(u32, u32) -> bool,
+    args: [u32; 7],
+    forward: impl FnOnce([u32; 7]),
+) -> bool {
+    if !contains(args[0], args[1]) {
+        return false;
+    }
+    forward(args);
+    true
+}
+
+#[cfg(test)]
+mod tests_wave33_agent13 {
+    use super::*;
+
+    #[test]
+    fn guard_blocks_and_allows() {
+        let mut hit = 0;
+        assert!(!w33a13_forward3(|_, _| false, 1, 2, 3, |_, _, _| hit += 1));
+        assert_eq!(hit, 0);
+        assert!(w33a13_forward3(
+            |a, b| a == 1 && b == 2,
+            1,
+            2,
+            3,
+            |_, _, c| hit += c
+        ));
+        assert_eq!(hit, 3);
+        assert!(w33a13_forward6(
+            |_, _| true,
+            [1, 2, 3, 4, 5, 6],
+            |a| hit += a[5]
+        ));
+        assert!(!w33a13_forward7(|_, _| false, [0; 7], |_| hit = 0));
+        assert!(w33a13_forward7(|_, _| true, [7; 7], |a| hit += a[6]));
+        assert_eq!(hit, 16);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave33/agent14.rs
+// ===========================================================================
+// Wave 33 agent 14: guarded virtual-forwarding wrappers.
+
+/// `0x00850f60`: when `guard(a, b)` is true, forwards the five arguments to
+/// the inner object's vtable slot `0x54`, modelled as `forward`.
+pub fn w33a14_guarded_forward5<G, F>(
+    a: u32,
+    b: u32,
+    c: u32,
+    d: u32,
+    e: u32,
+    guard: G,
+    mut forward: F,
+) where
+    G: FnOnce(u32, u32) -> bool,
+    F: FnMut(u32, u32, u32, u32, u32),
+{
+    if guard(a, b) {
+        forward(a, b, c, d, e);
+    }
+}
+
+/// `0x00850fa0`: when `guard(a, b)` is true, forwards the six arguments to
+/// the inner object's vtable slot `0x50`, modelled as `forward`.
+pub fn w33a14_guarded_forward6<G, F>(args: [u32; 6], guard: G, mut forward: F)
+where
+    G: FnOnce(u32, u32) -> bool,
+    F: FnMut([u32; 6]),
+{
+    if guard(args[0], args[1]) {
+        forward(args);
+    }
+}
+
+/// `0x00850fe0`: when `guard(a, b)` is true, forwards the four arguments to
+/// the inner object's vtable slot `0x34` and returns 1; otherwise returns 0.
+pub fn w33a14_guarded_forward4<G, F>(args: [u32; 4], guard: G, mut forward: F) -> u32
+where
+    G: FnOnce(u32, u32) -> bool,
+    F: FnMut([u32; 4]),
+{
+    if guard(args[0], args[1]) {
+        forward(args);
+        1
+    } else {
+        0
+    }
+}
+
+#[cfg(test)]
+mod tests_wave33_agent14 {
+    use super::*;
+
+    #[test]
+    fn forwards_only_when_guard_passes() {
+        let mut n = 0;
+        w33a14_guarded_forward5(1, 2, 3, 4, 5, |_, _| true, |_, _, _, _, _| n += 1);
+        w33a14_guarded_forward5(1, 2, 3, 4, 5, |_, _| false, |_, _, _, _, _| n += 10);
+        w33a14_guarded_forward6([1; 6], |_, _| true, |_| n += 100);
+        assert_eq!(n, 101);
+        assert_eq!(w33a14_guarded_forward4([1; 4], |a, b| a == b, |_| {}), 1);
+        assert_eq!(
+            w33a14_guarded_forward4([1, 2, 0, 0], |a, b| a == b, |_| {}),
+            0
+        );
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave33/agent15.rs
+// ===========================================================================
+// Wave 33 agent 15: small widget dispatch helpers.
+
+/// `0x00851020`: if the predicate accepts `(a, b)`, forwards the call to the
+/// owner's virtual slot at +0x38 and returns true; otherwise returns false.
+pub fn w33a15_dispatch_if_accepted<P, F>(a: u32, b: u32, c: u64, accept: P, mut forward: F) -> bool
+where
+    P: FnOnce(u32, u32) -> bool,
+    F: FnMut(u32, u32, u64),
+{
+    if accept(a, b) {
+        forward(a, b, c);
+        true
+    } else {
+        false
+    }
+}
+
+/// `0x0087c750`: compares the four shorts at record offset +4..+12 with the
+/// new rectangle; when any differs, stores it, calls `notify(old_x_y,
+/// old_w_h)` (the two old dwords at +4 and +8) and returns true.
+pub fn w33a15_update_rect<F>(rec: &mut [i16; 4], new: [i16; 4], mut notify: F) -> bool
+where
+    F: FnMut([i16; 2], [i16; 2]),
+{
+    if *rec == new {
+        return false;
+    }
+    let old = *rec;
+    *rec = new;
+    notify([old[0], old[1]], [old[2], old[3]]);
+    true
+}
+
+#[cfg(test)]
+mod tests_wave33_agent15 {
+    use super::*;
+
+    #[test]
+    fn dispatch() {
+        let mut n = 0;
+        assert!(w33a15_dispatch_if_accepted(
+            1,
+            2,
+            3,
+            |a, b| a < b,
+            |_, _, _| n += 1
+        ));
+        assert!(!w33a15_dispatch_if_accepted(
+            2,
+            1,
+            3,
+            |a, b| a < b,
+            |_, _, _| n += 1
+        ));
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn rect() {
+        let mut r = [1, 2, 3, 4];
+        let mut got = None;
+        assert!(!w33a15_update_rect(&mut r, [1, 2, 3, 4], |_, _| panic!()));
+        assert!(w33a15_update_rect(&mut r, [1, 2, 3, 5], |a, b| got = Some((a, b))));
+        assert_eq!(got, Some(([1, 2], [3, 4])));
+        assert_eq!(r, [1, 2, 3, 5]);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave33/agent16.rs
+// ===========================================================================
+// Wave 33 agent 16 translations.
+
+/// `0x008993a0`: key-code dispatch.  Codes 4 and 7 first ask their own
+/// handler (`on_four` / `on_seven`); if it reports handled the result is
+/// `true`, otherwise (and for every other code) the fallback handler runs.
+pub fn w33a16_dispatch_key(
+    code: i32,
+    on_four: impl FnOnce() -> bool,
+    on_seven: impl FnOnce() -> bool,
+    fallback: impl FnOnce(i32) -> bool,
+) -> bool {
+    let handled = match code {
+        4 => on_four(),
+        7 => on_seven(),
+        _ => false,
+    };
+    if handled {
+        return true;
+    }
+    fallback(code)
+}
+
+/// `0x008a7760`: sets the 16-bit field at dword index 0x1be; when the
+/// value changes it invokes the virtual slot at +0x144 and then the
+/// refresh helper.  Returns whether the value changed.
+pub fn w33a16_set_short_field(
+    field: &mut i16,
+    value: i16,
+    virtual_slot: impl FnOnce(),
+    refresh: impl FnOnce(),
+) -> bool {
+    if *field == value {
+        return false;
+    }
+    *field = value;
+    virtual_slot();
+    refresh();
+    true
+}
+
+#[cfg(test)]
+mod tests_wave33_agent16 {
+    use super::*;
+
+    #[test]
+    fn dispatch() {
+        assert!(w33a16_dispatch_key(4, || true, || false, |_| false));
+        assert!(!w33a16_dispatch_key(7, || true, || false, |_| false));
+        assert!(w33a16_dispatch_key(1, || true, || true, |c| c == 1));
+        assert!(w33a16_dispatch_key(4, || false, || false, |c| c == 4));
+    }
+
+    #[test]
+    fn setter() {
+        let mut f = 3i16;
+        let mut calls = 0;
+        assert!(!w33a16_set_short_field(&mut f, 3, || calls += 1, || {}));
+        assert_eq!(calls, 0);
+        assert!(w33a16_set_short_field(&mut f, 5, || calls += 1, || {}));
+        assert_eq!((f, calls), (5, 1));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave33/agent17.rs
+// ===========================================================================
+// Wave 33 agent 17 translations (runtime glue).
+
+/// `0x008ba7d0`: Scrollbar constructor tail.  After the base constructor and
+/// the vtable store, dwords `0x14..=0x18` of the object are zeroed.
+pub fn w33a17_scrollbar_init_fields(obj: &mut [u32]) {
+    for v in obj.iter_mut().skip(0x14).take(5) {
+        *v = 0;
+    }
+}
+
+/// `0x008bd100`: key/event dispatch.  `9` calls `h9`; `0x13`/`0x15` call
+/// `h_alt` and, when it returns false, run `h_fallback` and return 1;
+/// `0x13`/`0x15`/`0x12` then call `h12`.  A true handler result returns 1,
+/// otherwise `default` handles the code.
+pub fn w33a17_dispatch(
+    code: u32,
+    h9: impl FnOnce() -> bool,
+    h_alt: impl FnOnce() -> bool,
+    h_fallback: impl FnOnce(),
+    h12: impl FnOnce() -> bool,
+    default: impl FnOnce(u32) -> u32,
+) -> u32 {
+    let handled = match code {
+        9 => h9(),
+        0x13 | 0x15 => {
+            if !h_alt() {
+                h_fallback();
+                return 1;
+            }
+            h12()
+        }
+        0x12 => h12(),
+        _ => false,
+    };
+    if handled { 1 } else { default(code) }
+}
+
+#[cfg(test)]
+mod tests_wave33_agent17 {
+    use super::*;
+
+    #[test]
+    fn scrollbar_zeroes() {
+        let mut o = [7u32; 0x20];
+        w33a17_scrollbar_init_fields(&mut o);
+        assert_eq!(o[0x13], 7);
+        assert!(o[0x14..0x19].iter().all(|&v| v == 0));
+        assert_eq!(o[0x19], 7);
+    }
+
+    #[test]
+    fn dispatch_paths() {
+        assert_eq!(
+            w33a17_dispatch(9, || true, || true, || {}, || false, |_| 5),
+            1
+        );
+        assert_eq!(
+            w33a17_dispatch(0x13, || false, || false, || {}, || false, |_| 5),
+            1
+        );
+        assert_eq!(
+            w33a17_dispatch(0x13, || false, || true, || {}, || false, |_| 5),
+            5
+        );
+        assert_eq!(
+            w33a17_dispatch(0x12, || false, || true, || {}, || true, |_| 5),
+            1
+        );
+        assert_eq!(
+            w33a17_dispatch(3, || true, || true, || {}, || true, |c| c + 1),
+            4
+        );
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave33/agent18.rs
+// ===========================================================================
+// Wave 33 agent 18.
+
+/// `0x009023e0`: dispatches on `kind`.  Kinds 5, 7 and 9 first call their
+/// handler (`on5` = FUN_00901d20, `on7` = FUN_00903230, `on9` = FUN_00902430);
+/// a non-zero result returns 1.  Otherwise (or for any other kind) the
+/// fallback FUN_00918290 result is returned.
+pub fn w33a18_dispatch_kind(
+    kind: i32,
+    on5: impl FnOnce() -> bool,
+    on7: impl FnOnce() -> bool,
+    on9: impl FnOnce() -> bool,
+    fallback: impl FnOnce(i32) -> u32,
+) -> u32 {
+    let handled = match kind {
+        5 => on5(),
+        7 => on7(),
+        9 => on9(),
+        _ => false,
+    };
+    if handled { 1 } else { fallback(kind) }
+}
+
+#[cfg(test)]
+mod tests_wave33_agent18 {
+    use super::*;
+
+    #[test]
+    fn dispatch() {
+        assert_eq!(
+            w33a18_dispatch_kind(5, || true, || false, || false, |_| 9),
+            1
+        );
+        assert_eq!(
+            w33a18_dispatch_kind(7, || true, || false, || true, |k| k as u32),
+            7
+        );
+        assert_eq!(
+            w33a18_dispatch_kind(9, || false, || false, || true, |_| 9),
+            1
+        );
+        assert_eq!(w33a18_dispatch_kind(6, || true, || true, || true, |_| 4), 4);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave33/agent19.rs
+// ===========================================================================
+// Wave 33 agent 19: small dialog-command dispatch helpers.
+
+/// `0x0090b5d0`: when `command == 3` invokes virtual slot 0x78 with 0x3eb
+/// and returns 1; otherwise defers to the base handler (`fallback`).
+pub fn w33a19_dispatch_cmd3(
+    command: i32,
+    mut virt78: impl FnMut(u32),
+    fallback: impl FnOnce() -> u32,
+) -> u32 {
+    if command == 3 {
+        virt78(0x3eb);
+        return 1;
+    }
+    fallback()
+}
+
+/// `0x0090bbc0`: when `command == 2` invokes virtual slot 0x78 with 0x3ea
+/// and returns 1; otherwise defers to the base handler (`fallback`).
+pub fn w33a19_dispatch_cmd2(
+    command: i32,
+    mut virt78: impl FnMut(u32),
+    fallback: impl FnOnce() -> u32,
+) -> u32 {
+    if command != 2 {
+        return fallback();
+    }
+    virt78(0x3ea);
+    1
+}
+
+/// `0x0093ec50`: forwards both arguments to the 4-argument worker with the
+/// last two arguments fixed at zero.
+pub fn w33a19_forward_zero_tail<R>(
+    a: u32,
+    b: u32,
+    worker: impl FnOnce(u32, u32, u32, u32) -> R,
+) -> R {
+    worker(a, b, 0, 0)
+}
+
+#[cfg(test)]
+mod tests_wave33_agent19 {
+    use super::*;
+
+    #[test]
+    fn cmd3() {
+        let mut got = vec![];
+        assert_eq!(w33a19_dispatch_cmd3(3, |v| got.push(v), || 9), 1);
+        assert_eq!(got, [0x3eb]);
+        assert_eq!(w33a19_dispatch_cmd3(2, |v| got.push(v), || 9), 9);
+        assert_eq!(got.len(), 1);
+    }
+
+    #[test]
+    fn cmd2() {
+        let mut got = vec![];
+        assert_eq!(w33a19_dispatch_cmd2(2, |v| got.push(v), || 9), 1);
+        assert_eq!(got, [0x3ea]);
+        assert_eq!(w33a19_dispatch_cmd2(3, |v| got.push(v), || 9), 9);
+        assert_eq!(got.len(), 1);
+    }
+
+    #[test]
+    fn fwd() {
+        assert_eq!(
+            w33a19_forward_zero_tail(1, 2, |a, b, c, d| [a, b, c, d]),
+            [1, 2, 0, 0]
+        );
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave33/agent21.rs
+// ===========================================================================
+// Wave 33 agent 21: runtime helpers.
+
+/// `0x00963680`: dispatch on a record's kind (`kind`) and sub-state
+/// (`state`, low 16 bits of field 4).  When `state == 0xe` and `kind == 1`
+/// the `pre` callback runs and the state is re-read via `reload_state`.
+/// If the state is not 0xe the result is 0; otherwise kinds 0, 6, 8, 10,
+/// 0xd and 0xe call `handler`, everything else returns 0.
+pub fn w33a21_dispatch<P, R, H>(
+    kind: i32,
+    state: i16,
+    mut pre: P,
+    reload_state: R,
+    handler: H,
+) -> u32
+where
+    P: FnMut(),
+    R: FnOnce() -> i16,
+    H: FnOnce() -> u32,
+{
+    let mut st = state;
+    if st == 0xe {
+        if kind == 1 {
+            pre();
+            st = reload_state();
+            if st != 0xe {
+                return 0;
+            }
+        }
+    } else {
+        return 0;
+    }
+    match kind {
+        0 | 6 | 8 | 10 | 0xd | 0xe => handler(),
+        _ => 0,
+    }
+}
+
+/// `0x0099eba0`: strcpy; copies `src` through its NUL into `dst` and returns
+/// the number of bytes written (dst pointer is returned by the original).
+pub fn w33a21_strcpy(dst: &mut [u8], src: &[u8]) -> usize {
+    let mut i = 0;
+    loop {
+        let c = src.get(i).copied().unwrap_or(0);
+        dst[i] = c;
+        i += 1;
+        if c == 0 {
+            return i;
+        }
+    }
+}
+
+/// `0x0099ec90`: strlen; count of bytes before the first NUL (or slice end).
+pub fn w33a21_strlen(s: &[u8]) -> usize {
+    s.iter().position(|&b| b == 0).unwrap_or(s.len())
+}
+
+#[cfg(test)]
+mod tests_wave33_agent21 {
+    use super::*;
+
+    #[test]
+    fn strings() {
+        let mut d = [9u8; 8];
+        assert_eq!(w33a21_strcpy(&mut d, b"ab\0"), 3);
+        assert_eq!(&d[..4], b"ab\0\x09");
+        assert_eq!(w33a21_strlen(b"abc\0d"), 3);
+        assert_eq!(w33a21_strlen(b"ab"), 2);
+    }
+
+    #[test]
+    fn dispatch() {
+        assert_eq!(w33a21_dispatch(0, 3, || {}, || 0, || 7), 0);
+        assert_eq!(w33a21_dispatch(0, 0xe, || {}, || 0xe, || 7), 7);
+        assert_eq!(w33a21_dispatch(3, 0xe, || {}, || 0xe, || 7), 0);
+        assert_eq!(w33a21_dispatch(1, 0xe, || {}, || 0xe, || 7), 0);
+        assert_eq!(w33a21_dispatch(1, 0xe, || {}, || 5, || 7), 0);
+        assert_eq!(w33a21_dispatch(0xd, 0xe, || {}, || 0xe, || 7), 7);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave33/agent22.rs
+// ===========================================================================
+// Wave 33 agent 22 translations.
+
+/// `0x009a37b0`: bounded UTF-16 copy (wcsncpy without padding).  Copies up
+/// to `count` units from `src` into `dst`, stopping after the terminating
+/// zero has been copied.  Returns the number of units written.
+pub fn w33a22_wcsncpy_nopad(dst: &mut [u16], src: &[u16], count: usize) -> usize {
+    let mut n = 0;
+    while n < count && n < dst.len() {
+        let c = src.get(n).copied().unwrap_or(0);
+        dst[n] = c;
+        n += 1;
+        if c == 0 {
+            break;
+        }
+    }
+    n
+}
+
+#[cfg(test)]
+mod tests_wave33_agent22 {
+    use super::*;
+
+    #[test]
+    fn copies_until_nul() {
+        let mut d = [9u16; 6];
+        let n = w33a22_wcsncpy_nopad(&mut d, &[1, 2, 0, 7], 5);
+        assert_eq!(n, 3);
+        assert_eq!(d, [1, 2, 0, 9, 9, 9]);
+    }
+
+    #[test]
+    fn respects_count() {
+        let mut d = [9u16; 4];
+        assert_eq!(w33a22_wcsncpy_nopad(&mut d, &[1, 2, 3, 4], 2), 2);
+        assert_eq!(d, [1, 2, 9, 9]);
+        assert_eq!(w33a22_wcsncpy_nopad(&mut d, &[1], 0), 0);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave33/agent23.rs
+// ===========================================================================
+// Wave 33 agent 23: small stream-object helpers.
+
+/// `0x009d3c90`: clears the dword at byte offset 0x30 of `this` (`obj`,
+/// dword index 12) and, when the pointer dword at 0x10 (index 4) is
+/// non-null, bumps the refcount (dword at +8) of the pointed object through
+/// `bump_ref`.  Always returns 0.
+pub fn w33a23_reset_and_addref(obj: &mut [u32], bump_ref: &mut dyn FnMut(u32)) -> u32 {
+    obj[12] = 0;
+    if obj[4] != 0 {
+        bump_ref(obj[4]);
+    }
+    0
+}
+
+/// `0x009e4110`: write `count` items of `size` bytes.  `obj[0]` is the
+/// underlying handle (0 means nothing to do, returns 0); byte 0x44 (dword 0x11,
+/// low byte) selects the memory path (`mem_write(size*count)` == 0 returns
+/// `count`, else 0).  Otherwise `file_write(size, count, handle)` is called,
+/// then `obj[1]` is refreshed from `file_tell(handle)` and the write result
+/// returned.
+pub fn w33a23_write_items(
+    obj: &mut [u32],
+    size: i32,
+    count: i32,
+    mem_write: &mut dyn FnMut(i32) -> i32,
+    file_write: &mut dyn FnMut(i32, i32, u32) -> i32,
+    file_tell: &mut dyn FnMut(u32) -> u32,
+) -> i32 {
+    if obj[0] == 0 {
+        return 0;
+    }
+    if (obj[0x11] & 0xff) != 0 {
+        let r = mem_write(size.wrapping_mul(count));
+        return if r == 0 { count } else { 0 };
+    }
+    let r = file_write(size, count, obj[0]);
+    obj[1] = file_tell(obj[0]);
+    r
+}
+
+#[cfg(test)]
+mod tests_wave33_agent23 {
+    use super::*;
+
+    #[test]
+    fn addref() {
+        let mut o = [0u32; 16];
+        o[12] = 9;
+        o[4] = 7;
+        let mut seen = vec![];
+        assert_eq!(w33a23_reset_and_addref(&mut o, &mut |p| seen.push(p)), 0);
+        assert_eq!(o[12], 0);
+        assert_eq!(seen, vec![7]);
+        o[4] = 0;
+        assert_eq!(w33a23_reset_and_addref(&mut o, &mut |p| seen.push(p)), 0);
+        assert_eq!(seen.len(), 1);
+    }
+
+    #[test]
+    fn write() {
+        let mut o = [0u32; 0x12];
+        assert_eq!(
+            w33a23_write_items(&mut o, 2, 3, &mut |_| 0, &mut |_, _, _| 5, &mut |_| 1),
+            0
+        );
+        o[0] = 4;
+        assert_eq!(
+            w33a23_write_items(&mut o, 2, 3, &mut |_| 0, &mut |_, c, _| c, &mut |h| h + 1),
+            3
+        );
+        assert_eq!(o[1], 5);
+        o[0x11] = 1;
+        assert_eq!(
+            w33a23_write_items(&mut o, 2, 3, &mut |n| n - 6, &mut |_, _, _| 0, &mut |_| 0),
+            3
+        );
+        assert_eq!(
+            w33a23_write_items(&mut o, 2, 3, &mut |_| 1, &mut |_, _, _| 0, &mut |_| 0),
+            0
+        );
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave33/agent24.rs
+// ===========================================================================
+// Wave 33 translation batch 24: bit-length byte size, slot lookup, bump allocator.
+
+/// `0x009f01e0`: byte offset after a bit cursor: `base + ceil(bits / 8)`
+/// with the signed-division rounding of the original (`bits` signed).
+pub fn w33a24_bit_cursor_end(base: i32, bits: i32) -> i32 {
+    let t = bits.wrapping_add(7);
+    (t.wrapping_add(((t >> 31) as u32 & 7) as i32) >> 3).wrapping_add(base)
+}
+
+/// `0x009f11a0`: when `count > 0`, looks up the index with `find` and
+/// returns `values[index]`; otherwise (or on a negative index) `-1`.
+pub fn w33a24_lookup_value(count: i32, values: &[i32], key: u32, find: impl Fn(u32) -> i32) -> i32 {
+    if count > 0 {
+        let i = find(key);
+        if i >= 0 {
+            return values.get(i as usize).copied().unwrap_or(-1);
+        }
+    }
+    -1
+}
+
+/// Arena state used by `0x009f3420` (offsets 0x44..0x54 of the owner).
+#[derive(Default, Debug, Clone, PartialEq, Eq)]
+pub struct W33a24Arena {
+    /// +0x44 current block (0 = none)
+    pub block: i32,
+    /// +0x48 used bytes
+    pub used: i32,
+    /// +0x4c block capacity
+    pub cap: i32,
+    /// +0x50 total bytes in retired blocks
+    pub retired_total: i32,
+    /// +0x54 head of retired block list (node address)
+    pub retired_head: i32,
+}
+
+/// `0x009f3420`: bump-allocates `size` (rounded up to 8) from the current
+/// block, otherwise retires it onto a list (node alloc of 8 bytes via
+/// `alloc`, storing `[block, next]` through `write_node`) and allocates a
+/// fresh block of the rounded size.  Returns the address or 0 on failure.
+pub fn w33a24_arena_alloc(
+    arena: &mut W33a24Arena,
+    size: i32,
+    mut alloc: impl FnMut(i32) -> i32,
+    mut write_node: impl FnMut(i32, i32, i32),
+) -> i32 {
+    let mut off = arena.used;
+    let rounded = (size.wrapping_add(7) as u32 & 0xffff_fff8) as i32;
+    if arena.cap < off.wrapping_add(rounded) {
+        if arena.block != 0 {
+            let node = alloc(8);
+            if node == 0 {
+                return 0;
+            }
+            arena.retired_total = arena.retired_total.wrapping_add(arena.used);
+            write_node(node, arena.block, arena.retired_head);
+            arena.retired_head = node;
+        }
+        arena.cap = rounded;
+        arena.block = alloc(rounded);
+        if arena.block == 0 {
+            return 0;
+        }
+        off = 0;
+    }
+    arena.used = off.wrapping_add(rounded);
+    arena.block.wrapping_add(off)
+}
+
+#[cfg(test)]
+mod tests_wave33_agent24 {
+    use super::*;
+
+    #[test]
+    fn cursor() {
+        assert_eq!(w33a24_bit_cursor_end(10, 9), 12);
+        assert_eq!(w33a24_bit_cursor_end(10, 0), 10);
+    }
+
+    #[test]
+    fn lookup() {
+        assert_eq!(w33a24_lookup_value(0, &[5], 1, |_| 0), -1);
+        assert_eq!(w33a24_lookup_value(1, &[5], 1, |_| 0), 5);
+        assert_eq!(w33a24_lookup_value(1, &[5], 1, |_| -1), -1);
+    }
+
+    #[test]
+    fn arena() {
+        let mut a = W33a24Arena::default();
+        let mut next = 1000;
+        let mut nodes = vec![];
+        let r = w33a24_arena_alloc(
+            &mut a,
+            10,
+            |n| {
+                next += 100;
+                let _ = n;
+                next
+            },
+            |n, b, h| nodes.push((n, b, h)),
+        );
+        assert_eq!(r, 1100);
+        assert_eq!(a.used, 16);
+        let r2 = w33a24_arena_alloc(&mut a, 20, |_| 5000, |n, b, h| nodes.push((n, b, h)));
+        assert_eq!(r2, 5000);
+        assert_eq!(nodes, vec![(5000, 1100, 0)]);
+        assert_eq!(a.retired_total, 16);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave33/agent25.rs
+// ===========================================================================
+// Wave 33 agent 25 translations.
+
+/// Model of the buffer-state record used by `0x009f34a0` (offsets 0x44..0x54).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct W33a25State {
+    /// +0x44 buffer handle.
+    pub buf: u32,
+    /// +0x48 cleared.
+    pub f48: u32,
+    /// +0x4c consumed size.
+    pub f4c: u32,
+    /// +0x50 pending size.
+    pub f50: u32,
+    /// +0x54 chain of (node handle, payload handle), in link order.
+    pub chain: Vec<(u32, u32)>,
+}
+
+/// `0x009f34a0`: frees every chain node (payload first, then the node),
+/// then folds the pending size into the consumed size via `realloc`
+/// (returns 0xffffff75 when realloc yields 0), and clears +0x48/+0x54.
+pub fn w33a25_release_chain(
+    st: &mut W33a25State,
+    mut free: impl FnMut(u32),
+    realloc: impl FnOnce(u32, u32) -> u32,
+) -> u32 {
+    for (node, payload) in std::mem::take(&mut st.chain) {
+        free(payload);
+        free(node);
+    }
+    let mut ret = 0;
+    if st.f50 != 0 {
+        let total = st.f4c.wrapping_add(st.f50);
+        let h = realloc(st.buf, total);
+        st.f4c = total;
+        ret = 0xffff_ff75;
+        st.buf = h;
+        st.f50 = 0;
+        if h != 0 {
+            ret = 0;
+        }
+    }
+    st.f48 = 0;
+    ret
+}
+
+/// `0x00ae4340`: after `locate` (callee result 1 with start,len) positions a
+/// cursor at start+len, scans to the next `\n` (consumed) or the end of
+/// `buf[..size]`.  Returns the cursor and the remaining byte count.
+pub fn w33a25_next_line(
+    buf: &[u8],
+    size: usize,
+    locate: impl FnOnce() -> Option<(usize, usize)>,
+) -> Option<(usize, i64)> {
+    let (a, b) = locate()?;
+    let end = size.min(buf.len());
+    let mut p = a + b;
+    while p < end {
+        if buf[p] == b'\n' {
+            p += 1;
+            break;
+        }
+        p += 1;
+    }
+    Some((p, end as i64 - p as i64))
+}
+
+#[cfg(test)]
+mod tests_wave33_agent25 {
+    use super::*;
+
+    #[test]
+    fn release_chain_ok_and_fail() {
+        let mut st = W33a25State {
+            buf: 1,
+            f4c: 4,
+            f50: 6,
+            f48: 9,
+            chain: vec![(10, 20), (11, 21)],
+        };
+        let mut freed = vec![];
+        let r = w33a25_release_chain(
+            &mut st,
+            |x| freed.push(x),
+            |h, n| {
+                assert_eq!((h, n), (1, 10));
+                7
+            },
+        );
+        assert_eq!(r, 0);
+        assert_eq!(freed, vec![20, 10, 21, 11]);
+        assert_eq!((st.buf, st.f4c, st.f50, st.f48), (7, 10, 0, 0));
+        st.f50 = 1;
+        assert_eq!(w33a25_release_chain(&mut st, |_| {}, |_, _| 0), 0xffff_ff75);
+        st.f50 = 0;
+        assert_eq!(w33a25_release_chain(&mut st, |_| {}, |_, _| 5), 0);
+    }
+
+    #[test]
+    fn next_line_cases() {
+        let b = b"ab\ncd";
+        assert_eq!(w33a25_next_line(b, 5, || Some((0, 1))), Some((3, 2)));
+        assert_eq!(w33a25_next_line(b, 5, || Some((3, 2))), Some((5, 0)));
+        assert_eq!(w33a25_next_line(b, 5, || None), None);
+        assert_eq!(w33a25_next_line(b, 5, || Some((6, 1))), Some((7, -2)));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave33/agent26.rs
+// ===========================================================================
+// Wave 33 agent 26: token-buffer scanning helpers.
+
+fn w33a26_is_ws(c: u8) -> bool {
+    matches!(c, b' ' | b'\t' | 0x0b | b'\r' | 0x0c | b'\n')
+}
+
+/// `0x00ae43e0`: validates whitespace-separated tokens of a fetched buffer.
+/// `fetch` is the result of the opaque fetch helper (status, buffer); any
+/// status other than 1 is returned unchanged.  At most `max_tokens` tokens are
+/// checked; each must have even length and satisfy `token_ok`.  Returns 1 on
+/// success, -1 on a bad token or too few tokens.
+pub fn w33a26_validate_tokens(
+    fetch: Result<&[u8], i32>,
+    max_tokens: u32,
+    token_ok: &dyn Fn(&[u8]) -> bool,
+) -> i32 {
+    let buf = match fetch {
+        Ok(b) => b,
+        Err(s) => return s,
+    };
+    let end = buf.len();
+    let mut p = 0usize;
+    let mut count = 0u32;
+    while p < end {
+        if count >= max_tokens {
+            return 1;
+        }
+        while p < end && w33a26_is_ws(buf[p]) {
+            p += 1;
+        }
+        if p == end {
+            break;
+        }
+        let mut q = p;
+        while q < end && !w33a26_is_ws(buf[q]) {
+            q += 1;
+        }
+        if q == p || (q - p) & 1 != 0 || !token_ok(&buf[p..q]) {
+            return -1;
+        }
+        count += 1;
+        p = q;
+    }
+    if count < max_tokens { -1 } else { 1 }
+}
+
+/// `0x00ae4600`: counts token groups in a fetched buffer (a group is a run of
+/// non-space bytes followed by a run of whitespace; a leading whitespace run
+/// counts as one group).  Returns 0 when the fetch status is not 1.
+pub fn w33a26_count_tokens(fetch: Result<&[u8], i32>) -> i32 {
+    let buf = match fetch {
+        Ok(b) => b,
+        Err(_) => return 0,
+    };
+    let end = buf.len();
+    let mut p = 0usize;
+    let mut n = 0;
+    while p < end {
+        while p < end {
+            if w33a26_is_ws(buf[p]) {
+                while p < end && w33a26_is_ws(buf[p]) {
+                    p += 1;
+                }
+                break;
+            }
+            p += 1;
+        }
+        n += 1;
+    }
+    n
+}
+
+#[cfg(test)]
+mod tests_wave33_agent26 {
+    use super::*;
+
+    #[test]
+    fn validate() {
+        let ok = |_: &[u8]| true;
+        assert_eq!(w33a26_validate_tokens(Ok(b"ab  cdef\n"), 2, &ok), 1);
+        assert_eq!(w33a26_validate_tokens(Ok(b"abc"), 1, &ok), -1);
+        assert_eq!(w33a26_validate_tokens(Ok(b"ab"), 2, &ok), -1);
+        assert_eq!(w33a26_validate_tokens(Ok(b"ab cd"), 1, &ok), 1);
+        assert_eq!(w33a26_validate_tokens(Ok(b"ab"), 1, &|_| false), -1);
+        assert_eq!(w33a26_validate_tokens(Err(7), 1, &ok), 7);
+    }
+
+    #[test]
+    fn count() {
+        assert_eq!(w33a26_count_tokens(Ok(b"a b  c")), 3);
+        assert_eq!(w33a26_count_tokens(Ok(b"a b ")), 2);
+        assert_eq!(w33a26_count_tokens(Ok(b"")), 0);
+        assert_eq!(w33a26_count_tokens(Err(0)), 0);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave33/agent27.rs
+// ===========================================================================
+// Wave 33 agent 27: runtime helpers.
+
+/// State for the byte-counting sink at `0x00aec790` (offsets 0x62, 0x66,
+/// 0xc0 and 0xc4 of the owning object).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct W33a27Sink {
+    /// Byte at +0x66: sink accepts data.
+    pub open: bool,
+    /// Byte at +0x62: when set, the callback is skipped.
+    pub skip_callback: bool,
+    /// 64-bit running total (+0xc0 low, +0xc4 high).
+    pub total: u64,
+}
+
+/// `0x00aec790`: accounts `len` bytes. A zero length succeeds; otherwise a
+/// closed sink fails, the callback runs unless `skip_callback`, and the
+/// 64-bit total (low word with carry into the high word) grows by `len`.
+pub fn w33a27_account(sink: &mut W33a27Sink, len: u32, mut cb: impl FnMut(u32)) -> bool {
+    if len != 0 {
+        if !sink.open {
+            return false;
+        }
+        if !sink.skip_callback {
+            cb(len);
+        }
+        sink.total = sink.total.wrapping_add(len as u64) & 0xffff_ffff_ffff_ffff;
+    }
+    true
+}
+
+/// `0x00b09c80`: queries with kind 9 and a zeroed 64-bit out value; stores
+/// the callee result in `out` and returns 2 when the 64-bit value equals
+/// `expected` (high word zero), else 0.
+pub fn w33a27_match_query(
+    expected: u32,
+    out: &mut u32,
+    query: impl FnOnce(u32, &mut u64) -> u32,
+) -> u32 {
+    let mut v: u64 = 0;
+    *out = query(9, &mut v);
+    if v == expected as u64 { 2 } else { 0 }
+}
+
+#[cfg(test)]
+mod tests_wave33_agent27 {
+    use super::*;
+
+    #[test]
+    fn account_rules() {
+        let mut s = W33a27Sink::default();
+        assert!(w33a27_account(&mut s, 0, |_| panic!()));
+        assert!(!w33a27_account(&mut s, 5, |_| {}));
+        s.open = true;
+        let mut n = 0;
+        assert!(w33a27_account(&mut s, 0xffff_ffff, |l| n = l));
+        assert!(w33a27_account(&mut s, 2, |_| {}));
+        assert_eq!(n, 0xffff_ffff);
+        assert_eq!(s.total, 0x1_0000_0001);
+        s.skip_callback = true;
+        assert!(w33a27_account(&mut s, 1, |_| panic!()));
+    }
+
+    #[test]
+    fn match_query_rules() {
+        let mut out = 0;
+        let r = w33a27_match_query(7, &mut out, |k, v| {
+            assert_eq!(k, 9);
+            *v = 7;
+            42
+        });
+        assert_eq!((r, out), (2, 42));
+        assert_eq!(
+            w33a27_match_query(7, &mut out, |_, v| {
+                *v = 1 << 32 | 7;
+                1
+            }),
+            0
+        );
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave33/agent28.rs
+// ===========================================================================
+// Wave 33 agent 28 translations (runtime.rs target).
+
+/// `0x00b0ab30`: matches a lookup result against a key.  `lookup(p1, p2)`
+/// models the callee and returns `(index, key_lo, key_hi)`.  Returns true when
+/// the found key equals `(p1, p2)` and either the index equals `end_index`
+/// (`ecx[1]`) or `p4 == 0` and the i32 at byte offset `4` of the `0x1c`-byte
+/// row `index` in `rows` equals `p3`.
+pub fn w33a28_key_matches(
+    rows: &[u8],
+    end_index: i32,
+    p1: i32,
+    p2: i32,
+    p3: i32,
+    p4: i32,
+    lookup: impl FnOnce(i32, i32) -> (i32, i32, i32),
+) -> bool {
+    let (idx, lo, hi) = lookup(p1, p2);
+    if p1 != lo || p2 != hi {
+        return false;
+    }
+    if idx == end_index {
+        return true;
+    }
+    if p4 != 0 || idx < 0 {
+        return false;
+    }
+    let off = idx as usize * 0x1c + 4;
+    match rows.get(off..off + 4) {
+        Some(b) => i32::from_le_bytes([b[0], b[1], b[2], b[3]]) == p3,
+        None => false,
+    }
+}
+
+/// `0x00b4f0c0`: if `dirty`, sorts the 16-byte `[a, b, delta, pad]` entries
+/// with `sort`, merges runs sharing `(a, b)` and keeps only entries where the
+/// running sum crosses zero (emitting `+1` when it becomes positive, `-1` when
+/// it drops to zero or below), then truncates and clears `dirty`.
+pub fn w33a28_normalize_edges(
+    entries: &mut Vec<[i32; 4]>,
+    dirty: &mut bool,
+    sort: impl FnOnce(&mut [[i32; 4]]),
+) {
+    if !*dirty {
+        return;
+    }
+    sort(entries);
+    let n = entries.len();
+    let mut w = 0usize;
+    let mut i = 0usize;
+    let mut carry = 0i32;
+    while i < n {
+        let key = (entries[i][0], entries[i][1]);
+        let mut sum = entries[i][2].wrapping_add(carry);
+        let mut j = i + 1;
+        while j < n && (entries[j][0], entries[j][1]) == key {
+            sum = sum.wrapping_add(entries[j][2]);
+            j += 1;
+        }
+        if carry < 1 {
+            if sum > 0 {
+                entries[w][0] = key.0;
+                entries[w][1] = key.1;
+                entries[w][2] = 1;
+                w += 1;
+            }
+        } else if sum < 1 {
+            entries[w][0] = key.0;
+            entries[w][1] = key.1;
+            entries[w][2] = -1;
+            w += 1;
+        }
+        carry = sum;
+        i = j;
+    }
+    entries.truncate(w);
+    *dirty = false;
+}
+
+#[cfg(test)]
+mod tests_wave33_agent28 {
+    use super::*;
+
+    #[test]
+    fn edges() {
+        let mut v = vec![[1, 1, 1, 0], [1, 1, 1, 0], [2, 2, -2, 0], [3, 3, 1, 0]];
+        let mut d = true;
+        w33a28_normalize_edges(&mut v, &mut d, |_| {});
+        assert!(!d);
+        assert_eq!(v, vec![[1, 1, 1, 0], [2, 2, -1, 0], [3, 3, 1, 0]]);
+    }
+
+    #[test]
+    fn matches() {
+        let mut rows = vec![0u8; 0x38];
+        rows[0x1c + 4..0x1c + 8].copy_from_slice(&7i32.to_le_bytes());
+        assert!(w33a28_key_matches(&rows, 9, 1, 2, 7, 0, |_, _| (1, 1, 2)));
+        assert!(!w33a28_key_matches(&rows, 9, 1, 2, 8, 0, |_, _| (1, 1, 2)));
+        assert!(w33a28_key_matches(&rows, 1, 1, 2, 8, 5, |_, _| (1, 1, 2)));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave33/agent30.rs
+// ===========================================================================
+// Wave 33 agent 30.
+
+/// `0x00b89520`: forwards the object's first two words plus two caller
+/// arguments to the callee (modelled as a closure).
+pub fn w33a30_forward_pair<R>(
+    obj: &[u32; 2],
+    a: u32,
+    b: u32,
+    callee: impl FnOnce(u32, u32, u32, u32) -> R,
+) -> R {
+    callee(obj[0], obj[1], a, b)
+}
+
+/// `0x00b8fb50`: MD5-style finalisation.  `state[0..2]` is the 64-bit bit
+/// count, `state[2..6]` the digest words.  Feeds `((-(count>>3) - 9) & 0x3f) + 1`
+/// padding bytes from `pad` and then the 8 count bytes to `update`, and
+/// returns the four digest words.
+pub fn w33a30_finalize(state: &[u32; 6], pad: &[u8], mut update: impl FnMut(&[u8])) -> [u32; 4] {
+    let c = state[0];
+    let n = ((0u32.wrapping_sub(c >> 3).wrapping_sub(9)) & 0x3f) + 1;
+    let n = (n as usize).min(pad.len());
+    update(&pad[..n]);
+    let mut len = [0u8; 8];
+    len[..4].copy_from_slice(&c.to_le_bytes());
+    len[4..].copy_from_slice(&state[1].to_le_bytes());
+    update(&len);
+    [state[2], state[3], state[4], state[5]]
+}
+
+/// `0x00c12a00`: maps a PCI GPU vendor id to its name.
+pub fn w33a30_gpu_vendor_name(id: u16) -> Option<&'static str> {
+    match id {
+        0x1414 => Some("Microsoft"),
+        0x1002 => Some("AMD"),
+        0x106b => Some("Apple"),
+        0x10de => Some("NVidia"),
+        0x4351 => Some("Qualcomm"),
+        0x8086 => Some("Intel"),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests_wave33_agent30 {
+    use super::*;
+    #[test]
+    fn vendor() {
+        assert_eq!(w33a30_gpu_vendor_name(0x8086), Some("Intel"));
+        assert_eq!(w33a30_gpu_vendor_name(1), None);
+    }
+    #[test]
+    fn fin() {
+        let mut got = 0;
+        let d = w33a30_finalize(&[0, 0, 1, 2, 3, 4], &[0x80; 64], |s| got += s.len());
+        assert_eq!(d, [1, 2, 3, 4]);
+        assert_eq!(got, 56 + 8);
+    }
+    #[test]
+    fn fwd() {
+        assert_eq!(
+            w33a30_forward_pair(&[1, 2], 3, 4, |a, b, c, d| a + b + c + d),
+            10
+        );
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave33/agent31.rs
+// ===========================================================================
+// Wave 33 translation batch 31: three validators over parsed request records.
+// Callees are supplied by the caller as closures.
+
+fn w33a31_rd32(b: &[u8], off: usize) -> u32 {
+    u32::from_le_bytes([b[off], b[off + 1], b[off + 2], b[off + 3]])
+}
+
+/// `0x00c204e0`: validates a 0x21-byte request record against a permitted-bit
+/// mask `mask` and the limits `lim_e0`, `lim_e4`, `lim_ec` (context fields at
+/// `+0xe0`, `+0xe4`, `+0xec`).  `flags(kind)`, `pred_a(kind)` and `pred_b(kind)`
+/// model the helpers FUN_00c12eb0, FUN_00c12950 and FUN_00c12990.
+pub fn w33a31_validate_request(
+    rec: &[u8],
+    mask: u32,
+    lim_e0: u32,
+    lim_e4: u32,
+    lim_ec: u32,
+    flags: impl Fn(u8) -> u32,
+    pred_a: impl Fn(u8) -> bool,
+    pred_b: impl Fn(u8) -> bool,
+) -> bool {
+    let kind = rec[0];
+    let sel = rec[8];
+    let f = w33a31_rd32(rec, 4);
+    let (p0c, p10, p14, p18, p1c) = (
+        w33a31_rd32(rec, 0xc),
+        w33a31_rd32(rec, 0x10),
+        w33a31_rd32(rec, 0x14),
+        w33a31_rd32(rec, 0x18),
+        w33a31_rd32(rec, 0x1c),
+    );
+    let bit = |n: u32| (mask >> n) & 1 != 0;
+    let mut ok = kind < 9 && rec[0x20] < 5 && (f & 0x1f) == f && sel < 0x7a && f != 0;
+    if f & 1 != 0 {
+        ok &= bit(6);
+    }
+    if f & 2 != 0 {
+        ok &= bit(7);
+    }
+    if f & 4 != 0 {
+        ok &= bit(if flags(sel) & 0x20 == 0 { 8 } else { 9 });
+    }
+    if f & 8 != 0 {
+        ok &= bit(10);
+    }
+    if f & 0x10 != 0 {
+        ok &= bit(11);
+    }
+    match kind {
+        0 | 1 => ok &= p10 == 1 && p0c <= lim_e0 && p14 == 1 && bit(2),
+        2..=5 => ok &= p14 == 1 && p10 <= lim_e4 && p0c <= lim_e4 && bit(3),
+        6 | 7 => {
+            let t = ok && p14 == 1;
+            ok = p0c == p10 && p10 <= lim_e4 && p0c <= lim_e4 && t && bit(5);
+        }
+        8 => ok &= p0c <= lim_ec && p14 <= lim_ec && p10 <= lim_ec && bit(4),
+        _ => {}
+    }
+    let ok2 = if !pred_a(kind) {
+        ok && p18 == 1
+    } else {
+        ok && p18 != 0
+    };
+    let bits = if !pred_b(kind) {
+        let m = if p10 < p0c { p0c } else { p10 };
+        let v = p14.max(m);
+        32 - (v | 1).leading_zeros()
+    } else {
+        1
+    };
+    let ok3 = ok2 && p1c != 0 && p1c <= bits;
+    if !pred_b(kind) {
+        ok3 && rec[0x20] == 0
+    } else {
+        ok3
+    }
+}
+
+/// `0x00c20760`: checks a descriptor (`word0`, `lo`, `hi`, `opts`) against a
+/// record (`rec[0]`, flags at `+4`, selector at `+8`) and `want` bits.
+/// `check(a, b)` models FUN_00c12710 and `flags(sel)` models FUN_00c12eb0.
+pub fn w33a31_check_descriptor(
+    word0: u32,
+    lo: u8,
+    hi: u8,
+    opts: u8,
+    rec: &[u8],
+    want: u32,
+    check: impl Fn(u8, u8) -> u8,
+    flags: impl Fn(u8) -> u32,
+) -> bool {
+    let mut ok = (w33a31_rd32(rec, 4) & want) != 0 && word0 != 0;
+    if lo != 9 {
+        ok = (check(lo, rec[0]) & 1 != 0) && lo < 9 && ok;
+    }
+    if hi != 0x7a {
+        ok = ok && hi < 0x7a;
+    }
+    let low_one = !(flags(rec[8]) & 0x20 == 0 && opts & 1 != 0);
+    if flags(rec[8]) & 0x40 == 0 && opts & 2 != 0 {
+        return false;
+    }
+    ok && low_one
+}
+
+/// `0x00c20d70`: fit check of a size request `p` (ten u32 words) against the
+/// remaining capacity word `cap` (`+0xc` of the second record) with context
+/// alignments `align_114` and `align_118`.  Helpers FUN_00c12eb0, FUN_00c12dc0,
+/// FUN_00c12d10, FUN_00c12fd0 and FUN_00c12ec0 are the closures.
+pub fn w33a31_fit_request(
+    p: &[u32],
+    cap: u32,
+    id: u32,
+    align_114: u32,
+    align_118: u32,
+    flags: impl Fn(u32) -> u32,
+    step_x: impl Fn(u32) -> i32,
+    step_y: impl Fn(u32) -> i32,
+    base: impl Fn(u32, u32) -> u32,
+    count: impl Fn(u32, u32, u32) -> i32,
+) -> bool {
+    let (mut x, mut y, mul) = (p[7], p[8], p[9]);
+    if flags(id) & 0x10 != 0 {
+        let sx = step_x(id) as u32;
+        let sy = step_y(id) as u32;
+        x = x.wrapping_sub(1).wrapping_add(sx) & sx.wrapping_neg();
+        y = y.wrapping_sub(1).wrapping_add(sy) & sy.wrapping_neg();
+    }
+    let v6 = base(id, x);
+    let v3 = if p[1] != 0 { p[1] } else { v6 };
+    let used = (count(id, v3, y) as u32).wrapping_mul(mul);
+    let fits = used <= cap && (cap < used || p[0] <= cap.wrapping_sub(used));
+    if p[8] != 1 && p[1] == 0 {
+        return false;
+    }
+    v6 <= v3
+        && p[1] & align_114.wrapping_sub(1) == 0
+        && p[0] & align_118.wrapping_sub(1) == 0
+        && fits
+}
+
+#[cfg(test)]
+mod tests_wave33_agent31 {
+    use super::*;
+
+    #[test]
+    fn descriptor_basic() {
+        let mut rec = [0u8; 12];
+        rec[4] = 1;
+        assert!(w33a31_check_descriptor(
+            1,
+            9,
+            0x7a,
+            0,
+            &rec,
+            1,
+            |_, _| 1,
+            |_| 0x60
+        ));
+        assert!(!w33a31_check_descriptor(
+            0,
+            9,
+            0x7a,
+            0,
+            &rec,
+            1,
+            |_, _| 1,
+            |_| 0x60
+        ));
+        assert!(!w33a31_check_descriptor(
+            1,
+            9,
+            0x7a,
+            2,
+            &rec,
+            1,
+            |_, _| 1,
+            |_| 0
+        ));
+    }
+
+    #[test]
+    fn fit_basic() {
+        let p = [0u32, 4, 0, 0, 0, 0, 0, 2, 1, 2];
+        assert!(w33a31_fit_request(
+            &p,
+            10,
+            0,
+            4,
+            4,
+            |_| 0,
+            |_| 1,
+            |_| 1,
+            |_, x| x,
+            |_, _, _| 3
+        ));
+        assert!(!w33a31_fit_request(
+            &p,
+            5,
+            0,
+            4,
+            4,
+            |_| 0,
+            |_| 1,
+            |_| 1,
+            |_, x| x,
+            |_, _, _| 3
+        ));
+    }
+
+    #[test]
+    fn validate_basic() {
+        let mut r = [0u8; 0x21];
+        r[4] = 1;
+        r[8] = 1;
+        r[0xc] = 1;
+        r[0x10] = 1;
+        r[0x14] = 1;
+        r[0x18] = 1;
+        r[0x1c] = 1;
+        let ok = |m| w33a31_validate_request(&r, m, 5, 5, 5, |_| 0, |_| false, |_| false);
+        assert!(ok(!0));
+        assert!(!ok(0));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave33/agent34.rs
+// ===========================================================================
+// Wave 33 agent 34 translations.
+
+/// `0x00c4f2b0`: maps a small kind code to a flag mask.  Kind 5 depends on
+/// `format_flags` (the result of the format-info lookup `FUN_00c12eb0`):
+/// bit `0x20` selects `0x10`, otherwise `4`.  Unknown kinds (0, 6, > 10)
+/// return 0.
+pub fn w33a34_kind_flag_mask(kind: u8, format_flags: u32) -> u32 {
+    match kind {
+        1 => 0x80,
+        2 => 0x40,
+        3 => 0xc0,
+        4 => 8,
+        5 => {
+            if format_flags & 0x20 != 0 {
+                0x10
+            } else {
+                4
+            }
+        }
+        7 => 0x400,
+        8 => 0x800,
+        9 => 0x1000,
+        10 => 0x2000,
+        _ => 0,
+    }
+}
+
+#[cfg(test)]
+mod tests_wave33_agent34 {
+    use super::*;
+
+    #[test]
+    fn masks() {
+        assert_eq!(w33a34_kind_flag_mask(3, 0), 0xc0);
+        assert_eq!(w33a34_kind_flag_mask(5, 0x20), 0x10);
+        assert_eq!(w33a34_kind_flag_mask(5, 0), 4);
+        assert_eq!(w33a34_kind_flag_mask(6, 0), 0);
+        assert_eq!(w33a34_kind_flag_mask(10, 0), 0x2000);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave33/agent36.rs
+// ===========================================================================
+// Wave 33 agent 36: zlib `_tr_align` body and a bounded retry gate.
+
+/// Deflate bit-writer state used by `w33a36_tr_align` (offsets 0x14, 0x16b8,
+/// 0x16bc of the retail stream state; pending buffer at +8).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct W33a36Deflate {
+    pub pending_buf: Vec<u8>,
+    pub pending: usize,
+    pub bi_buf: u16,
+    pub bi_valid: i32,
+}
+
+/// `0x00c76860`: zlib `_tr_align` (send the empty static block header and
+/// END_BLOCK code, then `bi_flush` via the caller supplied closure
+/// `0xc7_6ed0`).
+pub fn w33a36_tr_align(s: &mut W33a36Deflate, bi_flush: impl FnOnce(&mut W33a36Deflate)) {
+    let valid = s.bi_valid;
+    let mut buf: u16 = (2u32.wrapping_shl(valid as u32 & 31) as u16) | s.bi_buf;
+    if valid < 14 {
+        s.bi_valid = valid + 3;
+    } else {
+        s.bi_buf = buf;
+        s.pending_buf[s.pending] = buf as u8;
+        s.pending += 1;
+        s.pending_buf[s.pending] = (s.bi_buf >> 8) as u8;
+        s.pending += 1;
+        let old = s.bi_valid as u16;
+        s.bi_valid -= 13;
+        buf = (2u32 >> (0x10u32.wrapping_sub(old as u32) & 31)) as u16;
+    }
+    s.bi_buf = buf;
+    if s.bi_valid > 9 {
+        s.pending_buf[s.pending] = s.bi_buf as u8;
+        s.pending += 1;
+        s.pending_buf[s.pending] = (s.bi_buf >> 8) as u8;
+        s.pending += 1;
+        s.bi_valid -= 9;
+        s.bi_buf = 0;
+    } else {
+        s.bi_valid += 7;
+    }
+    bi_flush(s);
+}
+
+/// `0x00c810c0`: waits up to 10 polls (sleeping 100 ms each) for the busy
+/// flag of slot `idx` to clear, returning -1 on timeout; if the ready flag
+/// is zero then returns `start(idx)` (callee `0xc8_0ce0`), else 0.
+pub fn w33a36_wait_and_start(
+    busy: &[u8],
+    ready: &[u8],
+    idx: usize,
+    mut sleep_ms: impl FnMut(u32),
+    start: impl FnOnce() -> i32,
+) -> i32 {
+    if busy[idx] != 0 {
+        // The flag is only re-read from shared memory in the retail code;
+        // with a fixed slice it can never clear, so all ten waits expire.
+        for _ in 0..10 {
+            sleep_ms(100);
+        }
+        return -1;
+    }
+    if ready[idx] == 0 {
+        return start();
+    }
+    0
+}
+
+#[cfg(test)]
+mod tests_wave33_agent36 {
+    use super::*;
+
+    #[test]
+    fn align_low_bits() {
+        let mut s = W33a36Deflate {
+            pending_buf: vec![0; 8],
+            ..Default::default()
+        };
+        w33a36_tr_align(&mut s, |_| {});
+        assert_eq!(s.bi_valid, 10);
+    }
+
+    #[test]
+    fn align_overflow_writes() {
+        let mut s = W33a36Deflate {
+            pending_buf: vec![0; 8],
+            bi_valid: 14,
+            ..Default::default()
+        };
+        w33a36_tr_align(&mut s, |_| {});
+        assert_eq!(s.pending, 2);
+    }
+
+    #[test]
+    fn wait_times_out() {
+        let mut n = 0;
+        assert_eq!(w33a36_wait_and_start(&[1], &[0], 0, |_| n += 1, || 5), -1);
+        assert_eq!(n, 10);
+        assert_eq!(w33a36_wait_and_start(&[0], &[0], 0, |_| {}, || 5), 5);
+        assert_eq!(w33a36_wait_and_start(&[0], &[1], 0, |_| {}, || 5), 0);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave33/agent37.rs
+// ===========================================================================
+// Wave 33 translation batch 37.
+//
+// Skipped (vftable/exception glue): FUN_00c83f18, FUN_00c83f79.
+
+/// `0x00c82260`: finds the extension start in a UTF-16 path.  Scans from
+/// the terminator backwards while the index is above 0 and the unit is
+/// neither `\` nor `.`; returns that index when it is a `.`, otherwise the
+/// terminator index (string length).
+pub fn w33a37_find_extension(s: &[u16]) -> usize {
+    let len = s.iter().position(|&c| c == 0).unwrap_or(s.len());
+    let at = |i: usize| if i < s.len() { s[i] } else { 0 };
+    let mut i = len;
+    while i > 0 && at(i) != 0x5c && at(i) != 0x2e {
+        i -= 1;
+    }
+    if at(i) == 0x2e { i } else { len }
+}
+
+#[cfg(test)]
+mod tests_wave33_agent37 {
+    use super::*;
+    fn w(s: &str) -> Vec<u16> {
+        let mut v: Vec<u16> = s.encode_utf16().collect();
+        v.push(0);
+        v
+    }
+    #[test]
+    fn ext() {
+        assert_eq!(w33a37_find_extension(&w("a\\b.txt")), 3);
+        assert_eq!(w33a37_find_extension(&w("a.b\\c")), 5);
+        assert_eq!(w33a37_find_extension(&w("abc")), 3);
+        assert_eq!(w33a37_find_extension(&w(".x")), 0);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave33/agent38.rs
+// ===========================================================================
+// Wave 33 agent 38: MSVC exception copy-constructors (vtable retag).
+
+/// Vtable tags the three constructors store at word 0.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum W33a38Vtable {
+    Base,
+    LogicError,
+    OutOfRange,
+    RegexError,
+}
+
+/// Model of the exception object words (`this[0]` vtable, `this[3]` regex code).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct W33a38Exc {
+    pub vtable: W33a38Vtable,
+    pub words: [u32; 4],
+}
+
+/// `0x00c83fb3`: copy-construct base from `src`, then set vtable to
+/// `std::logic_error`.
+pub fn w33a38_logic_error_copy(this: &mut W33a38Exc, src: &W33a38Exc) {
+    this.words = src.words;
+    this.vtable = W33a38Vtable::LogicError;
+}
+
+/// `0x00c83fce`: copy-construct base from `src`, then set vtable to
+/// `std::out_of_range`.
+pub fn w33a38_out_of_range_copy(this: &mut W33a38Exc, src: &W33a38Exc) {
+    this.words = src.words;
+    this.vtable = W33a38Vtable::OutOfRange;
+}
+
+/// `0x00c8400b`: copy-construct base, set vtable to `std::regex_error`,
+/// then copy word 3 (the error code) from `src`.
+pub fn w33a38_regex_error_copy(this: &mut W33a38Exc, src: &W33a38Exc) {
+    this.words = src.words;
+    this.vtable = W33a38Vtable::RegexError;
+    this.words[3] = src.words[3];
+}
+
+#[cfg(test)]
+mod tests_wave33_agent38 {
+    use super::*;
+
+    #[test]
+    fn copies_and_retags() {
+        let src = W33a38Exc {
+            vtable: W33a38Vtable::Base,
+            words: [1, 2, 3, 4],
+        };
+        let mut d = W33a38Exc {
+            vtable: W33a38Vtable::Base,
+            words: [0; 4],
+        };
+        w33a38_logic_error_copy(&mut d, &src);
+        assert_eq!(d.vtable, W33a38Vtable::LogicError);
+        w33a38_out_of_range_copy(&mut d, &src);
+        assert_eq!(d.vtable, W33a38Vtable::OutOfRange);
+        w33a38_regex_error_copy(&mut d, &src);
+        assert_eq!((d.vtable, d.words[3]), (W33a38Vtable::RegexError, 4));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave33/agent40.rs
+// ===========================================================================
+// Wave 33 translation batch 40.
+//
+// Skipped: FUN_00c936a0 and FUN_00c936bc (return value of unmodelled
+// FUN_00c93722 callee chain).
+
+/// `0x00c8af78`: wide `wcsrchr`.  Returns the index of the last u16 equal to
+/// `wanted` in the NUL-terminated string `s` (searching `0` finds the
+/// terminator itself), or `None`.  Both the scalar and SSE4.2 paths agree.
+pub fn w33a40_wcsrchr(s: &[u16], wanted: u16) -> Option<usize> {
+    let mut found = None;
+    for (i, &c) in s.iter().enumerate() {
+        if c == wanted {
+            found = Some(i);
+        }
+        if c == 0 {
+            return found;
+        }
+    }
+    found
+}
+
+#[cfg(test)]
+mod tests_wave33_agent40 {
+    use super::*;
+    #[test]
+    fn rchr() {
+        let s = [1u16, 2, 1, 3, 0, 1];
+        assert_eq!(w33a40_wcsrchr(&s, 1), Some(2));
+        assert_eq!(w33a40_wcsrchr(&s, 0), Some(4));
+        assert_eq!(w33a40_wcsrchr(&s, 9), None);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave33/agent41.rs
+// ===========================================================================
+// Wave 33 agent 41: CRT ctype table lookup and 4-char literal matcher.
+
+/// `0x00c936d8`: ctype table lookup.  Valid indices are -1..=0x100 (the
+/// unsigned test `index + 1 < 0x101`); the table holds 16-bit class masks.
+/// Returns `table[index] & mask`, or 0 when out of range.
+pub fn w33a41_ctype_mask(table: &[u16], index: i32, mask: u16) -> u16 {
+    if (index.wrapping_add(1) as u32) < 0x101 {
+        let i = index as isize;
+        // Index -1 reads the element before the table base; model it as 0.
+        if i < 0 {
+            return 0;
+        }
+        return table.get(i as usize).copied().unwrap_or(0) & mask;
+    }
+    0
+}
+
+/// `0x00c95411`: matches up to four characters of a stream against two
+/// 4-byte tables (upper/lower case spellings).  `current` is the character
+/// slot (`*param_1`), `next` supplies the following stream character.
+/// Returns true when all four positions matched.
+pub fn w33a41_match_four(
+    current: &mut u8,
+    upper: &[u8; 4],
+    lower: &[u8; 4],
+    mut next: impl FnMut() -> u8,
+) -> bool {
+    let mut i = 0usize;
+    while *current == upper[i] || *current == lower[i] {
+        *current = next();
+        i += 1;
+        if i == 4 {
+            return true;
+        }
+    }
+    false
+}
+
+#[cfg(test)]
+mod tests_wave33_agent41 {
+    use super::*;
+
+    #[test]
+    fn mask_range() {
+        let t = [0x0Fu16; 0x101];
+        assert_eq!(w33a41_ctype_mask(&t, 5, 0x3), 3);
+        assert_eq!(w33a41_ctype_mask(&t, 0x101, 0x3), 0);
+        assert_eq!(w33a41_ctype_mask(&t, -2, 0x3), 0);
+        assert_eq!(w33a41_ctype_mask(&t, -1, 0x3), 0);
+    }
+
+    #[test]
+    fn match_four() {
+        let mut it = b"RUE!".iter().copied();
+        let mut c = b'T';
+        assert!(w33a41_match_four(&mut c, b"TRUE", b"true", || it
+            .next()
+            .unwrap()));
+        let mut c = b'x';
+        assert!(!w33a41_match_four(&mut c, b"TRUE", b"true", || 0));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave33/agent42.rs
+// ===========================================================================
+// Wave 33 agent 42: CRT float-parse helper matching the `SNAN)` tail.
+
+/// `0x00c9544d`: matches the five characters of `SNAN)` (case-insensitive,
+/// upper table at `0xe4_fedc`, lower table at `0xe4_fee4`) starting with the
+/// current character `*cur`.  After each matching character the next one is
+/// fetched from `next` and stored back into `*cur`.  Returns 1 when all five
+/// matched, else 0 (the mismatching character stays in `*cur`).
+pub fn w33a42_match_snan_tail(cur: &mut u8, mut next: impl FnMut() -> u8) -> u32 {
+    const UPPER: &[u8; 5] = b"SNAN)";
+    const LOWER: &[u8; 5] = b"snan)";
+    let mut i = 0;
+    while *cur == UPPER[i] || *cur == LOWER[i] {
+        *cur = next();
+        i += 1;
+        if i == 5 {
+            return 1;
+        }
+    }
+    0
+}
+
+#[cfg(test)]
+mod tests_wave33_agent42 {
+    use super::*;
+
+    fn run(s: &[u8]) -> (u32, u8) {
+        let mut it = s.iter().copied().chain(std::iter::repeat(0));
+        let mut cur = it.next().unwrap();
+        let r = w33a42_match_snan_tail(&mut cur, || it.next().unwrap());
+        (r, cur)
+    }
+
+    #[test]
+    fn matches() {
+        assert_eq!(run(b"SnAn)x"), (1, b'x'));
+    }
+
+    #[test]
+    fn mismatch() {
+        assert_eq!(run(b"SNAX)"), (0, b'X'));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave33/agent44.rs
+// ===========================================================================
+// Wave 33 agent 44 translations.
+
+/// `0x00c98c85`: returns the default size hint of a buffer object: `0x200`
+/// when the field at `+0x404` is zero, otherwise the field at `+0x400`
+/// shifted right by one.
+pub fn w33a44_half_size_or_default(field_404: u32, field_400: u32) -> u32 {
+    if field_404 == 0 {
+        0x200
+    } else {
+        field_400 >> 1
+    }
+}
+
+#[cfg(test)]
+mod tests_wave33_agent44 {
+    use super::*;
+
+    #[test]
+    fn default_when_zero() {
+        assert_eq!(w33a44_half_size_or_default(0, 1000), 0x200);
+    }
+
+    #[test]
+    fn halves_when_set() {
+        assert_eq!(w33a44_half_size_or_default(1, 1000), 500);
+        assert_eq!(w33a44_half_size_or_default(7, 0xffff_ffff), 0x7fff_ffff);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave33/agent45.rs
+// ===========================================================================
+// Wave 33 agent 45: small iterator-advance helpers.
+
+/// `0x00c98c9d`: bucket count from a hash-table header; `0x100` when the
+/// field at `+0x404` is zero, else the field at `+0x400` shifted right by 2.
+pub fn w33a45_bucket_count(field_400: u32, field_404: i32) -> u32 {
+    if field_404 == 0 {
+        0x100
+    } else {
+        field_400 >> 2
+    }
+}
+
+/// `0x00c99080`: advances `count` times; each step calls `step`, which
+/// returns false to set `*pos = -1` and stop, else increments `*pos`.
+pub fn w33a45_advance_checked(count: i32, pos: &mut i32, mut step: impl FnMut() -> bool) {
+    let mut i = 0;
+    if 0 < count {
+        loop {
+            let v = if !step() {
+                *pos = -1;
+                -1
+            } else {
+                *pos = pos.wrapping_add(1);
+                *pos
+            };
+            i += 1;
+            if v == -1 || i >= count {
+                break;
+            }
+        }
+    }
+}
+
+/// `0x00c990bb`: calls `step` up to `count` times, stopping once it
+/// leaves `*pos == -1`.
+pub fn w33a45_advance_until_end(count: i32, pos: &mut i32, mut step: impl FnMut(&mut i32)) {
+    let mut i = 0;
+    if 0 < count {
+        loop {
+            step(pos);
+            if *pos == -1 {
+                return;
+            }
+            i += 1;
+            if i >= count {
+                break;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests_wave33_agent45 {
+    use super::*;
+
+    #[test]
+    fn bucket() {
+        assert_eq!(w33a45_bucket_count(64, 0), 0x100);
+        assert_eq!(w33a45_bucket_count(64, 1), 16);
+    }
+
+    #[test]
+    fn checked() {
+        let mut p = 0;
+        w33a45_advance_checked(3, &mut p, || true);
+        assert_eq!(p, 3);
+        let mut n = 0;
+        w33a45_advance_checked(5, &mut p, || {
+            n += 1;
+            n < 2
+        });
+        assert_eq!(p, -1);
+        assert_eq!(n, 2);
+    }
+
+    #[test]
+    fn until_end() {
+        let mut p = 0;
+        let mut calls = 0;
+        w33a45_advance_until_end(5, &mut p, |q| {
+            calls += 1;
+            if calls == 3 { *q = -1 } else { *q += 1 }
+        });
+        assert_eq!((p, calls), (-1, 3));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave33/agent46.rs
+// ===========================================================================
+// Wave 33 agent 46: printf-style format handler fragments (CRT glue).
+
+/// `0x00c99c39`: if the probe `ready` (callee at `0xc9_9cba`, argument 0)
+/// succeeds, updates the counter at ctx+0x18: incremented when
+/// `check(flag_byte)` is true, else set to -1.  Returns whether `ready` passed.
+pub fn w33a46_step_counter(
+    counter: &mut i32,
+    flag_byte: u8,
+    ready: impl FnOnce(u8) -> bool,
+    check: impl FnOnce(u8) -> bool,
+) -> bool {
+    if !ready(0) {
+        return false;
+    }
+    if check(flag_byte) {
+        *counter = counter.wrapping_add(1);
+    } else {
+        *counter = -1;
+    }
+    true
+}
+
+/// Result of the `%s` handler: text pointer, length and wide flag.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub struct W33a46Str {
+    pub text: u32,
+    pub len: u32,
+    pub wide: bool,
+}
+
+/// `0x00c9a966`: string argument handler.  A missing argument (or one with
+/// a null data pointer) yields `"(null)"` with length 6; otherwise length is
+/// the u16 header, halved when `is_wide` (callee `0xc9_8db5`) holds.
+/// `null_ptr` is the address standing for the "(null)" literal.
+pub fn w33a46_string_arg(arg: Option<(u16, u32)>, null_ptr: u32, is_wide: bool) -> W33a46Str {
+    match arg {
+        Some((hdr, data)) if data != 0 => W33a46Str {
+            text: data,
+            len: if is_wide {
+                (hdr >> 1) as u32
+            } else {
+                hdr as u32
+            },
+            wide: is_wide,
+        },
+        _ => W33a46Str {
+            text: null_ptr,
+            len: 6,
+            wide: false,
+        },
+    }
+}
+
+/// `0x00c9ace6`: single-character argument handler.  Narrow mode stores the
+/// low byte into `buf[0]` with length 1; wide mode converts via `convert`
+/// (callees `0xc9_8c85` / `0xca_ed87`) and returns (len, error flag).
+/// Returns `(len, error)`.
+pub fn w33a46_char_arg(
+    buf: &mut [u8],
+    value: u16,
+    is_wide: bool,
+    convert: impl FnOnce(&mut [u8], u16) -> Option<u32>,
+) -> (u32, bool) {
+    if !is_wide {
+        if let Some(b) = buf.first_mut() {
+            *b = value as u8;
+        }
+        (1, false)
+    } else {
+        match convert(buf, value) {
+            Some(n) => (n, false),
+            None => (0, true),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests_wave33_agent46 {
+    use super::*;
+
+    #[test]
+    fn counter() {
+        let mut c = 5;
+        assert!(w33a46_step_counter(&mut c, 1, |_| true, |_| true));
+        assert_eq!(c, 6);
+        assert!(w33a46_step_counter(&mut c, 1, |_| true, |_| false));
+        assert_eq!(c, -1);
+        assert!(!w33a46_step_counter(&mut c, 1, |_| false, |_| true));
+    }
+
+    #[test]
+    fn string() {
+        assert_eq!(w33a46_string_arg(None, 9, true).len, 6);
+        assert_eq!(w33a46_string_arg(Some((10, 4)), 9, true).len, 5);
+        assert_eq!(w33a46_string_arg(Some((10, 4)), 9, false).len, 10);
+        assert_eq!(w33a46_string_arg(Some((10, 0)), 9, false).text, 9);
+    }
+
+    #[test]
+    fn chr() {
+        let mut b = [0u8; 4];
+        assert_eq!(
+            w33a46_char_arg(&mut b, 0x41, false, |_, _| None),
+            (1, false)
+        );
+        assert_eq!(b[0], 0x41);
+        assert_eq!(
+            w33a46_char_arg(&mut b, 0x41, true, |_, _| Some(2)),
+            (2, false)
+        );
+        assert_eq!(w33a46_char_arg(&mut b, 0x41, true, |_, _| None), (0, true));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave33/agent47.rs
+// ===========================================================================
+// Wave 33 agent 47: bounded UTF-16 output sink helper.
+
+/// Output sink state read through the context pointer at `0x00c9b3d1`.
+pub struct W33a47Sink<'a> {
+    /// Destination buffer; the write cursor is `pos` (offset 0 of the record).
+    pub buf: &'a mut [u16],
+    pub pos: usize,
+    /// Offset +4: capacity limit.
+    pub limit: i32,
+    /// Offset +8: current count.
+    pub count: i32,
+    /// Offset +0xc: flag returned/used when the sink is full.
+    pub full_flag: u8,
+}
+
+/// `0x00c9b3d1`: append one UTF-16 unit to a bounded sink.  When the
+/// count equals the limit the unit is dropped: `total` becomes -1 if the
+/// flag is zero, otherwise it is incremented, and the flag is returned.
+/// Otherwise `total` and `count` are incremented, the unit is stored, the
+/// cursor advances, and 1 is returned.
+pub fn w33a47_put_u16(sink: &mut W33a47Sink, unit: u16, total: &mut i32) -> u8 {
+    if sink.count == sink.limit {
+        if sink.full_flag == 0 {
+            *total = -1;
+        } else {
+            *total = total.wrapping_add(1);
+        }
+        sink.full_flag
+    } else {
+        *total = total.wrapping_add(1);
+        sink.count += 1;
+        sink.buf[sink.pos] = unit;
+        sink.pos += 1;
+        1
+    }
+}
+
+#[cfg(test)]
+mod tests_wave33_agent47 {
+    use super::*;
+
+    #[test]
+    fn put_and_full() {
+        let mut b = [0u16; 2];
+        let mut s = W33a47Sink {
+            buf: &mut b,
+            pos: 0,
+            limit: 1,
+            count: 0,
+            full_flag: 0,
+        };
+        let mut t = 0;
+        assert_eq!(w33a47_put_u16(&mut s, 7, &mut t), 1);
+        assert_eq!((t, s.pos), (1, 1));
+        assert_eq!(w33a47_put_u16(&mut s, 8, &mut t), 0);
+        assert_eq!(t, -1);
+        s.full_flag = 1;
+        t = 5;
+        assert_eq!(w33a47_put_u16(&mut s, 8, &mut t), 1);
+        assert_eq!(t, 6);
+        assert_eq!(b[0], 7);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave33/agent48.rs
+// ===========================================================================
+// Wave 33 agent 48: CRT stream helpers over caller-supplied callees.
+
+/// `0x00c9e50a`: re-initialises a buffer record: calls the reset helper,
+/// then the allocator with `count * 2`.  On success (0) stores `count` at
+/// +0xc and flag 1 at +0x14; otherwise zeroes +0xc and the flag.
+pub fn w33a48_init_buffer(
+    count: i32,
+    reset: impl FnOnce(),
+    alloc: impl FnOnce(i32) -> i32,
+    size_field: &mut i32,
+    flag: &mut u8,
+) -> i32 {
+    reset();
+    let r = alloc(count.wrapping_mul(2));
+    if r == 0 {
+        *flag = 1;
+        *size_field = count;
+        0
+    } else {
+        *size_field = 0;
+        *flag = 0;
+        r
+    }
+}
+
+/// `0x00c9f7b8`: reads units until one is accepted by the predicate
+/// (returns 0 for accept); `u32::MAX` signals end of input.
+pub fn w33a48_read_until_accepted(
+    mut next: impl FnMut() -> u32,
+    mut reject: impl FnMut(u32, i32) -> i32,
+) -> u32 {
+    loop {
+        let v = next();
+        if v == 0xffff_ffff {
+            return 0xffff_ffff;
+        }
+        if reject(v & 0xff, 8) == 0 {
+            return v;
+        }
+    }
+}
+
+/// `0x00c9fdbc`: dispatches on the stream mode: mode 1 runs `prep` first
+/// then `mode1`, mode 2 uses `mode2`, anything else returns 0.
+pub fn w33a48_dispatch(
+    param: i32,
+    prep: impl FnOnce(),
+    mode: impl FnOnce() -> i32,
+    mode1: impl FnOnce(i32) -> u32,
+    mode2: impl FnOnce(i32) -> u32,
+) -> u32 {
+    if param == 1 {
+        prep();
+    }
+    let m = mode();
+    if m == 1 {
+        mode1(param)
+    } else if m == 2 {
+        mode2(param)
+    } else {
+        0
+    }
+}
+
+#[cfg(test)]
+mod tests_wave33_agent48 {
+    use super::*;
+
+    #[test]
+    fn init_ok_and_fail() {
+        let (mut s, mut f) = (9, 9u8);
+        assert_eq!(
+            w33a48_init_buffer(
+                4,
+                || {},
+                |n| {
+                    assert_eq!(n, 8);
+                    0
+                },
+                &mut s,
+                &mut f
+            ),
+            0
+        );
+        assert_eq!((s, f), (4, 1));
+        assert_eq!(w33a48_init_buffer(4, || {}, |_| 5, &mut s, &mut f), 5);
+        assert_eq!((s, f), (0, 0));
+    }
+
+    #[test]
+    fn read_loop() {
+        let mut it = vec![0x141u32, 0x42].into_iter();
+        let r = w33a48_read_until_accepted(|| it.next().unwrap(), |c, _| (c == 0x41) as i32);
+        assert_eq!(r, 0x42);
+        assert_eq!(w33a48_read_until_accepted(|| u32::MAX, |_, _| 0), u32::MAX);
+    }
+
+    #[test]
+    fn dispatch_modes() {
+        assert_eq!(
+            w33a48_dispatch(1, || {}, || 1, |p| p as u32 + 10, |_| 0),
+            11
+        );
+        assert_eq!(
+            w33a48_dispatch(3, || {}, || 2, |_| 0, |p| p as u32 + 20),
+            23
+        );
+        assert_eq!(w33a48_dispatch(3, || {}, || 7, |_| 1, |_| 2), 0);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave33/agent49.rs
+// ===========================================================================
+// Wave 33 agent 49: small size-lookup helpers.
+
+/// `0x00ca032e`: element size for a kind code: 0 -> 4, 3 or 8 -> 8, else 0.
+pub fn w33a49_kind_size_a(kind: i32) -> u32 {
+    match kind {
+        0 => 4,
+        3 | 8 => 8,
+        _ => 0,
+    }
+}
+
+/// `0x00ca0351`: element size for a type code (0..=10); unknown -> 0.
+pub fn w33a49_kind_size_b(kind: u32) -> u32 {
+    match kind {
+        0 | 3 | 6 | 7 | 9 => 4,
+        1 => 1,
+        2 => 2,
+        4 | 5 | 10 => 8,
+        _ => 0,
+    }
+}
+
+#[cfg(test)]
+mod tests_wave33_agent49 {
+    use super::*;
+
+    #[test]
+    fn size_a() {
+        assert_eq!(w33a49_kind_size_a(0), 4);
+        assert_eq!(w33a49_kind_size_a(3), 8);
+        assert_eq!(w33a49_kind_size_a(8), 8);
+        assert_eq!(w33a49_kind_size_a(5), 0);
+    }
+
+    #[test]
+    fn size_b() {
+        assert_eq!(w33a49_kind_size_b(1), 1);
+        assert_eq!(w33a49_kind_size_b(2), 2);
+        assert_eq!(w33a49_kind_size_b(9), 4);
+        assert_eq!(w33a49_kind_size_b(10), 8);
+        assert_eq!(w33a49_kind_size_b(11), 0);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave33/agent50.rs
+// ===========================================================================
+// Wave 33 agent 50: CRT stream helpers.
+
+/// Minimal model of the CRT `FILE` write cursor: `ptr` is the write
+/// position in `buf`, `cnt` the remaining count (signed).
+pub struct W33a50Stream {
+    pub buf: Vec<u8>,
+    pub ptr: usize,
+    pub cnt: i32,
+}
+
+/// `0x00ca486a`: putc-style store.  Decrements the stream counter; when it
+/// goes negative, defers to `overflow` (the flush-and-store callee);
+/// otherwise stores the low byte at the cursor, advances it, and returns the
+/// byte value.
+pub fn w33a50_putc(
+    ch: u32,
+    s: &mut W33a50Stream,
+    overflow: impl FnOnce(u32, &mut W33a50Stream) -> u32,
+) -> u32 {
+    s.cnt -= 1;
+    if s.cnt < 0 {
+        return overflow(ch, s);
+    }
+    if s.ptr >= s.buf.len() {
+        s.buf.resize(s.ptr + 1, 0);
+    }
+    s.buf[s.ptr] = ch as u8;
+    s.ptr += 1;
+    ch & 0xff
+}
+
+#[cfg(test)]
+mod tests_wave33_agent50 {
+    use super::*;
+
+    #[test]
+    fn stores_and_advances() {
+        let mut s = W33a50Stream {
+            buf: vec![0; 4],
+            ptr: 1,
+            cnt: 2,
+        };
+        assert_eq!(w33a50_putc(0x141, &mut s, |_, _| 9), 0x41);
+        assert_eq!(s.buf[1], 0x41);
+        assert_eq!((s.ptr, s.cnt), (2, 1));
+    }
+
+    #[test]
+    fn overflow_defers() {
+        let mut s = W33a50Stream {
+            buf: vec![0; 4],
+            ptr: 0,
+            cnt: 0,
+        };
+        assert_eq!(w33a50_putc(7, &mut s, |c, _| c + 100), 107);
+        assert_eq!(s.ptr, 0);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave33/agent51.rs
+// ===========================================================================
+// Wave 33 agent 51: small path/stream helpers (merge target `runtime.rs`).
+
+/// Record filled by `0x00ca52d2` (layout from the pseudocode offsets).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct W33a51Record {
+    /// Offset 0x00: `local_8 - 1`.
+    pub first: i32,
+    /// Offset 0x06: value returned by the 0x10-selector query.
+    pub field6: u16,
+    /// Offset 0x08: always set to 1.
+    pub field8: u16,
+    /// Offset 0x10: `local_8 - 1`.
+    pub last: i32,
+    /// Offsets 0x18, 0x20, 0x28: the same 64-bit handle.
+    pub handles: [u64; 3],
+}
+
+/// `0x00ca52d2`: initialises a record from a stream handle.  `ready`
+/// models the check callee (false -> error code 2 reported, returns false),
+/// `query16` the 0x10-selector query, `count` the length probe (None on
+/// failure) and `alloc` the 0x7bc allocator call.
+pub fn w33a51_init_record(
+    rec: &mut W33a51Record,
+    ready: impl FnOnce() -> bool,
+    report_error: impl FnOnce(u32),
+    query16: impl FnOnce() -> u16,
+    count: impl FnOnce() -> Option<i32>,
+    alloc: impl FnOnce() -> u64,
+) -> bool {
+    if !ready() {
+        report_error(2);
+        return false;
+    }
+    rec.field6 = query16();
+    rec.field8 = 1;
+    let Some(n) = count() else {
+        return false;
+    };
+    rec.last = n.wrapping_sub(1);
+    rec.first = n.wrapping_sub(1);
+    let h = alloc();
+    rec.handles = [h; 3];
+    true
+}
+
+/// `0x00ca57c3`: validates a UTF-16 path.  Skips a `X:` drive prefix; true
+/// when the remainder is empty, or when `is_sep(first)` holds and the
+/// following unit is zero.  `None` input yields false.
+pub fn w33a51_path_ok(path: Option<&[u16]>, is_sep: impl Fn(u16) -> bool) -> bool {
+    let Some(p) = path else { return false };
+    let at = |i: usize| p.get(i).copied().unwrap_or(0);
+    let mut start = 0;
+    let c = at(0);
+    if ((0x41..0x5b).contains(&c) || (0x61..0x7b).contains(&c)) && at(1) == 0x3a {
+        start = 2;
+    }
+    let c = at(start);
+    c == 0 || (is_sep(c) && at(start + 1) == 0)
+}
+
+#[cfg(test)]
+mod tests_wave33_agent51 {
+    use super::*;
+
+    #[test]
+    fn path() {
+        let sep = |c: u16| c == 0x5c;
+        assert!(!w33a51_path_ok(None, sep));
+        assert!(w33a51_path_ok(Some(&[0]), sep));
+        assert!(w33a51_path_ok(Some(&[0x43, 0x3a, 0]), sep));
+        assert!(w33a51_path_ok(Some(&[0x43, 0x3a, 0x5c, 0]), sep));
+        assert!(!w33a51_path_ok(Some(&[0x43, 0x3a, 0x5c, 0x61]), sep));
+        assert!(!w33a51_path_ok(Some(&[0x61, 0x62]), sep));
+    }
+
+    #[test]
+    fn record() {
+        let mut r = W33a51Record::default();
+        let mut e = 0;
+        assert!(!w33a51_init_record(
+            &mut r,
+            || false,
+            |c| e = c,
+            || 0,
+            || None,
+            || 0
+        ));
+        assert_eq!(e, 2);
+        assert!(w33a51_init_record(
+            &mut r,
+            || true,
+            |_| {},
+            || 7,
+            || Some(5),
+            || 9
+        ));
+        assert_eq!((r.first, r.last, r.field6, r.field8), (4, 4, 7, 1));
+        assert_eq!(r.handles, [9; 3]);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave33/agent52.rs
+// ===========================================================================
+// Wave 33 translation batch 52.
+// Skipped: FUN_00caa96e (reads opaque CRT globals, calls unmodelled init helpers).
+
+/// Object touched by `0x00ca6eb5` (fields at +0xc and +0x14).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct W33a52Slot {
+    pub value: u32,
+    pub flag: bool,
+}
+
+/// `0x00ca6eb5`: runs a pre-step, then calls the inner helper; on a zero
+/// result stores `value` and sets the flag, otherwise clears both and
+/// returns the helper's result.
+pub fn w33a52_set_slot(
+    slot: &mut W33a52Slot,
+    value: u32,
+    pre: impl FnOnce(),
+    inner: impl FnOnce(u32) -> i32,
+) -> i32 {
+    pre();
+    let r = inner(value);
+    if r == 0 {
+        slot.flag = true;
+        slot.value = value;
+        0
+    } else {
+        slot.value = 0;
+        slot.flag = false;
+        r
+    }
+}
+
+/// `0x00caa9ed`: copies an environment block (NUL-separated strings ending
+/// with an empty string), skipping entries that start with `=`.  Returns
+/// the copied strings (the C pointer array minus its null terminator).
+pub fn w33a52_copy_environment(block: &[u8]) -> Vec<Vec<u8>> {
+    let mut out = Vec::new();
+    let mut pos = 0;
+    while pos < block.len() && block[pos] != 0 {
+        let end = block[pos..]
+            .iter()
+            .position(|&b| b == 0)
+            .map_or(block.len(), |p| pos + p);
+        if block[pos] != b'=' {
+            out.push(block[pos..end].to_vec());
+        }
+        pos = end + 1;
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests_wave33_agent52 {
+    use super::*;
+
+    #[test]
+    fn slot_success_and_failure() {
+        let mut s = W33a52Slot::default();
+        assert_eq!(w33a52_set_slot(&mut s, 7, || {}, |_| 0), 0);
+        assert_eq!(
+            s,
+            W33a52Slot {
+                value: 7,
+                flag: true
+            }
+        );
+        assert_eq!(w33a52_set_slot(&mut s, 9, || {}, |_| 22), 22);
+        assert_eq!(
+            s,
+            W33a52Slot {
+                value: 0,
+                flag: false
+            }
+        );
+    }
+
+    #[test]
+    fn env_copy_skips_equals() {
+        let b = b"A=1\0=C:=x\0B=2\0\0";
+        assert_eq!(
+            w33a52_copy_environment(b),
+            vec![b"A=1".to_vec(), b"B=2".to_vec()]
+        );
+        assert!(w33a52_copy_environment(b"\0").is_empty());
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave33/agent53.rs
+// ===========================================================================
+/// `0x00caaabf`: frees a null-terminated pointer table (CRT env/argv style).
+/// Every entry up to the first zero is released through `free`, then the
+/// table itself (passed as `table_handle`) is released last.  A `None`
+/// table does nothing.  Returns the number of calls made to `free`.
+pub fn w33a53_free_ptr_table(
+    table: Option<&[u32]>,
+    table_handle: u32,
+    free: &mut dyn FnMut(u32),
+) -> usize {
+    let Some(t) = table else { return 0 };
+    let mut n = 0;
+    for &p in t.iter().take_while(|&&p| p != 0) {
+        free(p);
+        n += 1;
+    }
+    free(table_handle);
+    n + 1
+}
+
+#[cfg(test)]
+mod tests_wave33_agent53 {
+    use super::*;
+
+    #[test]
+    fn frees_entries_then_table() {
+        let mut log = Vec::new();
+        let n = w33a53_free_ptr_table(Some(&[5, 6, 0, 9]), 100, &mut |p| log.push(p));
+        assert_eq!(log, vec![5, 6, 100]);
+        assert_eq!(n, 3);
+    }
+
+    #[test]
+    fn none_is_noop() {
+        let mut c = 0;
+        assert_eq!(w33a53_free_ptr_table(None, 1, &mut |_| c += 1), 0);
+        assert_eq!(c, 0);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave33/agent54.rs
+// ===========================================================================
+// Wave 33 agent 54 (runtime.rs target).
+
+/// `0x00cab042`: atomic-style release of a shared refcounted block.  The
+/// count is decremented; when it reaches zero and the block is not the
+/// static default block, the block is freed (`free_block`) and the handle
+/// is repointed at the default block (`default_id`).  Returns true when the
+/// block was released.
+pub fn w33a54_release_refcounted<T: Copy + PartialEq>(
+    count: &mut i32,
+    handle: &mut T,
+    default_id: T,
+    free_block: impl FnOnce(T),
+) -> bool {
+    *count = count.wrapping_sub(1);
+    if *count == 0 && *handle != default_id {
+        free_block(*handle);
+        *handle = default_id;
+        return true;
+    }
+    false
+}
+
+#[cfg(test)]
+mod tests_wave33_agent54 {
+    use super::*;
+
+    #[test]
+    fn releases_at_zero() {
+        let mut c = 1;
+        let mut h = 5u32;
+        let mut freed = None;
+        assert!(w33a54_release_refcounted(&mut c, &mut h, 0, |x| freed = Some(x)));
+        assert_eq!((c, h, freed), (0, 0, Some(5)));
+    }
+
+    #[test]
+    fn keeps_default_and_shared() {
+        let mut c = 2;
+        let mut h = 5u32;
+        assert!(!w33a54_release_refcounted(&mut c, &mut h, 0, |_| panic!()));
+        let mut c = 1;
+        let mut h = 0u32;
+        assert!(!w33a54_release_refcounted(&mut c, &mut h, 0, |_| panic!()));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave33/agent56.rs
+// ===========================================================================
+// Wave 33 agent 56: CRT locale helpers.
+
+/// `0x00cac41d`: runs the append helper `0xca_1200` once per extra
+/// argument (`count` of them); the first nonzero status makes the original
+/// call a non-returning abort, modelled here as `Err(index)`.
+pub fn w33a56_append_all<F: FnMut(usize) -> i32>(count: i32, mut step: F) -> Result<(), usize> {
+    let mut i = 0usize;
+    while (i as i32) < count {
+        if step(i) != 0 {
+            return Err(i);
+        }
+        i += 1;
+    }
+    Ok(())
+}
+
+/// `0x00cacfd6`: when `ptr` is nonzero, runs the teardown helper and then
+/// the free helper on it; returns whether anything was released.
+pub fn w33a56_destroy_and_free<D: FnMut(usize), R: FnMut(usize)>(
+    ptr: usize,
+    mut teardown: D,
+    mut free: R,
+) -> bool {
+    if ptr == 0 {
+        return false;
+    }
+    teardown(ptr);
+    free(ptr);
+    true
+}
+
+#[cfg(test)]
+mod tests_wave33_agent56 {
+    use super::*;
+
+    #[test]
+    fn append_all_stops_on_error() {
+        let mut seen = vec![];
+        let r = w33a56_append_all(4, |i| {
+            seen.push(i);
+            (i == 2) as i32
+        });
+        assert_eq!(r, Err(2));
+        assert_eq!(seen, vec![0, 1, 2]);
+        assert_eq!(w33a56_append_all(0, |_| 1), Ok(()));
+    }
+
+    #[test]
+    fn destroy_order() {
+        let mut log = vec![];
+        let log_ref = std::cell::RefCell::new(&mut log);
+        assert!(w33a56_destroy_and_free(
+            5,
+            |p| log_ref.borrow_mut().push(('d', p)),
+            |p| log_ref.borrow_mut().push(('f', p))
+        ));
+        assert!(!w33a56_destroy_and_free(0, |_| {}, |_| {}));
+        assert_eq!(log, vec![('d', 5), ('f', 5)]);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave33/agent57.rs
+// ===========================================================================
+// Wave 33 translation batch 57.
+//
+// Skipped: FUN_00cad1ce (ends in non-returning call), FUN_00cad660
+// (depends on unmodelled CRT callees).
+
+/// 0x00cacff7: frees the owned blocks of a CRT per-thread locale/data
+/// record. Slot 0 is only freed when it is not the static default.
+/// Returns the slots that were released, in call order.
+pub fn w33a57_free_thread_data(
+    slots: &[u32],
+    default_ptr: u32,
+    free: &mut dyn FnMut(u32),
+) -> Vec<u32> {
+    let mut freed = Vec::new();
+    let mut f = |p: u32| {
+        free(p);
+        freed.push(p);
+    };
+    if let Some(&s0) = slots.first() {
+        if s0 != default_ptr {
+            f(s0);
+        }
+    }
+    for i in [0xf, 0xc, 0xd, 0xe, 10, 0xb, 0x10, 0x11, 0xd8] {
+        f(slots.get(i).copied().unwrap_or(0));
+    }
+    freed
+}
+
+#[cfg(test)]
+mod tests_wave33_agent57 {
+    use super::*;
+
+    #[test]
+    fn frees_in_order_and_skips_default() {
+        let mut slots = vec![0u32; 0xd9];
+        slots[0] = 0x100;
+        slots[0xf] = 1;
+        slots[0xd8] = 9;
+        let mut seen = vec![];
+        let r = w33a57_free_thread_data(&slots, 0x100, &mut |p| seen.push(p));
+        assert_eq!(r, seen);
+        assert_eq!(r.len(), 9);
+        assert_eq!(r[0], 1);
+        assert_eq!(r[8], 9);
+        let r2 = w33a57_free_thread_data(&slots, 0x200, &mut |_| {});
+        assert_eq!(r2.len(), 10);
+        assert_eq!(r2[0], 0x100);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave33/agent58.rs
+// ===========================================================================
+// Wave 33 agent 58: runtime helpers.
+
+/// `0x00cadb44`: replicates the low six bits of `v` into bytes 1 and 2 and
+/// keeps `v` itself in the low bytes (`(m << 8 | m) << 16 | v`).
+pub fn w33a58_replicate_mask(v: u32) -> u32 {
+    (((v & 0x3f) << 8 | (v & 0x3f)) << 16) | v
+}
+
+/// `0x00cae1d0`: ASCII case-insensitive compare of at most `count` bytes of
+/// two NUL-terminated strings; returns -1, 0 or 1.  A string ending (slice
+/// end counts as NUL) stops the scan and the raw bytes are compared.
+pub fn w33a58_strnicmp(a: &[u8], b: &[u8], count: i32) -> i32 {
+    let mut n = count;
+    let mut i = 0usize;
+    let lower = |c: u8| if c > 0x40 && c < 0x5b { c + 0x20 } else { c };
+    while n != 0 {
+        let x = a.get(i).copied().unwrap_or(0);
+        let y = b.get(i).copied().unwrap_or(0);
+        if x == 0 || y == 0 {
+            return if x == y {
+                0
+            } else if x < y {
+                -1
+            } else {
+                1
+            };
+        }
+        let (lx, ly) = (lower(x), lower(y));
+        if lx != ly {
+            return if lx < ly { -1 } else { 1 };
+        }
+        i += 1;
+        n -= 1;
+    }
+    0
+}
+
+#[cfg(test)]
+mod tests_wave33_agent58 {
+    use super::*;
+
+    #[test]
+    fn mask() {
+        assert_eq!(w33a58_replicate_mask(0x1f), 0x1f1f_001f);
+    }
+
+    #[test]
+    fn cmp() {
+        assert_eq!(w33a58_strnicmp(b"AbC", b"aBc", 3), 0);
+        assert_eq!(w33a58_strnicmp(b"abd", b"abc", 3), 1);
+        assert_eq!(w33a58_strnicmp(b"ab", b"abc", 5), -1);
+        assert_eq!(w33a58_strnicmp(b"x", b"y", 0), 0);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave33/agent60.rs
+// ===========================================================================
+// Wave 33 agent 60: CRT stdio temporary-buffer helpers (`_stbuf`/`_ftbuf`).
+
+/// Minimal model of the CRT `FILE` words used by the helpers (`ptr`,
+/// `base`, `cnt`, `flag`, `bufsiz` at word indices 0, 1, 2, 3, 6).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct W33a60File {
+    pub ptr: u32,
+    pub base: u32,
+    pub cnt: u32,
+    pub flag: u32,
+    pub bufsiz: u32,
+    /// Address of the inline 2-byte buffer (`param_1 + 5` words).
+    pub inline_buf: u32,
+}
+
+/// `0x00caf798`: true when the saved stream-state word equals the
+/// reference word with bit 0 set.
+pub fn w33a60_state_matches(state: u32, reference: u32) -> bool {
+    state == (reference | 1)
+}
+
+/// `0x00caf7ad`: set up a temporary 0x1000-byte buffer for stdout/stderr
+/// (`which` is 1 or 2 after the caller resolved the stream; `None` when the
+/// stream is neither or not a tty).  `slot` is the cached buffer for that
+/// stream, `alloc` allocates 0x1000 bytes (0 on failure).  Returns whether
+/// the buffer was installed.
+pub fn w33a60_stbuf(
+    f: &mut W33a60File,
+    is_tty: bool,
+    which: Option<u8>,
+    slot: &mut u32,
+    counter: &mut u32,
+    alloc: &mut dyn FnMut() -> u32,
+) -> bool {
+    if !is_tty || !matches!(which, Some(1) | Some(2)) {
+        return false;
+    }
+    *counter = counter.wrapping_add(1);
+    if f.flag & 0x4c0 != 0 {
+        return false;
+    }
+    f.flag |= 0x282;
+    if *slot == 0 {
+        *slot = alloc();
+        if *slot == 0 {
+            f.cnt = 2;
+            f.base = f.inline_buf;
+            f.ptr = f.inline_buf;
+            f.bufsiz = 2;
+            return true;
+        }
+    }
+    f.base = *slot;
+    f.ptr = *slot;
+    f.cnt = 0x1000;
+    f.bufsiz = 0x1000;
+    true
+}
+
+/// `0x00caf860`: release a temporary buffer: when `active` and flag bit 9
+/// is set, flush via `flush`, clear flag bits 0x280 and zero the buffer
+/// fields.
+pub fn w33a60_ftbuf(active: bool, f: &mut W33a60File, flush: &mut dyn FnMut(&mut W33a60File)) {
+    if active && (f.flag >> 9) & 1 != 0 {
+        flush(f);
+        f.flag &= 0xffff_fd7f;
+        f.bufsiz = 0;
+        f.base = 0;
+        f.ptr = 0;
+    }
+}
+
+#[cfg(test)]
+mod tests_wave33_agent60 {
+    use super::*;
+
+    #[test]
+    fn state() {
+        assert!(w33a60_state_matches(5, 4));
+        assert!(!w33a60_state_matches(4, 4));
+    }
+
+    #[test]
+    fn stbuf_and_ftbuf() {
+        let mut f = W33a60File {
+            inline_buf: 99,
+            ..Default::default()
+        };
+        let (mut slot, mut n) = (0u32, 0u32);
+        assert!(w33a60_stbuf(
+            &mut f,
+            true,
+            Some(1),
+            &mut slot,
+            &mut n,
+            &mut || 0
+        ));
+        assert_eq!((f.bufsiz, f.base, f.flag), (2, 99, 0x282));
+        let mut g = W33a60File::default();
+        assert!(w33a60_stbuf(
+            &mut g,
+            true,
+            Some(2),
+            &mut slot,
+            &mut n,
+            &mut || 500
+        ));
+        assert_eq!((g.base, g.cnt, n), (500, 0x1000, 2));
+        let mut h = W33a60File::default();
+        assert!(!w33a60_stbuf(
+            &mut h,
+            true,
+            None,
+            &mut slot,
+            &mut n,
+            &mut || 1
+        ));
+        let mut flushed = false;
+        w33a60_ftbuf(true, &mut g, &mut |_| flushed = true);
+        assert!(flushed && g.flag == 2 && g.base == 0);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave33/agent61.rs
+// ===========================================================================
+/// `0x00cb10e1`: writes a two-digit decimal field at `out[0..2]` and returns
+/// the number of bytes written (2, i.e. the advanced pointer offset).  When
+/// `value < 10` and `pad_zero` is false the tens digit is a space, otherwise
+/// it is `value / 10 + '0'`; the units digit is `value % 10 + '0'`.
+pub fn w33a61_format_two_digits(out: &mut [u8; 2], value: i32, pad_zero: bool) -> usize {
+    out[0] = if value < 10 && !pad_zero {
+        b' '
+    } else {
+        ((value / 10) as u8).wrapping_add(b'0')
+    };
+    out[1] = ((value % 10) as u8).wrapping_add(b'0');
+    2
+}
+
+#[cfg(test)]
+mod tests_wave33_agent61 {
+    use super::*;
+
+    #[test]
+    fn two_digits() {
+        let mut b = [0u8; 2];
+        assert_eq!(w33a61_format_two_digits(&mut b, 7, false), 2);
+        assert_eq!(&b, b" 7");
+        w33a61_format_two_digits(&mut b, 7, true);
+        assert_eq!(&b, b"07");
+        w33a61_format_two_digits(&mut b, 42, false);
+        assert_eq!(&b, b"42");
+        w33a61_format_two_digits(&mut b, 10, false);
+        assert_eq!(&b, b"10");
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave33/agent62.rs
+// ===========================================================================
+// Wave 33 translation batch 62.
+//
+// Skipped: FUN_00cb115d (locale/alloc glue), FUN_00cb124d (stream table
+// allocator with atomics and locks).
+
+/// `0x00cb1311`: CRT stream buffer release.  `s` is the four-word stream
+/// record; when flag bits 13 and 6 are both set, the buffer pointer (word 1)
+/// is passed to `free`, flags lose bits 6 and 8 (mask `0xfffffebf`) and words
+/// 0, 1 and 2 are zeroed.  Returns true when the release happened.
+pub fn w33a62_release_stream_buffer(s: &mut [u32; 4], mut free: impl FnMut(u32)) -> bool {
+    if (s[3] >> 13) & 1 != 0 && (s[3] >> 6) & 1 != 0 {
+        free(s[1]);
+        s[3] &= 0xffff_febf;
+        s[1] = 0;
+        s[0] = 0;
+        s[2] = 0;
+        true
+    } else {
+        false
+    }
+}
+
+#[cfg(test)]
+mod tests_wave33_agent62 {
+    use super::*;
+
+    #[test]
+    fn releases_when_flags_set() {
+        let mut s = [1, 0x1000, 3, 0x2140 | 0x1];
+        let mut freed = vec![];
+        assert!(w33a62_release_stream_buffer(&mut s, |p| freed.push(p)));
+        assert_eq!(freed, vec![0x1000]);
+        assert_eq!(s, [0, 0, 0, 0x2001]);
+    }
+
+    #[test]
+    fn noop_without_flags() {
+        let mut s = [1, 2, 3, 0x2000];
+        assert!(!w33a62_release_stream_buffer(&mut s, |_| panic!()));
+        assert_eq!(s, [1, 2, 3, 0x2000]);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave33/agent64.rs
+// ===========================================================================
+// Wave 33 agent 64: CRT multibyte length helpers.
+
+/// `0x00cb2b38`: length class of a NUL-terminated byte run: 1 if the first
+/// byte is zero, 2 if the second is zero, otherwise 3 or 4 depending on the
+/// third byte.
+pub fn w33a64_prefix_class(p: &[u8; 3]) -> u8 {
+    if p[0] == 0 {
+        1
+    } else if p[1] == 0 {
+        2
+    } else {
+        (p[2] != 0) as u8 + 3
+    }
+}
+
+/// `0x00cb2b64`: calls the decoder (`FUN_00cbaa59`, supplied by the caller)
+/// which yields `(status, value)`; when status < 5 the value is clamped to
+/// 0xfffd if above 0xffff and stored into `out` (if present).  Returns the
+/// status.
+pub fn w33a64_decode_u16<F: FnOnce() -> (u32, u32)>(out: Option<&mut u16>, decode: F) -> u32 {
+    let (status, mut v) = decode();
+    if status < 5 {
+        if v > 0xffff {
+            v = 0xfffd;
+        }
+        if let Some(o) = out {
+            *o = v as u16;
+        }
+    }
+    status
+}
+
+#[cfg(test)]
+mod tests_wave33_agent64 {
+    use super::*;
+
+    #[test]
+    fn class() {
+        assert_eq!(w33a64_prefix_class(&[0, 1, 1]), 1);
+        assert_eq!(w33a64_prefix_class(&[1, 0, 1]), 2);
+        assert_eq!(w33a64_prefix_class(&[1, 1, 0]), 3);
+        assert_eq!(w33a64_prefix_class(&[1, 1, 1]), 4);
+    }
+
+    #[test]
+    fn decode() {
+        let mut o = 0u16;
+        assert_eq!(w33a64_decode_u16(Some(&mut o), || (2, 0x12345)), 2);
+        assert_eq!(o, 0xfffd);
+        assert_eq!(w33a64_decode_u16(Some(&mut o), || (5, 7)), 5);
+        assert_eq!(o, 0xfffd);
+        assert_eq!(w33a64_decode_u16(Some(&mut o), || (1, 7)), 1);
+        assert_eq!(o, 7);
+        assert_eq!(w33a64_decode_u16(None, || (0, 1)), 0);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave33/agent65.rs
+// ===========================================================================
+// Wave 33 translation batch 65.
+//
+// CRT helpers: locale-aware `towlower`-style mapping and a pointer-vector
+// "reserve one slot" routine.
+
+/// Vector header used by `0x00cb4865`: `[begin, cur, cap]` as element
+/// indices/addresses (stored at offsets 0, 4, 8 of the object).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct W33a65PtrVec {
+    pub begin: u32,
+    pub cur: u32,
+    pub cap: u32,
+}
+
+/// `0x00cb4865`: ensure room for one more 4-byte entry.  Returns 0 on
+/// success or 0xc (ENOMEM) on failure.  `alloc(4 * 4)` allocates the first
+/// block (4 entries); `realloc(begin, new_entries)` grows an existing block
+/// to twice its entry count (refused at >= 0x80000000 entries).  Both return
+/// 0 on failure.
+pub fn w33a65_reserve_slot(
+    v: &mut W33a65PtrVec,
+    alloc: impl FnOnce(u32) -> u32,
+    realloc: impl FnOnce(u32, u32) -> u32,
+) -> u32 {
+    if v.cur != v.cap {
+        return 0;
+    }
+    if v.begin == 0 {
+        let p = alloc(4);
+        v.begin = p;
+        if p != 0 {
+            v.cur = p;
+            v.cap = p.wrapping_add(0x10);
+            return 0;
+        }
+        return 0xc;
+    }
+    let n = v.cap.wrapping_sub(v.begin) >> 2;
+    if n < 0x8000_0000 {
+        let p = realloc(v.begin, n.wrapping_mul(2));
+        if p == 0 {
+            return 0xc;
+        }
+        v.begin = p;
+        v.cur = p.wrapping_add(n.wrapping_mul(4));
+        v.cap = p.wrapping_add(n.wrapping_mul(8));
+        return 0;
+    }
+    0xc
+}
+
+/// Locale data consulted by `0x00cb2d30`.
+pub struct W33a65Locale<'a> {
+    /// Locale code page / name handle at +0xa8 (0 means the "C" locale).
+    pub lc_handle: u32,
+    /// 256-entry lower-case table at +0x94.
+    pub lower_table: &'a [u8; 256],
+}
+
+/// `0x00cb2d30`: locale-aware lower-casing of a 16-bit character.
+/// `0xffff` passes through.  In the C locale only `A..Z` is mapped.
+/// Otherwise values above 0xff go through `lcmap` (None => unchanged) and
+/// single-byte values flagged by `is_upper(c)` use the table.
+pub fn w33a65_tolower(
+    c: u16,
+    loc: &W33a65Locale,
+    is_upper: impl Fn(u16) -> bool,
+    lcmap: impl Fn(u32, u16) -> Option<u16>,
+) -> u16 {
+    if c == 0xffff {
+        return 0xffff;
+    }
+    if loc.lc_handle == 0 {
+        if c.wrapping_sub(0x41) < 0x1a {
+            return c + 0x20;
+        }
+        return c;
+    }
+    if c > 0xff {
+        return lcmap(loc.lc_handle, c).unwrap_or(c);
+    }
+    if is_upper(c) {
+        return loc.lower_table[c as usize] as u16;
+    }
+    c
+}
+
+#[cfg(test)]
+mod tests_wave33_agent65 {
+    use super::*;
+
+    #[test]
+    fn reserve() {
+        let mut v = W33a65PtrVec::default();
+        assert_eq!(w33a65_reserve_slot(&mut v, |_| 0x1000, |_, _| 0), 0);
+        assert_eq!((v.begin, v.cur, v.cap), (0x1000, 0x1000, 0x1010));
+        // room left: nothing happens
+        v.cur = 0x1004;
+        assert_eq!(w33a65_reserve_slot(&mut v, |_| 0, |_, _| 0), 0);
+        v.cur = v.cap;
+        assert_eq!(
+            w33a65_reserve_slot(
+                &mut v,
+                |_| 0,
+                |_, n| {
+                    assert_eq!(n, 8);
+                    0x2000
+                }
+            ),
+            0
+        );
+        assert_eq!((v.begin, v.cur, v.cap), (0x2000, 0x2010, 0x2020));
+        assert_eq!(w33a65_reserve_slot(&mut v, |_| 0, |_, _| 0), 0);
+        v.cur = v.cap;
+        assert_eq!(w33a65_reserve_slot(&mut v, |_| 0, |_, _| 0), 0xc);
+        let mut e = W33a65PtrVec::default();
+        assert_eq!(w33a65_reserve_slot(&mut e, |_| 0, |_, _| 0), 0xc);
+    }
+
+    #[test]
+    fn lower() {
+        let mut t = [0u8; 256];
+        t[0xc0] = 0xe0;
+        let c = W33a65Locale {
+            lc_handle: 0,
+            lower_table: &t,
+        };
+        let l = W33a65Locale {
+            lc_handle: 5,
+            lower_table: &t,
+        };
+        let up = |c: u16| c == 0xc0;
+        assert_eq!(w33a65_tolower(0xffff, &c, up, |_, _| None), 0xffff);
+        assert_eq!(w33a65_tolower(0x41, &c, up, |_, _| None), 0x61);
+        assert_eq!(w33a65_tolower(0x5b, &c, up, |_, _| None), 0x5b);
+        assert_eq!(w33a65_tolower(0xc0, &c, up, |_, _| None), 0xc0);
+        assert_eq!(w33a65_tolower(0xc0, &l, up, |_, _| None), 0xe0);
+        assert_eq!(w33a65_tolower(0x100, &l, up, |_, c| Some(c + 1)), 0x101);
+        assert_eq!(w33a65_tolower(0x100, &l, up, |_, _| None), 0x100);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave33/agent67.rs
+// ===========================================================================
+// Wave 33 translation batch 67.
+//
+// Skipped: FUN_00cb57cc (locale monetary setup; depends on unmodelled
+// locale-info callee and heap primitives).
+
+/// `0x00cb5481`: CRT `_copy_environ`.  Duplicates a NULL-terminated array of
+/// C strings; each entry is copied including its terminator.  `None` input
+/// yields `None` (the original returns 0); allocation failure paths end in
+/// non-returning calls and are not modelled.
+pub fn w33a67_copy_environ(src: Option<&[Vec<u8>]>) -> Option<Vec<Vec<u8>>> {
+    src.map(|rows| rows.to_vec())
+}
+
+/// `0x00cb56ce`: CRT `__free_lconv_mon`.  `fields` are the lconv string
+/// pointers (indexed by byte offset / 4) and `defaults` the C-locale
+/// pointers at the same offsets.  Returns the offsets (in bytes) whose value
+/// differs from the default and therefore get freed, in original order
+/// (0xc..=0x24, then 0x38..=0x4c).  A null record frees nothing.
+pub fn w33a67_free_lconv_mon_offsets(fields: Option<(&[usize], &[usize])>) -> Vec<usize> {
+    let Some((fields, defaults)) = fields else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for off in (0x0cusize..=0x24)
+        .step_by(4)
+        .chain((0x38..=0x4c).step_by(4))
+    {
+        let i = off / 4;
+        if fields.get(i) != defaults.get(i) {
+            out.push(off);
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests_wave33_agent67 {
+    use super::*;
+
+    #[test]
+    fn copy_environ() {
+        assert_eq!(w33a67_copy_environ(None), None);
+        let v = vec![b"A=1\0".to_vec()];
+        assert_eq!(w33a67_copy_environ(Some(&v)), Some(v.clone()));
+    }
+
+    #[test]
+    fn free_lconv() {
+        assert!(w33a67_free_lconv_mon_offsets(None).is_empty());
+        let d = vec![0usize; 20];
+        let mut f = d.clone();
+        assert!(w33a67_free_lconv_mon_offsets(Some((&f, &d))).is_empty());
+        f[3] = 5;
+        f[0x4c / 4] = 9;
+        f[0x28 / 4] = 7; // not freed
+        assert_eq!(
+            w33a67_free_lconv_mon_offsets(Some((&f, &d))),
+            vec![0xc, 0x4c]
+        );
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave33/agent68.rs
+// ===========================================================================
+// Wave 33 agent 68: CRT locale-struct free helpers.
+
+/// `0x00cb5b85`: frees the owned string fields of an lconv-like record.
+/// Fields 0, 1, 2, 12 and 13 are released through `free` unless they still
+/// point at the static default (`is_default(field_index, value)`).
+pub fn w33a68_free_lconv_strings(
+    fields: Option<&[usize]>,
+    is_default: impl Fn(usize, usize) -> bool,
+    mut free: impl FnMut(usize),
+) {
+    let Some(f) = fields else { return };
+    for idx in [0usize, 1, 2, 0xc, 0xd] {
+        if !is_default(idx, f[idx]) {
+            free(f[idx]);
+        }
+    }
+}
+
+/// `0x00cb5dff`: frees each pointer of an array of `count` entries; the
+/// count is clamped to 30 bits and forced to zero on pointer overflow
+/// (`base + count*4` wrapping).
+pub fn w33a68_free_ptr_array(
+    base: u32,
+    count: u32,
+    entries: &[usize],
+    mut free: impl FnMut(usize),
+) {
+    let wraps = base.wrapping_add(count.wrapping_mul(4)) < base;
+    let n = if wraps { 0 } else { count & 0x3fff_ffff } as usize;
+    for e in entries.iter().take(n) {
+        free(*e);
+    }
+}
+
+#[cfg(test)]
+mod tests_wave33_agent68 {
+    use super::*;
+
+    #[test]
+    fn lconv_frees_non_default() {
+        let f = [10usize, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 8];
+        let mut freed = vec![];
+        w33a68_free_lconv_strings(Some(&f), |i, v| i == 1 && v == 1, |p| freed.push(p));
+        assert_eq!(freed, vec![10, 2, 7, 8]);
+        w33a68_free_lconv_strings(None, |_, _| false, |_| panic!());
+    }
+
+    #[test]
+    fn ptr_array() {
+        let mut freed = vec![];
+        w33a68_free_ptr_array(0x1000, 2, &[5, 6, 7], |p| freed.push(p));
+        assert_eq!(freed, vec![5, 6]);
+        freed.clear();
+        w33a68_free_ptr_array(0xffff_fff0, 0x10, &[5], |p| freed.push(p));
+        assert!(freed.is_empty());
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave33/agent70.rs
+// ===========================================================================
+// Wave 33 translation batch 70.
+
+/// `0x00cb645f`: releases a locale-like object unless it is null, the
+/// static default instance, or flagged (slot 0x2c non-zero).  Calls
+/// `release_a` then `release_b`; returns whether they ran.
+pub fn w33a70_free_if_dynamic<T>(
+    obj: Option<&mut T>,
+    is_default: bool,
+    slot_2c: u32,
+    mut release_a: impl FnMut(&mut T),
+    mut release_b: impl FnMut(&mut T),
+) -> bool {
+    match obj {
+        Some(o) if !is_default && slot_2c == 0 => {
+            release_a(o);
+            release_b(o);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// `0x00cb6c9c`: binary search over a table of 12-byte rows `(name, value, _)`.
+/// `cmp(key, name)` is the three-way string compare.  On a match `*key` is
+/// replaced with the row's value (offset +4).  `hi` is the last index
+/// (negative means empty).  Returns whether a match was found.
+pub fn w33a70_bsearch_table(
+    rows: &[(u32, u32)],
+    hi: i32,
+    key: &mut u32,
+    mut cmp: impl FnMut(u32, u32) -> i32,
+) -> bool {
+    let mut hi = hi;
+    let mut lo = 0i32;
+    let mut r = 1i32;
+    if hi >= 0 {
+        loop {
+            let first = r == 0;
+            r = 0;
+            if first {
+                break;
+            }
+            let mid = (lo + hi) / 2;
+            let row = rows[mid as usize];
+            r = cmp(*key, row.0);
+            if r == 0 {
+                *key = row.1;
+            } else if r < 0 {
+                hi = mid - 1;
+            } else {
+                lo = mid + 1;
+            }
+            if lo > hi {
+                break;
+            }
+        }
+    }
+    r == 0
+}
+
+#[cfg(test)]
+mod tests_wave33_agent70 {
+    use super::*;
+
+    #[test]
+    fn free_runs() {
+        let v = std::cell::RefCell::new(vec![]);
+        let mut o = 1;
+        assert!(w33a70_free_if_dynamic(
+            Some(&mut o),
+            false,
+            0,
+            |_| v.borrow_mut().push(1),
+            |_| v.borrow_mut().push(2)
+        ));
+        assert_eq!(*v.borrow(), [1, 2]);
+        assert!(!w33a70_free_if_dynamic(
+            Some(&mut o),
+            true,
+            0,
+            |_| {},
+            |_| {}
+        ));
+        assert!(!w33a70_free_if_dynamic::<i32>(
+            None,
+            false,
+            0,
+            |_| {},
+            |_| {}
+        ));
+    }
+
+    #[test]
+    fn search() {
+        let rows = [(1, 10), (3, 30), (5, 50)];
+        let mut k = 3;
+        assert!(w33a70_bsearch_table(&rows, 2, &mut k, |a, b| a as i32 - b as i32));
+        assert_eq!(k, 30);
+        let mut k = 4;
+        assert!(!w33a70_bsearch_table(&rows, 2, &mut k, |a, b| a as i32 - b as i32));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave33/agent71.rs
+// ===========================================================================
+// Wave 33 agent 71: UTF-16 alpha run length and UTF-8 encoder helpers.
+
+/// `0x00cb70f6`: counts the leading ASCII letters (A-Z, a-z) of a UTF-16
+/// buffer; stops at the first other unit (or the end of the slice).
+pub fn w33a71_ascii_alpha_run_len(s: &[u16]) -> i32 {
+    let mut n = 0;
+    for &c in s {
+        let is_alpha = (0x41..=0x5a).contains(&c) || (0x61..=0x7a).contains(&c);
+        if !is_alpha {
+            break;
+        }
+        n += 1;
+    }
+    n
+}
+
+/// `0x00cb7d54`: encodes one code point as UTF-8 into `out`, clearing the
+/// two-word conversion state `state` on success.  A missing buffer or a zero
+/// code point returns 1 (zero writes a NUL byte when a buffer exists).
+/// Surrogates and values above 0x10ffff call `on_invalid` (the retail
+/// error helper `FUN_00cb7e03`) and return its result.
+pub fn w33a71_utf8_encode(
+    out: Option<&mut [u8]>,
+    cp: u32,
+    state: &mut [u32; 2],
+    on_invalid: impl FnOnce(&mut [u32; 2]) -> i32,
+) -> i32 {
+    let Some(out) = out else {
+        *state = [0, 0];
+        return 1;
+    };
+    if cp == 0 {
+        out[0] = 0;
+        *state = [0, 0];
+        return 1;
+    }
+    if cp < 0x80 {
+        out[0] = cp as u8;
+        return 1;
+    }
+    let (n, lead): (usize, u8) = if cp < 0x800 {
+        (1, 0xc0)
+    } else if cp < 0x10000 {
+        if (0xd800..0xe000).contains(&cp) {
+            return on_invalid(state);
+        }
+        (2, 0xe0)
+    } else {
+        if cp > 0x10ffff {
+            return on_invalid(state);
+        }
+        (3, 0xf0)
+    };
+    let mut v = cp;
+    for i in (1..=n).rev() {
+        out[i] = (v as u8 & 0x3f) | 0x80;
+        v >>= 6;
+    }
+    out[0] = v as u8 | lead;
+    *state = [0, 0];
+    n as i32 + 1
+}
+
+#[cfg(test)]
+mod tests_wave33_agent71 {
+    use super::*;
+
+    #[test]
+    fn alpha_run() {
+        let s: Vec<u16> = "abcZ1x".encode_utf16().collect();
+        assert_eq!(w33a71_ascii_alpha_run_len(&s), 4);
+        assert_eq!(w33a71_ascii_alpha_run_len(&[0x40]), 0);
+    }
+
+    #[test]
+    fn utf8() {
+        for cp in [0x24u32, 0xa2, 0x20ac, 0x10348] {
+            let mut b = [0u8; 4];
+            let mut st = [1, 1];
+            let n = w33a71_utf8_encode(Some(&mut b), cp, &mut st, |_| -1);
+            let want = char::from_u32(cp).unwrap().to_string();
+            assert_eq!(&b[..n as usize], want.as_bytes());
+        }
+        let mut st = [1, 1];
+        let mut b = [0u8; 4];
+        assert_eq!(
+            w33a71_utf8_encode(Some(&mut b), 0xd800, &mut st, |_| -7),
+            -7
+        );
+        assert_eq!(w33a71_utf8_encode(None, 5, &mut st, |_| -7), 1);
+        assert_eq!(st, [0, 0]);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave33/agent72.rs
+// ===========================================================================
+// Wave 33 agent 72.
+
+/// `0x00cba6e8`: UTF-16 code unit to code point state machine (c16rtomb
+/// style).  `state` is the two-word shift state (`param_3`, defaulting to
+/// the static state by the caller).  `convert(ch, state)` models the callee
+/// FUN_00cb7e22 and `error(state)` models FUN_00cb7e03 (the invalid-sequence
+/// path).  A high surrogate is stashed as `((c & 0x27ff) + 0x40) * 0x400`
+/// and returns 0; a low surrogate completes it.
+pub fn w33a72_c16_step<C, E>(unit: u32, state: &mut [u32; 2], mut convert: C, mut error: E) -> u32
+where
+    C: FnMut(u32, &mut [u32; 2]) -> u32,
+    E: FnMut(&mut [u32; 2]) -> u32,
+{
+    let low = (unit as u16).wrapping_add(0x2400);
+    if state[0] == 0 {
+        if low >= 0x400 {
+            if (unit as u16).wrapping_add(0x2800) >= 0x400 {
+                return convert(unit & 0xffff, state);
+            }
+            state[0] = ((unit & 0x27ff) + 0x40) * 0x400;
+            return 0;
+        }
+    } else if low < 0x400 {
+        let mut local = [0u32; 2];
+        let r = convert((unit & 0x23ff).wrapping_add(state[0]), &mut local);
+        state[0] = 0;
+        state[1] = 0;
+        return r;
+    }
+    error(state)
+}
+
+#[cfg(test)]
+mod tests_wave33_agent72 {
+    use super::*;
+
+    #[test]
+    fn surrogate_pair() {
+        let mut st = [0u32; 2];
+        let cv = |c: u32, _: &mut [u32; 2]| c;
+        let er = |_: &mut [u32; 2]| 0xffff_ffff;
+        assert_eq!(w33a72_c16_step(0xd83d, &mut st, cv, er), 0);
+        assert_eq!(w33a72_c16_step(0xde00, &mut st, cv, er), 0x1f600);
+        assert_eq!(st, [0, 0]);
+        assert_eq!(w33a72_c16_step(0x41, &mut st, cv, er), 0x41);
+        assert_eq!(w33a72_c16_step(0xde00, &mut st, cv, er), 0xffff_ffff);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave33/agent73.rs
+// ===========================================================================
+// Wave 33 agent 73: strtol-style integer parser.
+
+/// `0x00cbca30`: CRT `strtol`.  Skips leading whitespace, an optional sign
+/// and (for base 0 or 16) a `0x` prefix, then accumulates digits with
+/// wrapping signed arithmetic.  Overflow is flagged when the running value
+/// decreases; the result then saturates to `i32::MAX` (or `i32::MIN` for a
+/// negative sign, represented as `0x7fffffff + 1`).  Returns
+/// `(value, end_index, overflow)`.  Bytes past the slice read as NUL.
+pub fn w33a73_strtol(s: &[u8], base: u32) -> (i32, usize, bool) {
+    let at = |i: usize| -> u8 { s.get(i).copied().unwrap_or(0) };
+    let mut p = 0usize;
+    let mut c;
+    loop {
+        c = at(p);
+        p += 1;
+        if !matches!(c, b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r') {
+            break;
+        }
+    }
+    let sign = c;
+    let mut cur = c;
+    if c == b'-' || c == b'+' {
+        cur = at(p);
+        p += 1;
+    }
+    let mut base = base;
+    let mut skip = false;
+    if base == 0 {
+        if cur != b'0' {
+            base = 10;
+        } else if at(p) != b'x' && at(p) != b'X' {
+            base = 8;
+        } else {
+            base = 16;
+            skip = true;
+        }
+    } else if base == 16 && cur == b'0' && (at(p) == b'x' || at(p) == b'X') {
+        skip = true;
+    }
+    if skip {
+        cur = at(p + 1);
+        p += 2;
+    }
+    let mut overflow = false;
+    let mut acc: i32 = 0;
+    loop {
+        let d: u32 = match cur {
+            b'0'..=b'9' => (cur - b'0') as u32,
+            b'a'..=b'z' => (cur - b'a') as u32 + 10,
+            b'A'..=b'Z' => (cur - b'A') as u32 + 10,
+            _ => u32::MAX,
+        };
+        if base <= d {
+            break;
+        }
+        let next = acc.wrapping_mul(base as i32).wrapping_add(d as i32);
+        cur = at(p);
+        if next < acc {
+            overflow = true;
+        }
+        p += 1;
+        acc = next;
+    }
+    let end = p - 1;
+    let mut val = acc;
+    if overflow {
+        val = (i32::MAX as i64 + (sign == b'-') as i64) as i32;
+        if acc == val {
+            overflow = false;
+        }
+    }
+    if sign == b'-' && !overflow {
+        val = val.wrapping_neg();
+    }
+    (val, end, overflow)
+}
+
+#[cfg(test)]
+mod tests_wave33_agent73 {
+    use super::*;
+
+    #[test]
+    fn parses_bases() {
+        assert_eq!(w33a73_strtol(b"  -42x", 10), (-42, 5, false));
+        assert_eq!(w33a73_strtol(b"0x1F", 0), (31, 4, false));
+        assert_eq!(w33a73_strtol(b"017", 0), (15, 3, false));
+        assert_eq!(w33a73_strtol(b"+7", 0), (7, 2, false));
+        assert_eq!(w33a73_strtol(b"zz", 36), (1295, 2, false));
+    }
+
+    #[test]
+    fn overflow() {
+        let (v, _, o) = w33a73_strtol(b"99999999999", 10);
+        assert!(o);
+        assert_eq!(v, i32::MAX);
+    }
+}

@@ -1,4 +1,4 @@
-# Project status (2026-11-11, release 0.1.19)
+# Project status (2026-11-11, release 0.1.20)
 
 ## What works (shipped, tested)
 
@@ -12,13 +12,13 @@
 
 ## Translation progress
 
-5,512 of 56,128 functions (9.8%) translated, tested and cited; 3,147 wave helpers, of which only 385 have a non-test caller.  Breakdown by bucket and module: `CORPUS-STATUS.md`.  History: `WAVES.md`.
+5,631 of 56,128 functions (10.0%) translated, tested and cited; 3,147 wave helpers, of which only 385 have a non-test caller.  Breakdown by bucket and module: `CORPUS-STATUS.md`.  History: `WAVES.md`.
 
 ## What is missing
 
 1. **Integration of translated helpers.**  Most of the ~3,100 wave helpers are pure reference code (STL containers, CRT, video/audio kernels, UI records) with no call site, by design: the engine keeps one authoritative state.  Wiring a helper is only worthwhile when it replaces an approximation, with determinism/replay tests green (guide §5).
-2. **Remaining queue**: 217 clean tier-3 rows (client/render/audio neighbours); 13,019 tier-4 rows only on demand.  Yield is low: most rows are glue ending in non-returning calls.
-3. **Skiplist (7,022 rows)**: skipped because of non-returning calls or unmodelled callees; retry only after a needed callee is translated.  Per-row skip reasons were not recorded.
+2. **Remaining queue**: 80 clean tier-3 rows (client/render/audio neighbours); 12,939 tier-4 rows only on demand.  Yield is low: most rows are glue ending in non-returning calls.
+3. **Skiplist (7,120 rows)**: skipped because of non-returning calls or unmodelled callees; retry only after a needed callee is translated.  Per-row skip reasons were not recorded.
 4. **622 non-decompilable functions**: need manual assembly reconstruction or another decompiler.
 5. **Battle.net / online services (704 marked rows)**: deliberately out of scope, never implemented.
 6. **Phase 4 (front end/campaign data paths)** and **Phase 5 (helpers/CRT/thunks)** of `IMPLEMENTATION-PHASES.md` are open-ended; there is no exhaustive list of gameplay gaps against retail.  Known verification debt: in-game Remastered check of per-unit hotkey letters (`XBOX-CONTROLS.md`), later-campaign recordings for the timeline gate.
