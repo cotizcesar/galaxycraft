@@ -38,6 +38,21 @@ impl Rgb {
     }
 }
 
+/// Pixels saved by [`Framebuffer::save_rect`].
+pub struct SavedRect {
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    pixels: Vec<u32>,
+}
+
+/// How much of a cloaked unit shows through for players who can see it
+/// (its owner, or an enemy with a detector).  INFERENCE: retail draws
+/// cloaked units with a palette distortion effect; this true-colour view
+/// fades them instead.
+pub const CLOAK_KEEP: u8 = 110;
+
 /// Colour `owner`'s units, buildings and minimap blips are drawn in: its
 /// lobby colour, else the classic slot colour.
 pub fn player_rgb(world: &crate::sim::World, owner: u8) -> Rgb {
@@ -112,6 +127,42 @@ impl Framebuffer {
     pub fn put(&mut self, x: i32, y: i32, color: Rgb) {
         if x >= 0 && y >= 0 && x < self.width && y < self.height {
             self.pixels[y as usize * self.width as usize + x as usize] = color.0;
+        }
+    }
+
+    /// Copy of the pixels of a rectangle (clipped), for [`Self::fade_rect`].
+    pub fn save_rect(&self, x: i32, y: i32, w: i32, h: i32) -> SavedRect {
+        let x0 = x.clamp(0, self.width);
+        let y0 = y.clamp(0, self.height);
+        let x1 = (x + w).clamp(0, self.width);
+        let y1 = (y + h).clamp(0, self.height);
+        let mut pixels = Vec::with_capacity(((x1 - x0) * (y1 - y0)).max(0) as usize);
+        for yy in y0..y1 {
+            let row = yy as usize * self.width as usize;
+            pixels.extend_from_slice(&self.pixels[row + x0 as usize..row + x1 as usize]);
+        }
+        SavedRect {
+            x: x0,
+            y: y0,
+            w: x1 - x0,
+            h: y1 - y0,
+            pixels,
+        }
+    }
+
+    /// Blend what was drawn over a saved rectangle back towards the saved
+    /// pixels: `keep` (0..=255) is how much of the new drawing remains.  A
+    /// cloaked unit is drawn normally and then faded this way.
+    pub fn fade_rect(&mut self, saved: &SavedRect, keep: u8) {
+        for yy in 0..saved.h {
+            let row = (saved.y + yy) as usize * self.width as usize + saved.x as usize;
+            for xx in 0..saved.w {
+                let old = Rgb(saved.pixels[(yy * saved.w + xx) as usize]);
+                let new = Rgb(self.pixels[row + xx as usize]);
+                if old.0 != new.0 {
+                    self.pixels[row + xx as usize] = old.blend(new, keep).0;
+                }
+            }
         }
     }
 

@@ -15673,9 +15673,9 @@ impl App {
             if !u.alive || self.world.inside_gas_building(i) {
                 continue;
             }
-            // Cannot click an enemy the fog hides.
-            if self.fog_on()
-                && u.owner as usize != self.local_player
+            // Cannot click an enemy the fog (or an undetected cloak) hides.
+            if u.owner as usize != self.local_player
+                && (self.fog_on() || u.status.cloaked || u.status.burrowed)
                 && !self.world.can_see_unit(self.local_player as u8, i)
             {
                 continue;
@@ -15997,11 +15997,21 @@ impl App {
             }
             Act::StimPacks => {
                 for id in self.selected_mobile() {
-                    let _ = self.world.cast(
-                        id,
-                        galaxycraft::sim::Spell::StimPacks,
-                        galaxycraft::sim::SpellTarget::None,
-                    );
+                    // In a network game the cast goes through the lockstep
+                    // queue like every other act.
+                    if self.net.is_some() {
+                        self.queue_act(galaxycraft::replay::RecAct::Cast {
+                            caster: id,
+                            spell: galaxycraft::sim::Spell::StimPacks,
+                            target: galaxycraft::sim::SpellTarget::None,
+                        });
+                    } else {
+                        let _ = self.world.cast(
+                            id,
+                            galaxycraft::sim::Spell::StimPacks,
+                            galaxycraft::sim::SpellTarget::None,
+                        );
+                    }
                 }
             }
             Act::Research => {
@@ -18570,8 +18580,10 @@ impl App {
         let mut hd_units = Vec::new();
         for i in order {
             let u = &self.world.units[i];
-            if self.fog_on()
-                && u.owner as usize != self.local_player
+            // Enemy units the fog hides; cloaked or burrowed ones without a
+            // detector are hidden even with the fog switched off.
+            if u.owner as usize != self.local_player
+                && (self.fog_on() || u.status.cloaked || u.status.burrowed)
                 && !self.world.can_see_unit(self.local_player as u8, i)
             {
                 continue;
@@ -18589,6 +18601,11 @@ impl App {
                 .then(|| self.animator.unit_frame(u.id))
                 .flatten();
             let facing = self.rendered_facing(u);
+            // A cloaked unit we can see is drawn faded.
+            let cloak = u
+                .status
+                .cloaked
+                .then(|| fb.save_rect(sx - 48, sy - 48, 96, 96));
             if let Some((grp, frame)) = building_stage.get(&i) {
                 galaxycraft::render::draw_grp_centered(
                     fb,
@@ -18606,6 +18623,9 @@ impl App {
                 let ty = self.data.unit(u.type_id);
                 let r = ((ty.dimensions.right - ty.dimensions.left) as i32 / 2).max(12) + 4;
                 fb.circle_outline(sx, sy, r, Rgb::new(80, 255, 80));
+            }
+            if let Some(saved) = &cloak {
+                fb.fade_rect(saved, galaxycraft::render::CLOAK_KEEP);
             }
             // Neutral resources are stored under player 0: no bar on them
             // unless selected.
@@ -18656,7 +18676,18 @@ impl App {
             };
             marks.push(("lights", Instant::now()));
             for &i in &hd_units {
+                // A cloaked unit we can see is drawn faded.
+                let u = &self.world.units[i];
+                let cloak = u.status.cloaked.then(|| {
+                    let sx = cx + ((u.x / 256 - self.camera.0) as f32 * scale) as i32;
+                    let sy = cy + ((u.y / 256 - self.camera.1) as f32 * scale) as i32;
+                    let half = (56.0 * scale) as i32;
+                    fb_full.save_rect(sx - half, sy - half, half * 2, half * 2)
+                });
                 self.draw_unit_hd(fb_full, i, (cx, cy, cw, ch), scale, &env);
+                if let Some(saved) = &cloak {
+                    fb_full.fade_rect(saved, galaxycraft::render::CLOAK_KEEP);
+                }
             }
             self.draw_ctf_flags(fb_full, (cx, cy, cw, ch), scale, true);
             self.draw_animated_images(fb_full, (cx, cy, cw, ch), scale, &env);
@@ -19237,6 +19268,12 @@ impl App {
             )
             .chain(
                 self.animator
+                    .status_overlays(&self.world)
+                    .into_iter()
+                    .map(|b| (b.image, b.x, b.y, b.facing, b.frame)),
+            )
+            .chain(
+                self.animator
                     .effects()
                     .map(|e| (e.image, e.x, e.y, e.facing, e.frame)),
             )
@@ -19366,6 +19403,12 @@ impl App {
             .chain(
                 self.animator
                     .carry_overlays(&self.world)
+                    .into_iter()
+                    .map(|b| (b.image, b.x, b.y, b.facing, b.frame)),
+            )
+            .chain(
+                self.animator
+                    .status_overlays(&self.world)
                     .into_iter()
                     .map(|b| (b.image, b.x, b.y, b.facing, b.frame)),
             )

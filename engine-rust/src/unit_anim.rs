@@ -39,6 +39,36 @@ pub mod anim {
     /// `order_Repair` run `iscript_anims::AlmostBuilt`); the SCV's fires
     /// `useweapon 14`, the harvest Fusion Cutter spark.
     pub const ALMOST_BUILT: usize = 15;
+    /// Spell casters play this once while the simulation runs their cast.
+    pub const CAST_SPELL: usize = 7;
+    /// The Medic loops this while it heals (iscript 360: frames 68 / 85 and
+    /// the heal sound, `playsnd 1018`).
+    pub const SPECIAL_STATE_1: usize = 13;
+}
+
+/// Spell overlay images (`images.dat`), small / medium / large by the
+/// target's `units.dat` size: Lockdown field 361..=363 (`eldSmall/Med/
+/// Large`), Restoration 967..=969 (`tCure*`), Heal 970..=972 (`tmeHeal*`),
+/// Optical Flare hit 976..=978 (`TmeFlsh*`).
+pub const LOCKDOWN_FIELD_IMAGE: u16 = 361;
+pub const RESTORATION_IMAGE: u16 = 967;
+pub const HEAL_IMAGE: u16 = 970;
+pub const OPTICAL_FLARE_HIT_IMAGE: u16 = 976;
+/// `sfxdata.dat`: Stim Pack 278 / 279 (`TMaSti00/01`), Optical Flare cast
+/// 1016 (`TMedflsh`), its hit 1019 (`Miopia1`), Restoration 1017
+/// (`TMedRest`).
+pub const STIM_SOUNDS: [u16; 2] = [278, 279];
+pub const OPTICAL_FLARE_CAST_SOUND: u16 = 1016;
+pub const OPTICAL_FLARE_HIT_SOUND: u16 = 1019;
+pub const RESTORATION_SOUND: u16 = 1017;
+
+/// Offset (0..=2) of a size-keyed overlay image for a unit type.
+fn size_slot(data: &GameData, type_id: u16) -> u16 {
+    match data.unit(type_id).size {
+        crate::data::UnitSize::Medium => 1,
+        crate::data::UnitSize::Large => 2,
+        _ => 0,
+    }
 }
 
 /// Carried-resource images (`images.dat`): `OreChunk` 397 / 398, `GasOrb`
@@ -211,6 +241,12 @@ pub struct Animator {
     effects: Vec<Effect>,
     last_tick: Option<u64>,
     rng: u32,
+    /// Overlays that stay on a unit while a state lasts and restart when
+    /// their script ends: the Lockdown field and the Heal glow on a
+    /// patient, keyed by (unit id, base image).
+    status: HashMap<(u32, u16), Track>,
+    /// [`World::spell_cue_seq`] already turned into effects and sounds.
+    cue_seq: u64,
 }
 
 /// iscript of the engine-glow overlays (`tscGlow`, `tbaGlow`, `tdrGlow`,
@@ -324,10 +360,107 @@ impl Animator {
         };
         self.last_tick = Some(world.tick);
         for _ in 0..ticks {
+            self.step_spells(world);
             self.step(world);
             self.step_damage(world, lo);
             self.step_construction(world);
         }
+    }
+
+    /// Spell effects and sounds: the cues the simulation queued since the
+    /// last step, and the overlays that last as long as a state does.
+    fn step_spells(&mut self, world: &World) {
+        use crate::sim::SpellCueKind as K;
+        let data = &*world.data;
+        let mut rng = self.rng ^ 0x5bd1_e995;
+        // New cues (at most the ones the world still keeps).
+        let fresh =
+            (world.spell_cue_seq.saturating_sub(self.cue_seq) as usize).min(world.spell_cues.len());
+        self.cue_seq = world.spell_cue_seq;
+        let start = world.spell_cues.len() - fresh;
+        for cue in world.spell_cues.iter().skip(start) {
+            let Some(u) = world.unit(cue.unit) else {
+                continue;
+            };
+            let (x, y) = (u.x / 256, u.y / 256);
+            let slot = size_slot(data, u.type_id);
+            let (image, sound) = match cue.kind {
+                K::Stim => {
+                    rng = rng.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                    (None, Some(STIM_SOUNDS[(rng >> 16) as usize % 2]))
+                }
+                K::LockdownHit => (None, None),
+                K::Restoration => (Some(RESTORATION_IMAGE + slot), Some(RESTORATION_SOUND)),
+                K::OpticalFlareCast => (None, Some(OPTICAL_FLARE_CAST_SOUND)),
+                K::OpticalFlareHit => (
+                    Some(OPTICAL_FLARE_HIT_IMAGE + slot),
+                    Some(OPTICAL_FLARE_HIT_SOUND),
+                ),
+            };
+            if let Some(id) = sound {
+                self.sounds.push((id, x, y));
+            }
+            if let Some(image) = image
+                && let Some(track) = Track::start(data, image, anim::INIT, 0)
+            {
+                self.effects.push(Effect {
+                    image,
+                    x,
+                    y,
+                    facing: 0,
+                    frame: 0,
+                    track,
+                    age: 0,
+                });
+            }
+        }
+        // Lasting overlays: the Lockdown field on a disabled unit, the Heal
+        // glow on a patient a Medic is working on.
+        let mut wanted: Vec<(u32, u16)> = Vec::new();
+        for (i, u) in world.units.iter().enumerate().filter(|(_, u)| u.alive) {
+            if u.status.lockdown_ticks > 0 {
+                wanted.push((u.id, LOCKDOWN_FIELD_IMAGE + size_slot(data, u.type_id)));
+            }
+            if world.medic_is_healing(i)
+                && let Some(p) = u.target.and_then(|t| world.unit(t))
+            {
+                let key = (p.id, HEAL_IMAGE + size_slot(data, p.type_id));
+                if !wanted.contains(&key) {
+                    wanted.push(key);
+                }
+            }
+        }
+        self.status
+            .retain(|k, t| wanted.contains(k) || !t.state.ended);
+        for key in wanted {
+            let restart = self.status.get(&key).is_none_or(|t| t.state.ended);
+            if restart && let Some(t) = Track::start(data, key.1, anim::INIT, 0) {
+                self.status.insert(key, t);
+            }
+        }
+        for t in self.status.values_mut() {
+            let _ = t.tick(data, 0, &mut rng);
+            t.sounds.clear();
+        }
+        self.status
+            .retain(|(id, _), _| world.unit(*id).is_some_and(|u| u.alive));
+    }
+
+    /// The Lockdown fields and Heal glows showing a frame, on their units.
+    pub fn status_overlays(&self, world: &World) -> Vec<BulletPose> {
+        self.status
+            .iter()
+            .filter_map(|((id, image), t)| {
+                let u = world.unit(*id)?;
+                Some(BulletPose {
+                    image: *image,
+                    x: u.x / 256,
+                    y: u.y / 256,
+                    facing: 0,
+                    frame: t.frame?,
+                })
+            })
+            .collect()
     }
 
     /// Fire on burning Terran / Protoss buildings, blood on Zerg ones: the
@@ -475,7 +608,13 @@ impl Animator {
                     }
                     _ => false,
                 };
-            let fired = !working && u.cooldown > seen.cooldown;
+            let healing = !hidden && world.medic_is_healing(idx);
+            // The simulation is running this unit's cast animation.
+            let casting = u
+                .anim
+                .as_ref()
+                .is_some_and(|a| a.anim as usize == anim::CAST_SPELL);
+            let fired = !working && !healing && !casting && u.cooldown > seen.cooldown;
             let air = ty.ground_weapon == 255 && ty.air_weapon != 255
                 || u.target
                     .and_then(|t| world.unit(t))
@@ -486,9 +625,22 @@ impl Animator {
                     .track
                     .as_ref()
                     .is_none_or(|t| t.state.ended || t.state.ignore_rest);
-                let want = if working {
-                    (current != Some(anim::ALMOST_BUILT)).then_some(anim::ALMOST_BUILT)
-                } else if current == Some(anim::ALMOST_BUILT) {
+                let special = if working {
+                    Some(anim::ALMOST_BUILT)
+                } else if healing {
+                    Some(anim::SPECIAL_STATE_1)
+                } else if casting {
+                    Some(anim::CAST_SPELL)
+                } else {
+                    None
+                };
+                let in_special = matches!(
+                    current,
+                    Some(anim::ALMOST_BUILT | anim::SPECIAL_STATE_1 | anim::CAST_SPELL)
+                );
+                let want = if let Some(a) = special {
+                    (current != Some(a)).then_some(a)
+                } else if in_special {
                     Some(if moving {
                         anim::WALKING
                     } else {

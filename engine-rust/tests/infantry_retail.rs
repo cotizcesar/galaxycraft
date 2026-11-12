@@ -525,3 +525,112 @@ fn a_medic_keeps_its_orders_while_it_walks() {
     let x = w.units[medic].x / 256;
     assert!((880..=920).contains(&x), "walked to its destination: {x}");
 }
+
+#[test]
+fn selection_and_order_voices_cover_every_retail_line() {
+    use galaxycraft::sfx::SfxTable;
+    use galaxycraft::voice::{VoiceCue, selection_cue, voice_ids};
+    let table = SfxTable::bundled();
+    // sfxdata.tbl: every unit has 1 ready line, 4 "what?" lines, 4 order
+    // replies and 7 annoyed lines (the Ghost has 4).
+    for (ty, pissed) in [
+        (uid::MARINE, 7),
+        (uid::GHOST, 4),
+        (uid::SCV, 7),
+        (uid::FIREBAT, 7),
+        (uid::MEDIC, 7),
+    ] {
+        let n = |cue| voice_ids(&table, ty, cue).len();
+        assert_eq!(n(VoiceCue::Ready), 1, "ready of {ty}");
+        assert_eq!(n(VoiceCue::What), 4, "what of {ty}");
+        assert_eq!(n(VoiceCue::Yes), 4, "yes of {ty}");
+        assert_eq!(n(VoiceCue::Pissed), pissed, "annoyed of {ty}");
+        // Clicking the same unit again and again: three "what?" lines,
+        // then every annoyed line in order, then it starts over.
+        for click in 1..=3 {
+            assert_eq!(selection_cue(click, pissed).0, VoiceCue::What);
+        }
+        for k in 0..pissed {
+            assert_eq!(
+                selection_cue(4 + k as u32, pissed),
+                (VoiceCue::Pissed, k, false)
+            );
+        }
+        let (cue, _, restart) = selection_cue(4 + pissed as u32, pissed);
+        assert!(cue == VoiceCue::What && restart);
+    }
+}
+
+#[test]
+fn the_renderer_shows_the_medic_heal_and_the_spell_effects() {
+    use galaxycraft::unit_anim::{
+        Animator, HEAL_IMAGE, LOCKDOWN_FIELD_IMAGE, OPTICAL_FLARE_HIT_IMAGE, RESTORATION_IMAGE,
+        STIM_SOUNDS,
+    };
+    let mut w = world();
+    for t in [
+        tech::STIM_PACKS,
+        tech::LOCKDOWN,
+        tech::RESTORATION,
+        tech::OPTICAL_FLARE,
+    ] {
+        w.players[0].techs[t as usize] = true;
+    }
+    let medic = w.spawn_px(0, uid::MEDIC, 400, 400).unwrap();
+    let marine = w.spawn_px(0, uid::MARINE, 425, 400).unwrap();
+    w.units[marine].hp = fp(20);
+    w.units[medic].set_energy_fixed(200 * ENERGY_SCALE);
+    let (mid, marine_id) = (w.units[medic].id, w.units[marine].id);
+    let mut anim = Animator::default();
+    let (mut frames, mut heal_fx, mut sounds) = (Vec::new(), false, Vec::new());
+    for _ in 0..30 {
+        w.step();
+        anim.advance(&w);
+        frames.extend(anim.unit_frame(mid));
+        // The Marine is small: Heal image 970.
+        heal_fx |= anim
+            .status_overlays(&w)
+            .iter()
+            .any(|o| o.image == HEAL_IMAGE && o.x == w.units[marine].x / 256);
+        sounds.extend(anim.take_sounds().into_iter().map(|s| s.0));
+    }
+    // iscript 360 SpecialState1: frames 68 / 85 and `playsnd 1018`.
+    assert!(frames.contains(&68) && frames.contains(&85), "{frames:?}");
+    assert!(heal_fx, "the Heal glow shows on the patient");
+    assert!(sounds.contains(&1018), "heal sound: {sounds:?}");
+
+    // Stim: one of the two Stim Pack sounds.
+    w.cast(marine_id, Spell::StimPacks, SpellTarget::None)
+        .unwrap();
+    w.step();
+    anim.advance(&w);
+    let s: Vec<u16> = anim.take_sounds().into_iter().map(|s| s.0).collect();
+    assert!(s.iter().any(|id| STIM_SOUNDS.contains(id)), "{s:?}");
+
+    // Optical Flare on an enemy tank (large: +2), Restoration on our own
+    // Marine (small), Lockdown field on the tank.
+    let tank = w.spawn_px(1, uid::SIEGE_TANK, 560, 400).unwrap();
+    w.units[tank].order = Order::HoldPosition;
+    let tid = w.units[tank].id;
+    w.cast(mid, Spell::OpticalFlare, SpellTarget::Unit(tid))
+        .unwrap();
+    w.cast(mid, Spell::Restoration, SpellTarget::Unit(marine_id))
+        .unwrap_or(());
+    w.step();
+    anim.advance(&w);
+    let images: Vec<u16> = anim.effects().map(|e| e.image).collect();
+    assert!(
+        images.contains(&(OPTICAL_FLARE_HIT_IMAGE + 2)),
+        "flare hit on a large unit: {images:?}"
+    );
+    let _ = RESTORATION_IMAGE;
+    w.units[tank].status.lockdown_ticks = 50;
+    w.step();
+    anim.advance(&w);
+    assert!(
+        anim.status_overlays(&w)
+            .iter()
+            .any(|o| o.image == LOCKDOWN_FIELD_IMAGE + 2),
+        "lockdown field on the tank"
+    );
+}

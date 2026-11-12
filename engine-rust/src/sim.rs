@@ -790,6 +790,31 @@ pub struct NukeStrike {
     pub warned: bool,
 }
 
+/// What a [`SpellCue`] announces.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpellCueKind {
+    /// A unit used a Stim Pack.
+    Stim,
+    /// The Lockdown missile disabled its target.
+    LockdownHit,
+    /// Restoration cleansed the unit.
+    Restoration,
+    /// A Medic fired Optical Flare (the cue's unit is the caster).
+    OpticalFlareCast,
+    /// Optical Flare blinded the unit.
+    OpticalFlareHit,
+}
+
+/// One spell event for the renderer (see [`World::spell_cues`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SpellCue {
+    pub kind: SpellCueKind,
+    pub unit: u32,
+}
+
+/// Spell cues kept for the renderer.
+pub const SPELL_CUE_KEEP: usize = 64;
+
 /// `units.dat` group flags (OpenBW `GroupFlags`): Men and Building.
 pub const GROUP_MEN: u8 = 0x08;
 pub const GROUP_BUILDING: u8 = 0x10;
@@ -1798,6 +1823,12 @@ pub struct World {
     pub rescues: Vec<(u32, u8)>,
     /// Defensive Matrix hit/break cues produced during the current tick.
     pub matrix_cues: Vec<MatrixCue>,
+    /// The last [`SPELL_CUE_KEEP`] spell cues (Stim, Lockdown hit,
+    /// Restoration, Optical Flare) for the renderer's effects and sounds;
+    /// `spell_cue_seq` counts every cue ever pushed, so a consumer knows
+    /// which ones it has not seen yet.  Presentation only.
+    pub spell_cues: std::collections::VecDeque<SpellCue>,
+    pub spell_cue_seq: u64,
     /// Staged nuclear launches.
     pub nuke_strikes: Vec<NukeStrike>,
     /// `(x, y)` warning cues produced during the current tick.
@@ -1862,6 +1893,8 @@ impl World {
             rules: crate::map::ScenarioRules::default(),
             rescues: Vec::new(),
             matrix_cues: Vec::new(),
+            spell_cues: std::collections::VecDeque::new(),
+            spell_cue_seq: 0,
             nuke_strikes: Vec::new(),
             nuke_warnings: Vec::new(),
             trigger_victory: false,
@@ -6241,6 +6274,8 @@ impl World {
             hit::LOCKDOWN => {
                 if let Some(t) = target_idx {
                     self.units[t].status.apply_lockdown(LOCKDOWN_UPDATES);
+                    let id = self.units[t].id;
+                    self.push_spell_cue(SpellCueKind::LockdownHit, id);
                 }
             }
             hit::PARASITE => {
@@ -8708,6 +8743,8 @@ impl World {
                 let hp = self.units[caster].hp;
                 self.units[caster].hp = (hp - fp(10)).max(1);
                 self.units[caster].status.stim_ticks = STIM_FRAMES;
+                let id = self.units[caster].id;
+                self.push_spell_cue(SpellCueKind::Stim, id);
             }
             Spell::TankSiegeMode => {
                 self.order_siege(caster, self.units[caster].type_id == uid::SIEGE_TANK);
@@ -8943,6 +8980,8 @@ impl World {
                     s.optical_flare_ticks = 0;
                     s.parasite = false;
                     s.clear_acid_spores();
+                    let id = self.units[t].id;
+                    self.push_spell_cue(SpellCueKind::Restoration, id);
                 }
             }
             Spell::DisruptionWeb => {
@@ -8957,7 +8996,11 @@ impl World {
             }
             Spell::OpticalFlare => {
                 if let Some(t) = target_idx {
+                    // Permanent until Restoration (any non-zero value).
                     self.units[t].status.optical_flare_ticks = 600;
+                    let (cid, tid) = (self.units[caster].id, self.units[t].id);
+                    self.push_spell_cue(SpellCueKind::OpticalFlareCast, cid);
+                    self.push_spell_cue(SpellCueKind::OpticalFlareHit, tid);
                 }
             }
             Spell::Healing => {
@@ -10003,6 +10046,14 @@ impl World {
         let (dx, dy) = (self.units[ti].x - bx, self.units[ti].y - by);
         self.units[o].facing = direction_byte(dx, dy);
         self.fire(o, ti, wid, &w);
+    }
+
+    fn push_spell_cue(&mut self, kind: SpellCueKind, unit: u32) {
+        if self.spell_cues.len() >= SPELL_CUE_KEEP {
+            self.spell_cues.pop_front();
+        }
+        self.spell_cues.push_back(SpellCue { kind, unit });
+        self.spell_cue_seq += 1;
     }
 
     /// Whether `medic` may heal `j` (OpenBW `medic_can_heal_target`): a
