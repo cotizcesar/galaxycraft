@@ -338,3 +338,21 @@ fn lift_off_raises_dust_at_the_lo_offsets() {
         "{seen:?}"
     );
 }
+
+#[test]
+fn nobody_auto_attacks_an_abandoned_addon() {
+    // Retail gives it to the neutral player.
+    let mut w = world();
+    let factory = building(&mut w, uid::FACTORY, (576, 560));
+    let shop = finish_addon(&mut w, factory, uid::MACHINE_SHOP);
+    w.lift_building(factory).unwrap();
+    let i = w.index_of(factory).unwrap();
+    w.units[i].x = fp(1500);
+    w.units[i].y = fp(1500);
+    w.spawn_px(1, uid::MARINE, 672, 640).unwrap();
+    let hp = unit(&w, shop).hp;
+    for _ in 0..200 {
+        w.step();
+    }
+    assert_eq!(unit(&w, shop).hp, hp);
+}

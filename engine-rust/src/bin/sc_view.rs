@@ -2424,9 +2424,8 @@ struct App {
     sd_image_grps: std::collections::HashMap<u16, Option<std::rc::Rc<galaxycraft::render::Grp>>>,
     /// Retail remap tables of the current tileset (`ofire` 1, `gfire` 2,
     /// `bfire` 3, `bexpl` 4), read from the install on first use.
-    /// Enemy buildings the local player has scouted: retail keeps drawing
-    /// them where they were seen, under the fog, after the scout leaves.
-    seen_buildings: std::collections::HashSet<u32>,
+    /// Scouted enemy buildings as last seen (`fog_memory`).
+    fog_mem: fog_memory::FogMemory,
     /// Edge-scroll direction while the pointer rests on a screen edge of
     /// the focused window (0 = up, clockwise), set by the window loop.
     edge_scroll: Option<u8>,
@@ -6147,8 +6146,11 @@ fn run_game_script(app: &mut App, fb: &mut Framebuffer, script: &str) {
                 );
                 frame(app, fb, base(mouse));
             }
+            "edge" => {
+                mouse = app.script_edge(num(1), num(2), (fb.width, fb.height));
+                frame(app, fb, base(mouse));
+            }
             "site" => {
-                // `site:OWNER:TYPE:x:y:PCT`: a building under construction.
                 app.spawn_site(num(1), num(2), (num(3), num(4)), num(5));
                 frame(app, fb, base(mouse));
             }
@@ -6488,7 +6490,6 @@ fn run_game_script(app: &mut App, fb: &mut Framebuffer, script: &str) {
             }
             "shot" | "shot-cursor" => {
                 app.draw(fb);
-                // `shot-cursor` also paints the pointer, as the window does.
                 if parts[0] == "shot-cursor" {
                     app.pointer = mouse;
                     app.draw_cursor(fb);
@@ -7731,7 +7732,7 @@ fn main() {
         animator: galaxycraft::unit_anim::Animator::default(),
         image_names: None,
         sd_image_grps: std::collections::HashMap::new(),
-        seen_buildings: std::collections::HashSet::new(),
+        fog_mem: Default::default(),
         edge_scroll: None,
         deferred_cheats: Vec::new(),
         remap_tables: std::collections::HashMap::new(),
@@ -8754,8 +8755,7 @@ fn main() {
         }
         let raw_pointer = app.surface_mouse(&window);
         app.update_pointer(raw_pointer, (fb.width, fb.height));
-        // Mouse edge scrolling: only with the pointer inside the focused
-        // window (a clamped position outside it must not scroll).
+        // Mouse edge scrolling, only with the pointer inside the focused window.
         app.edge_scroll = app
             .pointer
             .filter(|_| window.is_active() && window.get_mouse_pos(MouseMode::Discard).is_some())

@@ -39,8 +39,10 @@ on screen.
 - **Spider Mine.**  A mine is nudged by collision while it waits (not
   checked against OpenBW's collision rules for it).
 - **Bunker boarding** uses 8 px instead of retail's 1: the engine's
-  building footprint holds walkers a few pixels off the box, and at 1 px
-  Marines stalled on the corners (tested).  Transports use 1 px.
+  pathing blocks walkers on a building's tiles (placement box), wider than
+  the collision box retail uses, and at 1 px Marines stalled on the
+  corners (tested).  Fixing it means modelling building collision by the
+  `units.dat` dimensions in the pathfinder.  Transports use 1 px.
 - **Air repulse.**  The map-edge turn and the "cannot be interrupted"
   exemptions are simplified.
 - **Team colour in SD** uses `tunit.pcx`'s exact shades for the slot
@@ -53,15 +55,13 @@ on screen.
 
 ## Terran buildings and client, 2026-11-12
 
-- **Abandoned add-ons** keep their owner in the engine (no neutral player
-  slot); they are treated as neutral (no buttons, no research, yellow
-  circle and cursor) and change owner when a building takes them.  Score
-  and supply counts may still credit the old owner.
+- **Abandoned add-ons** behave as neutral (no buttons, no research, not
+  auto-attacked, yellow circle and cursor, taken by whoever lands on
+  them) but keep their owner inside the engine, which has no neutral
+  player slot (`World` holds one entry per race); kill credit and score
+  may still count them for the old owner.
 - **Landing** crushes nothing (OpenBW kills burrowed / immobile units
   under the building and lifts off again if blocked by one).
-- **Fog memory** keeps a scouted building drawn as it is now (frame,
-  damage), not as it was last seen, and forgets one destroyed in the fog
-  (retail leaves its ghost until the area is seen again).
 - **Edge scrolling speed** follows the Mouse Scroll slider by inference.
   (Cursor rates are settled: the loader `FUN_0069df10` gives all eighteen
   cursors the same frame time, 10, the arrow's measured 6 fps.)
