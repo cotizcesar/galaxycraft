@@ -530,6 +530,23 @@ impl App {
         if input.down {
             self.camera.1 += scroll;
         }
+        // Mouse at a screen edge.  INFERENCE: the rate follows the Mouse
+        // Scroll slider the way the Key Scroll one scales the keys.
+        if let Some(dir) = self.edge_scroll {
+            let step = (14.0 * (0.5 + self.game_options.mouse_scroll)).round() as i32;
+            let (dx, dy) = [
+                (0, -1),
+                (1, -1),
+                (1, 0),
+                (1, 1),
+                (0, 1),
+                (-1, 1),
+                (-1, 0),
+                (-1, -1),
+            ][dir as usize % 8];
+            self.camera.0 += dx * step;
+            self.camera.1 += dy * step;
+        }
         if input.wheel != 0.0 {
             // Mouse Scroll Speed: 0.5 is the retail default of 48 px/notch.
             let step = 48.0 * (0.5 + self.game_options.mouse_scroll);

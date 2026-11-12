@@ -777,7 +777,7 @@ fn cursor_scale_for_height(height: i32) -> f32 {
 }
 
 /// Which retail target cursor matches the unit under the pointer.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum CursorTarget {
     /// Own unit or building (`cursor/targg.dds.grp`).
     Own,
@@ -787,28 +787,111 @@ enum CursorTarget {
     Neutral,
 }
 
-/// Retail pointer skins.  The executable's cursor table (x86/StarCraft.exe
-/// `0x00f07450..0x00f07480`) lists `TargY`, `TargR`, `TargG` and `TargN`
-/// with two frames, animation enabled and a centred `(0.5, 0.5)` hotspot;
-/// the scroll cursors use edge hotspots in the same table.  The target art is
-/// therefore centred on the pointer, unlike the arrow whose tip is its
-/// top-left corner.
-#[derive(Clone, Debug, Default)]
-struct CursorArt {
-    arrow: Option<galaxycraft::dds::DdsGrp>,
-    own: Option<galaxycraft::dds::DdsGrp>,
-    enemy: Option<galaxycraft::dds::DdsGrp>,
-    neutral: Option<galaxycraft::dds::DdsGrp>,
+/// Which retail cursor the pointer shows.  The executable's cursor table
+/// (x86/StarCraft.exe `0x00f07430..0x00f07560`, 16-byte rows: name, flag,
+/// hotspot x, hotspot y as a fraction of the HD image) lists `arrow`,
+/// `Illegal`, `TargY/R/G/N`, `MagG/R/Y`, `Drag`, `Time` and the eight
+/// `Scroll*` cursors.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum CursorShape {
+    Arrow,
+    /// Hovering over a unit: the animated magnifier (`MagG/MagR/MagY`).
+    Mag(CursorTarget),
+    /// A command button waiting for its target: `TargN` over terrain,
+    /// `TargG/R/Y` over a unit.
+    Targ(Option<CursorTarget>),
+    /// A selection box being dragged: the crosshair (`Drag`).
+    Drag,
+    /// Scrolling at a screen edge: 0 = up, then clockwise.
+    Scroll(u8),
 }
 
-impl CursorArt {
-    fn target(&self, target: CursorTarget) -> Option<&galaxycraft::dds::DdsGrp> {
-        match target {
-            CursorTarget::Own => self.own.as_ref(),
-            CursorTarget::Enemy => self.enemy.as_ref(),
-            CursorTarget::Neutral => self.neutral.as_ref(),
+const SCROLL_CURSORS: [(&str, (f32, f32)); 8] = [
+    ("scrollu", (0.5, 0.0)),
+    ("scrollur", (1.0, 0.0)),
+    ("scrollr", (1.0, 0.5)),
+    ("scrolldr", (1.0, 1.0)),
+    ("scrolld", (0.5, 1.0)),
+    ("scrolldl", (0.0, 1.0)),
+    ("scrolll", (0.0, 0.5)),
+    ("scrollul", (0.0, 0.0)),
+];
+
+impl CursorShape {
+    const ALL: [CursorShape; 17] = [
+        CursorShape::Arrow,
+        CursorShape::Mag(CursorTarget::Own),
+        CursorShape::Mag(CursorTarget::Enemy),
+        CursorShape::Mag(CursorTarget::Neutral),
+        CursorShape::Targ(None),
+        CursorShape::Targ(Some(CursorTarget::Own)),
+        CursorShape::Targ(Some(CursorTarget::Enemy)),
+        CursorShape::Targ(Some(CursorTarget::Neutral)),
+        CursorShape::Drag,
+        CursorShape::Scroll(0),
+        CursorShape::Scroll(1),
+        CursorShape::Scroll(2),
+        CursorShape::Scroll(3),
+        CursorShape::Scroll(4),
+        CursorShape::Scroll(5),
+        CursorShape::Scroll(6),
+        CursorShape::Scroll(7),
+    ];
+
+    /// File stem under `cursor/` (`.grp` for SD, `.dds.grp` for HD).
+    fn file(self) -> &'static str {
+        match self {
+            CursorShape::Arrow => "arrow",
+            CursorShape::Mag(CursorTarget::Own) => "magg",
+            CursorShape::Mag(CursorTarget::Enemy) => "magr",
+            CursorShape::Mag(CursorTarget::Neutral) => "magy",
+            CursorShape::Targ(None) => "targn",
+            CursorShape::Targ(Some(CursorTarget::Own)) => "targg",
+            CursorShape::Targ(Some(CursorTarget::Enemy)) => "targr",
+            CursorShape::Targ(Some(CursorTarget::Neutral)) => "targy",
+            CursorShape::Drag => "drag",
+            CursorShape::Scroll(d) => SCROLL_CURSORS[d as usize % 8].0,
         }
     }
+
+    /// HD hotspot, as a fraction of the image (the executable's table).
+    /// The SD GRPs are 128 x 128 canvases drawn around their centre.
+    fn hotspot(self) -> (f32, f32) {
+        match self {
+            CursorShape::Arrow => (0.0, 0.0),
+            CursorShape::Mag(_) => (0.48, 0.48),
+            CursorShape::Targ(_) | CursorShape::Drag => (0.5, 0.5),
+            CursorShape::Scroll(d) => SCROLL_CURSORS[d as usize % 8].1,
+        }
+    }
+}
+
+/// Retail pointer skins: HD (`cursor/*.dds.grp`) and SD (`cursor/*.grp`).
+#[derive(Clone, Debug, Default)]
+struct CursorArt {
+    hd: std::collections::HashMap<CursorShape, galaxycraft::dds::DdsGrp>,
+    sd: std::collections::HashMap<CursorShape, galaxycraft::render::Grp>,
+}
+
+/// Edge-scroll direction for a pointer at the border of a `size` surface:
+/// 0 = up, then clockwise; `None` away from the edges.
+fn edge_scroll_dir(pointer: (i32, i32), size: (i32, i32)) -> Option<u8> {
+    let (x, y) = pointer;
+    let l = x <= 1;
+    let r = x >= size.0 - 2;
+    let u = y <= 1;
+    let d = y >= size.1 - 2;
+    Some(match (u, r, d, l) {
+        (true, true, _, _) => 1,
+        (_, true, true, _) => 3,
+        (_, _, true, true) => 5,
+        (true, _, _, true) => 7,
+        (true, ..) => 0,
+        (_, true, ..) => 2,
+        (_, _, true, _) => 4,
+        (.., true) => 6,
+        _ => return None,
+    })
 }
 
 /// Authored-frame timeline for a menu layer: `(aligned_start, remaining
@@ -823,6 +906,41 @@ fn menu_clip_timeline(source_seconds: f32, start: f32) -> (f32, usize, f32) {
     let aligned_start = start_frame as f32 / MENU_CLIP_SOURCE_FPS;
     let frames = total_frames - start_frame;
     (aligned_start, frames, frames as f32 / MENU_CLIP_FPS)
+}
+
+/// Nearest-neighbour blit of an SD cursor GRP frame, its 128 x 128 canvas
+/// centred on the pointer (the classic cursors put their hotspot there).
+fn blit_sd_cursor(
+    fb: &mut Framebuffer,
+    grp: &galaxycraft::render::Grp,
+    index: usize,
+    palette: &galaxycraft::render::Palette,
+    at: (i32, i32),
+    scale: f32,
+) {
+    let Some(frame) = grp.frame(index) else {
+        return;
+    };
+    let ox = at.0 as f32 - grp.width as f32 / 2.0 * scale;
+    let oy = at.1 as f32 - grp.height as f32 / 2.0 * scale;
+    for y in 0..frame.h {
+        let y0 = (oy + (frame.y + y) as f32 * scale).round() as i32;
+        let y1 = (oy + (frame.y + y + 1) as f32 * scale).round() as i32;
+        for x in 0..frame.w {
+            let c = frame.indices[(y * frame.w + x) as usize];
+            if c == 0 {
+                continue;
+            }
+            let colour = palette.colors[c as usize];
+            let x0 = (ox + (frame.x + x) as f32 * scale).round() as i32;
+            let x1 = (ox + (frame.x + x + 1) as f32 * scale).round() as i32;
+            for py in y0..y1.max(y0 + 1) {
+                for px in x0..x1.max(x0 + 1) {
+                    fb.put(px, py, colour);
+                }
+            }
+        }
+    }
 }
 
 /// Bilinear, premultiplied blit of one cursor frame.  The GRP is 4K art, so
@@ -894,44 +1012,54 @@ fn blit_cursor_scaled(
     }
 }
 
-/// Paint the virtual pointer: the retail animated target cursor over a unit
-/// or resource, the retail arrow over terrain, otherwise the 12x18 fallback
-/// arrow.  Kept as a free function so the rendering path is covered without
-/// constructing the whole `App`.
+/// Paint the virtual pointer: the retail cursor for `shape` (falling back
+/// to the arrow), otherwise the 12x18 fallback arrow.  `sd` is the game
+/// palette when the classic graphics are on: then the SD GRP is drawn,
+/// scaled like the 640 x 480 screen.  Kept as a free function so the
+/// rendering path is covered without constructing the whole `App`.
 fn draw_virtual_cursor(
     fb: &mut Framebuffer,
     pointer: Option<(i32, i32)>,
     art: Option<&CursorArt>,
-    target: Option<CursorTarget>,
+    shape: CursorShape,
     elapsed: Duration,
+    sd: Option<&galaxycraft::render::Palette>,
 ) {
     let Some((mx, my)) = pointer else {
         return;
     };
-    let scale = cursor_scale_for_height(fb.height);
-    // `TargG/TargR/TargY` carry a `(0.5, 0.5)` hotspot in the executable's
-    // cursor table, so the oval pulses around the pointer instead of hanging
-    // below it.  Their two frames share the 6 fps cursor clock measured for
-    // the arrow (ten 60 Hz samples per authored frame).
-    if let Some(grp) = art.and_then(|a| target.and_then(|t| a.target(t)))
-        && !grp.frames.is_empty()
-    {
-        let frame = cursor_frame_index(elapsed, grp.frames.len());
-        if let Some(img) = grp.frames.get(frame) {
-            let w = (img.width as f32 * scale).round().max(1.0) as i32;
-            let h = (img.height as f32 * scale).round().max(1.0) as i32;
-            blit_cursor_scaled(fb, img, mx - w / 2, my - h / 2, scale);
+    // Every cursor shares the 6 fps clock measured for the arrow (ten
+    // 60 Hz samples per authored frame).  INFERENCE for the others.
+    if let (Some(palette), Some(art)) = (sd, art) {
+        let grp = art
+            .sd
+            .get(&shape)
+            .or_else(|| art.sd.get(&CursorShape::Arrow));
+        if let Some(grp) = grp.filter(|g| !g.frames.is_empty()) {
+            let frame = cursor_frame_index(elapsed, grp.frames.len());
+            let scale = fb.height.max(1) as f32 / 480.0;
+            blit_sd_cursor(fb, grp, frame, palette, (mx, my), scale);
             return;
         }
     }
-    // Retail arrow when the install provides it; the drawn arrow below is
-    // only the fallback for runs without assets.
-    if let Some(grp) = art.and_then(|a| a.arrow.as_ref())
+    let scale = cursor_scale_for_height(fb.height);
+    let found = art.and_then(|a| {
+        a.hd.get(&shape).map(|g| (g, shape)).or_else(|| {
+            a.hd.get(&CursorShape::Arrow)
+                .map(|g| (g, CursorShape::Arrow))
+        })
+    });
+    if let Some((grp, shape)) = found
         && !grp.frames.is_empty()
     {
         let frame = cursor_frame_index(elapsed, grp.frames.len());
         if let Some(img) = grp.frames.get(frame) {
-            blit_cursor_scaled(fb, img, mx, my, scale);
+            let w = img.width as f32 * scale;
+            let h = img.height as f32 * scale;
+            let (hx, hy) = shape.hotspot();
+            let x = mx - (w * hx).round() as i32;
+            let y = my - (h * hy).round() as i32;
+            blit_cursor_scaled(fb, img, x, y, scale);
             return;
         }
     }
@@ -2669,6 +2797,9 @@ struct App {
     /// Enemy buildings the local player has scouted: retail keeps drawing
     /// them where they were seen, under the fog, after the scout leaves.
     seen_buildings: std::collections::HashSet<u32>,
+    /// Edge-scroll direction while the pointer rests on a screen edge of
+    /// the focused window (0 = up, clockwise), set by the window loop.
+    edge_scroll: Option<u8>,
     remap_tables:
         std::collections::HashMap<(u16, u8), Option<std::rc::Rc<galaxycraft::render::RemapTable>>>,
     /// Mixer gains last sent to the audio thread.
@@ -6317,7 +6448,7 @@ fn random_take(prev: usize) -> usize {
 /// `click-world:x:y` / `rclick-world:x:y` (world game px), `click-view:px:py` / `rclick-view`
 /// (percent of the visible playfield), `minimap-click:px:py` /
 /// `minimap-rclick` (percent of the minimap), `look:x:y` (minimap click on a
-/// world point), `dump-units:NAME`, `shot:NAME`.  Writes `game.tsv` (one
+/// world point), `dump-units:NAME`, `shot:NAME`, `shot-cursor:NAME` (with the pointer).  Writes `game.tsv` (one
 /// state line per step) to `GC_WALK_DIR`.
 fn run_game_script(app: &mut App, fb: &mut Framebuffer, script: &str) {
     let dir = std::env::var("GC_WALK_DIR").unwrap_or_else(|_| "/tmp/opencode/game".into());
@@ -6730,8 +6861,13 @@ fn run_game_script(app: &mut App, fb: &mut Framebuffer, script: &str) {
                     mouse = click(app, fb, (r.x + r.w / 2, r.y + r.h / 2), false, false);
                 }
             }
-            "shot" => {
+            "shot" | "shot-cursor" => {
                 app.draw(fb);
+                // `shot-cursor` also paints the pointer, as the window does.
+                if parts[0] == "shot-cursor" {
+                    app.pointer = mouse;
+                    app.draw_cursor(fb);
+                }
                 let name = parts.get(1).copied().unwrap_or("frame");
                 let _ = fb.write_bmp(std::path::Path::new(&format!("{dir}/shot-{name}.bmp")));
             }
@@ -7643,20 +7779,27 @@ fn main() {
         }
     };
     let intro = menu && !no_intro && glue.is_some();
-    // Retail pointer skins: the arrow plus the three relation-coded target
-    // cursors (`TargG/TargR/TargY` in the executable's cursor table).
+    // Retail pointer skins, HD and SD (see `CursorShape`).
     let cursor_art = install_handle.as_ref().map(|inst| {
-        let load = |path: &str| {
-            inst.read_by_path(path)
+        let mut art = CursorArt::default();
+        for shape in CursorShape::ALL {
+            let stem = shape.file();
+            if let Some(g) = inst
+                .read_by_path(&format!("cursor/{stem}.dds.grp"))
                 .ok()
                 .and_then(|bytes| galaxycraft::dds::DdsGrp::parse(&bytes))
-        };
-        CursorArt {
-            arrow: load("cursor/arrow.dds.grp"),
-            own: load("cursor/targg.dds.grp"),
-            enemy: load("cursor/targr.dds.grp"),
-            neutral: load("cursor/targy.dds.grp"),
+            {
+                art.hd.insert(shape, g);
+            }
+            if let Some(g) = inst
+                .read_by_path(&format!("cursor/{stem}.grp"))
+                .ok()
+                .and_then(|bytes| galaxycraft::render::Grp::parse(&bytes))
+            {
+                art.sd.insert(shape, g);
+            }
         }
+        art
     });
     let mut hotkey_bindings = hotkey_data::HotkeyData::get().default_bindings();
     if let Some(path) = hotkey_save_path()
@@ -7963,6 +8106,7 @@ fn main() {
         image_names: None,
         sd_image_grps: std::collections::HashMap::new(),
         seen_buildings: std::collections::HashSet::new(),
+        edge_scroll: None,
         remap_tables: std::collections::HashMap::new(),
         volumes_sent: None,
         content_x0: 0,
@@ -8983,6 +9127,12 @@ fn main() {
         }
         let raw_pointer = app.surface_mouse(&window);
         app.update_pointer(raw_pointer, (fb.width, fb.height));
+        // Mouse edge scrolling: only with the pointer inside the focused
+        // window (a clamped position outside it must not scroll).
+        app.edge_scroll = app
+            .pointer
+            .filter(|_| window.is_active() && window.get_mouse_pos(MouseMode::Discard).is_some())
+            .and_then(|p| edge_scroll_dir(p, (fb.width, fb.height)));
         if needs_centre {
             // The logical view is only known once the window exists; centring
             // earlier leaves the camera clamped to the map corner (black fog).
@@ -10841,8 +10991,8 @@ mod end_check_tests {
 #[cfg(test)]
 mod cursor_visibility_tests {
     use super::{
-        CursorArt, CursorTarget, Framebuffer, Rgb, draw_virtual_cursor, normalize_selection,
-        system_cursor_visible_for,
+        CursorArt, CursorShape, CursorTarget, Framebuffer, Rgb, draw_virtual_cursor,
+        edge_scroll_dir, normalize_selection, system_cursor_visible_for,
     };
 
     fn solid_cursor(w: usize, h: usize, argb: u32) -> galaxycraft::dds::DdsGrp {
@@ -10879,69 +11029,141 @@ mod cursor_visibility_tests {
     fn the_virtual_cursor_renders_its_arrow_at_the_pointer() {
         let mut fb = Framebuffer::new(64, 48);
         fb.clear(Rgb::new(0, 0, 0));
-        draw_virtual_cursor(&mut fb, Some((8, 6)), None, None, std::time::Duration::ZERO);
+        let zero = std::time::Duration::ZERO;
+        draw_virtual_cursor(&mut fb, Some((8, 6)), None, CursorShape::Arrow, zero, None);
         // The fallback arrow is black with a light right/bottom edge.
         assert_eq!(fb.get(9, 6), Rgb::new(240, 240, 240));
         assert_eq!(fb.get(8, 0), Rgb::new(0, 0, 0));
         // No pointer: nothing is painted and no out-of-range panic.
         let mut empty = Framebuffer::new(8, 8);
-        draw_virtual_cursor(&mut empty, None, None, None, std::time::Duration::ZERO);
+        draw_virtual_cursor(&mut empty, None, None, CursorShape::Arrow, zero, None);
         assert_eq!(empty.get(0, 0), Rgb::new(0, 0, 0));
+    }
+
+    fn two_frames(w: usize, h: usize) -> galaxycraft::dds::DdsGrp {
+        galaxycraft::dds::DdsGrp {
+            frames: vec![
+                galaxycraft::dds::DdsImage {
+                    width: w,
+                    height: h,
+                    pixels: vec![0xffff_0000; w * h],
+                },
+                galaxycraft::dds::DdsImage {
+                    width: w,
+                    height: h,
+                    pixels: vec![0xff00_00ff; w * h],
+                },
+            ],
+        }
     }
 
     #[test]
     fn the_target_cursor_is_centred_and_animated() {
-        let art = CursorArt {
-            arrow: Some(solid_cursor(2, 2, 0xff00_ff00)),
-            own: Some(galaxycraft::dds::DdsGrp {
-                frames: vec![
-                    galaxycraft::dds::DdsImage {
-                        width: 4,
-                        height: 4,
-                        pixels: vec![0xffff_0000; 16],
-                    },
-                    galaxycraft::dds::DdsImage {
-                        width: 4,
-                        height: 4,
-                        pixels: vec![0xff00_00ff; 16],
-                    },
-                ],
-            }),
-            ..CursorArt::default()
-        };
+        let mut art = CursorArt::default();
+        art.hd
+            .insert(CursorShape::Arrow, solid_cursor(2, 2, 0xff00_ff00));
+        art.hd
+            .insert(CursorShape::Targ(Some(CursorTarget::Own)), two_frames(4, 4));
+        let targ = CursorShape::Targ(Some(CursorTarget::Own));
         // 1920-line framebuffer: one authored cursor pixel is one screen pixel.
         let mut fb = Framebuffer::new(64, 1920);
         fb.clear(Rgb::new(0, 0, 0));
-        draw_virtual_cursor(
-            &mut fb,
-            Some((32, 30)),
-            Some(&art),
-            Some(CursorTarget::Own),
-            std::time::Duration::ZERO,
-        );
+        let zero = std::time::Duration::ZERO;
+        draw_virtual_cursor(&mut fb, Some((32, 30)), Some(&art), targ, zero, None);
         // Centred hotspot (0.5, 0.5): the 4x4 frame starts at (30, 28).
         assert_eq!(fb.get(30, 28), Rgb::new(255, 0, 0));
         assert_eq!(fb.get(29, 27), Rgb::new(0, 0, 0));
         // The second authored frame follows the same 6 fps cursor clock.
         fb.clear(Rgb::new(0, 0, 0));
-        draw_virtual_cursor(
-            &mut fb,
-            Some((32, 30)),
-            Some(&art),
-            Some(CursorTarget::Own),
-            std::time::Duration::from_millis(167),
-        );
+        let later = std::time::Duration::from_millis(167);
+        draw_virtual_cursor(&mut fb, Some((32, 30)), Some(&art), targ, later, None);
         assert_eq!(fb.get(30, 28), Rgb::new(0, 0, 255));
-        // Over terrain the arrow is used again, at its top-left tip.
+        // The arrow sits at its top-left tip; a shape without art falls
+        // back to it.
+        for shape in [CursorShape::Arrow, CursorShape::Drag] {
+            fb.clear(Rgb::new(0, 0, 0));
+            draw_virtual_cursor(&mut fb, Some((10, 10)), Some(&art), shape, zero, None);
+            assert_eq!(fb.get(10, 10), Rgb::new(0, 255, 0), "{shape:?}");
+        }
+    }
+
+    #[test]
+    fn hd_cursors_use_the_executable_hotspots() {
+        // `MagG` 0.48 / 0.48, `ScrollDR` the bottom-right corner.
+        let mut art = CursorArt::default();
+        let mag = CursorShape::Mag(CursorTarget::Enemy);
+        art.hd.insert(mag, solid_cursor(100, 100, 0xffff_0000));
+        art.hd
+            .insert(CursorShape::Scroll(3), solid_cursor(10, 10, 0xff00_ff00));
+        let mut fb = Framebuffer::new(400, 1920);
+        let zero = std::time::Duration::ZERO;
+        draw_virtual_cursor(&mut fb, Some((200, 200)), Some(&art), mag, zero, None);
+        assert_eq!(fb.get(152, 152), Rgb::new(255, 0, 0));
+        assert_eq!(fb.get(151, 151), Rgb::new(0, 0, 0));
         fb.clear(Rgb::new(0, 0, 0));
         draw_virtual_cursor(
             &mut fb,
-            Some((10, 10)),
+            Some((399, 399)),
             Some(&art),
+            CursorShape::Scroll(3),
+            zero,
             None,
-            std::time::Duration::ZERO,
         );
-        assert_eq!(fb.get(10, 10), Rgb::new(0, 255, 0));
+        assert_eq!(fb.get(398, 398), Rgb::new(0, 255, 0));
+        assert_eq!(fb.get(389, 389), Rgb::new(0, 255, 0));
+        assert_eq!(fb.get(388, 388), Rgb::new(0, 0, 0));
+    }
+
+    #[test]
+    fn sd_cursors_are_centred_on_their_canvas_and_scaled_from_480_lines() {
+        let mut palette = galaxycraft::render::Palette {
+            colors: [Rgb::new(0, 0, 0); 256],
+        };
+        palette.colors[7] = Rgb::new(10, 200, 10);
+        // A 128 x 128 canvas with one pixel at (64, 64): the hotspot.
+        let grp = galaxycraft::render::Grp {
+            width: 128,
+            height: 128,
+            frames: vec![galaxycraft::render::GrpFrame {
+                x: 64,
+                y: 64,
+                w: 1,
+                h: 1,
+                indices: vec![7],
+            }],
+        };
+        let mut art = CursorArt::default();
+        art.sd.insert(CursorShape::Arrow, grp);
+        let mut fb = Framebuffer::new(200, 720);
+        let zero = std::time::Duration::ZERO;
+        let p = Some(&palette);
+        draw_virtual_cursor(
+            &mut fb,
+            Some((100, 100)),
+            Some(&art),
+            CursorShape::Drag,
+            zero,
+            p,
+        );
+        // 720 / 480 = 1.5x: the pixel covers (100..101.5) -> 100 and 101.
+        assert_eq!(fb.get(100, 100), Rgb::new(10, 200, 10));
+        assert_eq!(fb.get(101, 101), Rgb::new(10, 200, 10));
+        assert_eq!(fb.get(99, 99), Rgb::new(0, 0, 0));
+    }
+
+    #[test]
+    fn edge_scroll_follows_the_screen_border() {
+        let size = (1280, 720);
+        assert_eq!(edge_scroll_dir((640, 0), size), Some(0));
+        assert_eq!(edge_scroll_dir((1279, 0), size), Some(1));
+        assert_eq!(edge_scroll_dir((1279, 300), size), Some(2));
+        assert_eq!(edge_scroll_dir((1279, 719), size), Some(3));
+        assert_eq!(edge_scroll_dir((640, 719), size), Some(4));
+        assert_eq!(edge_scroll_dir((0, 719), size), Some(5));
+        assert_eq!(edge_scroll_dir((0, 300), size), Some(6));
+        assert_eq!(edge_scroll_dir((1, 1), size), Some(7));
+        assert_eq!(edge_scroll_dir((2, 300), size), None);
+        assert_eq!(edge_scroll_dir((640, 360), size), None);
     }
 }
 
