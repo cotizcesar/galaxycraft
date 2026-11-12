@@ -284,6 +284,7 @@ impl Order {
             Order::Cast { .. } => 80,
             Order::EnterTransport { .. } => 90,
             Order::Unload => 110,
+            Order::MoveUnload { .. } => 111,
             Order::Burrow => 115,
             Order::Unburrow => 117,
             Order::Siege => 97,
@@ -502,6 +503,11 @@ pub enum Order {
         transport: u32,
     },
     Unload,
+    /// Fly to a point and unload there (orders.dat row 111, OpenBW
+    /// `order_MoveUnload`).
+    MoveUnload {
+        pos: (i32, i32),
+    },
     Burrow,
     Unburrow,
     Siege,
@@ -5536,6 +5542,18 @@ impl World {
             }
             Order::EnterTransport { transport } => self.order_enter_transport(i, transport),
             Order::Unload => self.order_unload(i),
+            // OpenBW `order_MoveUnload`: within 16 px of the point the
+            // transport starts unloading.
+            Order::MoveUnload { pos } => {
+                if self.distance_to_point(i, (pos.0 * fp(1), pos.1 * fp(1))) <= fp(16) {
+                    self.units[i].path.clear();
+                    self.units[i].path_goal = None;
+                    self.units[i].order = Order::Unload;
+                    self.units[i].order_wait = 0;
+                } else {
+                    self.move_towards(i, pos, fp(4));
+                }
+            }
             Order::Burrow => {
                 if think {
                     self.order_burrow(i, true);

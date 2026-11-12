@@ -159,6 +159,7 @@ in HD and SD: turrets and the deployed tank, the air units fighting.
 | all | `attackwith 2` | fires the air weapon | **fixed**: it fired the ground weapon (the Valkyrie never shot; the Wraith lasered air units) |
 | Valkyrie | Halo Rockets | 8 per volley around the target (14 offsets); air splash: one full hit, others half within 50 px / a quarter within 100 px, own units spared | **fixed** |
 | Dropship | unload | one unit per 15 frames, weapons on cooldown; a Bunker empties at once | **fixed** (everything at once) |
+| Dropship | unload at a point | `order_MoveUnload`: fly there, unload within 16 px; the Unload button asks for the spot | **fixed** (the order did not exist) |
 | Battlecruiser | Yamato Gun | charges until its overlay's `castspell`, then a travelling blast, 260 on arrival | **fixed** (instant damage) |
 | Science Vessel | EMP Shockwave | a missile; drains the 64 px square at the impact, not the caster or units in stasis; kills hallucinations | **fixed** (instant, circle, caster included) |
 | Science Vessel | Irradiate | lands with its bullet | **fixed** (instant) |

@@ -242,3 +242,34 @@ fn stacked_air_units_drift_apart_and_a_lone_one_stays_put() {
     }
     assert_eq!((w.units[a].x, w.units[a].y), at);
 }
+
+#[test]
+fn a_dropship_flies_to_a_point_and_unloads_there() {
+    let mut w = world();
+    let ship = w.spawn_px(0, uid::DROPSHIP, 400, 400).unwrap();
+    let sid = w.units[ship].id;
+    let marine = w.spawn_px(0, uid::MARINE, 400, 440).unwrap();
+    let mid = w.units[marine].id;
+    w.issue(mid, Order::EnterTransport { transport: sid })
+        .unwrap();
+    for _ in 0..100 {
+        w.step();
+    }
+    assert_eq!(w.units[ship].cargo.len(), 1);
+    // OpenBW `order_MoveUnload`: unload once within 16 px of the point.
+    w.issue(sid, Order::MoveUnload { pos: (900, 500) }).unwrap();
+    let mut out_at = None;
+    for _ in 0..400 {
+        w.step();
+        if w.units[marine].alive {
+            out_at = Some((w.units[ship].x / 256, w.units[ship].y / 256));
+            break;
+        }
+    }
+    let (x, y) = out_at.expect("the Marine got out");
+    assert!(
+        (x - 900).abs() <= 20 && (y - 500).abs() <= 20,
+        "at the point: {x},{y}"
+    );
+    assert!((w.units[marine].x / 256 - 900).abs() < 80);
+}

@@ -56,10 +56,9 @@ on screen.
 - **Spider Mine.**  The hover list is a hardcoded type list rather than the
   `units.dat` movement flags; the burrow / unburrow frames and sounds are
   not drawn; a mine is nudged by collision while it waits.
-- **Dropship.**  No "unload at a point" order (`order_MoveUnload`), units
-  board from 8 px instead of 1 and the transport does not come to fetch
-  them, and unloaded units all appear at the exit position (collision
-  spreads them).
+- **Dropship.**  Units board from 8 px instead of 1 and the transport does
+  not come to fetch them, and unloaded units all appear at the exit
+  position (collision spreads them).
 - **Valkyrie.**  The near-target offset index is global, not per Valkyrie,
   and the 80-bullet cap on Halo Rockets is not enforced.
 - **Yamato Gun.**  Energy is spent when the blast leaves, not when the
@@ -73,5 +72,5 @@ on screen.
 - **Checked on screen only in outline** (scripted HD and SD sessions, small
   crops): the siege deploy, a mine chasing and exploding, the Yamato charge
   and blast, and the Matrix / Irradiate / EMP casts being accepted.  Not
-  looked at: the Matrix and Irradiate overlays on their targets, and a
-  Dropship unloading (tests only).
+  looked at: the Matrix and Irradiate overlays on their targets.  A
+  Dropship loading, flying to a point and unloading was checked on screen.

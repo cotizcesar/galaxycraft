@@ -16020,10 +16020,21 @@ impl App {
             Act::MergeDarkArchon => self.merge_templars(true),
             Act::Load => self.load_transports(),
             Act::Unload => {
-                for id in self.selected_transports() {
-                    self.send_order(id, Order::Unload);
+                // A Bunker empties at once; a transport asks where (click
+                // the transport itself to unload on the spot), as retail.
+                let flying = self.selected_transports().into_iter().any(|id| {
+                    self.world
+                        .unit(id)
+                        .is_some_and(|u| !self.data.unit(u.type_id).is_building())
+                });
+                if flying {
+                    self.target_act = Some((Act::Unload, var));
+                } else {
+                    for id in self.selected_transports() {
+                        self.send_order(id, Order::Unload);
+                    }
+                    self.play_ack();
                 }
-                self.play_ack();
             }
             Act::Addon => {
                 if let Err(e) = self.world.build_addon(u.id, var) {
@@ -16267,6 +16278,23 @@ impl App {
                         self.show_sim_error(e);
                     }
                 }
+            }
+            Act::Unload => {
+                for id in self.selected_transports() {
+                    let Some(u) = self.world.unit(id) else {
+                        continue;
+                    };
+                    let here = target == Some(id)
+                        || self.data.unit(u.type_id).is_building()
+                        || ((u.x / 256 - pos.0).abs() <= 16 && (u.y / 256 - pos.1).abs() <= 16);
+                    let order = if here {
+                        Order::Unload
+                    } else {
+                        Order::MoveUnload { pos }
+                    };
+                    self.send_order(id, order);
+                }
+                self.play_ack();
             }
             Act::Heal => {
                 if let Some(t) = target {
