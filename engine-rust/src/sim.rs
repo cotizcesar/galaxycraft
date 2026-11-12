@@ -835,6 +835,11 @@ pub const NUKE_WARP_FRAMES: i32 = 250;
 pub const NUKE_ACCELERATION: i32 = 33;
 pub const NUKE_TOP_SPEED: i32 = 8533;
 
+/// Frames a tank is busy deploying into Siege Mode and packing up again
+/// (iscript 92: Init and SpecialState2 up to their `sigorder 1`).
+pub const SIEGE_FRAMES: u8 = 64;
+pub const UNSIEGE_FRAMES: u8 = 63;
+
 /// Spell cues kept for the renderer.
 pub const SPELL_CUE_KEEP: usize = 64;
 
@@ -4505,6 +4510,11 @@ impl World {
         if !self.units[i].alive {
             return Err(SimError::BadUnit);
         }
+        // A tank in the middle of its siege / unsiege animation takes no
+        // orders (retail `status_flag_order_not_interruptible`).
+        if self.is_transforming(i) {
+            return Err(SimError::ProducerBusy);
+        }
         self.cancel_nuke_for(unit_id);
         match &new_order {
             Order::AttackUnit { target } => {
@@ -5487,16 +5497,9 @@ impl World {
                     self.order_burrow(i, false);
                 }
             }
-            Order::Siege => {
-                if think {
-                    self.order_siege(i, true);
-                }
-            }
-            Order::Unsiege => {
-                if think {
-                    self.order_siege(i, false);
-                }
-            }
+            // The transformation counts frames, so it runs every tick.
+            Order::Siege => self.order_siege(i, true),
+            Order::Unsiege => self.order_siege(i, false),
             Order::Lift => {
                 let id = self.units[i].id;
                 let _ = self.lift_building(id);
@@ -5661,10 +5664,10 @@ impl World {
     fn weapon_for(&self, attacker: usize, target: usize) -> Option<(u8, WeaponType)> {
         let a_ty = self.data.unit(self.units[attacker].type_id);
         if self.is_air_unit(target) {
-            let id = a_ty.air_weapon;
+            let id = self.data.air_weapon_id(a_ty);
             self.data.air_weapon(a_ty).cloned().map(|w| (id, w))
         } else {
-            let id = a_ty.ground_weapon;
+            let id = self.data.ground_weapon_id(a_ty);
             self.data.ground_weapon(a_ty).cloned().map(|w| (id, w))
         }
     }
@@ -5780,6 +5783,11 @@ impl World {
             // (U-238 Shells, ...), as the attack itself measures it.
             let d = self.units_distance_px(i, other_idx) * fp(1);
             let limit = max_fp.max(self.weapon_max_range_px(i, other_idx, w) * fp(1));
+            // A target inside the weapon's minimum range (the sieged tank's
+            // 64 px) is not a candidate.
+            if d < w.min_range as i32 * fp(1) {
+                continue;
+            }
             if d <= limit && best.is_none_or(|(bd, _)| d < bd) {
                 best = Some((d, other.id));
             }
@@ -5989,7 +5997,16 @@ impl World {
         if u.status.stim_ticks > 0 {
             mods += 1;
         }
-        if self.data.unit(u.type_id).flags & 0x2000_0000 != 0 {
+        // OpenBW `update_unit_speed_upgrades`: Adrenal Glands for the
+        // Zergling; the Devouring One (54) always has it.
+        if self.data.unit(u.type_id).flags & 0x2000_0000 != 0
+            || u.type_id == 54
+            || (u.type_id == uid::ZERGLING
+                && self
+                    .players
+                    .get(u.owner as usize)
+                    .is_some_and(|p| p.upgrade_level(upgrade::ADRENAL_GLANDS) > 0))
+        {
             mods += 1;
         }
         if u.status.ensnare_ticks > 0 {
@@ -7412,7 +7429,7 @@ impl World {
             Some(f)
                 if f.movement_type == crate::data::MovementType::Flingy && f.acceleration > 0 =>
             {
-                let acc = f.acceleration as i32;
+                let acc = self.modified_rate(i, f.acceleration as i32);
                 let cur = if self.units[i].moved_tick + 1 == self.tick {
                     self.units[i].speed
                 } else {
@@ -7444,7 +7461,8 @@ impl World {
             .data
             .flingy(ty.flingy)
             .filter(|f| f.movement_type == crate::data::MovementType::Flingy && f.turn_rate > 0)
-            .map(|f| f.turn_rate as i32);
+            .map(|f| f.turn_rate as i32)
+            .map(|r| self.modified_rate(i, r));
         if let (Some(rate), Some(&(wx, wy))) = (turn_rate, self.units[i].path.front()) {
             let (dx, dy) = (wx - self.units[i].x, wy - self.units[i].y);
             if dx != 0 || dy != 0 {
@@ -7603,20 +7621,58 @@ impl World {
                 cycle[(u.anim_tick as usize) % cycle.len()]
             }
         };
-        speed = Self::modified_speed_for_mods(u.type_id, speed, u.a04_status_modifier_count());
+        speed = Self::modified_speed_for_mods(u.type_id, speed, self.movement_mods(i));
         // Lifted Terran buildings use their flingy speed when present;
         // otherwise they drift at the standard building air speed.
         if u.lifted && speed <= 0 {
             speed = 1280;
         }
-        let owner = u.owner as usize;
-        // Metabolic Boost is the Zergling speed upgrade; workers have none.
-        if u.type_id == uid::ZERGLING
-            && self.players[owner].upgrade_level(upgrade::METABOLIC_BOOST) > 0
-        {
-            speed = speed * 3 / 2;
-        }
         speed
+    }
+
+    /// OpenBW `update_unit_speed_upgrades`: whether this unit moves with
+    /// its speed upgrade (Ion Thrusters for the Vulture, Metabolic Boost
+    /// for the Zergling, ...) or is one of the units that always have it.
+    pub fn has_speed_upgrade(&self, i: usize) -> bool {
+        let u = &self.units[i];
+        let id = match u.type_id {
+            // 19 = Jim Raynor (Vulture).
+            uid::VULTURE | 19 => upgrade::ION_THRUSTERS,
+            uid::OVERLORD => upgrade::PNEUMATIZED_CARAPACE,
+            uid::ZERGLING => upgrade::METABOLIC_BOOST,
+            uid::HYDRALISK => upgrade::MUSCULAR_AUGMENTS,
+            uid::ZEALOT => upgrade::LEG_ENHANCEMENTS,
+            uid::SCOUT => upgrade::GRAVITIC_THRUSTERS,
+            uid::SHUTTLE => upgrade::GRAVITIC_DRIVE,
+            uid::OBSERVER => upgrade::GRAVITIC_BOOSTERS,
+            uid::ULTRALISK => upgrade::ANABOLIC_SYNTHESIS,
+            // Hunter Killer 53, Yggdrasill 57, Fenix (Zealot) 77, Mojo 80,
+            // Artanis 88 and every Lurker.
+            53 | 57 | 77 | 80 | 88 | uid::LURKER => return true,
+            _ => return false,
+        };
+        self.players
+            .get(u.owner as usize)
+            .is_some_and(|p| p.upgrade_level(id) > 0)
+    }
+
+    /// Movement modifier count (OpenBW `get_modified_unit_speed`): +1 for
+    /// Stim, +1 for a speed upgrade, -1 for Ensnare.  Positive: speed x1.5
+    /// (at least 3 1/3 px per frame), acceleration and turn rate x2;
+    /// negative: speed / 2, acceleration and turn rate - 1/4.
+    pub fn movement_mods(&self, i: usize) -> i32 {
+        let u = &self.units[i];
+        i32::from(u.status.stim_ticks > 0) + i32::from(u.flag_29 || self.has_speed_upgrade(i))
+            - i32::from(u.status.ensnare_ticks > 0)
+    }
+
+    /// Flingy acceleration or turn rate under the movement modifiers.
+    fn modified_rate(&self, i: usize, base: i32) -> i32 {
+        match self.movement_mods(i) {
+            m if m > 0 => base * 2,
+            m if m < 0 => base - base / 4,
+            _ => base,
+        }
     }
 
     // ------------------------------------------------------------------
@@ -7735,7 +7791,7 @@ impl World {
             self.data
                 .ground_weapon(&ty)
                 .cloned()
-                .map(|w| (ty.ground_weapon, w))
+                .map(|w| (self.data.ground_weapon_id(&ty), w))
         } else {
             self.weapon_for(i, tidx)
         };
@@ -7767,7 +7823,7 @@ impl World {
         let Some(w) = self.data.ground_weapon(&ty).cloned() else {
             return;
         };
-        let weapon_id = ty.ground_weapon;
+        let weapon_id = self.data.ground_weapon_id(&ty);
         self.units[i].cooldown = self.modified_cooldown(i, &w);
         self.units[i].attacks_fired = self.units[i].attacks_fired.saturating_add(1);
         if self.units[i].status.hallucination {
@@ -8536,19 +8592,58 @@ impl World {
         self.order_done(i);
     }
 
+    /// Siege Mode and back (OpenBW `order_Sieging` / `order_Unsieging`).
+    /// Sieging: the tank stops, becomes the sieged type at once and is busy
+    /// for the 64 frames of its deploy animation (iscript 92 Init: `wait 1`,
+    /// five frames of 5, `wait 38`, `sigorder 1`).  Unsieging: it stays
+    /// sieged for the 63 frames of SpecialState2 (`wait 38`, five frames of
+    /// 5, `sigorder 1`) and only then becomes the tank again.  It cannot
+    /// fire or take another order meanwhile (`order_wait` counts down; 1
+    /// marks the last frame).
     fn order_siege(&mut self, i: usize, siege: bool) {
         if !self.players[self.units[i].owner as usize].has_tech(tech_id::TANK_SIEGE_MODE) {
+            self.units[i].order_wait = 0;
             self.order_done(i);
             return;
         }
-        if siege && self.units[i].type_id == uid::SIEGE_TANK {
-            self.units[i].status.sieged = true;
-            self.units[i].type_id = uid::SIEGE_MODE;
-        } else if !siege && self.units[i].type_id == uid::SIEGE_MODE {
+        let ty = self.units[i].type_id;
+        let wait = self.units[i].order_wait;
+        if siege {
+            if ty == uid::SIEGE_TANK {
+                self.units[i].path.clear();
+                self.units[i].path_goal = None;
+                self.units[i].target = None;
+                self.units[i].status.sieged = true;
+                self.units[i].type_id = uid::SIEGE_MODE;
+                self.units[i].order_wait = SIEGE_FRAMES + 1;
+                return;
+            }
+            if ty == uid::SIEGE_MODE && wait > 1 {
+                self.units[i].order_wait = wait - 1;
+                return;
+            }
+        } else if ty == uid::SIEGE_MODE {
+            if wait == 0 {
+                self.units[i].target = None;
+                self.units[i].order_wait = UNSIEGE_FRAMES + 1;
+                return;
+            }
+            if wait > 1 {
+                self.units[i].order_wait = wait - 1;
+                return;
+            }
             self.units[i].status.sieged = false;
             self.units[i].type_id = uid::SIEGE_TANK;
         }
+        self.units[i].order_wait = 0;
         self.order_done(i);
+    }
+
+    /// True while a tank is in the middle of its siege / unsiege animation.
+    pub fn is_transforming(&self, i: usize) -> bool {
+        self.units.get(i).is_some_and(|u| {
+            u.alive && matches!(u.order, Order::Siege | Order::Unsiege) && u.order_wait > 0
+        })
     }
 
     /// `0x005d4640`: Shield Battery target pre-check (different unit, same
@@ -8841,7 +8936,14 @@ impl World {
                 self.push_spell_cue(SpellCueKind::Stim, id);
             }
             Spell::TankSiegeMode => {
-                self.order_siege(caster, self.units[caster].type_id == uid::SIEGE_TANK);
+                // The spell only starts the transformation order.
+                if !self.is_transforming(caster) {
+                    self.units[caster].order = if self.units[caster].type_id == uid::SIEGE_TANK {
+                        Order::Siege
+                    } else {
+                        Order::Unsiege
+                    };
+                }
             }
             Spell::CloakingField | Spell::PersonnelCloaking => {
                 self.units[caster].status.cloaked = !self.units[caster].status.cloaked;
@@ -11471,6 +11573,13 @@ mod tests {
         w.issue(w.units[tank].id, Order::Siege).unwrap();
         w.step();
         assert_eq!(w.units[tank].type_id, uid::SIEGE_MODE);
+        // Busy for the deploy animation, then idle again.
+        assert!(w.is_transforming(tank));
+        for _ in 0..=SIEGE_FRAMES {
+            w.step();
+        }
+        assert!(!w.is_transforming(tank));
+        assert_eq!(w.units[tank].order, Order::Idle);
     }
 
     #[test]
@@ -27184,7 +27293,7 @@ impl World {
     /// zero-minimum row passes; otherwise the target must be at least
     /// `weapons.dat` minimum range away.
     pub fn a23_air_weapon_min_range_ok(&self, unit: &SimUnit, distance: i32) -> bool {
-        let weapon = self.data.unit(unit.type_id).air_weapon;
+        let weapon = self.data.air_weapon_id(self.data.unit(unit.type_id));
         if weapon > 0x81 {
             return false;
         }
@@ -27198,7 +27307,7 @@ impl World {
     /// (`units.dat` ground weapon, `0x82` sentinel, `weapons.dat` minimum
     /// range).
     pub fn a23_ground_weapon_min_range_ok(&self, unit: &SimUnit, distance: i32) -> bool {
-        let weapon = self.data.unit(unit.type_id).ground_weapon;
+        let weapon = self.data.ground_weapon_id(self.data.unit(unit.type_id));
         if weapon > 0x81 {
             return false;
         }

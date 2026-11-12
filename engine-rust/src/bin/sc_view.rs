@@ -21483,7 +21483,10 @@ impl App {
         if let Some(up) = self.data.upgrade(ty.armor_upgrade) {
             boxes.push((up.icon, ty.armor_upgrade));
         }
-        for w in [ty.ground_weapon, ty.air_weapon] {
+        for w in [
+            self.data.ground_weapon_id(&ty),
+            self.data.air_weapon_id(&ty),
+        ] {
             if w != NO_WEAPON
                 && let Some(wt) = self.data.weapon(w)
                 && !boxes.iter().any(|(i, _)| *i == wt.icon)

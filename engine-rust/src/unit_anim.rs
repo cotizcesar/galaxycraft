@@ -620,7 +620,8 @@ impl Animator {
                 .as_ref()
                 .is_some_and(|a| a.anim as usize == anim::CAST_SPELL);
             let fired = !working && !healing && !casting && u.cooldown > seen.cooldown;
-            let air = ty.ground_weapon == 255 && ty.air_weapon != 255
+            let (gw, aw) = (data.ground_weapon_id(ty), data.air_weapon_id(ty));
+            let air = gw >= 130 && aw < 130
                 || u.target
                     .and_then(|t| world.unit(t))
                     .is_some_and(|t| data.unit(t.type_id).is_flyer());
@@ -749,7 +750,7 @@ impl Animator {
             // source unit`, `self destruct`) never become a travelling
             // projectile: show their bullet image where it appears.
             if fired {
-                let weapon = if air { ty.air_weapon } else { ty.ground_weapon };
+                let weapon = if air { aw } else { gw };
                 let at = data.weapon(weapon).and_then(|w| {
                     use crate::projectile::behavior as b;
                     let target = u.target.and_then(|t| world.unit(t));

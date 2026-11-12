@@ -580,12 +580,35 @@ impl GameData {
 
     /// Ground weapon of a unit, or `None` for the sentinel 130.
     pub fn ground_weapon(&self, unit: &UnitType) -> Option<&WeaponType> {
-        self.weapon(unit.ground_weapon)
+        self.weapon(self.ground_weapon_id(unit))
     }
 
     /// Air weapon of a unit, or `None` for the sentinel 130.
     pub fn air_weapon(&self, unit: &UnitType) -> Option<&WeaponType> {
-        self.weapon(unit.air_weapon)
+        self.weapon(self.air_weapon_id(unit))
+    }
+
+    /// The turret row of a unit that has one (`units.dat` subunit 1): the
+    /// Siege Tank's two cannons and the Goliath's guns live on a separate
+    /// turret unit, which the simulation folds into its base.
+    pub fn turret(&self, unit: &UnitType) -> Option<&UnitType> {
+        (unit.turret < 228).then(|| self.units.get(unit.turret as usize))?
+    }
+
+    /// Ground weapon id of a unit: its own, else its turret's (130 = none).
+    pub fn ground_weapon_id(&self, unit: &UnitType) -> u8 {
+        match self.turret(unit) {
+            Some(t) if unit.ground_weapon >= 130 => t.ground_weapon,
+            _ => unit.ground_weapon,
+        }
+    }
+
+    /// Air weapon id of a unit: its own, else its turret's (130 = none).
+    pub fn air_weapon_id(&self, unit: &UnitType) -> u8 {
+        match self.turret(unit) {
+            Some(t) if unit.air_weapon >= 130 => t.air_weapon,
+            _ => unit.air_weapon,
+        }
     }
 
     pub fn order(&self, id: u8) -> Option<&OrderType> {
@@ -631,7 +654,12 @@ impl GameData {
     /// `0x7a150d80` computes `max(target_acquisition_range, ground_range/32,
     /// air_range/32)` and stores the result in a per-unit byte table.
     pub fn target_acquisition_px(&self, unit: &UnitType) -> i32 {
-        let mut range = unit.target_acquisition_range as i32 * 32;
+        // The turret's own acquisition range counts too (the sieged
+        // turret's 12 tiles over the base's 0).
+        let turret_acq = self
+            .turret(unit)
+            .map_or(0, |t| t.target_acquisition_range as i32);
+        let mut range = (unit.target_acquisition_range as i32).max(turret_acq) * 32;
         if let Some(w) = self.ground_weapon(unit) {
             range = range.max(w.max_range as i32);
         }
