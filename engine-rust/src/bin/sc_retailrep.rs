@@ -125,7 +125,7 @@ fn main() {
             ai.update(&mut world, target);
         }
         world.step();
-        if now % 2400 == 0 {
+        if now.is_multiple_of(2400) {
             println!(
                 "frame {now:>6}: minerals {:?} gas {:?} units p0={} p1={}",
                 world.players.iter().map(|p| p.minerals).collect::<Vec<_>>(),
@@ -166,7 +166,7 @@ impl TagMap {
             if name == b"UNIT" {
                 map_idx.clear();
                 start_locations = 0;
-                for (i, r) in chk[o + 8..end].chunks_exact(36).enumerate() {
+                for (i, r) in chk[o + 8..end].as_chunks::<36>().0.iter().enumerate() {
                     if u16::from_le_bytes([r[8], r[9]]) == 214 {
                         start_locations += 1;
                     } else {
