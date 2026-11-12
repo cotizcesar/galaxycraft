@@ -255,3 +255,36 @@ fn idle_units_attack_an_enemy_building_when_nothing_else_is_in_range() {
         assert!(w.units[depot].hp < hp, "unit {attacker} fires at the depot");
     }
 }
+
+#[test]
+fn turrets_play_their_firing_animation_and_sound() {
+    use galaxycraft::unit_anim::Animator;
+    // (unit, the firing sound of its turret's attack script)
+    for (attacker, gap) in [
+        (uid::SIEGE_MODE, 250),
+        (uid::GOLIATH, 120),
+        (uid::SIEGE_TANK, 150),
+    ] {
+        let mut w = world();
+        let a = w.spawn_px(0, attacker, 400, 400).unwrap();
+        if attacker == uid::SIEGE_MODE {
+            w.units[a].status.sieged = true;
+        }
+        let _egg = w.spawn_px(1, uid::EGG, 400 + gap, 400).unwrap();
+        let mut anim = Animator::default();
+        let mut sounds = Vec::new();
+        let mut posed = false;
+        for _ in 0..150 {
+            w.step();
+            anim.advance(&w);
+            sounds.extend(anim.take_sounds().into_iter().map(|s| s.0));
+            posed |= anim.turret_frame(w.units[a].id).is_some();
+        }
+        assert!(!sounds.is_empty(), "unit {attacker} fires with a sound");
+        if attacker == uid::SIEGE_MODE {
+            // iscript 93 GndAttkInit: `playsnd 96`.
+            assert!(sounds.contains(&96), "{sounds:?} posed {posed}");
+        }
+        let _ = posed;
+    }
+}

@@ -18665,10 +18665,14 @@ impl App {
                 if let Some((timage, tfacing)) = self.turret_pose(&self.world.units[i])
                     && let Some(grp) = self.sd_image_grp(timage)
                 {
+                    let raw = self
+                        .animator
+                        .turret_frame(self.world.units[i].id)
+                        .unwrap_or(0);
                     let frame = galaxycraft::render::sd_frame_index(
                         grp.frames.len(),
                         tfacing,
-                        Some(0),
+                        Some(raw),
                         false,
                         0,
                     );
@@ -19917,13 +19921,15 @@ impl App {
                     })
             {
                 let n = ti.header.frames.len();
+                let raw = self.animator.turret_frame(u.id).unwrap_or(0) as usize;
                 let (tframe, tflip) = if n >= 17 {
                     let dir = ((tfacing as i32 + 4) / 8).rem_euclid(32);
-                    if dir <= 16 {
+                    let (d, flip) = if dir <= 16 {
                         (dir as usize, false)
                     } else {
                         ((32 - dir) as usize, true)
-                    }
+                    };
+                    (if raw + d < n { raw + d } else { d }, flip)
                 } else {
                     (0, false)
                 };

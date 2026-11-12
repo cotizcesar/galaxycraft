@@ -135,6 +135,9 @@ struct UnitSeen {
     /// image 249): it follows the unit and shows its frame (`engframe`)
     /// until the unit stops.
     glow: Option<u16>,
+    /// Attack animation of the unit's turret image (tank barrel, Goliath
+    /// torso): its frames, firing sound and muzzle overlays.
+    turret: Option<Track>,
     cooldown: u32,
     x: i32,
     y: i32,
@@ -598,6 +601,7 @@ impl Animator {
             let seen = self.units.entry(u.id).or_insert_with(|| UnitSeen {
                 track: None,
                 glow: None,
+                turret: None,
                 cooldown: u.cooldown,
                 x: u.x,
                 y: u.y,
@@ -755,6 +759,45 @@ impl Animator {
                             });
                         }
                     }
+                }
+            }
+            // The turret fires: its own image runs the attack animation
+            // (iscript 93 for the sieged cannon: sound 96 and the muzzle
+            // flash; the Goliath's guns likewise).
+            if fired
+                && data.turret(ty).is_some()
+                && let Some(timage) = unit_image(data, ty.turret)
+            {
+                let a = if air {
+                    anim::AIR_ATTK_INIT
+                } else {
+                    anim::GND_ATTK_INIT
+                };
+                if let Some(t) = Track::start(data, timage, a, u.facing) {
+                    seen.turret = Some(t);
+                }
+            }
+            if let Some(t) = seen.turret.as_mut() {
+                let spawned_now = t.tick(data, u.facing, &mut rng);
+                for id in t.sounds.drain(..) {
+                    self.sounds.push((id, u.x / 256, u.y / 256));
+                }
+                t.weapons.clear();
+                for (img, dx, dy) in spawned_now {
+                    if let Some(track) = Track::start(data, img, anim::INIT, u.facing) {
+                        spawned.push(Effect {
+                            image: img,
+                            x: u.x / 256 + dx as i32,
+                            y: u.y / 256 + dy as i32,
+                            facing: u.facing,
+                            frame: 0,
+                            track,
+                            age: 0,
+                        });
+                    }
+                }
+                if t.state.ended || t.state.ignore_rest {
+                    seen.turret = None;
                 }
             }
             // Instant weapons (`appear at target unit / pos`, `appear at
@@ -924,6 +967,12 @@ impl Animator {
     /// it has none (buildings, units without scripts).
     pub fn unit_frame(&self, id: u32) -> Option<u16> {
         self.units.get(&id)?.track.as_ref()?.frame
+    }
+
+    /// The `playfram` operand of the unit's turret while it runs its attack
+    /// animation, `None` otherwise (the renderer then shows frame 0).
+    pub fn turret_frame(&self, id: u32) -> Option<u16> {
+        self.units.get(&id)?.turret.as_ref()?.frame
     }
 
     /// The engine glow a moving unit shows on top (image), if any; it is
