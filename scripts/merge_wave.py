@@ -15,7 +15,9 @@ The staging files are converted as follows:
     inside an existing module;
   * `galaxycraft::` paths become `crate::`.
 
-The script appends each batch under a `Merged from src/waveNN/agentNN.rs`
+A module split into a directory (`src/<module>/mod.rs`, see
+`scripts/split_merged.py`) gets each batch as `src/<module>/wNN/aNN.rs`.
+For a single-file module the script appends each batch under a `Merged from src/waveNN/agentNN.rs`
 header.  With `--replace`, existing waveNN blocks at the end of each target
 are removed first, which is how a batch is re-merged after a late correction.
 """
@@ -50,6 +52,41 @@ def parse_map(value: str) -> dict[int, str]:
         number, target = item.split("=", 1)
         mapping[int(number)] = target.strip()
     return mapping
+
+
+def add_line(path: Path, line: str, header: str = "") -> None:
+    """Append `line` to a module list file, creating it, unless present."""
+    text = path.read_text(encoding="utf-8") if path.exists() else header
+    if line not in text.splitlines():
+        text = text.rstrip("\n") + "\n" + line + "\n" if text else line + "\n"
+        path.write_text(text, encoding="utf-8")
+
+
+def write_split(module_dir: Path, wave: int, selected) -> None:
+    """Modules split by `scripts/split_merged.py` (`src/<module>/mod.rs`):
+    each batch becomes `src/<module>/wNN/aNN.rs` (under `translated/` for
+    `sim`), listed in `wNN/mod.rs` and re-exported."""
+    # `sim` keeps its hand-written code in `mod.rs` and its batches under
+    # `translated/`; the wave-only modules hold them at the top.
+    base = module_dir / "translated" if module_dir.name == "sim" else module_dir
+    depth = "super::super::super::*" if base != module_dir else "super::super::*"
+    group = f"w{wave:02d}"
+    gdir = base / group
+    gdir.mkdir(parents=True, exist_ok=True)
+    for n, _, body, _ in selected:
+        (gdir / f"a{n:02d}.rs").write_text(
+            "#![allow(unused_imports)]\n"
+            f"use {depth};\n\n"
+            "// ===========================================================================\n"
+            f"// Merged from src/wave{wave}/agent{n:02d}.rs\n"
+            "// ===========================================================================\n"
+            + body + "\n",
+            encoding="utf-8",
+        )
+        add_line(gdir / "mod.rs", f"mod a{n:02d};", "#![allow(unused_imports)]\n")
+        add_line(gdir / "mod.rs", f"pub use a{n:02d}::*;")
+    add_line(base / "mod.rs", f"mod {group};")
+    add_line(base / "mod.rs", f"pub use {group}::*;")
 
 
 def main() -> int:
@@ -105,6 +142,12 @@ def main() -> int:
         return 1
 
     for target in sorted({target for _, target, _, _ in batches}):
+        module_dir = ENGINE / "src" / Path(target).stem
+        if (module_dir / "mod.rs").exists():
+            selected = [b for b in batches if b[1] == target]
+            write_split(module_dir, args.wave, selected)
+            print(f"{target}: merged {', '.join(f'agent{n:02d}' for n, _, _, _ in selected)}")
+            continue
         path = ENGINE / "src" / target
         text = path.read_text(encoding="utf-8")
         selected = [b for b in batches if b[1] == target]

@@ -1,0 +1,23 @@
+# Files over the line limit, with the size they may not exceed.
+# Only shrink this list (scripts/check_file_sizes.py --update).
+engine-rust/src/aiscript.rs 2877
+engine-rust/src/audio.rs 3042
+engine-rust/src/bin/sc_view.rs 10982
+engine-rust/src/bin/sc_view/draw_world.rs 1819
+engine-rust/src/bin/sc_view/hud.rs 1901
+engine-rust/src/bin/sc_view/menu_draw.rs 2129
+engine-rust/src/bin/sc_view/menu_input.rs 1661
+engine-rust/src/bin/sc_view/mp.rs 3797
+engine-rust/src/handlers.rs 4849
+engine-rust/src/map.rs 1972
+engine-rust/src/menu.rs 2776
+engine-rust/src/net.rs 2315
+engine-rust/src/orders.rs 1526
+engine-rust/src/path.rs 4123
+engine-rust/src/render.rs 5529
+engine-rust/src/replay.rs 1593
+engine-rust/src/retail.rs 2632
+engine-rust/src/sim/mod.rs 2597
+engine-rust/src/sim/tests.rs 3739
+engine-rust/src/trigger.rs 4902
+engine-rust/src/video.rs 1725

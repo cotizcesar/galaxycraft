@@ -2,7 +2,7 @@
 
 Goal: no agent has to read a huge file.  Every phase is a pull request that
 only moves code, with no logic changes.  Planned 2026-11-12 in a separate
-planning session; **not started**.  Run it between waves and with no
+planning session; **done 2026-11-12** (see "Result" at the end).  Run it between waves and with no
 feature branch open: phase 5 collides with any branch that touches `sim.rs`
 (for example `vehicles/retail-polish`).
 
@@ -70,3 +70,31 @@ tools).
   names of the largest methods, not from a call analysis.  Do that analysis
   when phases 5 and 6 start.
 - `AGENTS.md` still quotes older line counts; update it in phase 7.
+
+## Result (2026-11-12)
+
+| phase | done |
+|---|---|
+| 1 | `scripts/split_merged.py` |
+| 2-4 | `runtime.rs`, `client.rs`, `ai_recovered.rs` and the translated tail of `sim.rs` split one file per wave block; `mod.rs` re-exports, no public path changed |
+| 3 | `merge_wave.py` writes `src/<module>/wNN/aNN.rs`; `triage_corpus.py` votes the module by directory (same `triage.tsv`) |
+| 5 | `impl World` split into 15 subsystem files (`scripts/split_impl.py`, plan `scripts/sim_split.json`); tests in `sim/tests.rs` |
+| 6 | the two `impl App` blocks split into 19 per-screen files under `bin/sc_view/` (plan `scripts/sc_view_split.json`) |
+| 7 | `scripts/check_file_sizes.py` + `docs/large-files.txt` (CI: `.github/workflows/checks.yml`), `docs/MODULES.md` generated, `AGENTS.md` updated, `.git-blame-ignore-revs` |
+
+Not done: the `enum Screen` state pattern for `App`, splitting the largest
+single methods (`handle_menu_input`, `draw_options`, `draw_hotkeys`,
+`draw_lobby`, `apply_spell`), moving the `impl World` blocks of the wave
+files into `sim/`, and crates.
+
+Proof that nothing changed:
+
+- `cargo test`: 5167 passing before and after (lib 4826); clippy and fmt
+  clean.
+- Ledger: 5736 translated, the same set of addresses.
+- The same scripted game (melee map, Siege Tank, Goliath, Science Vessel,
+  Dropship, Marine against Zerglings and an Ultralisk, 260 ticks) run with
+  the binary built from `main` and from the split: unit dumps and the
+  per-step state log are byte-identical in HD and SD; screenshots differ
+  only in the talking portrait's mouth, which follows the wall clock and
+  differs between two runs of the same `main` binary too.
