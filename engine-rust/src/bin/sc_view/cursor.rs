@@ -18,9 +18,10 @@ pub(super) fn cursor_frame_index(elapsed: Duration, frames: usize) -> usize {
     ((elapsed.as_secs_f32() * CURSOR_FPS) as usize) % frames
 }
 
-/// Retail cursor scale for a framebuffer of `height` pixels.
+/// Retail cursor scale for a framebuffer of `height` pixels: the cursor
+/// loader `FUN_0069df10` sets `height / 1920`, at least 0.25.
 pub(super) fn cursor_scale_for_height(height: i32) -> f32 {
-    (height.max(1) as f32 / CURSOR_ASSET_HEIGHT).max(0.02)
+    (height.max(1) as f32 / CURSOR_ASSET_HEIGHT).max(0.25)
 }
 
 /// Which retail target cursor matches the unit under the pointer.
@@ -262,7 +263,8 @@ pub(super) fn draw_virtual_cursor(
         return;
     };
     // Every cursor shares the 6 fps clock measured for the arrow (ten
-    // 60 Hz samples per authored frame).  INFERENCE for the others.
+    // 60 Hz samples per authored frame): the loader `FUN_0069df10` builds
+    // all eighteen with the same frame time, 10.
     if let (Some(palette), Some(art)) = (sd, art) {
         let grp = art
             .sd
@@ -497,6 +499,18 @@ pub(super) fn advance_virtual_pointer(
         x.clamp(0.0, (bounds.0 - 1).max(0) as f32),
         y.clamp(0.0, (bounds.1 - 1).max(0) as f32),
     )
+}
+
+/// The box-selection rectangle `(x, y, w, h)` between the drag start and
+/// the pointer, once the pointer has moved (a plain click draws none).
+pub(super) fn drag_box(start: Option<(i32, i32)>, now: (i32, i32)) -> Option<(i32, i32, i32, i32)> {
+    let s = start?;
+    if s == now {
+        return None;
+    }
+    let (x0, y0) = (s.0.min(now.0), s.1.min(now.1));
+    let (x1, y1) = (s.0.max(now.0), s.1.max(now.1));
+    Some((x0, y0, (x1 - x0).max(1), (y1 - y0).max(1)))
 }
 
 #[cfg(test)]
