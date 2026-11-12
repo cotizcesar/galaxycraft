@@ -7574,17 +7574,23 @@ impl World {
             }
             let row = (self.units[i].repulse_flags >> 4) as usize;
             let (ax, ay) = (ADJUST[row * 2], ADJUST[row * 2 + 1]);
-            let bias = |v: i32, a: i32| {
-                if v > a * 4 {
-                    v - a
-                } else if v > 0 {
-                    v + a
-                } else if v < -a * 4 {
-                    v + a
-                } else if v < 0 {
-                    v - a
-                } else {
-                    v
+            // Pull a strong component back by the bias and push a weak one
+            // further (OpenBW's four-way compare, folded).
+            let bias = |v: i32, a: i32| match v {
+                0 => 0,
+                v if v > 0 => {
+                    if v > a * 4 {
+                        v - a
+                    } else {
+                        v + a
+                    }
+                }
+                v => {
+                    if v < -a * 4 {
+                        v + a
+                    } else {
+                        v - a
+                    }
                 }
             };
             rx = bias(rx, ax);

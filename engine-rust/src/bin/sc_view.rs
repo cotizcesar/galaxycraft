@@ -18439,6 +18439,51 @@ impl App {
     }
 
     /// Facing byte the renderer should draw.
+    /// Turret of a Siege Tank or Goliath (`units.dat` subunit): its image
+    /// and where it points: at the unit's target while it has one, else
+    /// along the hull.  Drawn on top of the base at the same position.
+    fn turret_pose(&self, u: &galaxycraft::sim::SimUnit) -> Option<(u16, u8)> {
+        let ty = self.data.unit(u.type_id);
+        self.data.turret(ty)?;
+        let image = galaxycraft::unit_anim::unit_image(&self.data, ty.turret)?;
+        let facing = u
+            .target
+            .and_then(|t| self.world.unit(t))
+            .filter(|t| t.alive && (t.x != u.x || t.y != u.y))
+            .map_or_else(
+                || self.rendered_facing(u),
+                |t| {
+                    let (dx, dy) = ((t.x - u.x) as f64, (t.y - u.y) as f64);
+                    ((dx.atan2(-dy) / std::f64::consts::TAU * 256.0).round() as i32).rem_euclid(256)
+                        as u8
+                },
+            );
+        Some((image, facing))
+    }
+
+    /// Frame of the sieged tank's base (iscript 92): frames 0..=5 unfold
+    /// over the deploy animation (five frames of 5, then it holds 5) and
+    /// fold back at the end of the pack-up one (38 frames of hold first).
+    fn siege_base_frame(&self, u: &galaxycraft::sim::SimUnit) -> usize {
+        use galaxycraft::sim::{SIEGE_FRAMES, UNSIEGE_FRAMES};
+        let wait = u.order_wait as i32;
+        match u.order {
+            Order::Siege if wait > 0 => {
+                let elapsed = SIEGE_FRAMES as i32 - (wait - 1);
+                ((elapsed - 1) / 5).clamp(0, 5) as usize
+            }
+            Order::Unsiege if wait > 0 => {
+                let elapsed = UNSIEGE_FRAMES as i32 - (wait - 1);
+                if elapsed < 38 {
+                    5
+                } else {
+                    (4 - (elapsed - 38) / 5).clamp(0, 5) as usize
+                }
+            }
+            _ => 5,
+        }
+    }
+
     fn rendered_facing(&self, u: &galaxycraft::sim::SimUnit) -> u8 {
         self.smooth_facing
             .get(&u.id)
@@ -18570,8 +18615,41 @@ impl App {
             usize,
             (std::rc::Rc<galaxycraft::render::Grp>, usize),
         > = std::collections::HashMap::new();
+        // SD turrets: (turret GRP, frame, mirrored) per unit index.
+        let mut sd_turrets: std::collections::HashMap<
+            usize,
+            (std::rc::Rc<galaxycraft::render::Grp>, usize, bool),
+        > = std::collections::HashMap::new();
         if !hd {
             for &i in &order {
+                // The sieged tank's base is its own image, unfolding.
+                if self.world.units[i].type_id == galaxycraft::ids::unit::SIEGE_MODE {
+                    let frame = self.siege_base_frame(&self.world.units[i]);
+                    if let Some(image) = galaxycraft::unit_anim::unit_image(
+                        &self.data,
+                        galaxycraft::ids::unit::SIEGE_MODE,
+                    ) && let Some(grp) = self.sd_image_grp(image)
+                        && grp.frame(frame).is_some()
+                    {
+                        building_stage.insert(i, (grp, frame));
+                    }
+                }
+                if let Some((timage, tfacing)) = self.turret_pose(&self.world.units[i])
+                    && let Some(grp) = self.sd_image_grp(timage)
+                {
+                    let frame = galaxycraft::render::sd_frame_index(
+                        grp.frames.len(),
+                        tfacing,
+                        Some(0),
+                        false,
+                        0,
+                    );
+                    let flip = galaxycraft::render::sd_frame_flip(grp.frames.len(), tfacing);
+                    sd_turrets.insert(i, (grp, frame, flip));
+                }
+                if building_stage.contains_key(&i) {
+                    continue;
+                }
                 let (type_id, stage) = {
                     let u = &self.world.units[i];
                     (
@@ -18684,6 +18762,20 @@ impl App {
                 let ty = self.data.unit(u.type_id);
                 let r = ((ty.dimensions.right - ty.dimensions.left) as i32 / 2).max(12) + 4;
                 fb.circle_outline(sx, sy, r, Rgb::new(80, 255, 80));
+            }
+            if let Some((grp, frame, flip)) = sd_turrets.get(&i) {
+                galaxycraft::render::draw_grp_posed(
+                    fb,
+                    grp,
+                    *frame,
+                    self.sprites.palette(),
+                    (sx, sy),
+                    *flip,
+                    galaxycraft::render::GrpInk::Solid(Some(galaxycraft::render::player_rgb(
+                        &self.world,
+                        u.owner,
+                    ))),
+                );
             }
             if let Some(saved) = &cloak {
                 fb.fade_rect(saved, galaxycraft::render::CLOAK_KEEP);
@@ -19158,6 +19250,12 @@ impl App {
             let posed = raw as usize + frame;
             if posed < img.header.frames.len() {
                 frame = posed;
+            }
+        }
+        if u.type_id == galaxycraft::ids::unit::SIEGE_MODE {
+            let f = self.siege_base_frame(u);
+            if f < img.header.frames.len() {
+                frame = f;
             }
         }
         let mut layer_list = self.hd_unit_layers(u.type_id, u.is_completed_building(&self.data));
@@ -19780,6 +19878,43 @@ impl App {
             env,
         );
         layer(false, fb);
+        // The turret (tank barrel, Goliath torso) on top, pointing at the
+        // target.
+        if let Some((timage, tfacing)) = self.turret_pose(u) {
+            let skin = unit_skin_id(u.type_id, &self.game_options);
+            if let Some(ti) =
+                self.hd_sprites
+                    .image_skin(self.data.hd_anim_id(timage), skin, |path| {
+                        install?.read(path)
+                    })
+            {
+                let n = ti.header.frames.len();
+                let (tframe, tflip) = if n >= 17 {
+                    let dir = ((tfacing as i32 + 4) / 8).rem_euclid(32);
+                    if dir <= 16 {
+                        (dir as usize, false)
+                    } else {
+                        ((32 - dir) as usize, true)
+                    }
+                } else {
+                    (0, false)
+                };
+                if tframe < n {
+                    galaxycraft::hd_sprites::draw_frame_lit(
+                        fb,
+                        &ti,
+                        tframe,
+                        sx,
+                        sy,
+                        s,
+                        tflip,
+                        Some(team),
+                        clip,
+                        env,
+                    );
+                }
+            }
+        }
         // Engine glow on top of a moving unit (the SCV's thruster, image
         // 249), on the unit's own frame.
         if let Some(glow) = self.animator.unit_glow(u.id) {
