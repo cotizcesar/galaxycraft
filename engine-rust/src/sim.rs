@@ -973,6 +973,9 @@ pub struct SimUnit {
     /// its row of the adjust table (high nibble, 0 = not initialised).
     pub repulse_dir: u8,
     pub repulse_flags: u8,
+    /// Heading of the unit's turret (Siege Tank, Goliath), which turns on
+    /// its own at the turret's flingy turn rate.
+    pub turret_facing: u8,
     /// Fractional mineral debt for SCV repair, in 1/256 minerals.
     pub repair_debt: i32,
     /// Interceptors (Carrier) or scarabs (Reaver) currently in the hangar.
@@ -2892,6 +2895,7 @@ impl World {
             mine_armed_at: 0,
             repulse_dir: 0,
             repulse_flags: 0,
+            turret_facing: 0,
             repair_debt: 0,
             hangar: default_hangar(type_id),
             hangar_capacity: default_hangar_capacity(type_id),
@@ -3023,6 +3027,7 @@ impl World {
             mine_armed_at: 0,
             repulse_dir: 0,
             repulse_flags: 0,
+            turret_facing: 0,
             repair_debt: 0,
             hangar: default_hangar(type_id),
             hangar_capacity: default_hangar_capacity(type_id),
@@ -4964,6 +4969,7 @@ impl World {
         }
         self.resolve_collisions();
         self.apply_air_repulse();
+        self.turn_turrets();
         if self.tick.is_multiple_of(CREEP_GROW_INTERVAL as u64) {
             self.grow_creep();
         }
@@ -5393,6 +5399,57 @@ impl World {
             .count()
     }
 
+    /// OpenBW `find_unit_placement`: the spot nearest to `center` (1/256
+    /// px), within 128 px, where unit `j`'s box is on walkable ground and
+    /// overlaps no other ground unit or building.  Searched on a 4 px grid,
+    /// ring by ring.
+    fn free_spot_near(&self, j: usize, center: (i32, i32)) -> Option<(i32, i32)> {
+        let ty = self.data.unit(self.units[j].type_id);
+        let (cx, cy) = (center.0 / fp(1), center.1 / fp(1));
+        let fits = |x: i32, y: i32| {
+            let r = ty.dimensions.rect_at((x, y));
+            if r.0 < 0 || r.1 < 0 {
+                return false;
+            }
+            let corners = [(r.0, r.1), (r.2, r.1), (r.0, r.3), (r.2, r.3), (x, y)];
+            if !corners
+                .iter()
+                .all(|&(px, py)| self.terrain.walkable_px(px, py))
+            {
+                return false;
+            }
+            !self.units.iter().enumerate().any(|(k, o)| {
+                k != j && o.alive && o.in_transport.is_none() && !self.is_air_unit(k) && {
+                    let b = self
+                        .data
+                        .unit(o.type_id)
+                        .dimensions
+                        .rect_at((o.x / fp(1), o.y / fp(1)));
+                    r.0 <= b.2 && b.0 <= r.2 && r.1 <= b.3 && b.1 <= r.3
+                }
+            })
+        };
+        for ring in 0..=32 {
+            let d = ring * 4;
+            let mut best: Option<(i64, (i32, i32))> = None;
+            for k in -ring..=ring {
+                for (dx, dy) in [(k * 4, -d), (k * 4, d), (-d, k * 4), (d, k * 4)] {
+                    let (x, y) = (cx + dx, cy + dy);
+                    if fits(x, y) {
+                        let dist = (dx as i64).pow(2) + (dy as i64).pow(2);
+                        if best.is_none_or(|(bd, _)| dist < bd) {
+                            best = Some((dist, (x, y)));
+                        }
+                    }
+                }
+            }
+            if let Some((_, (x, y))) = best {
+                return Some((x * fp(1), y * fp(1)));
+            }
+        }
+        None
+    }
+
     fn exit_position(&self, i: usize) -> (i32, i32) {
         let u = &self.units[i];
         let ty = self.data.unit(u.type_id);
@@ -5728,6 +5785,24 @@ impl World {
         });
         if attacking {
             return true;
+        }
+        // A turret fires only once it points at the target, within the
+        // weapon's attack angle (OpenBW `unit_target_in_attack_angle` on
+        // the turret's heading).
+        if self
+            .data
+            .turret(self.data.unit(self.units[i].type_id))
+            .is_some()
+        {
+            let (dx, dy) = (
+                self.units[tidx].x - self.units[i].x,
+                self.units[tidx].y - self.units[i].y,
+            );
+            let want = direction_byte(dx, dy) as i32;
+            let diff = (want - self.units[i].turret_facing as i32).rem_euclid(256);
+            if diff.min(256 - diff) > weapon.attack_angle as i32 {
+                return true;
+            }
         }
         if self.units[i].cooldown == 0 {
             let flying = self.is_air_unit(tidx);
@@ -7631,6 +7706,42 @@ impl World {
         }
     }
 
+    /// Turrets (Siege Tank, Goliath) turn towards the unit's target, or
+    /// back along the hull without one, by their flingy turn rate per
+    /// frame (17 for the Goliath's guns, 13 for the tank cannons).  A
+    /// freshly spawned or just-sieged turret starts along the hull.
+    fn turn_turrets(&mut self) {
+        for i in 0..self.units.len() {
+            let u = &self.units[i];
+            if !u.alive {
+                continue;
+            }
+            let ty = self.data.unit(u.type_id);
+            let Some(turret) = self.data.turret(ty) else {
+                continue;
+            };
+            let rate = self
+                .data
+                .flingy(turret.flingy)
+                .map_or(255, |f| f.turn_rate as i32)
+                .max(1);
+            let want = u
+                .target
+                .and_then(|t| self.index_of(t))
+                .filter(|&t| self.units[t].alive)
+                .map_or(u.facing as i32, |t| {
+                    direction_byte(self.units[t].x - u.x, self.units[t].y - u.y) as i32
+                });
+            let cur = u.turret_facing as i32;
+            let mut diff = (want - cur).rem_euclid(256);
+            if diff > 128 {
+                diff -= 256;
+            }
+            let step = diff.clamp(-rate, rate);
+            self.units[i].turret_facing = (cur + step).rem_euclid(256) as u8;
+        }
+    }
+
     fn try_shift(&mut self, i: usize, dx: i32, dy: i32) -> bool {
         if dx == 0 && dy == 0 {
             return true;
@@ -8958,7 +9069,7 @@ impl World {
             self.units[i].order_wait -= 1;
             return;
         }
-        let (x, y) = self.exit_position(i);
+        let (cx, cy) = (self.units[i].x, self.units[i].y);
         let count = if building {
             self.units[i].cargo.len()
         } else {
@@ -8969,6 +9080,11 @@ impl World {
             let Some(j) = self.index_of(id) else {
                 continue;
             };
+            // OpenBW `unit_unload`: the nearest free spot to the container
+            // (`find_unit_placement`), not one shared exit point.
+            let (x, y) = self
+                .free_spot_near(j, (cx, cy))
+                .unwrap_or_else(|| self.exit_position(i));
             self.units[j].alive = true;
             self.units[j].clear_transport_link();
             self.units[j].set_in_bunker(false);

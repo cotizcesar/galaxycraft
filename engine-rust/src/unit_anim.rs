@@ -54,6 +54,9 @@ pub const LOCKDOWN_FIELD_IMAGE: u16 = 361;
 /// Defensive Matrix front shell 371..=373 (`edmFronS/M/L`) and Irradiate
 /// cloud 380..=382 (`eradLrg`), by the target's size.
 pub const MATRIX_FRONT_IMAGE: u16 = 371;
+/// Defensive Matrix back shell 374..=376 (`edmBackS/M/L`), drawn behind
+/// the unit.
+pub const MATRIX_BACK_IMAGE: u16 = 374;
 pub const IRRADIATE_IMAGE: u16 = 380;
 pub const RESTORATION_IMAGE: u16 = 967;
 pub const HEAL_IMAGE: u16 = 970;
@@ -65,6 +68,10 @@ pub const STIM_SOUNDS: [u16; 2] = [278, 279];
 pub const OPTICAL_FLARE_CAST_SOUND: u16 = 1016;
 pub const OPTICAL_FLARE_HIT_SOUND: u16 = 1019;
 pub const RESTORATION_SOUND: u16 = 1017;
+
+fn is_underlay(image: u16) -> bool {
+    (MATRIX_BACK_IMAGE..MATRIX_BACK_IMAGE + 3).contains(&image)
+}
 
 /// Offset (0..=2) of a size-keyed overlay image for a unit type.
 fn size_slot(data: &GameData, type_id: u16) -> u16 {
@@ -435,7 +442,9 @@ impl Animator {
             }
             // Defensive Matrix shell and Irradiate cloud, while they last.
             if u.status.matrix_ticks > 0 {
-                wanted.push((u.id, MATRIX_FRONT_IMAGE + size_slot(data, u.type_id)));
+                let slot = size_slot(data, u.type_id);
+                wanted.push((u.id, MATRIX_FRONT_IMAGE + slot));
+                wanted.push((u.id, MATRIX_BACK_IMAGE + slot));
             }
             if u.status.irradiate_ticks > 0 {
                 wanted.push((u.id, IRRADIATE_IMAGE + size_slot(data, u.type_id)));
@@ -465,10 +474,12 @@ impl Animator {
             .retain(|(id, _), _| world.unit(*id).is_some_and(|u| u.alive));
     }
 
-    /// The Lockdown fields and Heal glows showing a frame, on their units.
+    /// The Lockdown fields and Heal glows showing a frame, on their units
+    /// (drawn over them; see [`Self::status_underlays`] for the rest).
     pub fn status_overlays(&self, world: &World) -> Vec<BulletPose> {
         self.status
             .iter()
+            .filter(|((_, image), _)| !is_underlay(*image))
             .filter_map(|((id, image), t)| {
                 let u = world.unit(*id)?;
                 Some(BulletPose {
@@ -479,6 +490,16 @@ impl Animator {
                     frame: t.frame?,
                 })
             })
+            .collect()
+    }
+
+    /// Status images drawn behind unit `id` (the Defensive Matrix back
+    /// shell), as (image, frame).
+    pub fn status_underlays(&self, id: u32) -> Vec<(u16, u16)> {
+        self.status
+            .iter()
+            .filter(|((uid, image), _)| *uid == id && is_underlay(*image))
+            .filter_map(|((_, image), t)| Some((*image, t.frame?)))
             .collect()
     }
 

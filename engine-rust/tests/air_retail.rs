@@ -300,6 +300,12 @@ fn matrix_and_irradiate_show_their_overlays_on_the_target() {
     }
     // Marine: small (+0); Ultralisk: large (+2).
     assert!(seen.contains(&MATRIX_FRONT_IMAGE), "{seen:?}");
+    // The back shell is drawn behind the Marine.
+    assert!(
+        anim.status_underlays(mid)
+            .iter()
+            .any(|(img, _)| *img == galaxycraft::unit_anim::MATRIX_BACK_IMAGE)
+    );
     assert!(seen.contains(&(IRRADIATE_IMAGE + 2)), "{seen:?}");
 }
 
@@ -357,4 +363,42 @@ fn boarding_a_transport_does_not_play_a_death_animation() {
         );
     }
     assert!(w.units[marine].in_transport.is_some());
+}
+
+#[test]
+fn unloaded_units_land_on_separate_free_spots_under_the_transport() {
+    let mut w = world();
+    let ship = w.spawn_px(0, uid::DROPSHIP, 600, 600).unwrap();
+    let sid = w.units[ship].id;
+    let marines: Vec<usize> = (0..4)
+        .map(|k| w.spawn_px(0, uid::MARINE, 590 + 8 * k, 620).unwrap())
+        .collect();
+    for &m in &marines {
+        let mid = w.units[m].id;
+        w.issue(mid, Order::EnterTransport { transport: sid })
+            .unwrap();
+    }
+    for _ in 0..200 {
+        w.step();
+    }
+    assert_eq!(w.units[ship].cargo.len(), 4);
+    w.issue(sid, Order::Unload).unwrap();
+    for _ in 0..80 {
+        w.step();
+    }
+    let (sx, sy) = (w.units[ship].x / 256, w.units[ship].y / 256);
+    let spots: Vec<(i32, i32)> = marines
+        .iter()
+        .map(|&m| (w.units[m].x / 256, w.units[m].y / 256))
+        .collect();
+    for (k, &(x, y)) in spots.iter().enumerate() {
+        assert!(
+            (x - sx).abs() <= 40 && (y - sy).abs() <= 40,
+            "near the ship: {spots:?}"
+        );
+        for &(x2, y2) in &spots[k + 1..] {
+            // Marine box 17 x 20: no two overlap.
+            assert!((x - x2).abs() >= 16 || (y - y2).abs() >= 19, "{spots:?}");
+        }
+    }
 }

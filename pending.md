@@ -46,19 +46,17 @@ Rules read from the OpenBW source; these parts are simplified or not checked
 on screen.
 
 - **Turrets are folded into the base unit.**  The base fires the turret's
-  weapon; there is no separate turret unit, so the turret has no turn rate
-  of its own (it is drawn pointing at the target at once) and the hull is
-  not held still while it fires.  The turret's attack animation, sound and
-  muzzle overlays do play.
+  weapon; the turret's heading turns at its own rate and gates the shot,
+  and its attack animation, sound and muzzle overlays play.  Not modelled:
+  the hull is not held still while it fires.
 - **Siege Mode.**  The tank does not turn to its default direction before
   deploying, is not destroyed when a building occupies its spot, and the
   sieged turret's unfolding frames are not drawn (only the base's).
 - **Spider Mine.**  The hover list is a hardcoded type list rather than the
   `units.dat` movement flags; the burrow / unburrow frames and sounds are
   not drawn; a mine is nudged by collision while it waits.
-- **Dropship.**  Unloaded units all appear at the exit position (collision
-  spreads them) instead of `find_unit_placement`'s spot.  Boarding a Bunker
-  still uses 8 px (1 px for transports, which now fly over to fetch).
+- **Dropship.**  Boarding a Bunker still uses 8 px (1 px for transports,
+  which fly over to fetch).
 - **Valkyrie.**  The near-target offset index is global, not per Valkyrie,
   and the 80-bullet cap on Halo Rockets is not enforced.
 - **Yamato Gun.**  Energy is spent when the blast leaves, not when the
@@ -72,6 +70,5 @@ on screen.
 - **Checked on screen only in outline** (scripted HD and SD sessions, small
   crops): the siege deploy, a mine chasing and exploding, the Yamato charge
   and blast, and the Matrix / Irradiate / EMP casts being accepted; the Matrix
-  shell and the Irradiate cloud on their targets (only the Matrix front
-  shell is drawn, not the back one).  A
+  shell and the Irradiate cloud on their targets (front and back shells).  A
   Dropship loading, flying to a point and unloading was checked on screen.

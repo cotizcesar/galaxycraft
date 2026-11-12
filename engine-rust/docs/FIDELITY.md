@@ -161,6 +161,9 @@ in HD and SD: turrets and the deployed tank, the air units fighting.
 | Dropship | unload | one unit per 15 frames, weapons on cooldown; a Bunker empties at once | **fixed** (everything at once) |
 | Dropship | boarding | the transport flies over to fetch a unit that asks to board (`order_PickupTransport`); they board when the boxes touch | **fixed** (the unit walked all the way; 8 px) |
 | client | boarding | a unit that boards just disappears | **fixed**: it played its death animation |
+| Dropship, Bunker | unload placement | each unit on the nearest free spot to the container (`find_unit_placement`) | **fixed** (all on one exit point) |
+| Siege Tank, Goliath | turret heading | turns at the turret's flingy turn rate (13 / 17), fires within the weapon's attack angle | **fixed** (pointed at the target at once) |
+| client | Defensive Matrix | front and back shells | **fixed** (none, then front only) |
 | Dropship | unload at a point | `order_MoveUnload`: fly there, unload within 16 px; the Unload button asks for the spot | **fixed** (the order did not exist) |
 | Battlecruiser | Yamato Gun | charges until its overlay's `castspell`, then a travelling blast, 260 on arrival | **fixed** (instant damage) |
 | Science Vessel | EMP Shockwave | a missile; drains the 64 px square at the impact, not the caster or units in stasis; kills hallucinations | **fixed** (instant, circle, caster included) |

@@ -288,3 +288,27 @@ fn turrets_play_their_firing_animation_and_sound() {
         let _ = posed;
     }
 }
+
+#[test]
+fn a_turret_turns_at_its_own_rate_before_it_fires() {
+    // Sieged tank (turret turn rate 13 per frame, attack angle 16) facing
+    // north; one target due south needs about (128 - 16) / 13 = 9 frames
+    // of turning, one due north none.
+    let first_shot = |target_y: i32| {
+        let mut w = world();
+        let t = w.spawn_px(0, uid::SIEGE_MODE, 400, 600).unwrap();
+        w.units[t].status.sieged = true;
+        let egg = w.spawn_px(1, uid::EGG, 400, target_y).unwrap();
+        let hp = w.units[egg].hp;
+        (0..120).find(|_| {
+            w.step();
+            w.units[t].cooldown > 0 || w.units[egg].hp < hp
+        })
+    };
+    let ahead = first_shot(350).expect("fires north");
+    let behind = first_shot(850).expect("fires south");
+    assert!(
+        behind >= ahead + 8,
+        "turning takes time: {ahead} vs {behind}"
+    );
+}

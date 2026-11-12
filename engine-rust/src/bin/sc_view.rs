@@ -18468,25 +18468,14 @@ impl App {
 
     /// Facing byte the renderer should draw.
     /// Turret of a Siege Tank or Goliath (`units.dat` subunit): its image
-    /// and where it points: at the unit's target while it has one, else
-    /// along the hull.  Drawn on top of the base at the same position.
+    /// and heading (`SimUnit::turret_facing`).  Drawn on top of the base at
+    /// the same position.
     fn turret_pose(&self, u: &galaxycraft::sim::SimUnit) -> Option<(u16, u8)> {
         let ty = self.data.unit(u.type_id);
         self.data.turret(ty)?;
         let image = galaxycraft::unit_anim::unit_image(&self.data, ty.turret)?;
-        let facing = u
-            .target
-            .and_then(|t| self.world.unit(t))
-            .filter(|t| t.alive && (t.x != u.x || t.y != u.y))
-            .map_or_else(
-                || self.rendered_facing(u),
-                |t| {
-                    let (dx, dy) = ((t.x - u.x) as f64, (t.y - u.y) as f64);
-                    ((dx.atan2(-dy) / std::f64::consts::TAU * 256.0).round() as i32).rem_euclid(256)
-                        as u8
-                },
-            );
-        Some((image, facing))
+        // The simulation turns the turret at its own rate.
+        Some((image, u.turret_facing))
     }
 
     /// Frame of the sieged tank's base (iscript 92): frames 0..=5 unfold
@@ -18767,6 +18756,23 @@ impl App {
                 .then(|| self.animator.unit_frame(u.id))
                 .flatten();
             let facing = self.rendered_facing(u);
+            // Status images behind the unit (Defensive Matrix back shell).
+            for (image, frame) in self.animator.status_underlays(u.id) {
+                let remap = self.data.image(image).map_or(0, |im| im.color_shift);
+                if let (Some(grp), Some(table)) =
+                    (self.sd_image_grp(image), self.remap_table(remap))
+                {
+                    galaxycraft::render::draw_grp_remapped(
+                        fb,
+                        &grp,
+                        frame as usize,
+                        (sx, sy),
+                        false,
+                        &table,
+                    );
+                }
+            }
+            let u = &self.world.units[i];
             // A cloaked unit we can see is drawn faded.
             let cloak = u
                 .status
@@ -19897,6 +19903,27 @@ impl App {
             return;
         }
         layer(true, fb);
+        // Status images behind the unit (Defensive Matrix back shell).
+        for (image, sframe) in self.animator.status_underlays(u.id) {
+            if let Some(si) = self
+                .hd_sprites
+                .image(self.data.hd_anim_id(image), |path| install?.read(path))
+                && (sframe as usize) < si.header.frames.len()
+            {
+                galaxycraft::hd_sprites::draw_frame_lit(
+                    fb,
+                    &si,
+                    sframe as usize,
+                    sx,
+                    sy,
+                    s,
+                    false,
+                    None,
+                    clip,
+                    env,
+                );
+            }
+        }
         galaxycraft::hd_sprites::draw_frame_lit(
             fb,
             &img,
