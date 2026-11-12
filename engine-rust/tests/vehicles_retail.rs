@@ -159,3 +159,84 @@ fn the_arclite_cannon_has_a_minimum_range_and_hurts_its_own_side() {
     assert!(w.units[far].hp < hp_far);
     assert!(w.units[friend].hp < hp_friend || !w.units[friend].alive);
 }
+
+#[test]
+fn a_spider_mine_waits_burrows_ignores_hover_units_and_chases_walkers() {
+    use galaxycraft::ids::tech;
+    use galaxycraft::sim::{Order, SPIDER_MINE_ARM_TICKS, Spell, SpellTarget};
+    let mut w = world();
+    w.players[0].techs[tech::SPIDER_MINES as usize] = true;
+    let vulture = w.spawn_px(0, uid::VULTURE, 400, 400).unwrap();
+    let vid = w.units[vulture].id;
+    // The Vulture drives to within 20 px of the point before it lays it.
+    w.issue(
+        vid,
+        Order::Cast {
+            spell: Spell::SpiderMines,
+            target: SpellTarget::Point(600, 400),
+        },
+    )
+    .unwrap();
+    let mut mine = None;
+    for _ in 0..200 {
+        w.step();
+        mine = w
+            .units
+            .iter()
+            .position(|u| u.alive && u.type_id == uid::SPIDER_MINE);
+        if mine.is_some() {
+            break;
+        }
+    }
+    let mine = mine.expect("a mine was laid");
+    assert_eq!(w.units[vulture].hangar, 2);
+    assert!(
+        (w.units[vulture].x / 256 - 600).abs() <= 24,
+        "the Vulture drove there"
+    );
+    // At the point (the Vulture next to it may nudge it a pixel or two).
+    assert!((w.units[mine].x / 256 - 600).abs() <= 4 && (w.units[mine].y / 256 - 400).abs() <= 4);
+    // In the open for 60 frames plus the 4 of the burrow animation.
+    assert!(!w.units[mine].status.burrowed);
+    for _ in 0..SPIDER_MINE_ARM_TICKS - 3 {
+        w.step();
+    }
+    assert!(!w.units[mine].status.burrowed, "still visible");
+    assert!(w.can_see_unit(1, mine));
+    for _ in 0..6 {
+        w.step();
+    }
+    assert!(w.units[mine].status.burrowed, "armed");
+    assert!(!w.can_see_unit(1, mine), "hidden without a detector");
+
+    // Hovering units and buildings do not wake it.
+    let scv = w.spawn_px(1, uid::SCV, 630, 400).unwrap();
+    let enemy_vulture = w.spawn_px(1, uid::VULTURE, 600, 440).unwrap();
+    for u in [scv, enemy_vulture] {
+        w.units[u].order = Order::HoldPosition;
+    }
+    for _ in 0..40 {
+        w.step();
+    }
+    assert!(w.units[mine].alive && w.units[mine].status.burrowed);
+    // (Take them away: they would shoot the mine the moment it surfaces.)
+    for u in [scv, enemy_vulture] {
+        w.units[u].alive = false;
+    }
+
+    // A Marine 80 px away (inside the 96 px square) does: the mine
+    // unburrows, runs at it and explodes for 125 explosive (50 % on small).
+    let marine = w.spawn_px(1, uid::MARINE, 680, 400).unwrap();
+    w.units[marine].order = Order::HoldPosition;
+    let mut ran = false;
+    for _ in 0..60 {
+        w.step();
+        ran |= w.units[mine].alive && w.units[mine].x / 256 > 610;
+        if !w.units[mine].alive {
+            break;
+        }
+    }
+    assert!(ran, "the mine left its hole and chased");
+    assert!(!w.units[mine].alive, "and blew up");
+    assert!(!w.units[marine].alive, "62 damage kills a 40 hp Marine");
+}

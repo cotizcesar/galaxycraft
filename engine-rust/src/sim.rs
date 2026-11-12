@@ -98,8 +98,17 @@ pub const MAX_PRODUCTION_QUEUE: usize = 5;
 /// The retail engine caps active Halo Rockets at 80; use the same hard cap for
 /// every projectile so a pathological custom map cannot grow without bound.
 pub const MAX_PROJECTILES: usize = 80;
-/// Spider mine arming delay in logical ticks (about one second).
-pub const SPIDER_MINE_ARM_TICKS: i64 = 24;
+/// Spider Mine (OpenBW `order_SpiderMine`): frames it waits before it
+/// burrows, frames of its Burrow / UnBurrow animation (iscript 87), and so
+/// the frames from laying to armed.
+pub const SPIDER_MINE_WAIT_FRAMES: i64 = 60;
+pub const SPIDER_MINE_BURROW_FRAMES: i64 = 4;
+pub const SPIDER_MINE_ARM_TICKS: i64 = SPIDER_MINE_WAIT_FRAMES + SPIDER_MINE_BURROW_FRAMES;
+/// Half side of the square an armed mine watches (3 tiles), how far it
+/// follows a victim, and the box distance at which it explodes.
+pub const SPIDER_MINE_SEEK_PX: i32 = 96;
+pub const SPIDER_MINE_CHASE_PX: i32 = 576;
+pub const SPIDER_MINE_BLAST_PX: i32 = 30;
 /// Hatchery/Lair/Hive larva interval: 37 status updates (`0x25` reloaded by
 /// `0x5dfa06`), one status update every 8 logical ticks.
 pub const LARVA_SPAWN_TICKS: i32 = 37 * 8;
@@ -3928,7 +3937,7 @@ impl World {
     /// the Vulture carries three mines (`hangar`).
     pub fn place_spider_mine(&mut self, unit_id: u32, pos: (i32, i32)) -> Result<(), SimError> {
         let i = self.index_of(unit_id).ok_or(SimError::BadUnit)?;
-        if self.units[i].type_id != uid::VULTURE {
+        if !matches!(self.units[i].type_id, uid::VULTURE | 19) {
             return Err(SimError::Unsupported);
         }
         let owner = self.units[i].owner;
@@ -3938,11 +3947,15 @@ impl World {
         if self.units[i].hangar == 0 {
             return Err(SimError::QueueFull);
         }
-        self.spawn_temporary(owner, uid::SPIDER_MINE, pos, 0)
-            .ok_or(SimError::InvalidTarget)?;
-        self.units[i].hangar -= 1;
-        self.units[i].cooldown = self.units[i].cooldown.max(15);
-        Ok(())
+        // The Vulture drives to the point and lays the mine there
+        // (`order_PlaceMine`), like the Spider Mines button.
+        self.issue(
+            unit_id,
+            Order::Cast {
+                spell: Spell::SpiderMines,
+                target: SpellTarget::Point(pos.0, pos.1),
+            },
+        )
     }
 
     /// Find an owned completed parent building with a free add-on slot.
@@ -5568,6 +5581,9 @@ impl World {
         if self.units[i].type_id == uid::SCV
             || self.units[i].type_id == uid::PROBE
             || self.units[i].type_id == uid::DRONE
+            // The Spider Mine runs its own state machine
+            // (`update_specials`), not the generic acquire-and-attack.
+            || self.units[i].type_id == uid::SPIDER_MINE
         {
             return;
         }
@@ -8875,6 +8891,11 @@ impl World {
     /// has weapon 130 (Scanner Sweep, Recall, Meld, ...) have no weapon
     /// range and fall back to [`spell_range`].
     fn spell_range_px(&self, spell: Spell) -> Option<i32> {
+        // OpenBW `order_PlaceMine`: the Vulture lays the mine once it is
+        // within 20 px of the point.
+        if spell == Spell::SpiderMines {
+            return Some(20 * fp(1));
+        }
         spell
             .weapon_id()
             .and_then(|id| self.data.weapon(id))
@@ -9264,8 +9285,10 @@ impl World {
                     && self.units[caster].hangar > 0
                     && let Some(idx) = self.spawn_temporary(c_owner, uid::SPIDER_MINE, (tx, ty), 0)
                 {
-                    self.units[idx].status.burrowed = true;
-                    self.units[idx].mine_armed_at = self.tick as i64 + SPIDER_MINE_ARM_TICKS;
+                    // The mine takes the Vulture's heading and starts in
+                    // the open (`update_specials` runs its state machine).
+                    self.units[idx].facing = self.units[caster].facing;
+                    self.units[idx].mine_armed_at = self.tick as i64 + SPIDER_MINE_WAIT_FRAMES;
                     self.units[caster].hangar -= 1;
                 }
             }
@@ -10170,41 +10193,88 @@ impl World {
         Some(idx)
     }
 
-    /// Spider mines arm after a short delay, then detonate on the first enemy
-    /// that enters their 96-pixel trigger radius.  The damage comes from the
-    /// recovered `weapons.dat` row 6 (Spider Mines: 125 damage, radial splash).
+    /// Spider Mines (OpenBW `order_SpiderMine`).  A new mine sits in the
+    /// open for 60 frames, takes 4 to burrow, and is then hidden and armed.
+    /// It wakes for the nearest enemy inside the 96 px square around it
+    /// (3 tiles of target acquisition) that is not invincible, a grounded
+    /// building, a flyer or a hovering unit; unburrows (4 frames), chases
+    /// it at 16 px per frame while it stays within 576 px, and explodes
+    /// when their boxes are within 30 px (weapons.dat row 6: 125 explosive,
+    /// radial splash 50 / 75 / 100).  A mine that loses its target digs in
+    /// again.  `mine_armed_at` is the tick of the next state change.
     fn update_specials(&mut self) {
-        let mut detonations: Vec<(usize, (i32, i32))> = Vec::new();
-        let mut mines: Vec<usize> = Vec::new();
+        let now = self.tick as i64;
+        let mut detonations: Vec<usize> = Vec::new();
         for i in 0..self.units.len() {
-            let u = &self.units[i];
-            if !u.alive || u.type_id != uid::SPIDER_MINE {
+            if !self.units[i].alive || self.units[i].type_id != uid::SPIDER_MINE {
                 continue;
             }
-            if !u.status.burrowed {
-                mines.push(i);
+            if self.units[i].status.lockdown_ticks > 0 || self.units[i].status.stasis_ticks > 0 {
                 continue;
             }
-            if self.tick as i64 >= u.mine_armed_at {
-                let enemy = self.units.iter().enumerate().any(|(ni, n)| {
-                    n.alive
-                        && self.hostile(u.owner, n.owner)
-                        && !self.is_air_unit(ni)
-                        && (n.x - u.x).abs() <= fp(32)
-                        && (n.y - u.y).abs() <= fp(32)
-                });
-                if enemy {
-                    detonations.push((i, (u.x, u.y)));
+            // Fresh mine: start the 60-frame wait.
+            if self.units[i].mine_armed_at == 0 {
+                self.units[i].mine_armed_at = now + SPIDER_MINE_WAIT_FRAMES;
+            }
+            let armed_at = self.units[i].mine_armed_at;
+            let target = self.units[i].target.and_then(|t| self.index_of(t));
+            if self.units[i].status.burrowed {
+                // Armed: look for a victim.
+                let (mx, my, owner) = (self.units[i].x, self.units[i].y, self.units[i].owner);
+                let half = SPIDER_MINE_SEEK_PX * fp(1);
+                let victim = (0..self.units.len())
+                    .filter(|&n| {
+                        let v = &self.units[n];
+                        n != i
+                            && v.alive
+                            && self.hostile(owner, v.owner)
+                            && !v.invincible
+                            && !self.data.unit(v.type_id).is_building()
+                            && !self.is_air_unit(n)
+                            && !is_hover_type(v.type_id)
+                            && (v.x - mx).abs() <= half
+                            && (v.y - my).abs() <= half
+                    })
+                    .map(|n| (self.distance(i, n), n))
+                    .min()
+                    .map(|(_, n)| n);
+                if let Some(v) = victim {
+                    self.units[i].status.burrowed = false;
+                    self.units[i].target = Some(self.units[v].id);
+                    self.units[i].mine_armed_at = now + SPIDER_MINE_BURROW_FRAMES;
+                }
+                continue;
+            }
+            match target {
+                // Waiting in the open, then burrowing.
+                None => {
+                    if now >= armed_at + SPIDER_MINE_BURROW_FRAMES {
+                        self.units[i].status.burrowed = true;
+                        self.units[i].path.clear();
+                        self.units[i].path_goal = None;
+                    }
+                }
+                // Unburrowing, then the chase.
+                Some(_) if now < armed_at => {}
+                Some(v) => {
+                    let alive = self.units[v].alive && !self.is_air_unit(v);
+                    let dist = self.units_distance_px(i, v);
+                    if !alive || dist > SPIDER_MINE_CHASE_PX {
+                        self.units[i].target = None;
+                        self.units[i].path.clear();
+                        self.units[i].path_goal = None;
+                        self.units[i].mine_armed_at = now + SPIDER_MINE_WAIT_FRAMES;
+                    } else if dist <= SPIDER_MINE_BLAST_PX {
+                        detonations.push(i);
+                    } else {
+                        let (vx, vy) = (self.units[v].x / fp(1), self.units[v].y / fp(1));
+                        self.move_towards(i, (vx, vy), fp(4));
+                    }
                 }
             }
         }
-        for i in mines {
-            // `0x005b4850` sets the hidden flag while the mine arms; the
-            // Rust model uses burrowed hidden state plus the arming timer.
-            self.units[i].status.burrowed = true;
-            self.units[i].mine_armed_at = self.tick as i64 + SPIDER_MINE_ARM_TICKS;
-        }
-        for (i, pos) in detonations {
+        for i in detonations {
+            let pos = (self.units[i].x, self.units[i].y);
             if let Some(w) = self.data.weapon(wid::SPIDER_MINES).cloned() {
                 let owner = self.units[i].owner;
                 self.resolve_hit_type(owner, None, i, wid::SPIDER_MINES, &w, pos, 1, 1);
@@ -10523,6 +10593,16 @@ fn direction_vector(direction: i32) -> (i32, i32) {
     (
         (angle.sin() * 256.0).round() as i32,
         (-angle.cos() * 256.0).round() as i32,
+    )
+}
+
+/// Hovering units (`units.dat` movement flags 0xC1): they do not set off
+/// Spider Mines.  Vulture, SCV, Spider Mine, Raynor's Vulture (19), Drone,
+/// Dark Archon (63), Probe, Archon, Tassadar/Zeratul (76).
+pub fn is_hover_type(type_id: u16) -> bool {
+    matches!(
+        type_id,
+        uid::VULTURE | uid::SCV | uid::SPIDER_MINE | 19 | uid::DRONE | 63 | uid::PROBE | 68 | 76
     )
 }
 

@@ -672,10 +672,20 @@ fn vulture_mine_order_places_the_three_carried_mines() {
     let v = world.spawn_px(0, uid::VULTURE, 8 * 32, 8 * 32).unwrap();
     let id = world.units[v].id;
     assert_eq!(world.units[v].hangar, 3);
+    // Each order drives the Vulture to the point (within 20 px, OpenBW
+    // `order_PlaceMine`) and lays one mine there.
     for k in 0..3 {
         world
             .issue_order_id(id, 18, None, Some((10 * 32 + k * 16, 10 * 32)))
             .unwrap();
+        let before = world.units[v].hangar;
+        for _ in 0..200 {
+            world.step();
+            if world.units[v].hangar < before {
+                break;
+            }
+        }
+        assert_eq!(world.units[v].hangar, before - 1, "mine {k} laid");
     }
     assert_eq!(world.units[v].hangar, 0);
     assert_eq!(
