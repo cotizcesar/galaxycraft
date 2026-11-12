@@ -66,6 +66,15 @@ CLIENT = {
     "client.rs", "render.rs", "audio.rs", "buttons.rs", "button_sets.rs",
     "menu.rs", "runtime.rs", "profile.rs", "text.rs", "ui_art.rs",
 }
+def module_name(path: Path) -> str:
+    """The module a source file belongs to, by directory: `src/sim/mod.rs`
+    and `src/runtime/w31/a07.rs` vote as `sim.rs` and `runtime.rs`."""
+    rel = path.relative_to(ENGINE / "src").parts
+    if len(rel) == 1 or rel[0] == "bin":
+        return path.name
+    return f"{rel[0]}.rs"
+
+
 REF = re.compile(r"\b(?:FUN|thunk_FUN|LAB|SUB)_([0-9a-f]{8})\b")
 CITE = re.compile(r"0x([0-9a-fA-F]{6,8})\b")
 LIB = re.compile(
@@ -128,7 +137,7 @@ def main() -> int:
         for m in CITE.findall(path.read_text(encoding="utf-8", errors="ignore")):
             a = int(m, 16)
             if status.get(a, {}).get("status") == "translated":
-                module_of.setdefault(a, path.name)
+                module_of.setdefault(a, module_name(path))
 
     callees: dict[int, set[int]] = {}
     texts_cat: dict[int, str] = {}
