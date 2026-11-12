@@ -75,6 +75,3 @@ on screen.
   and blast, and the Matrix / Irradiate / EMP casts being accepted.  Not
   looked at: the Matrix and Irradiate overlays on their targets, and a
   Dropship unloading (tests only).
-- **Idle units and buildings.**  In the scripted session an idle
-  Battlecruiser did not open fire on an enemy Supply Depot in range; not
-  investigated (retail units attack buildings when nothing else is there).

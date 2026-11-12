@@ -240,3 +240,18 @@ fn a_spider_mine_waits_burrows_ignores_hover_units_and_chases_walkers() {
     assert!(!w.units[mine].alive, "and blew up");
     assert!(!w.units[marine].alive, "62 damage kills a 40 hp Marine");
 }
+
+#[test]
+fn idle_units_attack_an_enemy_building_when_nothing_else_is_in_range() {
+    for attacker in [uid::MARINE, uid::BATTLECRUISER, uid::SIEGE_TANK] {
+        let mut w = world();
+        let _a = w.spawn_px(0, attacker, 400, 400).unwrap();
+        let depot = w.spawn_px(1, uid::SUPPLY_DEPOT, 520, 400).unwrap();
+        w.units[depot].completed = true;
+        let hp = w.units[depot].hp;
+        for _ in 0..80 {
+            w.step();
+        }
+        assert!(w.units[depot].hp < hp, "unit {attacker} fires at the depot");
+    }
+}
