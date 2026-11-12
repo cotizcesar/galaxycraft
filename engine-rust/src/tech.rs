@@ -81,6 +81,8 @@ pub fn build_info(unit_id: u16) -> Option<BuildInfo> {
         unit::COMMAND_CENTER => b(unit::SCV, &[]),
         unit::COMSAT_STATION => b(unit::COMMAND_CENTER, &[(unit::ACADEMY, 1)]),
         unit::NUCLEAR_SILO => b(unit::COMMAND_CENTER, &[(unit::COVERT_OPS, 1)]),
+        // The silo arms itself by "training" its missile.
+        unit::NUCLEAR_MISSILE => b(unit::NUCLEAR_SILO, &[]),
         unit::SUPPLY_DEPOT => b(unit::SCV, &[]),
         unit::REFINERY => b(unit::SCV, &[]),
         unit::BARRACKS => b(unit::SCV, &[(unit::COMMAND_CENTER, 1)]),

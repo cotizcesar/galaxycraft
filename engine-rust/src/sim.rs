@@ -5121,6 +5121,15 @@ impl World {
         }
         let order = self.units[i].order.clone();
         match order {
+            // A Nuclear Silo "trains" its missile: it stays inside, armed.
+            Order::Train { unit_type }
+                if unit_type == uid::NUCLEAR_MISSILE
+                    && self.units[i].type_id == uid::NUCLEAR_SILO =>
+            {
+                self.units[i].nuke_ready = true;
+                self.units[i].order = Order::Idle;
+                self.start_next_production(i);
+            }
             Order::Train { unit_type } => {
                 let owner = self.units[i].owner;
                 let spawn_pos = self.exit_position(i);
@@ -6483,21 +6492,44 @@ impl World {
     /// damage to every unit in its splash radius, ignoring the weapon's stored
     /// per-shot damage.
     fn apply_nuke(&mut self, owner: u8, source: usize, impact: (i32, i32)) {
-        let radius = 128 * fp(1);
+        let Some(mut nuke) = self.data.weapon(wid::NUCLEAR_STRIKE).cloned() else {
+            return;
+        };
+        // weapons.dat row 31: full damage within 128 px of the victim's
+        // box, half within 192, a quarter within 256 (the splash rings of
+        // every radial weapon).
+        let (inner, middle, outer) = (
+            nuke.inner_splash as i32,
+            nuke.middle_splash as i32,
+            nuke.outer_splash as i32,
+        );
+        let (ix, iy) = (impact.0 / fp(1), impact.1 / fp(1));
         let mut targets = Vec::new();
         for j in 0..self.units.len() {
             if !self.units[j].alive {
                 continue;
             }
-            if self.distance_to_point(j, impact) <= radius {
-                targets.push(j);
-            }
+            let rect = self
+                .data
+                .unit(self.units[j].type_id)
+                .dimensions
+                .rect_at((self.units[j].x / fp(1), self.units[j].y / fp(1)));
+            let dx = (rect.0 - ix).max(ix - rect.2).max(0) as i64;
+            let dy = (rect.1 - iy).max(iy - rect.3).max(0) as i64;
+            let d = isqrt(dx * dx + dy * dy) as i32;
+            let divisor = if d <= inner {
+                1
+            } else if d <= middle {
+                2
+            } else if d <= outer {
+                4
+            } else {
+                continue;
+            };
+            targets.push((j, divisor));
         }
-        let Some(mut nuke) = self.data.weapon(wid::NUCLEAR_STRIKE).cloned() else {
-            return;
-        };
         nuke.damage_bonus = 0;
-        for j in targets {
+        for (j, divisor) in targets {
             let ty = self.data.unit(self.units[j].type_id);
             let max = ty.hit_points_raw as i32
                 + if ty.has_shields {
@@ -6507,7 +6539,7 @@ impl World {
                 };
             let damage = (max * 2 / 3).max(fp(500));
             nuke.damage = (damage / fp(1)).max(1) as u16;
-            self.apply_hit_from(owner, source, j, &nuke, 1);
+            self.apply_hit_from(owner, source, j, &nuke, divisor);
         }
     }
 
@@ -7532,15 +7564,12 @@ impl World {
             } => self.animation_attack(i, weapon, melee, ground),
             AnimEvent::AttackShift(distance) => self.animation_attack_shift(i, distance),
             AnimEvent::CastSpell => self.animation_cast(i),
-            AnimEvent::OrderDone(_) => {
-                let blocked = self.units[i]
-                    .anim
-                    .as_ref()
-                    .is_some_and(|a| a.orders_blocked);
-                if !blocked {
-                    self.order_done(i);
-                }
-            }
+            // `orderdone <flag>` only clears bits of the unit's order
+            // signal (the counterpart of `sigorder`); it does not finish the
+            // order.  Treating it as completion made the Medic, whose
+            // Walking script starts with `orderdone 1`, drop every order
+            // the moment it started to walk.
+            AnimEvent::OrderDone(_) => {}
             AnimEvent::SetDirection(d) => {
                 self.units[i].facing = d.clamp(0, 255) as u8;
             }
@@ -8939,10 +8968,17 @@ impl World {
                 }
             }
             Spell::Lockdown => {
-                if let Some(t) = target_idx {
-                    let ty = self.data.unit(self.units[t].type_id);
-                    if ty.is_mechanical() {
-                        self.units[t].status.apply_lockdown(LOCKDOWN_UPDATES);
+                // The Ghost fires the Lockdown missile (weapons.dat row 32,
+                // a bullet that follows its target); the unit is disabled
+                // when it lands (`hit::LOCKDOWN`).
+                if let Some(t) = target_idx
+                    && self.data.unit(self.units[t].type_id).is_mechanical()
+                {
+                    match self.data.weapon(wid::LOCKDOWN).cloned() {
+                        Some(w) if Projectile::weapon_is_travelling(&w) => {
+                            self.spawn_projectile(caster, t, wid::LOCKDOWN, &w);
+                        }
+                        _ => self.units[t].status.apply_lockdown(LOCKDOWN_UPDATES),
                     }
                 }
             }
@@ -9406,26 +9442,37 @@ impl World {
 
     fn launch_nuke_unrecorded(&mut self, ghost_id: u32, pos: (i32, i32)) -> Result<(), SimError> {
         let i = self.index_of(ghost_id).ok_or(SimError::BadUnit)?;
-        if !self.units[i].alive || self.units[i].type_id != uid::GHOST {
+        if !self.units[i].alive || !is_ghost_type(self.units[i].type_id) {
             return Err(SimError::Unsupported);
         }
         if self.nuke_strikes.iter().any(|s| s.ghost == ghost_id) {
             return Err(SimError::ProducerBusy);
         }
         let owner = self.units[i].owner;
-        let Some(silo) = self.units.iter().position(|u| {
+        let is_silo = |u: &SimUnit| {
             u.alive
                 && u.completed
                 && u.owner == owner
                 && u.type_id == uid::NUCLEAR_SILO
                 && u.addon_attached
-        }) else {
+        };
+        // A silo that already holds a missile first.
+        let Some(silo) = self
+            .units
+            .iter()
+            .position(|u| is_silo(u) && u.nuke_ready)
+            .or_else(|| self.units.iter().position(is_silo))
+        else {
             return Err(SimError::MissingRequirements);
         };
         let silo_id = self.units[silo].id;
-        // The client's Nuke button predates the explicit arm command; arm on
-        // demand so the first launch still charges the missile's 200/200.
         if !self.units[silo].nuke_ready {
+            // A player has to build the missile in the silo first (200 /
+            // 200, 1500 build time).  Computer players still arm on demand:
+            // their scripts order the strike directly.
+            if !self.players[owner as usize].is_computer {
+                return Err(SimError::MissingRequirements);
+            }
             self.arm_nuke(silo_id)?;
         }
         self.units[silo].nuke_ready = false;
@@ -9445,8 +9492,30 @@ impl World {
     }
 
     fn advance_nuke_strikes(&mut self) {
+        // The Ghost paints the target from within its sight range: until it
+        // is that close it walks towards the point and the countdown waits.
+        // INFERENCE from OpenBW `order_NukeGround` (range = sight range);
+        // falsifier: a retail Ghost painting a target outside its sight.
+        let mut waiting = Vec::new();
+        for k in 0..self.nuke_strikes.len() {
+            let (ghost, target) = (self.nuke_strikes[k].ghost, self.nuke_strikes[k].target);
+            let Some(g) = self.index_of(ghost) else {
+                continue;
+            };
+            let range = self.unit_sight_range(g) * 32 * fp(1);
+            if self.distance_to_point(g, target) > range {
+                self.move_towards(g, (target.0 / fp(1), target.1 / fp(1)), fp(8));
+                waiting.push(ghost);
+            } else {
+                self.units[g].path.clear();
+                self.units[g].path_goal = None;
+            }
+        }
         let mut launched = Vec::new();
         for strike in &mut self.nuke_strikes {
+            if waiting.contains(&strike.ghost) {
+                continue;
+            }
             strike.timer -= 1;
             if strike.timer <= 45 && !strike.warned {
                 strike.warned = true;
@@ -9827,6 +9896,10 @@ impl World {
                     continue;
                 };
                 if self.units[o].hp <= 0 {
+                    continue;
+                }
+                // An SCV sheltering in the Bunker does not fire.
+                if self.data.unit(self.units[o].type_id).is_worker() {
                     continue;
                 }
                 // `0x5b5aa0`: disabled occupants do not enter Bunker Guard.
@@ -10536,13 +10609,16 @@ fn is_creep_source(type_id: u16) -> bool {
     )
 }
 
-/// Bunker occupancy is four infantry slots; vehicles and workers cannot
-/// enter.  The shipped rows are Marine, Ghost, Firebat and Medic.
+/// Bunker occupancy is four slots for Terran units that take one transport
+/// space: Marine, Ghost, Firebat, Medic, the SCV (it does not fire from
+/// inside), the Civilian (15) and the infantry heroes.
 fn is_bunker_infantry(type_id: u16) -> bool {
     matches!(
         type_id,
-        uid::MARINE | uid::GHOST | uid::FIREBAT | uid::MEDIC
-    )
+        uid::MARINE | uid::GHOST | uid::FIREBAT | uid::MEDIC | uid::SCV | 15
+    ) || is_marine_type(type_id)
+        || is_firebat_type(type_id)
+        || is_ghost_type(type_id)
 }
 
 /// `0x005cc6d0`'s unit switch: the upgrade that raises this unit's
@@ -11939,7 +12015,17 @@ mod tests {
         let vulture = w.spawn(1, uid::VULTURE, 400, 320).unwrap();
         let vulture_id = w.units[vulture].id;
         w.apply_spell(caster, Spell::Lockdown, SpellTarget::Unit(vulture_id));
-        assert_eq!(w.units[vulture].status.lockdown_ticks, LOCKDOWN_UPDATES);
+        // The Lockdown missile has to reach the Vulture first.
+        assert_eq!(w.units[vulture].status.lockdown_ticks, 0);
+        let mut landed = None;
+        for _ in 0..60 {
+            w.step();
+            if w.units[vulture].status.lockdown_ticks > 0 {
+                landed = Some(w.units[vulture].status.lockdown_ticks);
+                break;
+            }
+        }
+        assert_eq!(landed, Some(LOCKDOWN_UPDATES));
     }
 
     #[test]
@@ -12243,7 +12329,8 @@ mod tests {
     #[test]
     fn nuke_waits_90_ticks_warns_at_45_and_consumes_the_silo() {
         let mut w = open_world();
-        let ghost = w.spawn(0, uid::GHOST, 320, 320).unwrap();
+        // Within the Ghost's sight (9 tiles) of the target point.
+        let ghost = w.spawn(0, uid::GHOST, 450, 320).unwrap();
         let silo = w.spawn(0, uid::NUCLEAR_SILO, 128, 128).unwrap();
         w.units[silo].addon_attached = true;
         let target = w.spawn(1, uid::MARINE, 700, 320).unwrap();

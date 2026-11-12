@@ -350,3 +350,178 @@ fn optical_flare_blinds_for_good_until_restoration() {
     w.set_cloak(w.units[ghost].id, true).unwrap();
     assert!(!w.can_see_unit(1, ghost));
 }
+
+/// Put `unit` into `bunker` through the load order.
+fn load(w: &mut World, unit: usize, bunker: usize) {
+    let (uid_, bid) = (w.units[unit].id, w.units[bunker].id);
+    w.issue(uid_, Order::EnterTransport { transport: bid })
+        .unwrap();
+    for _ in 0..200 {
+        w.step();
+        if w.units[unit].in_transport.is_some() {
+            return;
+        }
+    }
+    panic!(
+        "unit {} did not enter the bunker: order {:?} at {:?}, cargo {}",
+        w.units[unit].type_id,
+        w.units[unit].order,
+        (w.units[unit].x / 256, w.units[unit].y / 256),
+        w.units[bunker].cargo.len()
+    );
+}
+
+#[test]
+fn a_bunker_gives_its_marines_64_px_and_shelters_scvs_heroes_and_medics() {
+    let mut w = world();
+    let bunker = w.spawn_px(0, uid::BUNKER, 400, 400).unwrap();
+    w.units[bunker].completed = true;
+    let marine = w.spawn_px(0, uid::MARINE, 400, 450).unwrap();
+    load(&mut w, marine, bunker);
+    // A free Marine reaches 128 px; from the Bunker's centre it reaches
+    // 128 + 64.  Target box 180 px from the occupant's box.
+    let ling = w
+        .spawn_px(1, uid::ZERGLING, 400 + 8 + 180 + 8, 400)
+        .unwrap();
+    w.units[ling].order = Order::HoldPosition;
+    let hp = w.units[ling].hp;
+    for _ in 0..60 {
+        w.step();
+    }
+    assert!(w.units[ling].hp < hp, "the Bunker out-ranges a free Marine");
+
+    // SCVs, heroes and Medics may enter; the SCV does not fire and the
+    // Medic does not heal from inside.
+    let scv = w.spawn_px(0, uid::SCV, 380, 450).unwrap();
+    load(&mut w, scv, bunker);
+    let raynor = w.spawn_px(0, 20, 420, 450).unwrap();
+    load(&mut w, raynor, bunker);
+    let medic = w.spawn_px(0, uid::MEDIC, 400, 455).unwrap();
+    w.units[medic].set_energy_fixed(100 * ENERGY_SCALE);
+    load(&mut w, medic, bunker);
+    let wounded = w.spawn_px(0, uid::MARINE, 400, 450).unwrap();
+    w.units[wounded].hp = fp(10);
+    for _ in 0..50 {
+        w.step();
+    }
+    assert_eq!(w.units[wounded].hp, fp(10), "no healing from a Bunker");
+}
+
+#[test]
+fn a_silo_builds_its_missile_before_a_ghost_can_call_the_strike() {
+    let mut w = world();
+    w.players[0].minerals = 1000;
+    w.players[0].gas = 1000;
+    let cc = w.spawn_px(0, uid::COMMAND_CENTER, 300, 300).unwrap();
+    w.units[cc].completed = true;
+    for k in 0..4 {
+        let d = w
+            .spawn_px(0, uid::SUPPLY_DEPOT, 600 + 100 * k, 200)
+            .unwrap();
+        w.units[d].completed = true;
+    }
+    let silo = w.spawn_px(0, uid::NUCLEAR_SILO, 420, 320).unwrap();
+    w.units[silo].completed = true;
+    w.units[silo].addon_attached = true;
+    let ghost = w.spawn_px(0, uid::GHOST, 300, 900).unwrap();
+    let (sid, gid) = (w.units[silo].id, w.units[ghost].id);
+    // No missile yet: the strike is refused and nothing is spent.
+    assert_eq!(
+        w.launch_nuke(gid, (1500, 900)),
+        Err(SimError::MissingRequirements)
+    );
+    assert_eq!(w.players[0].minerals, 1000);
+    w.train(sid, uid::NUCLEAR_MISSILE).expect("arm the silo");
+    assert_eq!((w.players[0].minerals, w.players[0].gas), (800, 800));
+    assert!(!w.units[silo].nuke_ready, "it takes its build time");
+    let mut frames = 0;
+    while !w.units[silo].nuke_ready && frames < 3000 {
+        w.step();
+        frames += 1;
+    }
+    assert!(w.units[silo].nuke_ready, "armed after {frames} frames");
+    assert!(frames > 1000, "units.dat build time 1500: {frames}");
+    assert!(
+        !w.units
+            .iter()
+            .any(|u| u.alive && u.type_id == uid::NUCLEAR_MISSILE),
+        "the missile stays in the silo"
+    );
+
+    // The Ghost walks until the point is within its sight, then paints.
+    w.launch_nuke(gid, (1500, 900)).unwrap();
+    assert!(!w.units[silo].nuke_ready);
+    let start = w.units[ghost].x;
+    let mut hit_at = None;
+    let victim = w.spawn_px(1, uid::SUPPLY_DEPOT, 1500, 900).unwrap();
+    let far = w
+        .spawn_px(1, uid::SUPPLY_DEPOT, 1500 + 48 + 230, 900)
+        .unwrap();
+    let (hp_v, hp_f) = (w.units[victim].hp, w.units[far].hp);
+    for t in 0..1500 {
+        w.step();
+        if w.units[victim].hp < hp_v || !w.units[victim].alive {
+            hit_at = Some(t);
+            break;
+        }
+    }
+    assert!(hit_at.is_some(), "the nuke landed");
+    assert!(
+        w.units[ghost].x > start + 256 * 500,
+        "the Ghost walked into range"
+    );
+    assert!(
+        ((1500 - w.units[ghost].x / 256) as i64) <= 9 * 32 + 16,
+        "and stopped at its sight range"
+    );
+    // Depot: 500 hp, armor 1.  Ground zero takes the full 500; one whose
+    // box is 200+ px away is in the outer ring and takes a quarter.
+    assert!(!w.units[victim].alive || w.units[victim].hp <= fp(2));
+    let lost = (hp_f - w.units[far].hp) / 256;
+    assert!((100..=130).contains(&lost), "outer ring: {lost}");
+}
+
+#[test]
+fn the_lockdown_missile_takes_time_to_reach_its_target() {
+    let mut w = world();
+    w.players[0].techs[tech::LOCKDOWN as usize] = true;
+    let ghost = w.spawn_px(0, uid::GHOST, 300, 400).unwrap();
+    let tank = w.spawn_px(1, uid::SIEGE_TANK, 520, 400).unwrap();
+    w.units[tank].order = Order::HoldPosition;
+    let (gid, tid) = (w.units[ghost].id, w.units[tank].id);
+    w.units[ghost].set_energy_fixed(100 * ENERGY_SCALE);
+    w.issue(
+        gid,
+        Order::Cast {
+            spell: Spell::Lockdown,
+            target: SpellTarget::Unit(tid),
+        },
+    )
+    .unwrap();
+    let mut landed = None;
+    for t in 0..120 {
+        w.step();
+        if w.units[tank].status.lockdown_ticks > 0 {
+            landed = Some(t);
+            break;
+        }
+    }
+    let t = landed.expect("locked down");
+    assert!(t >= 3, "cast animation plus missile flight: {t}");
+    assert_eq!(w.units[ghost].energy_fixed() / ENERGY_SCALE, 0);
+}
+
+#[test]
+fn a_medic_keeps_its_orders_while_it_walks() {
+    // Its Walking script starts with `orderdone 1`, which only clears an
+    // order-signal bit.
+    let mut w = world();
+    let medic = w.spawn_px(0, uid::MEDIC, 400, 400).unwrap();
+    let id = w.units[medic].id;
+    w.issue(id, Order::Move { pos: (900, 400) }).unwrap();
+    for _ in 0..200 {
+        w.step();
+    }
+    let x = w.units[medic].x / 256;
+    assert!((880..=920).contains(&x), "walked to its destination: {x}");
+}

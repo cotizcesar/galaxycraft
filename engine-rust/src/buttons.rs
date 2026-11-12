@@ -383,6 +383,8 @@ pub fn state(world: &World, unit: &SimUnit, b: &Button) -> Option<ButtonState> {
                 && u.owner == unit.owner
                 && u.type_id == crate::ids::unit::NUCLEAR_SILO
                 && u.addon_attached
+                // Only with a missile built and waiting in the silo.
+                && u.nuke_ready
         })),
         Cond::Cloak => on(!unit.status.cloaked
             && (player.has_tech(b.cond_var as u8)
