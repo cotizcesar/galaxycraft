@@ -838,3 +838,39 @@ fn a_computer_player_builds_its_missile_before_it_can_strike() {
     assert!(w.units[silo].nuke_ready);
     w.launch_nuke(gid, (500, 900)).expect("armed now");
 }
+
+#[test]
+fn marines_board_a_bunker_from_every_side_at_one_pixel() {
+    // OpenBW `order_EnterTransport`: within 1 px of the box, corners too.
+    for (dx, dy) in [
+        (0, 60),
+        (0, -60),
+        (70, 0),
+        (-70, 0),
+        (60, 50),
+        (-60, 50),
+        (60, -50),
+        (-60, -50),
+    ] {
+        let mut w = world();
+        let bunker = w.spawn_px(0, uid::BUNKER, 400, 400).unwrap();
+        let marine = w.spawn_px(0, uid::MARINE, 400 + dx, 400 + dy).unwrap();
+        let (mid, bid) = (w.units[marine].id, w.units[bunker].id);
+        w.issue(mid, Order::EnterTransport { transport: bid })
+            .unwrap();
+        let mut boarded = false;
+        for _ in 0..300 {
+            w.step();
+            if w.units[marine].in_transport.is_some() {
+                boarded = true;
+                break;
+            }
+        }
+        assert!(
+            boarded,
+            "from ({dx}, {dy}): stuck at ({}, {})",
+            w.units[marine].x / 256,
+            w.units[marine].y / 256
+        );
+    }
+}

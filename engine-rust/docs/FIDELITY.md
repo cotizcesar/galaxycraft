@@ -228,3 +228,4 @@ working animations, cursors, cloak, fog memory.
 | fog | memory | a scouted building stays as last seen; one destroyed out of sight stays as a ghost until its spot is seen | **fixed** (live state drawn; destroyed ones vanished) |
 | add-ons | abandoned | neutral: not auto-attacked | **fixed** (enemies attacked it) |
 | cursor | scroll arrows | eight edge cursors with edge hotspots | checked on screen in HD and SD (`edge:x:y` script step) |
+| Bunker | boarding | within 1 px of the box (`order_EnterTransport`) | **fixed** (8 px): the walker closes the last pixels straight to the box; tested from 8 sides |

@@ -171,7 +171,7 @@ Sizes are lines.  Find a function with `rg -n 'fn name' engine-rust/src`.
 | `sim/step.rs` | 827 | `impl World`: step (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/tests.rs` | 3739 |  |
 | `sim/translated/mod.rs` | 18 |  |
-| `sim/transport.rs` | 211 | `impl World`: transport (moved out of `mod.rs` by scripts/split_impl.py). |
+| `sim/transport.rs` | 228 | `impl World`: transport (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/unit_queries.rs` | 589 | `impl World`: unit queries (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/workers.rs` | 549 | `impl World`: workers (moved out of `mod.rs` by scripts/split_impl.py). |
 | `tables.rs` | 600 | Additional column-major tables recovered from the shipped CASC data. |
