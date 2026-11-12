@@ -873,8 +873,7 @@ fn hash_unit(h: &mut DefaultHasher, u: &SimUnit) {
     u.alive.hash(h);
     u.completed.hash(h);
     u.credited.hash(h);
-    u.lifted.hash(h);
-    u.lift_phase.hash(h);
+    (u.lifted, u.lift_phase).hash(h);
     u.addon_attached.hash(h);
     u.kills.hash(h);
     u.builder.hash(h);
