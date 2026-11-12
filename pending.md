@@ -70,5 +70,11 @@ on screen.
   exemptions are simplified.
 - **Not drawn.**  The hover bob of idle flyers (`setvertpos`), and the SD
   tank hull shows a dotted blue outline (its shadow image).
-- **Not checked on screen.**  The siege transformation, mines, Yamato, EMP,
-  Irradiate, Matrix, and a Dropship unloading (covered by tests only).
+- **Checked on screen only in outline** (scripted HD and SD sessions, small
+  crops): the siege deploy, a mine chasing and exploding, the Yamato charge
+  and blast, and the Matrix / Irradiate / EMP casts being accepted.  Not
+  looked at: the Matrix and Irradiate overlays on their targets, and a
+  Dropship unloading (tests only).
+- **Idle units and buildings.**  In the scripted session an idle
+  Battlecruiser did not open fire on an enemy Supply Depot in range; not
+  investigated (retail units attack buildings when nothing else is there).

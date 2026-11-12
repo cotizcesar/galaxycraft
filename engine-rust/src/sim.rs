@@ -7052,7 +7052,11 @@ impl World {
         let attacker_ty = self.data.unit(self.units[a].type_id).clone();
         let can_hit = |w: &World, i: usize| {
             let ty = w.data.unit(w.units[i].type_id);
-            if ty.is_worker() || !matches!(w.units[i].order, Order::Idle | Order::Stop) {
+            // (Spider Mines run their own state machine.)
+            if ty.is_worker()
+                || w.units[i].type_id == uid::SPIDER_MINE
+                || !matches!(w.units[i].order, Order::Idle | Order::Stop)
+            {
                 return false;
             }
             let weapon = if air {
