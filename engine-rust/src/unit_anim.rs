@@ -51,6 +51,10 @@ pub mod anim {
 /// Large`), Restoration 967..=969 (`tCure*`), Heal 970..=972 (`tmeHeal*`),
 /// Optical Flare hit 976..=978 (`TmeFlsh*`).
 pub const LOCKDOWN_FIELD_IMAGE: u16 = 361;
+/// Defensive Matrix front shell 371..=373 (`edmFronS/M/L`) and Irradiate
+/// cloud 380..=382 (`eradLrg`), by the target's size.
+pub const MATRIX_FRONT_IMAGE: u16 = 371;
+pub const IRRADIATE_IMAGE: u16 = 380;
 pub const RESTORATION_IMAGE: u16 = 967;
 pub const HEAL_IMAGE: u16 = 970;
 pub const OPTICAL_FLARE_HIT_IMAGE: u16 = 976;
@@ -425,6 +429,13 @@ impl Animator {
         for (i, u) in world.units.iter().enumerate().filter(|(_, u)| u.alive) {
             if u.status.lockdown_ticks > 0 {
                 wanted.push((u.id, LOCKDOWN_FIELD_IMAGE + size_slot(data, u.type_id)));
+            }
+            // Defensive Matrix shell and Irradiate cloud, while they last.
+            if u.status.matrix_ticks > 0 {
+                wanted.push((u.id, MATRIX_FRONT_IMAGE + size_slot(data, u.type_id)));
+            }
+            if u.status.irradiate_ticks > 0 {
+                wanted.push((u.id, IRRADIATE_IMAGE + size_slot(data, u.type_id)));
             }
             if world.medic_is_healing(i)
                 && let Some(p) = u.target.and_then(|t| world.unit(t))

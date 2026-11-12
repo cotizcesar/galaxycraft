@@ -273,3 +273,32 @@ fn a_dropship_flies_to_a_point_and_unloads_there() {
     );
     assert!((w.units[marine].x / 256 - 900).abs() < 80);
 }
+
+#[test]
+fn matrix_and_irradiate_show_their_overlays_on_the_target() {
+    use galaxycraft::unit_anim::{Animator, IRRADIATE_IMAGE, MATRIX_FRONT_IMAGE};
+    let mut w = world();
+    for t in [tech::DEFENSIVE_MATRIX, tech::IRRADIATE] {
+        w.players[0].techs[t as usize] = true;
+    }
+    let vessel = w.spawn_px(0, uid::SCIENCE_VESSEL, 400, 400).unwrap();
+    w.units[vessel].set_energy_fixed(200 * ENERGY_SCALE);
+    let marine = w.spawn_px(0, uid::MARINE, 460, 400).unwrap();
+    let ultra = w.spawn_px(1, uid::ULTRALISK, 560, 460).unwrap();
+    w.units[ultra].order = Order::HoldPosition;
+    let (vid, mid, uid_) = (w.units[vessel].id, w.units[marine].id, w.units[ultra].id);
+    w.cast(vid, Spell::DefensiveMatrix, SpellTarget::Unit(mid))
+        .unwrap();
+    w.cast(vid, Spell::Irradiate, SpellTarget::Unit(uid_))
+        .unwrap();
+    let mut anim = Animator::default();
+    let mut seen = std::collections::HashSet::new();
+    for _ in 0..30 {
+        w.step();
+        anim.advance(&w);
+        seen.extend(anim.status_overlays(&w).iter().map(|o| o.image));
+    }
+    // Marine: small (+0); Ultralisk: large (+2).
+    assert!(seen.contains(&MATRIX_FRONT_IMAGE), "{seen:?}");
+    assert!(seen.contains(&(IRRADIATE_IMAGE + 2)), "{seen:?}");
+}

@@ -71,6 +71,7 @@ on screen.
   tank hull shows a dotted blue outline (its shadow image).
 - **Checked on screen only in outline** (scripted HD and SD sessions, small
   crops): the siege deploy, a mine chasing and exploding, the Yamato charge
-  and blast, and the Matrix / Irradiate / EMP casts being accepted.  Not
-  looked at: the Matrix and Irradiate overlays on their targets.  A
+  and blast, and the Matrix / Irradiate / EMP casts being accepted; the Matrix
+  shell and the Irradiate cloud on their targets (only the Matrix front
+  shell is drawn, not the back one).  A
   Dropship loading, flying to a point and unloading was checked on screen.
