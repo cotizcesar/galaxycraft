@@ -321,3 +321,29 @@ fn an_scv_ordered_to_attack_closes_in_and_hits_with_its_cutter() {
         "the SCV holds its position while it fights: {trace:?}"
     );
 }
+
+#[test]
+fn an_scv_cruises_at_five_pixels_per_frame_and_sees_seven_tiles() {
+    let mut w = world();
+    w.enable_fog();
+    let scv = w.spawn_px(0, uid::SCV, 200, 1000).unwrap();
+    let sid = w.units[scv].id;
+    w.issue(sid, Order::Move { pos: (1800, 1000) }).unwrap();
+    // Let it accelerate (67 / 256 px per frame each frame up to 1280 / 256).
+    for _ in 0..40 {
+        w.step();
+    }
+    let x0 = w.units[scv].x;
+    for _ in 0..20 {
+        w.step();
+    }
+    assert_eq!(
+        (w.units[scv].x - x0) / 256,
+        100,
+        "20 frames at 5 px / frame"
+    );
+    // Sight: 7 tiles (224 px) around it, not 9.
+    let (x, y) = (w.units[scv].x / 256, w.units[scv].y / 256);
+    assert!(w.is_visible_to(0, x + 6 * 32, y));
+    assert!(!w.is_visible_to(0, x + 9 * 32, y));
+}
