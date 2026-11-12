@@ -77,7 +77,7 @@ Checked against the retail data (iscript 84, `weapons.dat` rows 13 / 14,
 
 | aspect | retail | engine |
 |---|---|---|
-| walking | Walking anim, `imgol 249` thruster glow | matches (`tests/unit_glow.rs`) |
+| walking | Walking anim, `imgol 249` thruster glow; 32 directions, the western half mirrored | HD matches (`tests/unit_glow.rs`); **fixed in SD**: the 17 direction frames were spread over the whole circle without mirroring (a unit heading west showed a wrong direction), and the glow was not drawn |
 | mining minerals | AlmostBuilt loop: frame 34, `useweapon 14`, frame 17; spark image 526 appears 10 px ahead; cutter sounds 35..39 | **fixed**: the animator runs AlmostBuilt while `gather_timer > 0`; the worker faces its field |
 | cargo in hands | overlay image: OreChunk 397 / 398, GasTank 403 / 404 (Orb 399, Sac 401 for the other races) until delivery | **fixed**: `Animator::carry_overlays`, drawn in SD and HD |
 | gas | worker hidden for 37 frames inside the building | **fixed**: `World::inside_gas_building` (not drawn, not selectable, not visible to enemies, no collision) |

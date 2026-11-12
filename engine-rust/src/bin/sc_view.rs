@@ -6288,7 +6288,7 @@ fn script_key(name: &str) -> Key {
 /// `spawn:OWNER:TYPE_ID:x:y`, `key:K`, `ctrl-key:K`, `ticks:N` (simulation ticks),
 /// `click-unit:NAME` / `rclick-unit:NAME` (the nearest on-screen unit whose
 /// name contains NAME), `click-cmd:N` (command-card slot N, 1..9),
-/// `click-world:x:y` (world game px), `click-view:px:py` / `rclick-view`
+/// `click-world:x:y` / `rclick-world:x:y` (world game px), `click-view:px:py` / `rclick-view`
 /// (percent of the visible playfield), `minimap-click:px:py` /
 /// `minimap-rclick` (percent of the minimap), `look:x:y` (minimap click on a
 /// world point), `dump-units:NAME`, `shot:NAME`.  Writes `game.tsv` (one
@@ -6604,9 +6604,9 @@ fn run_game_script(app: &mut App, fb: &mut Framebuffer, script: &str) {
                 let at = (rx + rw * num(1) / 100, ry + rh * num(2) / 100);
                 mouse = click(app, fb, at, parts[0] == "minimap-rclick", false);
             }
-            "click-world" => {
+            "click-world" | "rclick-world" => {
                 let at = app.screen_point_of_world(num(1), num(2));
-                mouse = click(app, fb, at, false, false);
+                mouse = click(app, fb, at, parts[0] == "rclick-world", false);
             }
             "click-cargo" => {
                 // Cargo slot N of the selected transport.
@@ -19255,12 +19255,51 @@ impl App {
             } else {
                 raw as usize
             };
-            galaxycraft::render::draw_grp_centered(
+            galaxycraft::render::draw_grp_posed(
                 fb,
                 &grp,
                 index,
                 self.sprites.palette(),
                 (x - self.camera.0, y - self.camera.1),
+                galaxycraft::render::sd_frame_flip(grp.frames.len(), facing),
+                galaxycraft::render::GrpInk::Solid(None),
+            );
+        }
+        // Engine glows of moving units (the SCV's thruster, image 249):
+        // the glow's own direction frame, alternating its two frame sets
+        // (iscript 291: `engset 0`, `engset 1`, one tick each).
+        let glows: Vec<(u16, i32, i32, u8)> = self
+            .world
+            .units
+            .iter()
+            .enumerate()
+            .filter(|(i, u)| {
+                u.alive
+                    && !self.world.inside_gas_building(*i)
+                    && (!self.fog_on()
+                        || u.owner as usize == self.local_player
+                        || self.world.can_see_unit(local, *i))
+            })
+            .filter_map(|(_, u)| {
+                let glow = self.animator.unit_glow(u.id)?;
+                Some((glow, u.x / 256, u.y / 256, self.rendered_facing(u)))
+            })
+            .collect();
+        let set = (self.world.tick % 2) as u16 * 17;
+        for (image, x, y, facing) in glows {
+            let Some(grp) = self.sd_image_grp(image) else {
+                continue;
+            };
+            let index =
+                galaxycraft::render::sd_frame_index(grp.frames.len(), facing, Some(set), false, 0);
+            galaxycraft::render::draw_grp_posed(
+                fb,
+                &grp,
+                index,
+                self.sprites.palette(),
+                (x - self.camera.0, y - self.camera.1),
+                galaxycraft::render::sd_frame_flip(grp.frames.len(), facing),
+                galaxycraft::render::GrpInk::Glow(Rgb::new(255, 150, 40)),
             );
         }
     }
