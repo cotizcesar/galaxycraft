@@ -1988,10 +1988,14 @@ pub fn draw_grp_posed(
                     let d = fb.get(ox + x, oy + y).0;
                     // The pixel value is the glow's strength (`tscGlow`:
                     // 1 at the rim up to 46 on the two exhausts).
+                    // Weak pixels only lighten what is under them; strong
+                    // ones take the tint (the remap tables go from a faint
+                    // haze to the saturated colour).
                     let k = (c as u32).min(48);
                     let add = |shift: u32| {
-                        (((d >> shift) & 0xff) + ((tint.0 >> shift) & 0xff) * k / 48).min(255)
-                            << shift
+                        let t = (tint.0 >> shift) & 0xff;
+                        let colour = (255 * (48 - k) + t * k) / 48;
+                        (((d >> shift) & 0xff) + colour * k / 64).min(255) << shift
                     };
                     Rgb(add(16) | add(8) | add(0))
                 }
