@@ -51,9 +51,9 @@ pass, so keep the backup.
 Current stop point:
 
 ```text
-ledger translated: 5631
-next wave:         34 (queue mode, tier 4)
-lib tests:         4730 (full suite 5007)
+ledger translated: 5736
+next wave:         35 (queue mode, tier 3-4)
+lib tests:         4822 (full suite 5099)
 ```
 
 Fixture-backed tests need the generated fixtures and assets
@@ -65,10 +65,10 @@ Follow [AGENTS.md](AGENTS.md) and
 
 ```bash
 python3 scripts/triage_corpus.py
-python3 scripts/prepare_wave.py --wave 34 --queue engine-rust/docs/triage.tsv
+python3 scripts/prepare_wave.py --wave 35 --queue engine-rust/docs/triage.tsv
 # launch translators (Agent batches or Workflow shards)
-python3 scripts/validate_wave.py --wave 34
-python3 scripts/merge_wave.py --wave 34 --map auto
+python3 scripts/validate_wave.py --wave 35
+python3 scripts/merge_wave.py --wave 35 --map auto
 cd engine-rust && cargo fmt && cargo test --lib && cargo clippy --all-targets -- -D warnings
 ```
 

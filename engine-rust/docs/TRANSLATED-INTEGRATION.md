@@ -239,3 +239,7 @@ call graph so those rows are no longer queued.  Waves are paused.
 
 +119 exact ledger functions (ledger 5512 -> 5631) in `client.rs` and `runtime.rs`.  No rules-core counterpart; the helpers stay auditable reference code.  Tier 3 is nearly empty (80 rows); the rest of the queue is tier 4 glue.
 
+## Wave 34 (2026-11-11, triage queue, tiers 3-4, 60 agents)
+
++105 exact ledger functions (ledger 5631 -> 5736) in `client.rs` and `runtime.rs`.  Measurement wave: tier 3 translated 58 of 80 rows, tier 4 translated 47 of 100.  No rules-core counterpart; the helpers stay auditable reference code.
+
