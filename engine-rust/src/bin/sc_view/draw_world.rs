@@ -432,16 +432,37 @@ impl App {
                 }
             }
         }
+        // Enemy buildings in sight are remembered for the fog.
+        let local = self.local_player as u8;
+        for (i, u) in self.world.units.iter().enumerate() {
+            if u.alive
+                && u.owner != local
+                && self.data.unit(u.type_id).is_building()
+                && self.world.can_see_unit(local, i)
+            {
+                self.seen_buildings.insert(u.id);
+            }
+        }
         let mut hd_units = Vec::new();
         for i in order {
             let u = &self.world.units[i];
             // Enemy units the fog hides; cloaked or burrowed ones without a
-            // detector are hidden even with the fog switched off.
+            // detector are hidden even with the fog switched off.  A
+            // scouted building stays drawn where it was seen.
+            let mut remembered = false;
             if u.owner as usize != self.local_player
                 && (self.fog_on() || u.status.cloaked || u.status.burrowed)
                 && !self.world.can_see_unit(self.local_player as u8, i)
             {
-                continue;
+                if self.fog_on()
+                    && !u.status.cloaked
+                    && !u.status.burrowed
+                    && self.seen_buildings.contains(&u.id)
+                {
+                    remembered = true;
+                } else {
+                    continue;
+                }
             }
             if hd && self.hd_unit_image(u.type_id).is_some() {
                 hd_units.push(i);
@@ -478,6 +499,9 @@ impl App {
                 .status
                 .cloaked
                 .then(|| fb.save_rect(sx - 48, sy - 48, 96, 96));
+            // The SD fog is drawn under the units: darken a remembered
+            // building by hand.
+            let fogged = remembered.then(|| fb.save_rect(sx - 96, sy - 96, 192, 192));
             if let Some((grp, frame)) = building_stage.get(&i) {
                 galaxycraft::render::draw_grp_posed(
                     fb,
@@ -522,6 +546,11 @@ impl App {
             }
             if let Some(saved) = &cloak {
                 fb.fade_rect(saved, galaxycraft::render::CLOAK_KEEP);
+            }
+            if let Some(saved) = &fogged {
+                fb.dim_changed(saved, 110);
+                // No health bar or selection on a remembered building.
+                continue;
             }
             // Neutral resources are stored under player 0: no bar on them
             // unless selected.

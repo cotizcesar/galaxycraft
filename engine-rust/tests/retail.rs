@@ -615,7 +615,8 @@ fn materialised_assets_load_without_the_bundled_asset_directory() {
         &mut icon,
         galaxycraft::ids::unit::MARINE,
         (0, 0, 64, 64),
-        None
+        None,
+        [0; 4]
     ));
     assert!(icon.pixels.iter().any(|p| *p & 0x00ff_ffff != 0));
 

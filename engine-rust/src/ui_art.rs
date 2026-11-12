@@ -51,13 +51,47 @@ pub fn console_scale(height: i32) -> f32 {
 }
 
 /// Wireframe colours measured on 134905 / 135051 (see `draw_wireframe_hd`).
-const WIREFRAME_ZERG: [[f32; 3]; 4] = [
-    [252.0, 252.0, 56.0],
+/// Wireframe section colours by damage state: healthy, damaged, critical.
+const WIREFRAME_STATES: [[f32; 3]; 3] = [
     [19.0, 247.0, 24.0],
-    [248.0, 140.0, 20.0],
+    [252.0, 252.0, 56.0],
     [200.0, 24.0, 24.0],
 ];
-const WIREFRAME_GREEN: [f32; 3] = [0.06, 0.97, 0.09];
+
+/// Damage state (0 green, 1 yellow, 2 red) of the four wireframe sections
+/// of a unit with `hp` of `max_hp` (any unit, same scale).  The status
+/// wireframe is cut into four sections (four palette indices in SD, layers
+/// 0..=3 in HD); as the unit loses hit points they turn yellow one by one
+/// and then red, in an order that differs per unit (retail keeps a
+/// per-unit `wireframe_randomizer`; `seed` stands in for it).
+/// INFERENCE: thresholds chosen so the first section yellows at 8 %
+/// damage and the last turns red at 86 %; falsifier: a retail capture of a
+/// unit at a known hit point fraction.
+pub fn wireframe_states(hp: i32, max_hp: i32, seed: u32) -> [u8; 4] {
+    if max_hp <= 0 || hp >= max_hp {
+        return [0; 4];
+    }
+    let damage = 100 - (hp.max(0) as i64 * 100 / max_hp as i64) as i32;
+    // A permutation of the sections from the seed.
+    let mut order = [0usize, 1, 2, 3];
+    let mut r = seed.wrapping_mul(2_654_435_761);
+    for k in (1..4).rev() {
+        r = r.rotate_left(7) ^ 0x9e37_79b9;
+        order.swap(k, (r % (k as u32 + 1)) as usize);
+    }
+    let mut out = [0u8; 4];
+    for (rank, &section) in order.iter().enumerate() {
+        let rank = rank as i32;
+        out[section] = if damage > 50 + 12 * rank {
+            2
+        } else if damage > 8 + 14 * rank {
+            1
+        } else {
+            0
+        };
+    }
+    out
+}
 const WIREFRAME_SHIELD: [f32; 3] = [12.0, 72.0, 204.0];
 
 /// CASC directory of a console skin.  The KRC sets are race-independent
@@ -422,7 +456,7 @@ impl ConsoleArt {
         fb: &mut crate::render::Framebuffer,
         unit: u16,
         rect: (i32, i32, i32, i32),
-        zerg: bool,
+        states: [u8; 4],
         shields: bool,
     ) -> bool {
         let Some(img) = self
@@ -478,26 +512,21 @@ impl ConsoleArt {
                     ((bg >> 8) & 0xff) as f32,
                     (bg & 0xff) as f32,
                 ];
-                if zerg {
-                    for (k, tint) in WIREFRAME_ZERG.iter().enumerate() {
-                        let a = sample(k, dx, dy)[3].min(1.0);
-                        if a > 0.0 {
-                            c = over(c, *tint, a);
-                        }
-                    }
-                } else {
+                // Layers 0..=3 are the four sections; each takes its
+                // damage colour, shaded by the grey art of layer 6.
+                let shade = {
                     let s = sample(6, dx, dy);
                     if s[3] > 0.0 {
-                        let g = s[0] / s[3];
-                        c = over(
-                            c,
-                            [
-                                g * WIREFRAME_GREEN[0],
-                                g * WIREFRAME_GREEN[1],
-                                g * WIREFRAME_GREEN[2],
-                            ],
-                            s[3].min(1.0),
-                        );
+                        (s[0] / s[3] / 255.0).clamp(0.35, 1.0)
+                    } else {
+                        1.0
+                    }
+                };
+                for (k, state) in states.iter().enumerate() {
+                    let a = sample(k, dx, dy)[3].min(1.0);
+                    if a > 0.0 {
+                        let t = WIREFRAME_STATES[*state as usize % 3];
+                        c = over(c, [t[0] * shade, t[1] * shade, t[2] * shade], a);
                     }
                 }
                 if shields {
@@ -527,6 +556,7 @@ impl ConsoleArt {
         unit_id: u16,
         dest: (i32, i32, i32, i32),
         team: Option<crate::render::Rgb>,
+        states: [u8; 4],
     ) -> bool {
         let Some(grp) = &self.wireframe else {
             return false;
@@ -551,11 +581,10 @@ impl ConsoleArt {
                 // uses 216..=219, a Supply Depot 208..=211), so the whole
                 // range is mapped, not just the first block.
                 let k = ((idx as u32 - 191) as f32 / 28.0).clamp(0.0, 1.0); // dark -> bright
-                crate::render::Rgb::new(
-                    (30.0 * k) as u8 + 6,
-                    (200.0 * k) as u8 + 30,
-                    (40.0 * k) as u8 + 6,
-                )
+                // Four consecutive indices are the four sections.
+                let t = WIREFRAME_STATES[states[(idx as usize - 192) & 3] as usize % 3];
+                let k = 0.25 + 0.75 * k;
+                crate::render::Rgb::new((t[0] * k) as u8, (t[1] * k) as u8, (t[2] * k) as u8)
             } else if (3..=15).contains(&idx) {
                 let k = (16 - idx as u32) as f32 / 9.0;
                 crate::render::Rgb::new(
@@ -1205,10 +1234,45 @@ mod wireframe_tests {
             wireframe4: None,
         };
         let mut fb = Framebuffer::new(1, 1);
-        assert!(console.draw_wireframe(&mut fb, 0, (0, 0, 1, 1), None));
+        assert!(console.draw_wireframe(&mut fb, 0, (0, 0, 1, 1), None, [0; 4]));
         let c = fb.get(0, 0);
         let (r, g, b) = ((c.0 >> 16) & 0xff, (c.0 >> 8) & 0xff, c.0 & 0xff);
         assert!(g > r && g > b, "wireframe pixel {r},{g},{b} is not green");
         console.wireframe = None;
+    }
+}
+
+#[cfg(test)]
+mod wireframe_state_tests {
+    use super::wireframe_states;
+
+    #[test]
+    fn sections_turn_yellow_then_red_as_hit_points_fall() {
+        assert_eq!(wireframe_states(100, 100, 7), [0; 4]);
+        let count = |hp: i32, s: u8| {
+            wireframe_states(hp, 100, 7)
+                .iter()
+                .filter(|&&x| x == s)
+                .count()
+        };
+        // Light damage: some sections yellow, none red.
+        assert!(count(85, 1) >= 1 && count(85, 2) == 0);
+        // Half health: every section at least yellow.
+        assert_eq!(count(45, 0), 0);
+        // Nearly dead: all red.
+        assert_eq!(count(5, 2), 4);
+        // Monotonic: losing hit points never heals a section.
+        let mut prev = [0u8; 4];
+        for hp in (0..=100).rev() {
+            let now = wireframe_states(hp, 100, 7);
+            for k in 0..4 {
+                assert!(now[k] >= prev[k]);
+            }
+            prev = now;
+        }
+        // The order depends on the unit.
+        let differ =
+            (0..32).any(|seed| wireframe_states(80, 100, seed) != wireframe_states(80, 100, 7));
+        assert!(differ);
     }
 }

@@ -153,6 +153,23 @@ impl Framebuffer {
     /// Blend what was drawn over a saved rectangle back towards the saved
     /// pixels: `keep` (0..=255) is how much of the new drawing remains.  A
     /// cloaked unit is drawn normally and then faded this way.
+    /// Darken what was drawn over a saved rectangle (a building remembered
+    /// under the SD fog): each changed pixel is scaled by `keep` / 256.
+    pub fn dim_changed(&mut self, saved: &SavedRect, keep: u32) {
+        for yy in 0..saved.h {
+            let row = (saved.y + yy) as usize * self.width as usize + saved.x as usize;
+            for xx in 0..saved.w {
+                let old = saved.pixels[(yy * saved.w + xx) as usize];
+                let new = self.pixels[row + xx as usize];
+                if old != new {
+                    let ch = |s: u32| ((new >> s) & 0xff) * keep / 256;
+                    self.pixels[row + xx as usize] =
+                        (new & 0xff00_0000) | (ch(16) << 16) | (ch(8) << 8) | ch(0);
+                }
+            }
+        }
+    }
+
     pub fn fade_rect(&mut self, saved: &SavedRect, keep: u8) {
         for yy in 0..saved.h {
             let row = (saved.y + yy) as usize * self.width as usize + saved.x as usize;

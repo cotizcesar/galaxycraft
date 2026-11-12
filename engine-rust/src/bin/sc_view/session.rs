@@ -166,6 +166,7 @@ impl App {
         self.last_races = races.clone();
         world.recorder = Some(Recorder::new());
         self.world = world;
+        self.seen_buildings.clear();
         self.apply_special_rules();
         self.trigger_portraits_seen = (0, 0);
         self.trigger_cues_seen = 0;
@@ -462,6 +463,7 @@ impl App {
             self.game_options.game_unit_skin,
         );
         self.world = world;
+        self.seen_buildings.clear();
         self.apply_special_rules();
         self.trigger_portraits_seen = (0, 0);
         self.trigger_cues_seen = 0;

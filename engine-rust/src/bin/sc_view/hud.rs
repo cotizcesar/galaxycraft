@@ -542,9 +542,30 @@ impl App {
     /// the camera box over the console art's own black well.
     pub(super) fn draw_hud_minimap(&mut self, fb: &mut Framebuffer) {
         let (rx, ry, rw, rh) = self.minimap_rect();
-        let units = self
+        let mut units = self
             .world
             .minimap_units(self.local_player as u8, self.fog_on());
+        // Scouted enemy buildings stay on the minimap under the fog.
+        if self.fog_on() {
+            let local = self.local_player as u8;
+            for (i, u) in self.world.units.iter().enumerate() {
+                if u.alive
+                    && self.seen_buildings.contains(&u.id)
+                    && !self.world.can_see_unit(local, i)
+                {
+                    let ty = self.data.unit(u.type_id);
+                    units.push(galaxycraft::render::MinimapDot {
+                        x: u.x / 256,
+                        y: u.y / 256,
+                        owner: u.owner,
+                        placement: (ty.placement.x as i32, ty.placement.y as i32),
+                        building: true,
+                        resource: false,
+                        color: galaxycraft::render::player_rgb(&self.world, u.owner),
+                    });
+                }
+            }
+        }
         // The box frames the playfield above the console: 368 game px tall
         // (135051: inner box 1371..1406 at 3 px per tile).
         let cam = (
@@ -650,10 +671,17 @@ impl App {
                 side,
                 side,
             );
-            // units.dat group flag 0x01 = Zerg.
-            let zerg = ty.group_flags & 0x01 != 0;
-            if !console.draw_wireframe_hd(fb, u.type_id, rect, zerg, ty.has_shields) {
-                console.draw_wireframe(fb, u.type_id, (wire.x, wire.y, wire.w, wire.h), None);
+            // Damaged sections turn yellow, then red.
+            let states =
+                galaxycraft::ui_art::wireframe_states(u.hp, ty.hit_points_raw as i32, u.id);
+            if !console.draw_wireframe_hd(fb, u.type_id, rect, states, ty.has_shields) {
+                console.draw_wireframe(
+                    fb,
+                    u.type_id,
+                    (wire.x, wire.y, wire.w, wire.h),
+                    None,
+                    states,
+                );
             }
         }
         let name = self.data.unit_name(u.type_id).to_string();
@@ -684,7 +712,16 @@ impl App {
                 HUD_TEXT_COLOR,
             ));
         }
-        parts.push((format!("{hp}/{max_hp}"), HUD_HP_COLOR));
+        // Retail colours the hit points by what is left: green, then
+        // yellow under two thirds, red under one third.
+        let hp_colour = if max_hp > 0 && hp * 3 < max_hp {
+            Rgb::new(220, 40, 30)
+        } else if max_hp > 0 && hp * 3 < max_hp * 2 {
+            Rgb::new(232, 220, 40)
+        } else {
+            HUD_HP_COLOR
+        };
+        parts.push((format!("{hp}/{max_hp}"), hp_colour));
         let total: f32 = parts
             .iter()
             .map(|(t, _)| self.glue_measure(t, HUD_SMALL_PX, GlueFace::Hud))
@@ -1134,9 +1171,10 @@ impl App {
             }
             let side = (r.w.min(r.h) as f32 * 0.86).round() as i32;
             let rect = (r.x + (r.w - side) / 2, r.y + (r.h - side) / 2, side, side);
-            let zerg = ty.group_flags & 0x01 != 0;
-            if !console.draw_wireframe_hd(fb, u.type_id, rect, zerg, ty.has_shields) {
-                console.draw_wireframe(fb, u.type_id, rect, None);
+            let states =
+                galaxycraft::ui_art::wireframe_states(u.hp, ty.hit_points_raw as i32, u.id);
+            if !console.draw_wireframe_hd(fb, u.type_id, rect, states, ty.has_shields) {
+                console.draw_wireframe(fb, u.type_id, rect, None, states);
             }
         }
     }
@@ -1183,9 +1221,10 @@ impl App {
             }
             let side = (r.w.min(r.h) as f32 * 0.86).round() as i32;
             let rect = (r.x + (r.w - side) / 2, r.y + (r.h - side) / 2, side, side);
-            let zerg = cty.group_flags & 0x01 != 0;
-            if !console.draw_wireframe_hd(fb, c.type_id, rect, zerg, cty.has_shields) {
-                console.draw_wireframe(fb, c.type_id, rect, None);
+            let states =
+                galaxycraft::ui_art::wireframe_states(c.hp, cty.hit_points_raw as i32, c.id);
+            if !console.draw_wireframe_hd(fb, c.type_id, rect, states, cty.has_shields) {
+                console.draw_wireframe(fb, c.type_id, rect, None, states);
             }
         }
     }

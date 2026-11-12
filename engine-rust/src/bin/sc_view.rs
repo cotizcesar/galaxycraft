@@ -2666,6 +2666,9 @@ struct App {
     sd_image_grps: std::collections::HashMap<u16, Option<std::rc::Rc<galaxycraft::render::Grp>>>,
     /// Retail remap tables of the current tileset (`ofire` 1, `gfire` 2,
     /// `bfire` 3, `bexpl` 4), read from the install on first use.
+    /// Enemy buildings the local player has scouted: retail keeps drawing
+    /// them where they were seen, under the fog, after the scout leaves.
+    seen_buildings: std::collections::HashSet<u32>,
     remap_tables:
         std::collections::HashMap<(u16, u8), Option<std::rc::Rc<galaxycraft::render::RemapTable>>>,
     /// Mixer gains last sent to the audio thread.
@@ -7959,6 +7962,7 @@ fn main() {
         animator: galaxycraft::unit_anim::Animator::default(),
         image_names: None,
         sd_image_grps: std::collections::HashMap::new(),
+        seen_buildings: std::collections::HashSet::new(),
         remap_tables: std::collections::HashMap::new(),
         volumes_sent: None,
         content_x0: 0,
