@@ -19292,6 +19292,20 @@ impl App {
             } else {
                 raw as usize
             };
+            // `images.dat` draw function 9 (remapped glows: fire, heal,
+            // lockdown, smoke): the pixel values are strengths of a tinted
+            // light, not palette colours.  INFERENCE: tints approximate
+            // the `ofire` / `gfire` / `bfire` / `bexpl` remap tables.
+            let ink = match self.data.image(image) {
+                Some(i) if i.modifier == 9 => {
+                    galaxycraft::render::GrpInk::Glow(match i.color_shift {
+                        2 => Rgb::new(90, 255, 90),
+                        3 | 4 => Rgb::new(90, 170, 255),
+                        _ => Rgb::new(255, 150, 40),
+                    })
+                }
+                _ => galaxycraft::render::GrpInk::Solid(None),
+            };
             galaxycraft::render::draw_grp_posed(
                 fb,
                 &grp,
@@ -19299,7 +19313,7 @@ impl App {
                 self.sprites.palette(),
                 (x - self.camera.0, y - self.camera.1),
                 galaxycraft::render::sd_frame_flip(grp.frames.len(), facing),
-                galaxycraft::render::GrpInk::Solid(None),
+                ink,
             );
         }
         // Engine glows of moving units (the SCV's thruster, image 249):

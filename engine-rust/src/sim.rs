@@ -5321,6 +5321,8 @@ impl World {
             if let Some((_, w)) = self.weapon_for(i, tidx)
                 && self.units_distance_px(i, tidx) <= self.weapon_max_range_px(i, tidx, &w)
             {
+                self.units[i].path.clear();
+                self.units[i].path_goal = None;
                 return;
             }
             // Game pixels (see `attack_target`).
@@ -5550,6 +5552,11 @@ impl World {
         }
         self.units[i].target = Some(target);
         if self.attack_target_no_move(i, target) {
+            // In range: the unit stands and fires.  A path left over from
+            // the approach made the renderer play the walk animation over
+            // the attack (the Firebat's flame never showed).
+            self.units[i].path.clear();
+            self.units[i].path_goal = None;
             return;
         }
         // `move_towards` takes game pixels: passing the fixed-point position

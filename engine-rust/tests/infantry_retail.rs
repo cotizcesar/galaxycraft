@@ -634,3 +634,58 @@ fn the_renderer_shows_the_medic_heal_and_the_spell_effects() {
         "lockdown field on the tank"
     );
 }
+
+#[test]
+fn idle_marines_and_ghosts_open_fire_on_an_enemy_in_range() {
+    for fog in [false, true] {
+        let mut w = world();
+        if fog {
+            w.enable_fog();
+        }
+        let marine = w.spawn_px(0, uid::MARINE, 400, 400).unwrap();
+        let ghost = w.spawn_px(0, uid::GHOST, 400, 440).unwrap();
+        // An enemy that does not fight back, inside both ranges.
+        let egg = w.spawn_px(1, uid::EGG, 500, 420).unwrap();
+        let hp = w.units[egg].hp;
+        let mut fired = (false, false);
+        for _ in 0..60 {
+            w.step();
+            fired.0 |= w.units[marine].cooldown > 0;
+            fired.1 |= w.units[ghost].cooldown > 0;
+        }
+        assert!(fired.0, "the idle Marine fires (fog {fog})");
+        assert!(fired.1, "the idle Ghost fires (fog {fog})");
+        assert!(w.units[egg].hp < hp);
+    }
+}
+
+#[test]
+fn the_renderer_shows_the_firebat_flame_and_the_marine_gunfire() {
+    use galaxycraft::unit_anim::Animator;
+    let mut w = world();
+    let bat = w.spawn_px(0, uid::FIREBAT, 400, 400).unwrap();
+    let marine = w.spawn_px(0, uid::MARINE, 380, 440).unwrap();
+    let egg = w.spawn_px(1, uid::EGG, 440, 400).unwrap();
+    let _ = egg;
+    let (bid, mid) = (w.units[bat].id, w.units[marine].id);
+    let mut anim = Animator::default();
+    let (mut flame, mut bat_frames, mut marine_frames, mut sounds) =
+        (false, Vec::new(), Vec::new(), Vec::new());
+    for _ in 0..60 {
+        w.step();
+        anim.advance(&w);
+        // iscript 69 GndAttkInit: `imgol 421` (thingy\flamer.grp).
+        flame |= anim.effects().any(|e| e.image == 421);
+        bat_frames.extend(anim.unit_frame(bid));
+        marine_frames.extend(anim.unit_frame(mid));
+        sounds.extend(anim.take_sounds().into_iter().map(|s| s.0));
+    }
+    assert!(flame, "the flame overlay appears");
+    assert!(
+        bat_frames.contains(&17),
+        "Firebat firing pose: {bat_frames:?}"
+    );
+    // iscript 78: firing frames 34 / 51 and the Gauss Rifle sound 69.
+    assert!(marine_frames.contains(&51), "Marine muzzle frame");
+    assert!(sounds.contains(&69), "gunfire sound: {sounds:?}");
+}

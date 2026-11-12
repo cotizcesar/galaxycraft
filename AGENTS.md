@@ -141,3 +141,6 @@ expected.  Do not retry skiplist rows until a callee they need is translated.
 - `engine-rust/docs/TRANSLATED-INTEGRATION.md` — what is wired where.
 - `engine-rust/docs/TRANSLATION-PIPELINE.md`, `RESUME.md` — restore/regen.
 - `engine-rust/docs/evidence-recovery.md`, `IMPLEMENTATION-PHASES.md` — RE notes.
+- `engine-rust/docs/UNIT-FIDELITY-METHOD.md` — how one unit is audited against
+  retail and fixed (reference tool `scripts/unit_ref.py`, tests, scripted
+  HD / SD screenshots); results in `FIDELITY.md`, open doubts in `pending.md`.

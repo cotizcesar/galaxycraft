@@ -265,7 +265,12 @@ pub fn unit_image(data: &GameData, type_id: u16) -> Option<u16> {
 pub fn bullet_image(data: &GameData, weapon: u8) -> Option<u16> {
     let w = data.weapon(weapon)?;
     let flingy = data.flingy(u16::try_from(w.flingy).ok()?)?;
-    Some(data.sprite(flingy.sprite)?.image)
+    // An invisible sprite (`sprites.dat` visible = 0) is never drawn: the
+    // Flame Thrower's bullet is the white `circle14` placeholder, and the
+    // flame the player sees is the Firebat's own `imgol 421`.
+    data.sprite(flingy.sprite)
+        .filter(|s| s.visible)
+        .map(|s| s.image)
 }
 
 /// Facing (0..256) of a vector in game pixels, 0 = up, clockwise.
