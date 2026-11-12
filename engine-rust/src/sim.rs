@@ -3584,23 +3584,22 @@ impl World {
             // The Extractor is the one Zerg structure exempt from creep
             // (it lives off the geyser itself).
             let zerg = is_zerg_building(type_id) && type_id != uid::EXTRACTOR;
-            let geyser = self.units.iter().find_map(|u| {
-                if !u.alive || u.type_id != uid::VESPENE_GEYSER {
-                    return None;
-                }
-                let occupied = self.units.iter().any(|b| {
-                    b.alive
-                        && b.completed
-                        && is_gas_building(b.type_id)
-                        && (b.x - u.x).abs() < fp(64)
-                        && (b.y - u.y).abs() < fp(64)
-                });
-                if occupied {
-                    None
-                } else {
-                    Some((u.x / fp(1), u.y / fp(1)))
-                }
-            });
+            // The free geyser nearest to the requested spot (an under-construction
+            // refinery already occupies its geyser).
+            let geyser = self
+                .units
+                .iter()
+                .filter(|u| u.alive && u.type_id == uid::VESPENE_GEYSER)
+                .filter(|u| {
+                    !self.units.iter().any(|b| {
+                        b.alive
+                            && is_gas_building(b.type_id)
+                            && (b.x - u.x).abs() < fp(64)
+                            && (b.y - u.y).abs() < fp(64)
+                    })
+                })
+                .map(|u| (u.x / fp(1), u.y / fp(1)))
+                .min_by_key(|g| (g.0 - near.0).pow(2) as i64 + (g.1 - near.1).pow(2) as i64);
             if let Some((gx, gy)) = geyser {
                 if zerg && !self.has_creep_px(gx, gy) {
                     return None;
@@ -37649,5 +37648,30 @@ mod tests_wave19_agent10 {
         w19a10_79eaf0(&mut ctx, 0, 0, 2, 0, || calls += 1, |_, _| {});
         assert_eq!(ctx.cells16[0], 0x8000);
         assert_eq!(calls, 2);
+    }
+}
+
+#[cfg(test)]
+mod refinery_placement_tests {
+    use super::*;
+
+    #[test]
+    fn a_refinery_goes_on_the_geyser_nearest_to_the_cursor() {
+        let data = Arc::new(GameData::bundled().expect("bundled tables"));
+        let mut w = World::new(data, Terrain::open(64, 64), 2);
+        let first = w.spawn_px(0, uid::VESPENE_GEYSER, 200, 200).unwrap();
+        let second = w.spawn_px(0, uid::VESPENE_GEYSER, 1500, 1200).unwrap();
+        let (sx, sy) = (w.units[second].x / fp(1), w.units[second].y / fp(1));
+        let spot = w.placement_spot(uid::REFINERY, (sx, sy));
+        assert_eq!(
+            spot,
+            Some((sx, sy)),
+            "must not fall back to the first geyser"
+        );
+        // An under-construction refinery already occupies its geyser.
+        let r = w.spawn_px(0, uid::REFINERY, sx, sy).unwrap();
+        w.units[r].completed = false;
+        assert_eq!(w.placement_spot(uid::REFINERY, (sx, sy)), None);
+        let _ = first;
     }
 }
