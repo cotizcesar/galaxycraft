@@ -135,6 +135,9 @@ GC_WALK_DIR=/tmp/walk ./target/release/sc_view --install "$SC_INSTALL" \
 - Run every scene twice: as above (HD) and with `--sd`.  The two renderers
   share the simulation and the animator but draw differently, and several
   bugs were in only one of them.
+- Buildings sit on the 32 px tile grid: spawn them where
+  `centre - placement / 2` is a multiple of 32 (a Barracks at 576, 2544),
+  or landing and add-ons will not line up.
 - `--shot-map 80` is a melee map (index 0 is a campaign mission with tech
   restrictions).  Player 0 starts at world (320, 2768) on it.
 - Script steps (full list in the comment above `run_game_script` in
@@ -142,7 +145,9 @@ GC_WALK_DIR=/tmp/walk ./target/release/sc_view --install "$SC_INSTALL" \
   `click-unit:NAME`, `rclick-unit:NAME`, `click-world:x:y`,
   `rclick-world:x:y`, `drag:x0:y0:x1:y1`, `key:K`, `cheat:TEXT`,
   `arm-silos` (every Nuclear Silo attached and loaded),
-  `dump-units:NAME`, `shot:NAME`.
+  `dump-units:NAME`, `shot:NAME`, `shot-cursor:NAME` (the pointer is
+  painted too: cursors), `move:x:y` (screen point, no click),
+  `drag-hold:x0:y0:x1:y1` (box still held).
 - `dump-units:NAME` writes `NAME.tsv` (id, owner, type, position, hp, order,
   path, animation); `game.tsv` has one line per step with the camera,
   resources and selection.  Use them to find where a unit is and what it is

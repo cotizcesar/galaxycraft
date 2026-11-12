@@ -618,7 +618,11 @@ impl App {
                 );
             }
             if let Some(saved) = &cloak {
-                fb.fade_rect(saved, galaxycraft::render::CLOAK_KEEP);
+                fb.refract_rect(
+                    saved,
+                    galaxycraft::render::CLOAK_KEEP,
+                    (self.world.tick / 3) as u32,
+                );
             }
             if let Some(saved) = &fogged {
                 fb.dim_changed(saved, 110);
@@ -685,7 +689,11 @@ impl App {
                 });
                 self.draw_unit_hd(fb_full, i, (cx, cy, cw, ch), scale, &env);
                 if let Some(saved) = &cloak {
-                    fb_full.fade_rect(saved, galaxycraft::render::CLOAK_KEEP);
+                    fb_full.refract_rect(
+                        saved,
+                        galaxycraft::render::CLOAK_KEEP,
+                        (self.world.tick / 3) as u32,
+                    );
                 }
             }
             self.draw_ctf_flags(fb_full, (cx, cy, cw, ch), scale, true);

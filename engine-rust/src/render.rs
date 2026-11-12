@@ -47,11 +47,11 @@ pub struct SavedRect {
     pixels: Vec<u32>,
 }
 
-/// How much of a cloaked unit shows through for players who can see it
-/// (its owner, or an enemy with a detector).  INFERENCE: retail draws
-/// cloaked units with a palette distortion effect; this true-colour view
-/// fades them instead.
-pub const CLOAK_KEEP: u8 = 110;
+/// How much of a cloaked unit's own colour shows over the displaced
+/// background ([`Framebuffer::refract_rect`]) for players who can see it.
+/// INFERENCE: retail distorts through palette tables; the shift and this
+/// tint are tuned by eye.
+pub const CLOAK_KEEP: u8 = 70;
 
 /// Colour `owner`'s units, buildings and minimap blips are drawn in: its
 /// lobby colour, else the classic slot colour.
@@ -166,6 +166,29 @@ impl Framebuffer {
                     self.pixels[row + xx as usize] =
                         (new & 0xff00_0000) | (ch(16) << 16) | (ch(8) << 8) | ch(0);
                 }
+            }
+        }
+    }
+
+    /// Cloak look: where something was drawn over the saved background,
+    /// show the background seen through it, displaced sideways by a
+    /// ripple that moves with `phase`, lightly lit by the unit (`keep` /
+    /// 256 of the unit's colour).  Retail's cloaked draw function shifts
+    /// the screen pixels behind the unit's shape the same way.
+    pub fn refract_rect(&mut self, saved: &SavedRect, keep: u8, phase: u32) {
+        for yy in 0..saved.h {
+            let row = (saved.y + yy) as usize * self.width as usize + saved.x as usize;
+            // Two to four pixels, changing every couple of rows.
+            let shift = 2 + ((yy as u32 / 2 + phase) % 3) as i32;
+            for xx in 0..saved.w {
+                let old = saved.pixels[(yy * saved.w + xx) as usize];
+                let new = self.pixels[row + xx as usize];
+                if old == new {
+                    continue;
+                }
+                let sx = (xx + shift).clamp(0, saved.w - 1);
+                let behind = Rgb(saved.pixels[(yy * saved.w + sx) as usize]);
+                self.pixels[row + xx as usize] = behind.blend(Rgb(new), keep).0;
             }
         }
     }
