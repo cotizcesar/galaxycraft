@@ -96179,3 +96179,3417 @@ mod tests_wave33_agent73 {
         assert_eq!(v, i32::MAX);
     }
 }
+
+// ===========================================================================
+// Merged from src/wave34/agent08.rs
+// ===========================================================================
+// Wave 34 translation batch 08 (MMX/SSE2 pixel kernels).
+
+/// `0x004bbe7f`: 6-tap vertical filter producing 8 output bytes per row.
+/// Source rows sit at byte offsets `0, s, 2s, 3s, 4s, 5s` from the row start
+/// (the retail code advances the base by `s` between loads); taps are
+/// `coef[0..8]`, `coef[8..16]`, `coef[16..24]` for rows 0, 1, 2, then
+/// `coef[24..32]` for row 3, `coef[32..40]` for row 4, `coef[40..48]` for row 5
+/// (row order in the retail code is rows 0,1,2,4 then 3,5).  Products are
+/// 16-bit wrapping, accumulation uses signed saturating adds in the retail
+/// order (r1+r4, +r2, +r0, +r3, +r5), then `round` (the constant at
+/// the retail global) is added, `>> 7` arithmetic, and each word is clamped
+/// to `0..=255`.  `rows` counts output rows; `dst_stride` is in bytes.
+pub fn w34a08_filter6_rows(
+    src: &[u8],
+    src_start: usize,
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_start: usize,
+    dst_stride: usize,
+    rows: usize,
+    coef: &[i16; 48],
+    round: &[i16; 8],
+) {
+    let mut s = src_start;
+    let mut d = dst_start;
+    for _ in 0..rows {
+        // Row k of the retail loads: A=0, B=s, C=2s, D=4s, E=3s, F=5s.
+        let offs = [
+            0usize,
+            src_stride,
+            2 * src_stride,
+            4 * src_stride,
+            3 * src_stride,
+            5 * src_stride,
+        ];
+        let cbase = [0usize, 8, 16, 32, 24, 40];
+        let mut prod = [[0i16; 8]; 6];
+        for r in 0..6 {
+            for i in 0..8 {
+                let px = src[s + offs[r] + i] as i16;
+                prod[r][i] = px.wrapping_mul(coef[cbase[r] + i]);
+            }
+        }
+        for i in 0..8 {
+            // prod order: 0=u1(row0) 1=u2 2=u3 3=u4 4=u5 5=u6
+            let mut acc = prod[1][i].saturating_add(prod[3][i]);
+            acc = acc.saturating_add(prod[2][i]);
+            acc = acc.saturating_add(prod[0][i]);
+            acc = acc.saturating_add(prod[4][i]);
+            acc = acc.saturating_add(prod[5][i]);
+            acc = acc.saturating_add(round[i]);
+            acc >>= 7;
+            dst[d + i] = acc.clamp(0, 255) as u8;
+        }
+        s += src_stride;
+        d += dst_stride;
+    }
+}
+
+/// `0x004bbf22`: widens bytes to 16-bit words.  Each row reads 16 source
+/// bytes and writes 16 `u16` words (32 bytes, little endian) to the
+/// destination; `src_stride` and `dst_stride` are byte strides, `rows` is
+/// the loop count (retail do-while, so at least one row is written).
+pub fn w34a08_widen_u8_to_u16_rows(
+    src: &[u8],
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    rows: usize,
+) {
+    let mut s = 0usize;
+    let mut d = 0usize;
+    for _ in 0..rows.max(1) {
+        for i in 0..16 {
+            let w = src[s + i] as u16;
+            dst[d + 2 * i..d + 2 * i + 2].copy_from_slice(&w.to_le_bytes());
+        }
+        s += src_stride;
+        d += dst_stride;
+    }
+}
+
+#[cfg(test)]
+mod tests_wave34_agent08 {
+    use super::*;
+
+    #[test]
+    fn widen() {
+        let src: Vec<u8> = (0..32).collect();
+        let mut dst = vec![0u8; 64];
+        w34a08_widen_u8_to_u16_rows(&src, 16, &mut dst, 32, 2);
+        assert_eq!(dst[0], 0);
+        assert_eq!(dst[2], 1);
+        assert_eq!(dst[30], 15);
+        assert_eq!(dst[32], 16);
+        assert_eq!(dst[62], 31);
+        assert_eq!(dst[1], 0);
+    }
+
+    #[test]
+    fn filter_identity_and_clamp() {
+        let src = vec![100u8; 8 * 8];
+        let mut dst = vec![0u8; 8];
+        let mut coef = [0i16; 48];
+        for i in 0..8 {
+            coef[i] = 128; // row 0 tap = 1.0 in Q7
+        }
+        let round = [64i16; 8];
+        w34a08_filter6_rows(&src, 0, 8, &mut dst, 0, 8, 1, &coef, &round);
+        assert_eq!(dst, vec![100u8; 8]);
+        coef[8] = 300;
+        w34a08_filter6_rows(&src, 0, 8, &mut dst, 0, 8, 1, &coef, &round);
+        assert_eq!(dst[0], 255);
+        let neg = [-32768i16; 8];
+        let coef0 = [0i16; 48];
+        w34a08_filter6_rows(&src, 0, 8, &mut dst, 0, 8, 1, &coef0, &neg);
+        assert_eq!(dst[0], 0);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave34/agent12.rs
+// ===========================================================================
+// Wave 34 translation batch 12.
+//
+// Window: queue: 3 addresses, module `runtime.rs`.
+// Skipped (MMX bodies whose decompilation mangles byte unpacking):
+// FUN_004bd000, FUN_004bd124.
+
+/// `0x004bd09b`: six-tap vertical MMX filter over rows of four signed 16-bit
+/// words.  `taps` holds the qwords at indices 0,2,4,6,8,10 of the filter
+/// table (each four i16 lanes).  Row weights apply to rows -2,-1,0,+1,+2,+3
+/// relative to the current row in the order
+/// taps[0]*r(-2) + taps[1]*r(-1) + taps[2]*r(0) + taps[3]*r(+1)... see below:
+/// the saturating sum order is r(-1)*t[1], r(+2)*t[4], r(0)*t[2], r(-2)*t[0],
+/// r(+1)*t[3], r(+3)*t[5].  Each product keeps the low 16 bits (`pmullw`),
+/// sums saturate (`paddsw`), then `+0x40`, `>> 7`, and each lane is clamped
+/// to 0..=255 and packed to one byte.  `src_start` is the byte offset of the
+/// current row; it advances by `src_stride` per output row; `dst` advances by
+/// `dst_stride`.
+pub fn w34a12_vertical_6tap_filter(
+    src: &[u8],
+    src_start: usize,
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_start: usize,
+    dst_stride: usize,
+    rows: usize,
+    taps: &[[i16; 4]; 6],
+) {
+    let rd = |off: usize| -> [i16; 4] {
+        let mut o = [0i16; 4];
+        for (i, v) in o.iter_mut().enumerate() {
+            *v = i16::from_le_bytes([src[off + i * 2], src[off + i * 2 + 1]]);
+        }
+        o
+    };
+    let mut cur = src_start;
+    let mut d = dst_start;
+    for _ in 0..rows {
+        // (row offset in strides relative to current, tap index)
+        let order: [(isize, usize); 6] = [(-1, 1), (2, 4), (0, 2), (-2, 0), (1, 3), (3, 5)];
+        let mut acc = [0i16; 4];
+        for (k, (rel, t)) in order.iter().enumerate() {
+            let off = (cur as isize + rel * src_stride as isize) as usize;
+            let r = rd(off);
+            for l in 0..4 {
+                let p = r[l].wrapping_mul(taps[*t][l]);
+                acc[l] = if k == 0 { p } else { acc[l].saturating_add(p) };
+            }
+        }
+        for l in 0..4 {
+            let v = acc[l].saturating_add(0x40) >> 7;
+            dst[d + l] = v.clamp(0, 255) as u8;
+        }
+        cur += src_stride;
+        d += dst_stride;
+    }
+}
+
+#[cfg(test)]
+mod tests_wave34_agent12 {
+    #[test]
+    fn identity_tap() {
+        let mut src = vec![0u8; 8 * 16];
+        // row index 2 (current row when start = 2*stride), lane values 128,256,-5,1000
+        let vals = [128i16, 100, -5, 200];
+        for (i, v) in vals.iter().enumerate() {
+            src[2 * 8 + i * 2..2 * 8 + i * 2 + 2].copy_from_slice(&v.to_le_bytes());
+        }
+        let mut taps = [[0i16; 4]; 6];
+        taps[2] = [128; 4];
+        let mut dst = [0u8; 4];
+        super::w34a12_vertical_6tap_filter(&src, 16, 8, &mut dst, 0, 4, 1, &taps);
+        assert_eq!(dst, [128, 100, 0, 200]);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave34/agent13.rs
+// ===========================================================================
+// Wave 34 translation batch 13: MMX bilinear predictors.
+
+/// Saturating pack of a signed 16-bit lane to a byte (packuswb).
+fn w34a13_sat(v: i16) -> u8 {
+    v.clamp(0, 255) as u8
+}
+
+/// Shared two-pass bilinear 4-row kernel used by `0x004bd235` (8 wide) and
+/// `0x004bd346` (4 wide).  Pass 1 filters `src[x]`,`src[x+1]` with
+/// `hf` (tap0, tap1) as `(a*t0 + b*t1 + 0x40) >> 7` saturated to a byte; pass 2
+/// blends the previous and current filtered rows with `vf` the same way.
+fn w34a13_bilinear(
+    src: &[u8],
+    src_stride: usize,
+    hf: (i16, i16),
+    vf: (i16, i16),
+    dst: &mut [u8],
+    dst_stride: usize,
+    width: usize,
+) {
+    let pass1 = |row: usize| -> Vec<u8> {
+        (0..width)
+            .map(|x| {
+                let a = src[row * src_stride + x] as i16;
+                let b = src[row * src_stride + x + 1] as i16;
+                w34a13_sat(
+                    (a.wrapping_mul(hf.0)
+                        .wrapping_add(b.wrapping_mul(hf.1))
+                        .wrapping_add(0x40))
+                        >> 7,
+                )
+            })
+            .collect()
+    };
+    let mut prev = pass1(0);
+    for r in 0..4 {
+        let cur = pass1(r + 1);
+        for x in 0..width {
+            let v = (prev[x] as i16)
+                .wrapping_mul(vf.0)
+                .wrapping_add((cur[x] as i16).wrapping_mul(vf.1))
+                .wrapping_add(0x40)
+                >> 7;
+            dst[r * dst_stride + x] = w34a13_sat(v);
+        }
+        prev = cur;
+    }
+}
+
+/// `0x004bd235`: 8x4 two-pass bilinear predictor (horizontal then vertical
+/// filter, rounding 0x40, shift 7, byte saturation).  Needs 5 source rows of
+/// 9 bytes.
+pub fn w34a13_bilinear_8x4(
+    src: &[u8],
+    src_stride: usize,
+    hf: (i16, i16),
+    vf: (i16, i16),
+    dst: &mut [u8],
+    dst_stride: usize,
+) {
+    w34a13_bilinear(src, src_stride, hf, vf, dst, dst_stride, 8);
+}
+
+/// `0x004bd346`: 4x4 variant of the same two-pass bilinear predictor.
+pub fn w34a13_bilinear_4x4(
+    src: &[u8],
+    src_stride: usize,
+    hf: (i16, i16),
+    vf: (i16, i16),
+    dst: &mut [u8],
+    dst_stride: usize,
+) {
+    w34a13_bilinear(src, src_stride, hf, vf, dst, dst_stride, 4);
+}
+
+#[cfg(test)]
+mod tests_wave34_agent13 {
+    use super::*;
+
+    #[test]
+    fn identity_filter_copies() {
+        let src: Vec<u8> = (0..5 * 16).map(|i| (i * 7) as u8).collect();
+        let mut dst = [0u8; 4 * 8];
+        w34a13_bilinear_8x4(&src, 16, (128, 0), (128, 0), &mut dst, 8);
+        for r in 0..4 {
+            for x in 0..8 {
+                assert_eq!(dst[r * 8 + x], src[r * 16 + x]);
+            }
+        }
+        let mut d4 = [0u8; 16];
+        w34a13_bilinear_4x4(&src, 16, (128, 0), (128, 0), &mut d4, 4);
+        assert_eq!(d4[4], src[16]);
+    }
+
+    #[test]
+    fn half_filter_averages_and_saturates() {
+        let mut src = vec![0u8; 5 * 8];
+        for r in 0..5 {
+            src[r * 8] = 100;
+            src[r * 8 + 1] = 51;
+        }
+        let mut d = [0u8; 16];
+        w34a13_bilinear_4x4(&src, 8, (64, 64), (128, 0), &mut d, 4);
+        assert_eq!(d[0], 76);
+        assert_eq!(w34a13_sat(300), 255);
+        assert_eq!(w34a13_sat(-5), 0);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave34/agent14.rs
+// ===========================================================================
+// Wave 34 agent 14: SSE2 masked sum-of-squared-differences kernel.
+
+/// `0x004bd548`: sum of squared differences over 16 blocks of 16 `i16`
+/// samples (256 values).  In each block the first eight lanes are masked:
+/// lane 0 is zeroed when `lo != 0`, lane 1 when `hi != 0` (the mask is
+/// `value == 0`), lane 7 is zeroed when `lane7_nonzero` (an undefined
+/// input in the pseudocode, so the caller supplies it).  The pmaddwd pair
+/// sums and accumulators wrap as `i32`.
+pub fn w34a14_masked_ssd(a: &[i16], b: &[i16], lo: u16, hi: u16, lane7_nonzero: bool) -> i32 {
+    let mut acc: i32 = 0;
+    for blk in 0..16usize {
+        for l in 0..16usize {
+            let i = blk * 16 + l;
+            let mut d = a[i].wrapping_sub(b[i]);
+            if l < 8 {
+                let keep = match l {
+                    0 => lo == 0,
+                    1 => hi == 0,
+                    7 => !lane7_nonzero,
+                    _ => true,
+                };
+                if !keep {
+                    d = 0;
+                }
+            }
+            acc = acc.wrapping_add((d as i32).wrapping_mul(d as i32));
+        }
+    }
+    acc
+}
+
+#[cfg(test)]
+mod tests_wave34_agent14 {
+    use super::*;
+
+    #[test]
+    fn masked_ssd() {
+        let a = [3i16; 256];
+        let b = [1i16; 256];
+        assert_eq!(w34a14_masked_ssd(&a, &b, 0, 0, false), 256 * 4);
+        assert_eq!(w34a14_masked_ssd(&a, &b, 1, 0, false), 240 * 4);
+        assert_eq!(w34a14_masked_ssd(&a, &b, 1, 1, true), 16 * 13 * 4);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave34/agent15.rs
+// ===========================================================================
+// Wave 34 agent 15: block SSD and block-copy kernels.
+
+/// `0x004bd618`: sum of squared differences over 128 contiguous i16 samples
+/// (16 iterations of 8 lanes; `pmaddwd` pairs, wrapping 32-bit accumulation,
+/// 16-bit wrapping subtraction).
+pub fn w34a15_ssd_128(a: &[i16], b: &[i16]) -> i32 {
+    let mut sum = 0i32;
+    for i in 0..128 {
+        let d = a[i].wrapping_sub(b[i]) as i32;
+        sum = sum.wrapping_add(d.wrapping_mul(d));
+    }
+    sum
+}
+
+/// `0x004bd730`: copies `rows` rows of 32 bytes from `src` (byte stride
+/// `src_stride`) to `dst` (byte stride `dst_stride`).  Retail copies four
+/// rows per pass then the remainder; the result is the same as a plain loop
+/// for `rows >= 4` (smaller counts are undefined in retail).
+pub fn w34a15_copy_rows32(
+    src: &[u8],
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    rows: usize,
+) {
+    for r in 0..rows {
+        let s = r * src_stride;
+        let d = r * dst_stride;
+        dst[d..d + 32].copy_from_slice(&src[s..s + 32]);
+    }
+}
+
+/// `0x004bd841`: copies four rows of 8 bytes between strided buffers.
+pub fn w34a15_copy_4x8(src: &[u8], src_stride: usize, dst: &mut [u8], dst_stride: usize) {
+    for r in 0..4 {
+        let s = r * src_stride;
+        let d = r * dst_stride;
+        dst[d..d + 8].copy_from_slice(&src[s..s + 8]);
+    }
+}
+
+#[cfg(test)]
+mod tests_wave34_agent15 {
+    use super::*;
+
+    #[test]
+    fn ssd() {
+        let a = [3i16; 128];
+        let b = [1i16; 128];
+        assert_eq!(w34a15_ssd_128(&a, &b), 4 * 128);
+        assert_eq!(w34a15_ssd_128(&a, &a), 0);
+    }
+
+    #[test]
+    fn copy32() {
+        let src: Vec<u8> = (0..=255u8).cycle().take(40 * 6 + 32).collect();
+        let mut dst = vec![0u8; 36 * 6 + 32];
+        w34a15_copy_rows32(&src, 40, &mut dst, 36, 6);
+        for r in 0..6 {
+            assert_eq!(&dst[r * 36..r * 36 + 32], &src[r * 40..r * 40 + 32]);
+        }
+    }
+
+    #[test]
+    fn copy4x8() {
+        let src: Vec<u8> = (0..64u8).collect();
+        let mut dst = vec![0u8; 64];
+        w34a15_copy_4x8(&src, 16, &mut dst, 12);
+        assert_eq!(&dst[36..44], &src[48..56]);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave34/agent16.rs
+// ===========================================================================
+// Wave 34 agent 16: libvpx-style block copy, DC-only add and 16-lane multiply.
+
+/// `0x004bd87a`: copies a 16x16 byte block (16 rows of 16 bytes) from `src`
+/// (row stride `src_stride`) to `dst` (row stride `dst_stride`).
+pub fn w34a16_copy_16x16(src: &[u8], src_stride: usize, dst: &mut [u8], dst_stride: usize) {
+    for r in 0..16 {
+        let s = r * src_stride;
+        let d = r * dst_stride;
+        dst[d..d + 16].copy_from_slice(&src[s..s + 16]);
+    }
+}
+
+/// `0x004bdc33`: DC-only inverse transform add.  `dc` is the low 16 bits of
+/// the coefficient; `(dc + 4) >> 3` (arithmetic, 16-bit wrap on the add) is
+/// added with saturation to a 4x4 predictor block and clamped to 0..=255.
+pub fn w34a16_dc_only_add_4x4(
+    dc: i32,
+    pred: &[u8],
+    pred_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+) {
+    let v = ((dc as i16).wrapping_add(4) >> 3) as i16;
+    for r in 0..4 {
+        for c in 0..4 {
+            let p = pred[r * pred_stride + c] as i16;
+            let s = p.saturating_add(v);
+            dst[r * dst_stride + c] = s.clamp(0, 255) as u8;
+        }
+    }
+}
+
+/// `0x004bdcb0`: element-wise 16-bit multiply of two 16-lane vectors,
+/// keeping the low 16 bits of each product.
+pub fn w34a16_mul_lo_i16x16(a: &[i16; 16], b: &[i16; 16]) -> [i16; 16] {
+    let mut out = [0i16; 16];
+    for i in 0..16 {
+        out[i] = a[i].wrapping_mul(b[i]);
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests_wave34_agent16 {
+    use super::*;
+
+    #[test]
+    fn copy_block() {
+        let src: Vec<u8> = (0..16 * 20).map(|i| (i % 251) as u8).collect();
+        let mut dst = vec![0u8; 16 * 18];
+        w34a16_copy_16x16(&src, 20, &mut dst, 18);
+        assert_eq!(&dst[18 * 15..18 * 15 + 16], &src[20 * 15..20 * 15 + 16]);
+        assert_eq!(dst[16], 0);
+    }
+
+    #[test]
+    fn dc_add() {
+        let mut pred = [0u8; 16];
+        pred[0] = 250;
+        pred[1] = 5;
+        pred[2] = 100;
+        let mut dst = [0u8; 16];
+        w34a16_dc_only_add_4x4(60, &pred, 4, &mut dst, 4); // (60+4)>>3 = 8
+        assert_eq!(dst[0], 255);
+        assert_eq!(dst[1], 13);
+        assert_eq!(dst[2], 108);
+        w34a16_dc_only_add_4x4(-100, &pred, 4, &mut dst, 4); // (-96)>>3 = -12
+        assert_eq!(dst[0], 238);
+        assert_eq!(dst[1], 0);
+    }
+
+    #[test]
+    fn mul_lo() {
+        let mut a = [0i16; 16];
+        let mut b = [0i16; 16];
+        a[0] = 300;
+        b[0] = 300;
+        a[15] = -3;
+        b[15] = 7;
+        let r = w34a16_mul_lo_i16x16(&a, &b);
+        assert_eq!(r[0], 90000u32 as u16 as i16);
+        assert_eq!(r[15], -21);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave34/agent17.rs
+// ===========================================================================
+// Wave 34 agent 17: MMX/SSE2 pixel kernels (4x4 IDCT-add, bilinear blends).
+
+fn w34a17_mulhi(a: i16, k: i16) -> i16 {
+    ((a as i32 * k as i32) >> 16) as i16
+}
+
+/// `0x004bdcef`: 4x4 inverse transform with per-coefficient multiply
+/// (`coef[i] * dq[i]`, 16-bit wrapping), added with signed saturation to
+/// the 4x4 byte block at `dst[base..]` (row stride `stride`) and clamped to
+/// 0..=255.  The coefficient block is zeroed afterwards.
+pub fn w34a17_idct4x4_add(
+    coef: &mut [i16; 16],
+    dq: &[i16; 16],
+    dst: &mut [u8],
+    base: usize,
+    stride: usize,
+) {
+    const S: i16 = 0x8a8cu16 as i16;
+    const K: i16 = 0x4e7b;
+    let mut p = [[0i16; 4]; 4];
+    for r in 0..4 {
+        for c in 0..4 {
+            p[r][c] = coef[r * 4 + c].wrapping_mul(dq[r * 4 + c]);
+        }
+    }
+    coef.fill(0);
+    // pass 1 over columns: x[r][c]
+    let mut x = [[0i16; 4]; 4];
+    for c in 0..4 {
+        let (p0, p1, p2, p3) = (p[0][c], p[1][c], p[2][c], p[3][c]);
+        let a = p0.wrapping_add(p2);
+        let b = p0.wrapping_sub(p2);
+        let cn = w34a17_mulhi(p3, K)
+            .wrapping_add(p3)
+            .wrapping_sub(w34a17_mulhi(p1, S).wrapping_add(p1));
+        let d = w34a17_mulhi(p3, S)
+            .wrapping_add(p3)
+            .wrapping_add(w34a17_mulhi(p1, K))
+            .wrapping_add(p1);
+        x[0][c] = a.wrapping_add(d);
+        x[1][c] = b.wrapping_sub(cn);
+        x[2][c] = b.wrapping_add(cn);
+        x[3][c] = a.wrapping_sub(d);
+    }
+    for r in 0..4 {
+        let (x0, x1, x2, x3) = (x[r][0], x[r][1], x[r][2], x[r][3]);
+        let a = x0.wrapping_add(x2).wrapping_add(4);
+        let b = x0.wrapping_sub(x2).wrapping_add(4);
+        let cn = w34a17_mulhi(x3, K)
+            .wrapping_add(x3)
+            .wrapping_sub(w34a17_mulhi(x1, S).wrapping_add(x1));
+        let d = w34a17_mulhi(x3, S)
+            .wrapping_add(x3)
+            .wrapping_add(w34a17_mulhi(x1, K))
+            .wrapping_add(x1);
+        let out = [
+            a.wrapping_add(d) >> 3,
+            b.wrapping_sub(cn) >> 3,
+            b.wrapping_add(cn) >> 3,
+            a.wrapping_sub(d) >> 3,
+        ];
+        for (k, o) in out.iter().enumerate() {
+            let i = base + r * stride + k;
+            let s = o.saturating_add(dst[i] as i16);
+            dst[i] = s.clamp(0, 255) as u8;
+        }
+    }
+}
+
+fn w34a17_blend(
+    src: &[u8],
+    sstride: usize,
+    dst: &mut [u8],
+    dstride: usize,
+    w: u32,
+    wd: usize,
+    ht: usize,
+) {
+    let w = (w & 0xffff) as u16;
+    let iw = 0x10u16.wrapping_sub(w);
+    for r in 0..ht {
+        for c in 0..wd {
+            let a = src[r * sstride + c] as u16;
+            let b = dst[r * dstride + c] as u16;
+            let v = a
+                .wrapping_mul(w)
+                .wrapping_add(b.wrapping_mul(iw))
+                .wrapping_add(8)
+                >> 4;
+            dst[r * dstride + c] = v.min(255) as u8;
+        }
+    }
+}
+
+/// `0x004bde90`: blends a 16x16 source block into the destination block:
+/// `dst = min(255, (src*w + dst*(16-w) + 8) >> 4)` with 16-bit arithmetic,
+/// `w` the low 16 bits of the weight argument.
+pub fn w34a17_blend16x16(src: &[u8], sstride: usize, dst: &mut [u8], dstride: usize, w: u32) {
+    w34a17_blend(src, sstride, dst, dstride, w, 16, 16);
+}
+
+/// `0x004bdf29`: the 8x8 variant of the blend above.
+pub fn w34a17_blend8x8(src: &[u8], sstride: usize, dst: &mut [u8], dstride: usize, w: u32) {
+    w34a17_blend(src, sstride, dst, dstride, w, 8, 8);
+}
+
+#[cfg(test)]
+mod tests_wave34_agent17 {
+    use super::*;
+
+    #[test]
+    fn dc_idct() {
+        let mut c = [0i16; 16];
+        c[0] = 64;
+        let dq = [1i16; 16];
+        let mut d = [250u8; 16];
+        d[0] = 10;
+        w34a17_idct4x4_add(&mut c, &dq, &mut d, 0, 4);
+        assert_eq!(d[0], 18);
+        assert_eq!(d[1], 255);
+        assert_eq!(c, [0; 16]);
+    }
+
+    #[test]
+    fn blends() {
+        let s = [100u8; 256];
+        let mut d = [20u8; 256];
+        w34a17_blend16x16(&s, 16, &mut d, 16, 8);
+        assert_eq!(d[0], 60);
+        let mut d = [20u8; 64];
+        w34a17_blend8x8(&s, 8, &mut d, 8, 16);
+        assert_eq!(d[5], 100);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave34/agent18.rs
+// ===========================================================================
+// Wave 34 agent 18: SSE2 16x16 block statistics kernel.
+// Skipped: FUN_004be080 and FUN_004be291 (MMX loop-filter bodies whose
+// decompiled lane shuffles are not reliably recoverable).
+
+/// `0x004bdf99`: 16x16 block statistics.  Returns `(var_like, sad_like)`
+/// where `sad_like = (sum |src-ref| + 0x80) >> 8` (written to `*param_6`)
+/// and `var_like = (sumsq(ref) - (sum(ref)^2 >> 8) + 0x80) >> 8`
+/// (written to `*param_5`).  Both blocks are 16 rows of 16 bytes, each
+/// with its own stride.  Arithmetic wraps in 32 bits like the original.
+pub fn w34a18_block16_stats(
+    src: &[u8],
+    src_stride: usize,
+    reference: &[u8],
+    ref_stride: usize,
+) -> (u32, u32) {
+    let mut sad: u32 = 0;
+    let mut sum: u32 = 0;
+    let mut sumsq: u32 = 0;
+    for row in 0..16 {
+        let s = &src[row * src_stride..row * src_stride + 16];
+        let r = &reference[row * ref_stride..row * ref_stride + 16];
+        for i in 0..16 {
+            sad += (s[i] as i32 - r[i] as i32).unsigned_abs();
+            sum += r[i] as u32;
+            sumsq = sumsq.wrapping_add(r[i] as u32 * r[i] as u32);
+        }
+    }
+    let sad_out = sad.wrapping_add(0x80) >> 8;
+    let var_out = sumsq
+        .wrapping_sub(sum.wrapping_mul(sum) >> 8)
+        .wrapping_add(0x80)
+        >> 8;
+    (var_out, sad_out)
+}
+
+#[cfg(test)]
+mod tests_wave34_agent18 {
+    use super::*;
+
+    #[test]
+    fn flat_blocks() {
+        let a = vec![10u8; 256];
+        let b = vec![10u8; 256];
+        assert_eq!(w34a18_block16_stats(&a, 16, &b, 16), (0, 0));
+    }
+
+    #[test]
+    fn sad_and_variance() {
+        let a = vec![0u8; 256];
+        let b: Vec<u8> = (0..256).map(|i| if i % 2 == 0 { 255 } else { 0 }).collect();
+        let (v, s) = w34a18_block16_stats(&a, 16, &b, 16);
+        assert_eq!(s, (128 * 255 + 0x80) >> 8);
+        let sumsq = 128u32 * 255 * 255;
+        let sum = 128u32 * 255;
+        assert_eq!(v, (sumsq - (sum * sum >> 8) + 0x80) >> 8);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave34/agent24.rs
+// ===========================================================================
+// Wave 34 translation batch 24.
+//
+// Implemented: one 16-lane Hadamard-style butterfly (scalar SSE2 body).
+// Skipped: FUN_004c1220 and FUN_004c13b8 (SIMD DCT with unresolved constant tables).
+
+/// `0x004c1760`: two-stage add/sub butterfly over 16 i16 lanes with a final
+/// `(x + 3) >> 3` round; results scatter to `out[k * 0x10]` (even lane
+/// groups at multiples of 0x20, odd at 0x10 + multiples of 0x20).
+/// `out` must hold at least 0xf1 elements.
+pub fn w34a24_butterfly16(inp: &[i16; 16], out: &mut [i16]) {
+    let a = |i: usize| inp[i];
+    let mut s = [0i16; 8];
+    let mut d = [0i16; 8];
+    // lanes 0..3 pair with 12..15, lanes 4..7 pair with 8..11
+    for i in 0..4 {
+        s[i] = a(i).wrapping_add(a(i + 12));
+        d[i] = a(i).wrapping_sub(a(i + 12));
+        s[i + 4] = a(i + 4).wrapping_add(a(i + 8));
+        d[i + 4] = a(i + 4).wrapping_sub(a(i + 8));
+    }
+    // second stage
+    let mut p = [0i16; 4]; // sum of s[i+4]+s[i]  (sVar17,19,20,21)
+    let mut m = [0i16; 4]; // s[i]-s[i+4]
+    let mut q = [0i16; 4]; // d[i+4]+d[i]  (sVar22..25)
+    let mut r = [0i16; 4]; // d[i]-d[i+4]
+    for i in 0..4 {
+        p[i] = s[i + 4].wrapping_add(s[i]);
+        m[i] = s[i].wrapping_sub(s[i + 4]);
+        q[i] = d[i + 4].wrapping_add(d[i]);
+        r[i] = d[i].wrapping_sub(d[i + 4]);
+    }
+    // third stage: pairs (0,3) and (1,2)
+    let t5 = p[0].wrapping_add(p[3]);
+    let t6 = q[0].wrapping_add(q[3]);
+    let t7 = m[0].wrapping_add(m[3]);
+    let t8 = r[0].wrapping_add(r[3]);
+    let t13 = p[1].wrapping_add(p[2]);
+    let t14 = q[1].wrapping_add(q[2]);
+    let t15 = m[1].wrapping_add(m[2]);
+    let t16 = r[1].wrapping_add(r[2]);
+    let t17 = p[0].wrapping_sub(p[3]);
+    let t22 = q[0].wrapping_sub(q[3]);
+    let t1 = m[0].wrapping_sub(m[3]);
+    let t9 = r[0].wrapping_sub(r[3]);
+    let t19 = p[1].wrapping_sub(p[2]);
+    let t23 = q[1].wrapping_sub(q[2]);
+    let t2 = m[1].wrapping_sub(m[2]);
+    let t10 = r[1].wrapping_sub(r[2]);
+    let lo_a = [
+        t13.wrapping_add(t5),
+        t14.wrapping_add(t6),
+        t15.wrapping_add(t7),
+        t16.wrapping_add(t8),
+        t19.wrapping_add(t17),
+        t23.wrapping_add(t22),
+        t2.wrapping_add(t1),
+        t10.wrapping_add(t9),
+    ];
+    let lo_b = [
+        t5.wrapping_sub(t13),
+        t6.wrapping_sub(t14),
+        t7.wrapping_sub(t15),
+        t8.wrapping_sub(t16),
+        t17.wrapping_sub(t19),
+        t22.wrapping_sub(t23),
+        t1.wrapping_sub(t2),
+        t9.wrapping_sub(t10),
+    ];
+    for k in 0..8 {
+        let base = (k % 4) * 0x40 + (k / 4) * 0x10;
+        out[base] = lo_a[k].wrapping_add(3) >> 3;
+        out[base + 0x20] = lo_b[k].wrapping_add(3) >> 3;
+    }
+}
+
+#[cfg(test)]
+mod tests_wave34_agent24 {
+    use super::*;
+
+    #[test]
+    fn zero_and_dc() {
+        let mut out = vec![0i16; 0x100];
+        w34a24_butterfly16(&[0; 16], &mut out);
+        assert!(out.iter().all(|&v| v == 0));
+        w34a24_butterfly16(&[1; 16], &mut out);
+        // DC sum = 16, (16+3)>>3 = 2 at index 0; all others (0+3)>>3 = 0
+        assert_eq!(out[0], 2);
+        assert_eq!(out[0x20], 0);
+        assert_eq!(out[0xf0], 0);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave34/agent25.rs
+// ===========================================================================
+// Wave 34 agent 25 (queue, `runtime.rs`).
+
+/// `0x004d7af0`: dequantised DC-only inverse transform for two side-by-side
+/// 4x4 blocks (8 pixels wide, 4 rows).  `coeffs[0]*dq[0]` and
+/// `coeffs[16]*dq[0]` are the two DCs (16-bit wrapping multiply; the second
+/// block's DC is `coeffs[16]`), the low-block DC also uses `coeffs[1]*dq[1]`
+/// only as a discarded lane.  Each DC becomes `(dc + 4) >> 3` and is added
+/// to the left (pixels 0..4) or right (pixels 4..8) block, saturating to
+/// 0..=255.  Both DC slots (`coeffs[0..2]` and `coeffs[16..18]`) are cleared.
+pub fn w34a25_dc_only_idct_add_pair(coeffs: &mut [i16], dq: &[i16], dst: &mut [u8], stride: usize) {
+    let dc0 = coeffs[0].wrapping_mul(dq[0]);
+    let dc1 = coeffs[16].wrapping_mul(dq[0]);
+    coeffs[0] = 0;
+    coeffs[1] = 0;
+    coeffs[16] = 0;
+    coeffs[17] = 0;
+    let a = dc0.wrapping_add(4) >> 3;
+    let b = dc1.wrapping_add(4) >> 3;
+    for row in 0..4 {
+        for x in 0..8 {
+            let d = if x < 4 { a } else { b };
+            let p = &mut dst[row * stride + x];
+            *p = (*p as i16).wrapping_add(d).clamp(0, 255) as u8;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests_wave34_agent25 {
+    use super::*;
+
+    #[test]
+    fn dc_pair() {
+        let mut c = [0i16; 32];
+        c[0] = 8;
+        c[16] = -100;
+        let mut d = vec![10u8; 8 * 4];
+        w34a25_dc_only_idct_add_pair(&mut c, &[2, 1], &mut d, 8);
+        assert_eq!(d[0], 12);
+        assert_eq!(d[7], 0);
+        assert_eq!(c[0], 0);
+        assert_eq!(c[16], 0);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave34/agent26.rs
+// ===========================================================================
+// Wave 34 translation batch 26.
+
+/// `0x004d9aa0`: two-row bilinear blend (SSE2 kernel).  For each of
+/// `rows` rows, every output byte is
+/// `clamp((a*f[3] + b*f[4] + 64) >> 7, 0, 255)` where `a` is the source
+/// byte in the current row and `b` the byte `src_stride` bytes later.
+/// Four bytes are produced per row; the source advances by `src_stride`
+/// and the destination by `dst_stride` per iteration.  `filter` holds the
+/// eight 16-bit taps; only words 3 and 4 are used.
+pub fn w34a26_bilinear_pair_rows(
+    src: &[u8],
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    rows: usize,
+    filter: &[i16; 8],
+) {
+    let (f0, f1) = (filter[3] as i32, filter[4] as i32);
+    for r in 0..rows {
+        for i in 0..4 {
+            let a = src[r * src_stride + i] as i32;
+            let b = src[r * src_stride + src_stride + i] as i32;
+            let sum = (a * f0 + b * f1).clamp(-32768, 32767);
+            let v = ((sum + 64).clamp(-32768, 32767)) >> 7;
+            dst[r * dst_stride + i] = v.clamp(0, 255) as u8;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests_wave34_agent26 {
+    use super::*;
+
+    #[test]
+    fn blend_halves() {
+        let src = [100u8, 0, 255, 10, 200, 0, 255, 30];
+        let mut dst = [0u8; 4];
+        let f = [0, 0, 0, 64, 64, 0, 0, 0];
+        w34a26_bilinear_pair_rows(&src, 4, &mut dst, 4, 1, &f);
+        assert_eq!(dst, [150, 0, 255, 20]);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave34/agent27.rs
+// ===========================================================================
+// Wave 34 agent 27: libvpx 2-tap bilinear SSE2 kernels.
+
+fn w34a27_tap(p0: u8, p1: u8, f0: i16, f1: i16) -> u8 {
+    let a = (p0 as i16).wrapping_mul(f0);
+    let b = (p1 as i16).wrapping_mul(f1);
+    let s = a.saturating_add(b).saturating_add(64) >> 7;
+    s.clamp(0, 255) as u8
+}
+
+/// `0x004d9b20`: 8-wide bilinear filter. Each output byte blends the source
+/// pixel and the pixel `src_stride` bytes below with taps `filter[3]` and
+/// `filter[4]` (16-bit wrapping multiply, saturating add, +64, >>7, clamp).
+pub fn w34a27_bilinear8(
+    src: &[u8],
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    rows: usize,
+    filter: &[i16; 8],
+) {
+    for r in 0..rows {
+        for i in 0..8 {
+            dst[r * dst_stride + i] = w34a27_tap(
+                src[r * src_stride + i],
+                src[(r + 1) * src_stride + i],
+                filter[3],
+                filter[4],
+            );
+        }
+    }
+}
+
+/// `0x004d9b9a`: 16-wide variant of the same bilinear blend.
+pub fn w34a27_bilinear16(
+    src: &[u8],
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    rows: usize,
+    filter: &[i16; 8],
+) {
+    for r in 0..rows {
+        for i in 0..16 {
+            dst[r * dst_stride + i] = w34a27_tap(
+                src[r * src_stride + i],
+                src[(r + 1) * src_stride + i],
+                filter[3],
+                filter[4],
+            );
+        }
+    }
+}
+
+/// `0x004d9c39`: 4-wide bilinear blend averaged (rounding up) with the
+/// existing destination bytes.
+pub fn w34a27_bilinear4_avg(
+    src: &[u8],
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    rows: usize,
+    filter: &[i16; 8],
+) {
+    for r in 0..rows {
+        for i in 0..4 {
+            let v = w34a27_tap(
+                src[r * src_stride + i],
+                src[(r + 1) * src_stride + i],
+                filter[3],
+                filter[4],
+            );
+            let d = &mut dst[r * dst_stride + i];
+            *d = ((v as u16 + *d as u16 + 1) >> 1) as u8;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests_wave34_agent27 {
+    use super::*;
+
+    #[test]
+    fn blend_and_avg() {
+        let f = [0, 0, 0, 64, 64, 0, 0, 0];
+        let src = [
+            10u8, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160,
+        ];
+        let mut d = [0u8; 8];
+        w34a27_bilinear8(&src, 8, &mut d, 8, 1, &f);
+        assert_eq!(d[0], 50);
+        let mut d16 = [0u8; 16];
+        let s16: Vec<u8> = (0..32).map(|x| x as u8 * 8).collect();
+        w34a27_bilinear16(&s16, 16, &mut d16, 16, 1, &f);
+        assert_eq!(d16[0], 64);
+        let mut a = [100u8; 4];
+        w34a27_bilinear4_avg(&src, 8, &mut a, 4, 1, &f);
+        assert_eq!(a[0], 75);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave34/agent28.rs
+// ===========================================================================
+// Wave 34 translation batch 28: bilinear filter kernels (two-tap, 7-bit).
+
+fn w34a28_taps(filter: &[u8; 16]) -> (i16, i16) {
+    (
+        i16::from_le_bytes([filter[6], filter[7]]),
+        i16::from_le_bytes([filter[8], filter[9]]),
+    )
+}
+
+fn w34a28_tap(a: u8, b: u8, w0: i16, w1: i16) -> u8 {
+    let p0 = (a as i16).wrapping_mul(w0);
+    let p1 = (b as i16).wrapping_mul(w1);
+    let s = p0.saturating_add(p1).saturating_add(0x40) >> 7;
+    s.clamp(0, 255) as u8
+}
+
+fn w34a28_avg(a: u8, b: u8) -> u8 {
+    ((a as u16 + b as u16 + 1) >> 1) as u8
+}
+
+fn w34a28_rows_avg(
+    src: &[u8],
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    rows: usize,
+    filter: &[u8; 16],
+    width: usize,
+) {
+    let (w0, w1) = w34a28_taps(filter);
+    for r in 0..rows {
+        let s = r * src_stride;
+        let d = r * dst_stride;
+        for i in 0..width {
+            let v = w34a28_tap(src[s + i], src[s + src_stride + i], w0, w1);
+            dst[d + i] = w34a28_avg(v, dst[d + i]);
+        }
+    }
+}
+
+/// `0x004d9cc1`: vertical two-tap bilinear filter over 8 pixels per row,
+/// blended with the existing destination via rounding average.  Taps are
+/// the 16-bit words 3 and 4 of `filter`; `(a*w0 + b*w1 + 64) >> 7` with
+/// signed saturation, clamped to a byte.  `rows == 0` is a no-op here
+/// (the original do-while would wrap).
+pub fn w34a28_bilinear8_avg(
+    src: &[u8],
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    rows: usize,
+    filter: &[u8; 16],
+) {
+    w34a28_rows_avg(src, src_stride, dst, dst_stride, rows, filter, 8);
+}
+
+/// `0x004d9d43`: same as the 8-wide kernel but 16 pixels per row.
+pub fn w34a28_bilinear16_avg(
+    src: &[u8],
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    rows: usize,
+    filter: &[u8; 16],
+) {
+    w34a28_rows_avg(src, src_stride, dst, dst_stride, rows, filter, 16);
+}
+
+/// `0x004d9dea`: horizontal two-tap bilinear filter over 4 pixels per row
+/// (pixel `i` mixes source bytes `i` and `i+1`), stored without averaging.
+pub fn w34a28_bilinear4_h(
+    src: &[u8],
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    rows: usize,
+    filter: &[u8; 16],
+) {
+    let (w0, w1) = w34a28_taps(filter);
+    for r in 0..rows {
+        for i in 0..4 {
+            dst[r * dst_stride + i] =
+                w34a28_tap(src[r * src_stride + i], src[r * src_stride + i + 1], w0, w1);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests_wave34_agent28 {
+    use super::*;
+
+    fn f(w0: i16, w1: i16) -> [u8; 16] {
+        let mut b = [0u8; 16];
+        b[6..8].copy_from_slice(&w0.to_le_bytes());
+        b[8..10].copy_from_slice(&w1.to_le_bytes());
+        b
+    }
+
+    #[test]
+    fn half_mix_avg() {
+        let src = [100u8; 32];
+        let mut dst = [50u8; 16];
+        w34a28_bilinear8_avg(&src, 8, &mut dst, 8, 1, &f(64, 64));
+        assert_eq!(&dst[..8], &[75u8; 8]);
+        assert_eq!(&dst[8..], &[50u8; 8]);
+    }
+
+    #[test]
+    fn wide16_and_clamp() {
+        let src = [255u8; 48];
+        let mut dst = [0u8; 16];
+        w34a28_bilinear16_avg(&src, 16, &mut dst, 16, 1, &f(128, 128));
+        assert_eq!(dst, [128u8; 16]);
+    }
+
+    #[test]
+    fn horizontal4() {
+        let src = [10u8, 20, 30, 40, 50, 0, 0, 0];
+        let mut dst = [0u8; 4];
+        w34a28_bilinear4_h(&src, 8, &mut dst, 4, 1, &f(64, 64));
+        assert_eq!(dst, [15, 25, 35, 45]);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave34/agent29.rs
+// ===========================================================================
+// Wave 34 agent 29: SSE2 bilinear 2-tap horizontal predictors.
+
+/// Shared bilinear tap kernel: `sat16(p0*t0 + p1*t1)`, +64, >>7, clamp to u8.
+/// The SSE2 code uses `pmullw` (wrapping), `paddsw` (saturating) and `packuswb`.
+fn w34a29_tap(p0: u8, p1: u8, t0: i16, t1: i16) -> u8 {
+    let a = (p0 as i16).wrapping_mul(t0);
+    let b = (p1 as i16).wrapping_mul(t1);
+    let s = a.saturating_add(b).saturating_add(0x40) >> 7;
+    s.clamp(0, 255) as u8
+}
+
+/// Taps are words 3 and 4 of the 16-byte filter block.
+fn w34a29_taps(filter: &[i16; 8]) -> (i16, i16) {
+    (filter[3], filter[4])
+}
+
+/// `0x004d9e6e`: 8-wide horizontal bilinear filter, `rows` rows; each output
+/// pixel is `clamp((src[i]*f[3] + src[i+1]*f[4] + 64) >> 7)`.
+pub fn w34a29_bilinear_h8(
+    src: &[u8],
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    rows: usize,
+    filter: &[i16; 8],
+) {
+    let (t0, t1) = w34a29_taps(filter);
+    for r in 0..rows {
+        for i in 0..8 {
+            dst[r * dst_stride + i] =
+                w34a29_tap(src[r * src_stride + i], src[r * src_stride + i + 1], t0, t1);
+        }
+    }
+}
+
+/// `0x004d9eec`: 16-wide variant of the same horizontal bilinear filter.
+pub fn w34a29_bilinear_h16(
+    src: &[u8],
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    rows: usize,
+    filter: &[i16; 8],
+) {
+    let (t0, t1) = w34a29_taps(filter);
+    for r in 0..rows {
+        for i in 0..16 {
+            dst[r * dst_stride + i] =
+                w34a29_tap(src[r * src_stride + i], src[r * src_stride + i + 1], t0, t1);
+        }
+    }
+}
+
+/// `0x004d9f8b`: 4-wide horizontal bilinear filter averaged (`pavgb`,
+/// `(a+b+1)>>1`) into the existing destination pixels.
+pub fn w34a29_bilinear_h4_avg(
+    src: &[u8],
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    rows: usize,
+    filter: &[i16; 8],
+) {
+    let (t0, t1) = w34a29_taps(filter);
+    for r in 0..rows {
+        for i in 0..4 {
+            let v = w34a29_tap(src[r * src_stride + i], src[r * src_stride + i + 1], t0, t1);
+            let d = &mut dst[r * dst_stride + i];
+            *d = ((v as u16 + *d as u16 + 1) >> 1) as u8;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests_wave34_agent29 {
+    use super::*;
+
+    const F: [i16; 8] = [0, 0, 0, 96, 32, 0, 0, 0];
+
+    #[test]
+    fn h8_and_h16() {
+        let src: Vec<u8> = (0..40).map(|i| (i * 7) as u8).collect();
+        let mut d = [0u8; 16];
+        w34a29_bilinear_h8(&src, 20, &mut d, 8, 2, &F);
+        assert_eq!(d[0], ((0 * 96 + 7 * 32 + 64) >> 7) as u8);
+        let mut d16 = [0u8; 16];
+        w34a29_bilinear_h16(&src, 20, &mut d16, 16, 1, &[0, 0, 0, 128, 0, 0, 0, 0]);
+        assert_eq!(d16[5], src[5]);
+    }
+
+    #[test]
+    fn clamp_and_avg() {
+        let src = [255u8; 10];
+        let mut d = [0u8; 4];
+        w34a29_bilinear_h8(
+            &[255u8; 9],
+            9,
+            &mut [0u8; 8],
+            8,
+            1,
+            &[0, 0, 0, 0x7fff, 0x7fff, 0, 0, 0],
+        );
+        w34a29_bilinear_h4_avg(&src, 10, &mut d, 4, 1, &[0, 0, 0, 128, 0, 0, 0, 0]);
+        assert_eq!(d, [128; 4]);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave34/agent30.rs
+// ===========================================================================
+// Wave 34 translation batch 30: libvpx two-tap bilinear SSE kernels.
+
+fn w34a30_two_tap_avg(
+    src: &[u8],
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    rows: usize,
+    filter: &[i16; 8],
+    width: usize,
+) {
+    let f0 = filter[3];
+    let f1 = filter[4];
+    for r in 0..rows {
+        for i in 0..width {
+            let a = src[r * src_stride + i] as i16;
+            let b = src[r * src_stride + i + 1] as i16;
+            let sum = a
+                .wrapping_mul(f0)
+                .saturating_add(b.wrapping_mul(f1))
+                .saturating_add(0x40);
+            let v = (sum >> 7).clamp(0, 255) as u32;
+            let d = dst[r * dst_stride + i] as u32;
+            dst[r * dst_stride + i] = ((v + d + 1) >> 1) as u8;
+        }
+    }
+}
+
+/// `0x004da017`: 8-wide bilinear row filter (taps are words 3 and 4 of the
+/// filter), rounded by 0x40, shifted by 7, clamped, then averaged with the
+/// existing destination bytes.  Runs `rows` (>= 1) rows.
+pub fn w34a30_bilin_avg_8(
+    src: &[u8],
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    rows: usize,
+    filter: &[i16; 8],
+) {
+    w34a30_two_tap_avg(src, src_stride, dst, dst_stride, rows, filter, 8);
+}
+
+/// `0x004da09d`: 16-wide variant of the same bilinear filter-and-average.
+pub fn w34a30_bilin_avg_16(
+    src: &[u8],
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    rows: usize,
+    filter: &[i16; 8],
+) {
+    w34a30_two_tap_avg(src, src_stride, dst, dst_stride, rows, filter, 16);
+}
+
+/// `0x004db7be`: 4-wide bilinear filter (taps are words 3 and 4 saturated to
+/// signed bytes, pmaddubsw then pmulhrsw by 0x100), clamped, stored without
+/// averaging.
+pub fn w34a30_bilin_4(
+    src: &[u8],
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    rows: usize,
+    filter: &[i16; 8],
+) {
+    let f0 = filter[3].clamp(-128, 127) as i16;
+    let f1 = filter[4].clamp(-128, 127) as i16;
+    for r in 0..rows {
+        for i in 0..4 {
+            let a = src[r * src_stride + i] as i16;
+            let b = src[r * src_stride + i + 1] as i16;
+            let m = (a * f0).saturating_add(b * f1);
+            let v = ((((m as i32) * 256) >> 14) + 1) >> 1;
+            dst[r * dst_stride + i] = (v as i16).clamp(0, 255) as u8;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests_wave34_agent30 {
+    use super::*;
+
+    const F: [i16; 8] = [0, 0, 0, 64, 64, 0, 0, 0];
+
+    #[test]
+    fn avg8() {
+        let src: Vec<u8> = (0..9).map(|i| i * 10).collect();
+        let mut dst = [100u8; 8];
+        w34a30_bilin_avg_8(&src, 9, &mut dst, 8, 1, &F);
+        // pixel 0: (0*64+10*64+64)>>7 = 5; avg(5,100)=53
+        assert_eq!(dst[0], 53);
+    }
+
+    #[test]
+    fn avg16_clamps() {
+        let src = [255u8; 17];
+        let f = [0, 0, 0, 128, 128, 0, 0, 0];
+        let mut dst = [0u8; 16];
+        w34a30_bilin_avg_16(&src, 17, &mut dst, 16, 1, &f);
+        assert!(dst.iter().all(|&d| d == 128));
+    }
+
+    #[test]
+    fn four_wide() {
+        let src = [0u8, 10, 20, 30, 40];
+        let mut dst = [0u8; 4];
+        w34a30_bilin_4(&src, 5, &mut dst, 4, 1, &F);
+        assert_eq!(dst, [5, 15, 25, 35]);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave34/agent31.rs
+// ===========================================================================
+// Wave 34 agent 31: libvpx SSSE3 bilinear first-pass kernels.
+//
+// The SIMD pseudocode is modelled with explicit filter taps `(f0, f1)`
+// (the signed byte pair broadcast by the original), pmaddubsw (u8*i8
+// pairs, saturated to i16), pmulhrsw by 0x100 (`(x + 64) >> 7`) and an
+// unsigned clamp to a byte.
+
+fn w34a31_tap(src: &[u8], i: usize, taps: (i8, i8)) -> u8 {
+    let s = (src[i] as i32) * (taps.0 as i32) + (src[i + 1] as i32) * (taps.1 as i32);
+    let s = s.clamp(i16::MIN as i32, i16::MAX as i32);
+    ((s + 64) >> 7).clamp(0, 255) as u8
+}
+
+fn w34a31_rows(
+    src: &[u8],
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    height: usize,
+    width: usize,
+    taps: (i8, i8),
+    average: bool,
+) {
+    for y in 0..height {
+        for x in 0..width {
+            let v = w34a31_tap(&src[y * src_stride..], x, taps);
+            let d = &mut dst[y * dst_stride + x];
+            *d = if average {
+                ((v as u16 + *d as u16 + 1) >> 1) as u8
+            } else {
+                v
+            };
+        }
+    }
+}
+
+/// `0x004db825`: 8-wide horizontal bilinear pass, `height` rows
+/// (the original loops do-while, so `height` of 0 is treated as 0 rows).
+/// Reads `width + 1` source bytes per row.
+pub fn w34a31_bilinear_h8(
+    src: &[u8],
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    height: usize,
+    taps: (i8, i8),
+) {
+    w34a31_rows(src, src_stride, dst, dst_stride, height, 8, taps, false);
+}
+
+/// `0x004db890`: 16-wide horizontal bilinear pass, 17 source bytes per row.
+pub fn w34a31_bilinear_h16(
+    src: &[u8],
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    height: usize,
+    taps: (i8, i8),
+) {
+    w34a31_rows(src, src_stride, dst, dst_stride, height, 16, taps, false);
+}
+
+/// `0x004db909`: 4-wide horizontal bilinear pass averaged (pavgb,
+/// round up) with the existing destination bytes.
+pub fn w34a31_bilinear_h4_avg(
+    src: &[u8],
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    height: usize,
+    taps: (i8, i8),
+) {
+    w34a31_rows(src, src_stride, dst, dst_stride, height, 4, taps, true);
+}
+
+#[cfg(test)]
+mod tests_wave34_agent31 {
+    use super::*;
+
+    #[test]
+    fn identity_and_blend() {
+        let src: Vec<u8> = (0..40).collect();
+        let mut d = [0u8; 16];
+        w34a31_bilinear_h8(&src, 20, &mut d, 8, 2, (127, 0));
+        // 128 as i8 wraps to -128; use 64/64 blend instead
+        let mut d = [0u8; 16];
+        w34a31_bilinear_h8(&src, 20, &mut d, 8, 2, (64, 64));
+        assert_eq!(d[0], 1); // (0*64+1*64+64)>>7 = 1
+        assert_eq!(d[8], 21);
+    }
+
+    #[test]
+    fn wide_and_avg() {
+        let src = vec![100u8; 40];
+        let mut d = [0u8; 16];
+        w34a31_bilinear_h16(&src, 20, &mut d, 16, 1, (64, 64));
+        assert!(d.iter().all(|&v| v == 100));
+        let mut a = [50u8; 4];
+        w34a31_bilinear_h4_avg(&src, 20, &mut a, 4, 1, (64, 64));
+        assert_eq!(a, [75; 4]);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave34/agent32.rs
+// ===========================================================================
+// Wave 34 agent 32 translations.
+
+/// Seven-dword default table written by `0x00513ea0` (globals at
+/// 00fa904c..00fa9068, in address order).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct W34a32Defaults {
+    pub d_904c: u32,
+    pub d_9050: u32,
+    pub d_9054: u32,
+    pub d_9058: u32,
+    pub d_905c: u32,
+    pub d_9060: u32,
+    pub d_9064: u32,
+}
+
+/// `0x00513ea0`: stores the constant defaults 5000, 2500, 500, 1700, 100,
+/// 2000 (the 64-bit store at the 905c slot) and 500.
+pub fn w34a32_init_defaults() -> W34a32Defaults {
+    W34a32Defaults {
+        d_904c: 5000,
+        d_9050: 0x9c4,
+        d_9054: 500,
+        d_9058: 0x6a4,
+        d_905c: 100,
+        d_9060: 0x7d0,
+        d_9064: 500,
+    }
+}
+
+#[cfg(test)]
+mod tests_wave34_agent32 {
+    use super::*;
+
+    #[test]
+    fn defaults() {
+        let d = w34a32_init_defaults();
+        assert_eq!(d.d_904c, 5000);
+        assert_eq!(d.d_9050, 2500);
+        assert_eq!(d.d_9058, 1700);
+        assert_eq!((d.d_905c, d.d_9060), (100, 2000));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave34/agent33.rs
+// ===========================================================================
+// Wave 34 agent 33 translations.
+
+/// `0x00513ee0`: resets seven consecutive u32 globals (starting at the
+/// block at 0xfa9030) to their defaults: 10000, 5000, 1000, 0xd48, 400,
+/// 4000, 1000.
+pub fn w34a33_reset_defaults(block: &mut [u32; 7]) {
+    *block = [10000, 5000, 1000, 0xd48, 400, 4000, 1000];
+}
+
+/// `0x00532a30`: stores the result of the callee (taking the 24-bit ECX
+/// argument) into a global.
+pub fn w34a33_store_call(arg: u32, callee: impl Fn(u32) -> u32, global: &mut u32) {
+    *global = callee(arg & 0x00ff_ffff);
+}
+
+#[cfg(test)]
+mod tests_wave34_agent33 {
+    use super::*;
+
+    #[test]
+    fn reset() {
+        let mut b = [0u32; 7];
+        w34a33_reset_defaults(&mut b);
+        assert_eq!(b[4], 400);
+        assert_eq!(b[5], 4000);
+        assert_eq!(b[3], 0xd48);
+    }
+
+    #[test]
+    fn store() {
+        let mut g = 0;
+        w34a33_store_call(0x0100_0005, |x| x + 1, &mut g);
+        assert_eq!(g, 6);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave34/agent34.rs
+// ===========================================================================
+// Wave 34 translation batch 34.
+
+/// `0x005340c0`: invokes the callback `count` times (loop over a counter).
+pub fn w34a34_repeat_call(count: i32, mut f: impl FnMut()) {
+    let mut n = count;
+    while n != 0 {
+        f();
+        n = n.wrapping_sub(1);
+    }
+}
+
+/// Small-buffer string header (`0x005340f0`): size 0, data pointer at the
+/// inline buffer, capacity word `0x8000000f`, first inline byte 0.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct W34a34SsoHeader {
+    pub ptr_is_inline: bool,
+    pub size: u32,
+    pub cap: u32,
+    pub inline_first: u8,
+}
+
+/// `0x005340f0`: initialises an empty inline-buffer string header.
+pub fn w34a34_init_empty_sso() -> W34a34SsoHeader {
+    W34a34SsoHeader {
+        ptr_is_inline: true,
+        size: 0,
+        cap: 0x8000_000f,
+        inline_first: 0,
+    }
+}
+
+/// AnimationLoader object fields (dword layout; vtable at slot 0).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct W34a34AnimationLoader {
+    pub f1: u32,
+    pub f2: u32,
+    pub f3: u32,
+    pub flags: u32,
+    pub f5: u32,
+    pub f6: u32,
+    pub flag_byte: u8,
+}
+
+/// `0x00535470`: AnimationLoader constructor; `flags = param_6 | 0x1000`.
+pub fn w34a34_animation_loader_init(
+    p1: u32,
+    p2: u32,
+    p3: u32,
+    p4: u32,
+    p5: u32,
+    p6: u32,
+    p7: u8,
+) -> W34a34AnimationLoader {
+    W34a34AnimationLoader {
+        f1: p1,
+        f2: p2,
+        f3: p3,
+        flags: p6 | 0x1000,
+        f5: p4,
+        f6: p5,
+        flag_byte: p7,
+    }
+}
+
+#[cfg(test)]
+mod tests_wave34_agent34 {
+    use super::*;
+
+    #[test]
+    fn repeat() {
+        let mut c = 0;
+        w34a34_repeat_call(3, || c += 1);
+        assert_eq!(c, 3);
+    }
+
+    #[test]
+    fn sso() {
+        assert_eq!(w34a34_init_empty_sso().cap, 0x8000_000f);
+    }
+
+    #[test]
+    fn loader() {
+        let l = w34a34_animation_loader_init(1, 2, 3, 4, 5, 6, 7);
+        assert_eq!((l.flags, l.f5, l.f6, l.flag_byte), (0x1006, 4, 5, 7));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave34/agent35.rs
+// ===========================================================================
+// Wave 34 translation batch 35.
+//
+// Skipped: FUN_005358a0 (ends in a non-returning call).
+
+/// `0x005356e0`: when the guard byte (`active`) and the byte behind the
+/// first pointer (`*enabled`) are both non-zero, sets the flag at offset
+/// `0x24` of the `0x14`-stride record `index` in `table` to 1.
+pub fn w34a35_mark_record_flag(
+    active: bool,
+    enabled: bool,
+    table: &mut [u8],
+    index: usize,
+) -> bool {
+    if !active || !enabled {
+        return false;
+    }
+    match table.get_mut(index * 0x14 + 0x24) {
+        Some(b) => {
+            *b = 1;
+            true
+        }
+        None => false,
+    }
+}
+
+/// `0x00535780`: if the handle is non-zero, releases it through the
+/// caller-supplied release routine; returns whether it was called.
+pub fn w34a35_release_if_set(handle: u32, release: &mut dyn FnMut(u32)) -> bool {
+    if handle != 0 {
+        release(handle);
+        true
+    } else {
+        false
+    }
+}
+
+#[cfg(test)]
+mod tests_wave34_agent35 {
+    use super::*;
+
+    #[test]
+    fn flag() {
+        let mut t = vec![0u8; 0x100];
+        assert!(!w34a35_mark_record_flag(true, false, &mut t, 1));
+        assert!(w34a35_mark_record_flag(true, true, &mut t, 1));
+        assert_eq!(t[0x14 + 0x24], 1);
+        assert!(!w34a35_mark_record_flag(true, true, &mut t, 100));
+    }
+
+    #[test]
+    fn release() {
+        let mut got = vec![];
+        assert!(!w34a35_release_if_set(0, &mut |h| got.push(h)));
+        assert!(w34a35_release_if_set(7, &mut |h| got.push(h)));
+        assert_eq!(got, vec![7]);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave34/agent36.rs
+// ===========================================================================
+/// `0x00535ef0`: readiness predicate over a record.  Returns false when bit 3
+/// of the flag byte at offset `0x34` is set; otherwise true only if the
+/// dwords at indices 1, 4, 5 and 6 (indices 0, 2 and 3 are ignored) are all
+/// non-zero.  `rec` must cover at least 0x35 bytes.
+pub fn w34a36_record_ready(rec: &[u8]) -> bool {
+    if rec.len() < 0x35 || rec[0x34] & 8 != 0 {
+        return false;
+    }
+    [1usize, 4, 5, 6].iter().all(|&i| {
+        let o = i * 4;
+        u32::from_le_bytes([rec[o], rec[o + 1], rec[o + 2], rec[o + 3]]) != 0
+    })
+}
+
+#[cfg(test)]
+mod tests_wave34_agent36 {
+    use super::*;
+
+    fn full() -> Vec<u8> {
+        let mut v = vec![0u8; 0x38];
+        for i in [1usize, 4, 5, 6] {
+            v[i * 4] = 1;
+        }
+        v
+    }
+
+    #[test]
+    fn ready_cases() {
+        let mut v = full();
+        assert!(w34a36_record_ready(&v));
+        v[0x34] = 8;
+        assert!(!w34a36_record_ready(&v));
+        v[0x34] = 7;
+        assert!(w34a36_record_ready(&v));
+        v[5 * 4] = 0;
+        assert!(!w34a36_record_ready(&v));
+        assert!(!w34a36_record_ready(&[0u8; 4]));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave34/agent38.rs
+// ===========================================================================
+// Wave 34 agent 38: small dispatch helpers.
+
+/// Fields of the record read through `this` by `0x00538450`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct W34a38Record {
+    pub f08: u32,
+    pub f0c: u32,
+    pub f10: u32,
+    pub f14: u32,
+    pub f18: u32,
+    pub flag_1c: u8,
+}
+
+/// Which callee `0x00538450` dispatched to, with its arguments.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum W34a38Call {
+    /// FUN_00536d90(f14, f18, f08, f0c, f10, param)
+    Wide([u32; 6]),
+    /// FUN_005367b0(f08, f0c, f10)
+    Narrow([u32; 3]),
+}
+
+/// `0x00538450`: when the flag byte at +0x1c is non-zero, calls the six
+/// argument routine with (+0x14, +0x18, +0x8, +0xc, +0x10, param); otherwise
+/// calls the three argument routine with (+0x8, +0xc, +0x10).
+pub fn w34a38_dispatch(rec: &W34a38Record, param: u32) -> W34a38Call {
+    if rec.flag_1c != 0 {
+        W34a38Call::Wide([rec.f14, rec.f18, rec.f08, rec.f0c, rec.f10, param])
+    } else {
+        W34a38Call::Narrow([rec.f08, rec.f0c, rec.f10])
+    }
+}
+
+/// `0x005386a0`: if the object exists, invokes its first vtable slot
+/// (scalar deleting destructor) with flag 1.  Returns whether it was called.
+pub fn w34a38_delete_virtual<F: FnOnce(u32)>(obj_present: bool, slot0: F) -> bool {
+    if obj_present {
+        slot0(1);
+    }
+    obj_present
+}
+
+/// `0x005386b0`: tail-calls vtable slot 1 (offset +4) of the object held at
+/// +0xc of `this`.
+pub fn w34a38_forward_slot1<R, F: FnOnce() -> R>(slot1: F) -> R {
+    slot1()
+}
+
+#[cfg(test)]
+mod tests_wave34_agent38 {
+    use super::*;
+
+    #[test]
+    fn dispatch_picks_callee() {
+        let mut r = W34a38Record {
+            f08: 1,
+            f0c: 2,
+            f10: 3,
+            f14: 4,
+            f18: 5,
+            flag_1c: 0,
+        };
+        assert_eq!(w34a38_dispatch(&r, 9), W34a38Call::Narrow([1, 2, 3]));
+        r.flag_1c = 1;
+        assert_eq!(w34a38_dispatch(&r, 9), W34a38Call::Wide([4, 5, 1, 2, 3, 9]));
+    }
+
+    #[test]
+    fn delete_and_forward() {
+        let mut got = 0;
+        assert!(w34a38_delete_virtual(true, |f| got = f));
+        assert_eq!(got, 1);
+        assert!(!w34a38_delete_virtual(false, |_| panic!()));
+        assert_eq!(w34a38_forward_slot1(|| 7), 7);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave34/agent39.rs
+// ===========================================================================
+// Wave 34 agent 39: dialog widget geometry setters (rect at +4, kind at +0x3c).
+
+/// Widget state touched by the setters: rect (+4..+0xc) as left/top/right/bottom,
+/// kind (+0x3c), and the kind-0xe shadow fields.
+#[allow(non_camel_case_types)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct w34a39_Widget {
+    pub rect: [i16; 4],
+    pub kind: i16,
+    pub f50: i16,
+    pub f52: i16,
+    pub f54: i16,
+    pub f56: i16,
+    pub f60: i16,
+    pub f62: i16,
+    pub f64: i16,
+    pub f66: i16,
+}
+
+/// `0x0087c530`: sets the widget height; kind 0xe also stores `f62 + h` in
+/// `f66`.  Returns the rect handed to the (unmodelled) apply helper:
+/// bottom = top + h.
+pub fn w34a39_set_height(w: &mut w34a39_Widget, h: i16) -> [i16; 4] {
+    if w.kind == 0xe {
+        w.f66 = w.f62.wrapping_add(h);
+    }
+    [w.rect[0], w.rect[1], w.rect[2], w.rect[1].wrapping_add(h)]
+}
+
+/// `0x0087c650`: moves the widget so left equals `x`; kind 0xe shifts
+/// f60/f64/f50/f54 by the delta.  Returns the shifted rect.
+pub fn w34a39_set_left(w: &mut w34a39_Widget, x: i16) -> [i16; 4] {
+    let d = x.wrapping_sub(w.rect[0]);
+    if w.kind == 0xe {
+        w.f60 = w.f60.wrapping_add(d);
+        w.f64 = w.f64.wrapping_add(d);
+        w.f50 = w.f50.wrapping_add(d);
+        w.f54 = w.f54.wrapping_add(d);
+    }
+    [
+        w.rect[0].wrapping_add(d),
+        w.rect[1],
+        w.rect[2].wrapping_add(d),
+        w.rect[3],
+    ]
+}
+
+/// `0x0087c6d0`: moves the widget so top equals `y`; kind 0xe shifts
+/// f62/f66/f52/f56 by the delta.  Returns the shifted rect.
+pub fn w34a39_set_top(w: &mut w34a39_Widget, y: i16) -> [i16; 4] {
+    let d = y.wrapping_sub(w.rect[1]);
+    if w.kind == 0xe {
+        w.f62 = w.f62.wrapping_add(d);
+        w.f66 = w.f66.wrapping_add(d);
+        w.f52 = w.f52.wrapping_add(d);
+        w.f56 = w.f56.wrapping_add(d);
+    }
+    [
+        w.rect[0],
+        w.rect[1].wrapping_add(d),
+        w.rect[2],
+        w.rect[3].wrapping_add(d),
+    ]
+}
+
+#[cfg(test)]
+mod tests_wave34_agent39 {
+    use super::*;
+
+    fn wd(kind: i16) -> w34a39_Widget {
+        w34a39_Widget {
+            rect: [10, 20, 50, 60],
+            kind,
+            f50: 1,
+            f52: 2,
+            f54: 3,
+            f56: 4,
+            f60: 5,
+            f62: 6,
+            f64: 7,
+            f66: 8,
+        }
+    }
+
+    #[test]
+    fn height() {
+        let mut w = wd(0xe);
+        assert_eq!(w34a39_set_height(&mut w, 15), [10, 20, 50, 35]);
+        assert_eq!(w.f66, 21);
+        let mut w = wd(1);
+        w34a39_set_height(&mut w, 15);
+        assert_eq!(w.f66, 8);
+    }
+
+    #[test]
+    fn left_top() {
+        let mut w = wd(0xe);
+        assert_eq!(w34a39_set_left(&mut w, 15), [15, 20, 55, 60]);
+        assert_eq!((w.f60, w.f64, w.f50, w.f54), (10, 12, 6, 8));
+        let mut w = wd(0xe);
+        assert_eq!(w34a39_set_top(&mut w, 0), [10, 0, 50, 40]);
+        assert_eq!((w.f62, w.f66, w.f52, w.f56), (-14, -12, -18, -16));
+        let mut w = wd(2);
+        assert_eq!(w34a39_set_top(&mut w, 25)[1], 25);
+        assert_eq!(w.f62, 6);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave34/agent40.rs
+// ===========================================================================
+// Wave 34 translation batch 40.
+
+/// `0x0093c410`: wide-char path basename.  Applies `wcsrchr` for `/`, then
+/// `\`, then `:` in turn, each time restarting from one wide char past the
+/// last match.  Returns the start index of the result within `path`.
+pub fn w34a40_path_basename(path: &[u16]) -> usize {
+    fn rchr(s: &[u16], from: usize, c: u16) -> Option<usize> {
+        let end = s.iter().position(|&x| x == 0).unwrap_or(s.len());
+        if from > end {
+            return None;
+        }
+        s[from..end].iter().rposition(|&x| x == c).map(|i| i + from)
+    }
+    let mut start = 0usize;
+    for c in [0x2f_u16, 0x5c, 0x3a] {
+        if let Some(i) = rchr(path, start, c) {
+            start = i + 1;
+        }
+    }
+    start
+}
+
+/// `0x0087ca50`: builds the 8-byte argument block passed to the follow-up
+/// call.  `obj` is the record at `this+4` (>= 12 bytes).  When the u16 at
+/// `+0x3c` is 0xe, the u16 at `+0x64` becomes `[+0x60] + delta` (obj must
+/// then be >= 0x66 bytes).  Returns `(first_dword, second_dword)`: the dword at
+/// `+4`, and a dword whose low half is `delta + low16(dword@+4)` and whose
+/// high half is the high half of the dword at `+8`.
+pub fn w34a40_offset_block(obj: &mut [u8], delta: i16) -> (u32, u32) {
+    let rd16 = |o: &[u8], i: usize| u16::from_le_bytes([o[i], o[i + 1]]);
+    if rd16(obj, 0x3c) == 0xe {
+        let v = (rd16(obj, 0x60) as i16).wrapping_add(delta) as u16;
+        obj[0x64..0x66].copy_from_slice(&v.to_le_bytes());
+    }
+    let d4 = u32::from_le_bytes([obj[4], obj[5], obj[6], obj[7]]);
+    let hi = rd16(obj, 10);
+    let lo = (delta as u16).wrapping_add(d4 as u16);
+    (d4, (hi as u32) << 16 | lo as u32)
+}
+
+#[cfg(test)]
+mod tests_wave34_agent40 {
+    use super::*;
+    #[test]
+    fn basename() {
+        let s: Vec<u16> = "a/b\\c:d".encode_utf16().chain([0]).collect();
+        assert_eq!(w34a40_path_basename(&s), 6);
+        let s: Vec<u16> = "abc".encode_utf16().chain([0]).collect();
+        assert_eq!(w34a40_path_basename(&s), 0);
+    }
+    #[test]
+    fn block() {
+        let mut o = vec![0u8; 0x70];
+        o[0x3c] = 0xe;
+        o[0x60] = 5;
+        o[4] = 1;
+        o[10] = 7;
+        let (a, b) = w34a40_offset_block(&mut o, 2);
+        assert_eq!(a, 1);
+        assert_eq!(b, 0x0007_0003);
+        assert_eq!(o[0x64], 7);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave34/agent41.rs
+// ===========================================================================
+// Wave 34 agent 41.
+
+/// `0x009a3710`: widens a NUL-terminated byte string in place to UTF-16LE
+/// style (each byte followed by a zero).  Returns `false` when the buffer is
+/// too small (`len*2+2 > buf.len()`), mirroring the null return.
+pub fn w34a41_widen_in_place(buf: &mut [u8]) -> bool {
+    let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    if len * 2 + 2 > buf.len() {
+        return false;
+    }
+    let mut i = len as isize;
+    while i >= 0 {
+        let u = i as usize;
+        buf[u * 2] = buf[u];
+        buf[u * 2 + 1] = 0;
+        i -= 1;
+    }
+    true
+}
+
+#[cfg(test)]
+mod tests_wave34_agent41 {
+    use super::*;
+
+    #[test]
+    fn widen() {
+        let mut b = *b"abc\0\0\0\0\0";
+        assert!(w34a41_widen_in_place(&mut b));
+        assert_eq!(&b, b"a\0b\0c\0\0\0");
+        let mut s = *b"abc\0";
+        assert!(!w34a41_widen_in_place(&mut s));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave34/agent42.rs
+// ===========================================================================
+// Wave 34 agent 42: FMOD DSP parameter / dump helpers.
+
+/// `0x009bc230`: FMOD oscillator DSP parameter query.  `param == 0` yields
+/// the waveform type (value as float plus its name; sine, square, saw up,
+/// saw down, triangle, noise), `param == 1` the rate formatted `%.02f`.
+/// Returns `(value, description)`; other indexes return `None`.
+pub fn w34a42_osc_get_param(ty: i32, rate: f32, param: i32) -> Option<(f32, String)> {
+    match param {
+        0 => {
+            let name = match ty {
+                0 => "sine",
+                1 => "square",
+                2 => "saw up",
+                3 => "saw down",
+                4 => "triangle",
+                5 => "noise",
+                _ => "",
+            };
+            Some((ty as f32, name.to_string()))
+        }
+        1 => Some((rate, format!("{rate:.2}"))),
+        _ => None,
+    }
+}
+
+/// `0x009cc840`: reads the 4-byte version field via `read(4, 1)`; returns
+/// 5 on short read, otherwise sets `*flag` when the field equals 1 and
+/// returns 0.
+pub fn w34a42_read_flag(read_ok: bool, field: i32, flag: &mut u8) -> u32 {
+    if !read_ok {
+        return 5;
+    }
+    if field == 1 {
+        *flag = 1;
+    }
+    0
+}
+
+/// `0x009ccae0`: like the above but when the field is 1 also reads two
+/// 8-byte values; both must succeed to set `*flag`, else returns 5.
+pub fn w34a42_read_flag_pair(
+    read_ok: bool,
+    field: i32,
+    read2_ok: bool,
+    read3_ok: bool,
+    flag: &mut u8,
+) -> u32 {
+    if read_ok {
+        if field != 1 {
+            return 0;
+        }
+        if read2_ok && read3_ok {
+            *flag = 1;
+            return 0;
+        }
+    }
+    5
+}
+
+#[cfg(test)]
+mod tests_wave34_agent42 {
+    use super::*;
+
+    #[test]
+    fn osc() {
+        assert_eq!(w34a42_osc_get_param(1, 0.0, 0).unwrap().1, "square");
+        assert_eq!(w34a42_osc_get_param(0, 1.5, 1).unwrap().1, "1.50");
+        assert!(w34a42_osc_get_param(0, 0.0, 2).is_none());
+    }
+
+    #[test]
+    fn flags() {
+        let mut f = 0;
+        assert_eq!(w34a42_read_flag(false, 1, &mut f), 5);
+        assert_eq!(w34a42_read_flag(true, 1, &mut f), 0);
+        assert_eq!(f, 1);
+        let mut g = 0;
+        assert_eq!(w34a42_read_flag_pair(true, 2, true, true, &mut g), 0);
+        assert_eq!(g, 0);
+        assert_eq!(w34a42_read_flag_pair(true, 1, true, false, &mut g), 5);
+        assert_eq!(w34a42_read_flag_pair(true, 1, true, true, &mut g), 0);
+        assert_eq!(g, 1);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave34/agent43.rs
+// ===========================================================================
+// Wave 34 translation batch 43.
+
+/// `0x009e0140`: indexed entry lookup.  When `initialised` is false the
+/// `init` callback (FUN_009dfc40) runs and a nonzero result is returned
+/// as is.  Index outside `0..names.len()` yields 0x25.  Name and path
+/// outputs are copied truncated to `len - 1` units and terminated with 0;
+/// the 16-byte record is copied to `guid_out` when present.
+pub fn w34a43_get_entry(
+    initialised: bool,
+    init: impl FnOnce() -> i32,
+    index: i32,
+    names: &[Vec<u16>],
+    paths: &[Vec<u16>],
+    guids: &[[u32; 4]],
+    name_out: Option<&mut [u16]>,
+    path_out: Option<&mut [u16]>,
+    guid_out: Option<&mut [u32; 4]>,
+) -> i32 {
+    if !initialised {
+        let r = init();
+        if r != 0 {
+            return r;
+        }
+    }
+    if index < 0 || index as usize >= names.len() {
+        return 0x25;
+    }
+    let i = index as usize;
+    let copy = |dst: Option<&mut [u16]>, src: &[u16]| {
+        if let Some(d) = dst {
+            if d.is_empty() {
+                return;
+            }
+            let n = d.len() - 1;
+            for (k, slot) in d.iter_mut().take(n).enumerate() {
+                *slot = src.get(k).copied().unwrap_or(0);
+            }
+            d[n] = 0;
+        }
+    };
+    copy(name_out, &names[i]);
+    copy(path_out, paths.get(i).map(|v| v.as_slice()).unwrap_or(&[]));
+    if let (Some(g), Some(s)) = (guid_out, guids.get(i)) {
+        *g = *s;
+    }
+    0
+}
+
+#[cfg(test)]
+mod tests_wave34_agent43 {
+    use super::*;
+
+    #[test]
+    fn entry_lookup() {
+        let names = vec![vec![65u16, 66, 67]];
+        let paths = vec![vec![1u16]];
+        let guids = vec![[1, 2, 3, 4]];
+        let mut n = [9u16; 3];
+        let mut g = [0u32; 4];
+        let r = w34a43_get_entry(
+            true,
+            || 7,
+            0,
+            &names,
+            &paths,
+            &guids,
+            Some(&mut n),
+            None,
+            Some(&mut g),
+        );
+        assert_eq!((r, n, g), (0, [65, 66, 0], [1, 2, 3, 4]));
+        assert_eq!(
+            w34a43_get_entry(true, || 0, 1, &names, &paths, &guids, None, None, None),
+            0x25
+        );
+        assert_eq!(
+            w34a43_get_entry(false, || 5, 0, &names, &paths, &guids, None, None, None),
+            5
+        );
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave34/agent44.rs
+// ===========================================================================
+// Wave 34 translation batch 44.
+
+/// `0x009f1bc0`: canonical-Huffman symbol decode.  `peek(n)` models
+/// FUN_009f0200 (returns n bits, or negative when unavailable) and
+/// `consume(n)` models FUN_009f0180.  Fields: `lookup` (+0x20), `lookup_bits`
+/// (+0x24), `max_bits` (+0x28), `limit` (+8), `codes` (+0x14), `lens` (+0x1c).
+/// Returns the symbol or `u32::MAX`.
+#[allow(clippy::too_many_arguments)]
+pub fn w34a44_huff_decode(
+    lookup: &[u32],
+    lookup_bits: i32,
+    max_bits: i32,
+    limit: i32,
+    codes: &[u32],
+    lens: &[i8],
+    peek: &mut dyn FnMut(i32) -> i32,
+    consume: &mut dyn FnMut(i32),
+) -> u32 {
+    let mut max = max_bits;
+    let (mut lo, mut hi): (u32, i32);
+    let first = peek(lookup_bits);
+    if first < 0 {
+        lo = 0;
+        hi = limit;
+    } else {
+        let e = lookup[first as usize];
+        if (e as i32) >= 0 {
+            consume(lens[(e - 1) as usize] as i32);
+            return e.wrapping_sub(1);
+        }
+        lo = ((e as i32) >> 15 & 0x7fff) as u32;
+        hi = limit.wrapping_sub((e & 0x7fff) as i32);
+    }
+    let mut v = peek(max);
+    loop {
+        if v >= 0 || max < 2 {
+            if v < 0 {
+                return u32::MAX;
+            }
+            let mut x = v as u32;
+            x = x.rotate_left(16);
+            x = ((x >> 8) ^ (x << 8)) & 0x00ff_00ff ^ (x << 8);
+            x = ((x >> 4) ^ (x << 4)) & 0x0f0f_0f0f ^ (x << 4);
+            x = ((x >> 2) ^ x.wrapping_mul(4)) & 0x3333_3333 ^ x.wrapping_mul(4);
+            x = ((x >> 1) ^ x.wrapping_mul(2)) & 0x5555_5555 ^ x.wrapping_mul(2);
+            let mut d = hi.wrapping_sub(lo as i32);
+            while d > 1 {
+                let half = (d >> 1) as u32;
+                let c = codes[(half + lo) as usize];
+                if x < c {
+                    hi = hi.wrapping_sub(half as i32);
+                } else {
+                    lo = lo.wrapping_add(half);
+                }
+                d = hi.wrapping_sub(lo as i32);
+            }
+            let l = lens[lo as usize] as i32;
+            if max < l {
+                consume(max);
+                return u32::MAX;
+            }
+            consume(l);
+            return lo;
+        }
+        max -= 1;
+        v = peek(max);
+    }
+}
+
+/// `0x00ac04e0`: counts the leading hex digits (`0-9`, `a-f`, `A-F`) of
+/// `text[..len]`; `check(text, n)` models FUN_00b8ef50 and `conv(text, n)`
+/// models FUN_00b8eeb0.  When the check passes and `1 <= n <= 0x2e` (even
+/// rounding) the converted byte is returned in the second slot.
+pub fn w34a44_hex_prefix(
+    text: &[u8],
+    len: u32,
+    check: &dyn Fn(&[u8], u32) -> bool,
+    conv: &dyn Fn(&[u8], u32) -> u8,
+) -> (u32, Option<u8>) {
+    let mut n = 0u32;
+    if len != 0 {
+        loop {
+            let c = text[n as usize];
+            if !(c.is_ascii_digit() || (b'a'..=b'f').contains(&c) || (b'A'..=b'F').contains(&c)) {
+                break;
+            }
+            n += 1;
+            if n >= len {
+                break;
+            }
+        }
+    }
+    if check(text, n) && n != 0 && (n & !1) < 0x2f {
+        return (n, Some(conv(text, n)));
+    }
+    (0, None)
+}
+
+/// `0x00b0bb60`: walks 28-byte (7 x u32) records, accumulating the first
+/// word into `sum_a` and the second into `sum_b` (64-bit), stopping before
+/// `sum_b` would reach `limit + 1`.  Returns `(count, sum_a, sum_b)`.
+pub fn w34a44_accumulate(
+    limit_lo: u32,
+    limit_hi: u32,
+    recs: &[u32],
+    count: u32,
+) -> (u32, u64, u64) {
+    let (mut a, mut b) = (0u64, 0u64);
+    let mut n = 0u32;
+    if (count > 1 || recs.first().copied().unwrap_or(0) != 0) && count != 0 {
+        let hi_lim = limit_hi.wrapping_add((limit_lo == 0xffff_ffff) as u32);
+        let lo_lim = limit_lo.wrapping_add(1);
+        loop {
+            let r = &recs[n as usize * 7..];
+            let nb = b.wrapping_add(r[1] as u64);
+            let (nlo, nhi) = (nb as u32, (nb >> 32) as u32);
+            if hi_lim < nhi || (hi_lim <= nhi && lo_lim <= nlo) {
+                return (n, a, b);
+            }
+            b = nb;
+            a = a.wrapping_add(r[0] as u64);
+            n += 1;
+            if n >= count {
+                break;
+            }
+        }
+    }
+    (n, a, b)
+}
+
+#[cfg(test)]
+mod tests_wave34_agent44 {
+    use super::*;
+
+    #[test]
+    fn hex_prefix() {
+        let t = b"1aFz";
+        assert_eq!(
+            w34a44_hex_prefix(t, 4, &|_, _| true, &|_, n| n as u8),
+            (3, Some(3))
+        );
+        assert_eq!(w34a44_hex_prefix(t, 4, &|_, _| false, &|_, _| 0), (0, None));
+    }
+
+    #[test]
+    fn accumulate() {
+        let recs = [1, 10, 0, 0, 0, 0, 0, 2, 20, 0, 0, 0, 0, 0];
+        assert_eq!(w34a44_accumulate(100, 0, &recs, 2), (2, 3, 30));
+        assert_eq!(w34a44_accumulate(15, 0, &recs, 2), (1, 1, 10));
+    }
+
+    #[test]
+    fn huff_direct() {
+        let lookup = [3u32, 0];
+        let lens = [0i8, 0, 2];
+        let mut used = 0;
+        let r = w34a44_huff_decode(&lookup, 1, 4, 3, &[], &lens, &mut |_| 0, &mut |n| used = n);
+        assert_eq!((r, used), (2, 2));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave34/agent45.rs
+// ===========================================================================
+// Wave 34 agent 45: small range-table helpers (runtime.rs).
+
+/// `0x00b4ee90`: number of 32-byte records between `begin` and `end` byte
+/// offsets (`(end - begin) >> 4 >> 1`).  The validation call is not modelled.
+pub fn w34a45_record_count(begin: i32, end: i32) -> u32 {
+    ((end.wrapping_sub(begin) >> 4) as u32) >> 1
+}
+
+/// `0x00b4eeb0`: reads record `index` (stride 0x20) and returns the dwords
+/// at offsets 0 and 4, and at offsets 0x10 and 0x14.
+pub fn w34a45_read_record_pairs(rows: &[u8], index: usize) -> Option<([u32; 2], [u32; 2])> {
+    let base = index.checked_mul(0x20)?;
+    let rd = |o: usize| -> Option<u32> {
+        let s = rows.get(base.checked_add(o)?..base.checked_add(o + 4)?)?;
+        Some(u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
+    };
+    Some(([rd(0)?, rd(4)?], [rd(0x10)?, rd(0x14)?]))
+}
+
+/// `0x00b4eef0`: walks `(lo, hi, count, _)` records (stride 16 bytes).
+/// `a` and `b` are 64-bit keys.  For the first record whose key is not
+/// below `a`... returns false when the key exceeds `a` and either the
+/// accumulated count is positive or the key is below `b`; true otherwise.
+pub fn w34a45_range_check(recs: &[[u32; 4]], a: u64, b: u64) -> bool {
+    let mut acc: i32 = 0;
+    for r in recs {
+        let key = ((r[1] as u64) << 32) | r[0] as u64;
+        if a < key {
+            return !(acc > 0 || key < b);
+        }
+        acc = acc.wrapping_add(r[2] as i32);
+    }
+    true
+}
+
+#[cfg(test)]
+mod tests_wave34_agent45 {
+    use super::*;
+    #[test]
+    fn count() {
+        assert_eq!(w34a45_record_count(0, 64), 2);
+    }
+    #[test]
+    fn pairs() {
+        let mut v = vec![0u8; 64];
+        v[32] = 1;
+        v[36] = 2;
+        v[48] = 3;
+        v[52] = 4;
+        assert_eq!(w34a45_read_record_pairs(&v, 1), Some(([1, 2], [3, 4])));
+        assert_eq!(w34a45_read_record_pairs(&v, 2), None);
+    }
+    #[test]
+    fn range() {
+        let r = [[5, 0, 1, 0], [20, 0, 1, 0]];
+        assert!(w34a45_range_check(&r, 100, 0));
+        assert!(!w34a45_range_check(&r, 10, 0));
+        assert!(w34a45_range_check(&r, 4, 0));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave34/agent46.rs
+// ===========================================================================
+// Wave 34 agent 46 translations.
+
+/// `0x00c12710`: returns whether `value` is compatible with the category
+/// `kind` (0/1 accept 0,1; 2 accepts 2,3; 3/6/7 accept 2,3,6,7; 4/5 accept
+/// 4,5; 8 accepts 8; anything else rejects).
+pub fn w34a46_kind_accepts(kind: u8, value: u8) -> bool {
+    match kind {
+        0 | 1 => matches!(value, 0 | 1),
+        2 => matches!(value, 2 | 3),
+        3 | 6 | 7 => matches!(value, 2 | 3 | 6 | 7),
+        4 | 5 => matches!(value, 4 | 5),
+        8 => value == 8,
+        _ => false,
+    }
+}
+
+/// `0x00c12950`: true for the odd kinds 1, 3, 5 and 7.
+pub fn w34a46_kind_is_odd_flag(kind: u8) -> bool {
+    matches!(kind, 1 | 3 | 5 | 7)
+}
+
+#[cfg(test)]
+mod tests_wave34_agent46 {
+    use super::*;
+
+    #[test]
+    fn accepts() {
+        assert!(w34a46_kind_accepts(0, 1));
+        assert!(!w34a46_kind_accepts(0, 2));
+        assert!(w34a46_kind_accepts(7, 6));
+        assert!(w34a46_kind_accepts(8, 8));
+        assert!(!w34a46_kind_accepts(9, 0));
+    }
+
+    #[test]
+    fn odd() {
+        assert!(w34a46_kind_is_odd_flag(5));
+        assert!(!w34a46_kind_is_odd_flag(4));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave34/agent47.rs
+// ===========================================================================
+// Wave 34 translation batch 47: block-compressed texture size helpers.
+
+/// `0x00c12990`: true when `format` is 4 or 5.
+pub fn w34a47_is_format_4_or_5(format: u8) -> bool {
+    format.wrapping_sub(4) < 2
+}
+
+/// `0x00c12ec0`: size in bytes for `count` rows given a format code; the
+/// divisor groups come from the format switch (4, 5, 6, 8, 10, 12, else 1).
+pub fn w34a47_rows_size(format: u8, mult: i32, extent: u32) -> i32 {
+    let d: u32 = match format {
+        0x39..=0x52 | 0x5f | 0x60 | 0x6d..=0x74 => 4,
+        0x53 | 0x54 | 0x56 | 0x59 | 0x61 | 0x62 | 0x64 | 0x67 => 5,
+        0x55 | 0x57 | 0x5a | 0x63 | 0x65 | 0x68 => 6,
+        0x58 | 0x5b | 0x66 | 0x69 => 8,
+        0x5c | 0x5d | 0x6a | 0x6b => 10,
+        0x5e | 0x6c => 12,
+        _ => 1,
+    };
+    let add = if d == 1 { 0 } else { d - 1 };
+    ((extent.wrapping_add(add)) / d).wrapping_mul(mult as u32) as i32
+}
+
+/// `0x00c12fd0`: block-rounded size; `table` models the per-format int
+/// table (indexed by format), `extent` is the dimension to round up.
+pub fn w34a47_block_size(format: u8, extent: i32, table: &[i32]) -> i32 {
+    let d: u32 = match format {
+        0x39..=0x51 | 0x5f | 0x6f | 0x70 | 0x73 | 0x74 => 4,
+        0x52 | 0x53 | 0x60 | 0x61 => 5,
+        0x54 | 0x55 | 0x62 | 0x63 => 6,
+        0x56..=0x58 | 0x64 | 0x65 | 0x66 | 0x6d | 0x6e | 0x71 | 0x72 => 8,
+        0x59..=0x5c | 0x67..=0x6a => 10,
+        0x5d | 0x5e | 0x6b | 0x6c => 12,
+        _ => 1,
+    };
+    let entry = table.get(format as usize).copied().unwrap_or(0);
+    ((extent.wrapping_sub(1) as u32).wrapping_add(d) / d).wrapping_mul(entry as u32) as i32
+}
+
+#[cfg(test)]
+mod tests_wave34_agent47 {
+    use super::*;
+
+    #[test]
+    fn flag() {
+        assert!(w34a47_is_format_4_or_5(4) && w34a47_is_format_4_or_5(5));
+        assert!(!w34a47_is_format_4_or_5(3) && !w34a47_is_format_4_or_5(6));
+    }
+
+    #[test]
+    fn rows() {
+        assert_eq!(w34a47_rows_size(0x39, 2, 5), 4);
+        assert_eq!(w34a47_rows_size(0x5e, 3, 13), 6);
+        assert_eq!(w34a47_rows_size(0, 3, 7), 21);
+    }
+
+    #[test]
+    fn block() {
+        let mut t = vec![0; 256];
+        t[0x39] = 8;
+        t[1] = 3;
+        assert_eq!(w34a47_block_size(0x39, 5, &t), 16);
+        assert_eq!(w34a47_block_size(1, 5, &t), 15);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave34/agent48.rs
+// ===========================================================================
+// Wave 34 agent 48: small dispatch/flag-combine helpers.
+
+/// `0x00c1a670`: looks up a value through the virtual slot at `+0x38` using
+/// the bytes at record offsets `+8` and `+0x20`, validates the record with the
+/// check callee, and either dispatches the forwarded call (slot `+300` of the
+/// owner object) or runs the failure path.  Returns `param_1` unchanged.
+pub fn w34a48_validate_dispatch<L, C, D, F>(
+    param_1: u32,
+    rec: &[u8],
+    lookup: L,
+    check: C,
+    dispatch: D,
+    on_fail: F,
+) -> u32
+where
+    L: FnOnce(u8, u8) -> u32,
+    C: FnOnce(&[u8], u32) -> bool,
+    D: FnOnce(),
+    F: FnOnce(),
+{
+    let key = lookup(rec[8], rec[0x20]);
+    if check(rec, key) {
+        dispatch();
+    } else {
+        on_fail();
+    }
+    param_1
+}
+
+/// `0x00c20d20`: ANDs the byte results of two callees with bit 12 of
+/// `a_flags` and bit 3 of `b_flags` (both shifted down, low byte used).
+pub fn w34a48_flag_and_a(a_flags: u32, b_flags: u32, first: u8, second: u8) -> u8 {
+    second & ((a_flags >> 12) as u8) & ((b_flags >> 3) as u8) & first
+}
+
+/// `0x00c20f50`: ANDs the byte results of two callees with bit 4 of
+/// `a_flags` and bit 11 of `b_flags` (both shifted down, low byte used).
+pub fn w34a48_flag_and_b(a_flags: u32, b_flags: u32, first: u8, second: u8) -> u8 {
+    second & first & ((a_flags >> 4) as u8) & ((b_flags >> 11) as u8)
+}
+
+#[cfg(test)]
+mod tests_wave34_agent48 {
+    use super::*;
+
+    #[test]
+    fn dispatch_paths() {
+        let mut rec = [0u8; 0x24];
+        rec[8] = 3;
+        rec[0x20] = 4;
+        let hit = std::cell::Cell::new(0);
+        let r = w34a48_validate_dispatch(
+            9,
+            &rec,
+            |a, b| (a as u32) << 8 | b as u32,
+            |_, k| k == 0x304,
+            || hit.set(1),
+            || hit.set(2),
+        );
+        assert_eq!((r, hit.get()), (9, 1));
+        let r = w34a48_validate_dispatch(
+            7,
+            &rec,
+            |_, _| 0,
+            |_, _| false,
+            || hit.set(1),
+            || hit.set(2),
+        );
+        assert_eq!((r, hit.get()), (7, 2));
+    }
+
+    #[test]
+    fn flags() {
+        assert_eq!(w34a48_flag_and_a(1 << 12, 1 << 3, 0xff, 0xff), 1);
+        assert_eq!(w34a48_flag_and_a(0, 1 << 3, 0xff, 0xff), 0);
+        assert_eq!(w34a48_flag_and_b(1 << 4, 1 << 11, 0xff, 0xff), 1);
+        assert_eq!(w34a48_flag_and_b(1 << 4, 0, 0xff, 0xff), 0);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave34/agent49.rs
+// ===========================================================================
+// Wave 34 agent 49 translations.
+
+/// `0x00c6bdd0`: runs a cursor-advancing routine over `*cursor` and, when an
+/// out-slot is supplied, stores the number of bytes consumed.
+pub fn w34a49_consumed_len(
+    start: i32,
+    param3: u32,
+    advance: impl FnOnce(i32, u32) -> i32,
+    out: Option<&mut i32>,
+) {
+    let end = advance(start, param3);
+    if let Some(o) = out {
+        *o = end.wrapping_sub(start);
+    }
+}
+
+/// `0x00c713f0`: directory-exists check on a NUL-terminated UTF-16 path.
+/// `exists` is the probe with flag 0, `attrs` returns file attributes
+/// (`0xffffffff` on failure; bit 4 is the directory flag).  When attributes
+/// fail, the path is cut at the last `\` or `/` and the parent is checked
+/// recursively; on success the separator is restored as `\` and re-probed.
+pub fn w34a49_dir_exists(
+    path: &mut [u16],
+    exists: &dyn Fn(&[u16]) -> bool,
+    attrs: &dyn Fn(&[u16]) -> u32,
+) -> u32 {
+    if exists(path) {
+        return 1;
+    }
+    let a = attrs(path);
+    if a != 0xffff_ffff {
+        return (a >> 4) & 1;
+    }
+    let find = |p: &[u16], c: u16| {
+        let n = p.iter().position(|&x| x == 0).unwrap_or(p.len());
+        p[..n].iter().rposition(|&x| x == c)
+    };
+    let s1 = find(path, 0x5c);
+    let s2 = find(path, 0x2f);
+    let cut = match (s1, s2) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (a, b) => a.or(b),
+    };
+    if let Some(i) = cut {
+        path[i] = 0;
+        if w34a49_dir_exists(path, exists, attrs) & 0xff != 0 {
+            path[i] = 0x5c;
+            return u32::from(exists(path));
+        }
+    }
+    0
+}
+
+/// State tables for `0x00c80ce0`.
+#[derive(Default, Clone, Debug)]
+pub struct W34a49NvState {
+    pub handle: [i32; 2],
+    pub loaded: [i32; 2],
+    pub flag_a: [i32; 2],
+    pub flag_b: [i32; 2],
+}
+
+/// `0x00c80ce0`: lazily loads `nvapi.dll` (index 0) or `nvpowerapi.dll`
+/// (otherwise); `mode` must be 0 or 1 (else -3).  Load failure -> -2; init
+/// error is returned after unloading.
+pub fn w34a49_nv_load(
+    st: &mut W34a49NvState,
+    index: usize,
+    mode: i32,
+    load: impl FnOnce(&str) -> i32,
+    init: impl FnOnce(i32, usize, i32) -> i32,
+    unload: impl FnOnce(i32),
+) -> i32 {
+    let m = match mode {
+        0 => 0,
+        1 => 1,
+        _ => return -3,
+    };
+    if st.handle[index] == 0 {
+        let name = if index != 0 {
+            "nvpowerapi.dll"
+        } else {
+            "nvapi.dll"
+        };
+        let h = load(name);
+        if h == 0 {
+            return -2;
+        }
+        let r = init(h, index, mode);
+        if r != 0 {
+            unload(h);
+            return r;
+        }
+        st.handle[index] = h;
+        st.loaded[index] = 1;
+        st.flag_a[m] = 1;
+        st.flag_b[m] = 1;
+    }
+    0
+}
+
+#[cfg(test)]
+mod tests_wave34_agent49 {
+    use super::*;
+
+    #[test]
+    fn consumed() {
+        let mut o = 0;
+        w34a49_consumed_len(10, 0, |s, _| s + 7, Some(&mut o));
+        assert_eq!(o, 7);
+        w34a49_consumed_len(10, 0, |s, _| s, None);
+    }
+
+    #[test]
+    fn dir() {
+        let mut p: Vec<u16> = "a\\b".encode_utf16().chain([0]).collect();
+        let ex = |q: &[u16]| {
+            q.first() == Some(&0x61) && q.get(1) == Some(&0x5c) && q.get(2) == Some(&0x62)
+        };
+        let at = |q: &[u16]| {
+            if q.get(1) == Some(&0) {
+                0x10
+            } else {
+                0xffff_ffff
+            }
+        };
+        assert_eq!(w34a49_dir_exists(&mut p, &ex, &at), 1);
+        let mut p2: Vec<u16> = "a\\c".encode_utf16().chain([0]).collect();
+        assert_eq!(w34a49_dir_exists(&mut p2, &ex, &at), 0);
+    }
+
+    #[test]
+    fn nv() {
+        let mut st = W34a49NvState::default();
+        assert_eq!(
+            w34a49_nv_load(&mut st, 0, 2, |_| 1, |_, _, _| 0, |_| {}),
+            -3
+        );
+        assert_eq!(
+            w34a49_nv_load(&mut st, 0, 0, |_| 0, |_, _, _| 0, |_| {}),
+            -2
+        );
+        assert_eq!(
+            w34a49_nv_load(
+                &mut st,
+                1,
+                1,
+                |n| {
+                    assert_eq!(n, "nvpowerapi.dll");
+                    5
+                },
+                |_, _, _| 0,
+                |_| {}
+            ),
+            0
+        );
+        assert_eq!(st.handle[1], 5);
+        assert_eq!(st.flag_a[1], 1);
+        assert_eq!(w34a49_nv_load(&mut st, 0, 0, |_| 6, |_, _, _| 9, |_| {}), 9);
+        assert_eq!(st.handle[0], 0);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave34/agent50.rs
+// ===========================================================================
+// Wave 34 batch 50: API-id trampolines (counter, gate, lazy resolve, hooks).
+
+/// Hook state shared by the trampolines (globals `0x0140e064`, resolver,
+/// pre-call and post-call hooks).
+pub struct W34a50Hooks<'a> {
+    pub counter: i32,
+    pub gate: &'a mut dyn FnMut() -> i32,
+    pub resolve: Option<&'a mut dyn FnMut(u32) -> Option<usize>>,
+    #[allow(clippy::type_complexity)]
+    pub pre: Option<&'a mut dyn FnMut(u32, &mut u64)>,
+    pub post: Option<&'a mut dyn FnMut(u32, u32, u32, i32)>,
+}
+
+fn w34a50_trampoline<F: FnMut(usize) -> i32>(
+    h: &mut W34a50Hooks,
+    cached: &mut Option<usize>,
+    id: u32,
+    mut call: F,
+) -> i32 {
+    h.counter += 1;
+    let gate = (h.gate)();
+    if gate != 0 {
+        h.counter -= 1;
+        return gate;
+    }
+    if cached.is_none() {
+        if let Some(r) = h.resolve.as_mut() {
+            *cached = r(id);
+        }
+        if cached.is_none() {
+            h.counter -= 1;
+            return -3;
+        }
+    }
+    let target = cached.unwrap();
+    let mut cookie: u64 = 0;
+    if let Some(p) = h.pre.as_mut() {
+        p(id, &mut cookie);
+    }
+    let rc = call(target);
+    if let Some(p) = h.post.as_mut() {
+        p(id, cookie as u32, (cookie >> 32) as u32, rc);
+    }
+    h.counter -= 1;
+    rc
+}
+
+/// `0x00c811e0`: trampoline for API id `0x59e890f9` (5 args, slot `0x0140e910`).
+pub fn w34a50_call_59e890f9(
+    h: &mut W34a50Hooks,
+    cached: &mut Option<usize>,
+    args: [u32; 5],
+    call: &mut dyn FnMut(usize, [u32; 5]) -> i32,
+) -> i32 {
+    w34a50_trampoline(h, cached, 0x59e890f9, |t| call(t, args))
+}
+
+/// `0x00c812b0`: trampoline for API id `0xd4e26bbf` (5 args, slot `0x0140e90c`).
+pub fn w34a50_call_d4e26bbf(
+    h: &mut W34a50Hooks,
+    cached: &mut Option<usize>,
+    args: [u32; 5],
+    call: &mut dyn FnMut(usize, [u32; 5]) -> i32,
+) -> i32 {
+    w34a50_trampoline(h, cached, 0xd4e26bbf, |t| call(t, args))
+}
+
+/// `0x00c81380`: trampoline for API id `0x7aaf7a04` (4 args, slot `0x0140e794`).
+pub fn w34a50_call_7aaf7a04(
+    h: &mut W34a50Hooks,
+    cached: &mut Option<usize>,
+    args: [u32; 4],
+    call: &mut dyn FnMut(usize, [u32; 4]) -> i32,
+) -> i32 {
+    w34a50_trampoline(h, cached, 0x7aaf7a04, |t| call(t, args))
+}
+
+#[cfg(test)]
+mod tests_wave34_agent50 {
+    use super::*;
+
+    #[test]
+    fn resolves_and_calls() {
+        let mut gate = || 0;
+        let mut res = |id: u32| if id == 0x7aaf7a04 { Some(9) } else { None };
+        let mut h = W34a50Hooks {
+            counter: 0,
+            gate: &mut gate,
+            resolve: Some(&mut res),
+            pre: None,
+            post: None,
+        };
+        let mut c = None;
+        let mut call = |t: usize, a: [u32; 4]| (t as i32) + a[3] as i32;
+        assert_eq!(
+            w34a50_call_7aaf7a04(&mut h, &mut c, [1, 2, 3, 4], &mut call),
+            13
+        );
+        assert_eq!(h.counter, 0);
+        let mut c2 = None;
+        let mut call5 = |_t: usize, _a: [u32; 5]| 0;
+        assert_eq!(
+            w34a50_call_59e890f9(&mut h, &mut c2, [0; 5], &mut call5),
+            -3
+        );
+        assert_eq!(
+            w34a50_call_d4e26bbf(&mut h, &mut c2, [0; 5], &mut call5),
+            -3
+        );
+        assert_eq!(h.counter, 0);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave34/agent52.rs
+// ===========================================================================
+// Wave 34 translation batch 52.
+
+/// `0x00c82530`: basename of a wide path.  Finds the last `\` (wcsrchr
+/// semantics, stopping at the NUL) and returns the index just after it, or
+/// 0 when there is no separator.
+pub fn w34a52_path_basename_start(path: &[u16]) -> usize {
+    let end = path.iter().position(|&c| c == 0).unwrap_or(path.len());
+    match path[..end].iter().rposition(|&c| c == 0x5c) {
+        Some(i) => i + 1,
+        None => 0,
+    }
+}
+
+#[cfg(test)]
+mod tests_wave34_agent52 {
+    use super::*;
+
+    #[test]
+    fn basename() {
+        let a: Vec<u16> = "a\\b\\c.txt\0".encode_utf16().collect();
+        assert_eq!(w34a52_path_basename_start(&a), 4);
+        let b: Vec<u16> = "c.txt\0".encode_utf16().collect();
+        assert_eq!(w34a52_path_basename_start(&b), 0);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave34/agent53.rs
+// ===========================================================================
+// Wave 34 agent 53: small format-spec helpers.
+
+/// `0x00c98db5`: format-conversion predicate.  Modes 2 and 13 give false,
+/// modes 3 and 12 give true, otherwise true unless `spec` is `c` or `s`.
+pub fn w34a53_spec_flag(spec: u8, mode: i32) -> bool {
+    match mode {
+        2 | 13 => false,
+        3 | 12 => true,
+        _ => spec != b'c' && spec != b's',
+    }
+}
+
+/// `0x00c98e34`: returns `callee() + base`, where `base` is the object's
+/// field at offset 0x404 or, when that is zero, the object address itself.
+pub fn w34a53_offset_base(field_404: i32, this: i32, callee: impl FnOnce() -> i32) -> i32 {
+    let r = callee();
+    let base = if field_404 == 0 { this } else { field_404 };
+    r.wrapping_add(base)
+}
+
+/// `0x00c990e7`: calls `step` up to `count` times, stopping early once
+/// `*state` becomes -1 after a call.
+pub fn w34a53_repeat_put(ch: u8, count: i32, state: &mut i32, mut step: impl FnMut(i16, &mut i32)) {
+    let mut i = 0;
+    while i < count {
+        step(ch as i8 as i16, state);
+        if *state == -1 {
+            return;
+        }
+        i += 1;
+    }
+}
+
+#[cfg(test)]
+mod tests_wave34_agent53 {
+    use super::*;
+
+    #[test]
+    fn flag() {
+        assert!(!w34a53_spec_flag(b'x', 2));
+        assert!(w34a53_spec_flag(b'c', 3));
+        assert!(!w34a53_spec_flag(b'x', 13));
+        assert!(!w34a53_spec_flag(b's', 5));
+        assert!(w34a53_spec_flag(b'd', 5));
+    }
+
+    #[test]
+    fn base() {
+        assert_eq!(w34a53_offset_base(0, 100, || 5), 105);
+        assert_eq!(w34a53_offset_base(50, 100, || 5), 55);
+    }
+
+    #[test]
+    fn repeat() {
+        let mut n = 0;
+        let mut st = 0;
+        w34a53_repeat_put(b'a', 5, &mut st, |_, s| {
+            n += 1;
+            if n == 3 {
+                *s = -1;
+            }
+        });
+        assert_eq!(n, 3);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave34/agent54.rs
+// ===========================================================================
+// Wave 34 agent 54: small MSVC iostream/locale helpers.
+
+/// `0x00c9b27e`: counts up to `count` characters of a NUL-terminated
+/// buffer starting at `pos`, skipping the trail byte of each lead byte
+/// (`is_lead(byte)` models the ctype mask 0x8000 test).  Stops at NUL or
+/// end of slice; returns the number of characters consumed.
+pub fn w34a54_count_mb_chars(
+    buf: &[u8],
+    pos: usize,
+    count: i32,
+    is_lead: impl Fn(u8) -> bool,
+) -> i32 {
+    let mut p = pos;
+    let mut n = 0;
+    while n < count {
+        let b = buf.get(p).copied().unwrap_or(0);
+        if b == 0 {
+            return n;
+        }
+        if is_lead(b) {
+            p += 1;
+        }
+        p += 1;
+        n += 1;
+    }
+    n
+}
+
+/// Output cursor for `w34a54_put_byte`.
+pub struct W34a54Out<'a> {
+    pub buf: &'a mut [u8],
+    pub pos: usize,
+    pub avail: usize,
+    pub limit: usize,
+    pub flag: u8,
+}
+
+/// `0x00c9b38f`: bounded put.  When the remaining-space counter equals the
+/// limit, no write happens: `written` becomes -1 if `flag` is 0, else is
+/// incremented, and `flag` is returned.  Otherwise the byte is stored,
+/// counters advance and 1 is returned.
+pub fn w34a54_put_byte(out: &mut W34a54Out, byte: u8, written: &mut i32) -> u8 {
+    if out.avail == out.limit {
+        if out.flag == 0 {
+            *written = -1;
+        } else {
+            *written += 1;
+        }
+        return out.flag;
+    }
+    *written += 1;
+    out.avail += 1;
+    out.buf[out.pos] = byte;
+    out.pos += 1;
+    1
+}
+
+/// `0x00c9fa8d`: reads the next byte of `buf` at `*pos` (end = `buf.len()`),
+/// advancing; returns 0xffffffff at end.
+pub fn w34a54_next_byte(buf: &[u8], pos: &mut usize) -> u32 {
+    match buf.get(*pos) {
+        Some(&b) if *pos < buf.len() => {
+            *pos += 1;
+            b as u32
+        }
+        _ => 0xffff_ffff,
+    }
+}
+
+#[cfg(test)]
+mod tests_wave34_agent54 {
+    use super::*;
+    #[test]
+    fn count() {
+        assert_eq!(w34a54_count_mb_chars(b"ab\0", 0, 5, |_| false), 2);
+        assert_eq!(w34a54_count_mb_chars(b"\x81xab", 0, 2, |b| b == 0x81), 2);
+    }
+    #[test]
+    fn put() {
+        let mut b = [0u8; 2];
+        let mut o = W34a54Out {
+            buf: &mut b,
+            pos: 0,
+            avail: 0,
+            limit: 1,
+            flag: 0,
+        };
+        let mut w = 0;
+        assert_eq!(w34a54_put_byte(&mut o, 7, &mut w), 1);
+        assert_eq!(w34a54_put_byte(&mut o, 8, &mut w), 0);
+        assert_eq!(w, -1);
+        assert_eq!(b[0], 7);
+    }
+    #[test]
+    fn next() {
+        let mut p = 0;
+        assert_eq!(w34a54_next_byte(b"a", &mut p), 97);
+        assert_eq!(w34a54_next_byte(b"a", &mut p), 0xffff_ffff);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave34/agent55.rs
+// ===========================================================================
+// Wave 34 agent 55 translations.
+
+/// `0x00c9fe04`: thiscall helper.  Calls the inner lookup with
+/// `this + 8` and the dword at `this + 0x68`, feeds its result to the
+/// follow-up routine and always returns 1.
+pub fn w34a55_lookup_then_apply(
+    this_plus_8: u32,
+    field_68: u32,
+    lookup: impl FnOnce(u32, u32) -> u32,
+    apply: impl FnOnce(u32),
+) -> u32 {
+    apply(lookup(this_plus_8, field_68));
+    1
+}
+
+/// `0x00ca207a`: address of record `index` in the global table at
+/// `0x00f4e670`; the record stride is `0x38` bytes.
+pub fn w34a55_table_entry_address(index: i32) -> u32 {
+    0x00f4_e670u32.wrapping_add((index as u32).wrapping_mul(0x38))
+}
+
+#[cfg(test)]
+mod tests_wave34_agent55 {
+    use super::*;
+
+    #[test]
+    fn lookup_then_apply_passes_result() {
+        let mut seen = 0;
+        let r = w34a55_lookup_then_apply(0x18, 7, |a, b| a + b, |v| seen = v);
+        assert_eq!(r, 1);
+        assert_eq!(seen, 0x1f);
+    }
+
+    #[test]
+    fn table_entry_stride() {
+        assert_eq!(w34a55_table_entry_address(0), 0x00f4_e670);
+        assert_eq!(w34a55_table_entry_address(2), 0x00f4_e670 + 0x70);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave34/agent56.rs
+// ===========================================================================
+// Wave 34 agent 56: wide-char path helpers.
+
+/// `0x00ca41af`: forwards its three arguments plus `param_1` to the
+/// five-argument worker with `-1` as the second argument.
+pub fn w34a56_forward_with_minus_one<F: FnOnce(u32, u32, u32, u32, u32) -> R, R>(
+    worker: F,
+    a: u32,
+    b: u32,
+    c: u32,
+    d: u32,
+) -> R {
+    worker(a, 0xffff_ffff, b, c, d)
+}
+
+/// `0x00ca5752`: drive number of a wide path.  `"X:"` followed by a non-NUL
+/// char yields 1..=26 (case-insensitive); `"X:"` alone is rejected (`None`,
+/// the original raises error 2).  Otherwise the current drive from
+/// `current_drive` is returned.
+pub fn w34a56_drive_number(path: &[u16], current_drive: impl FnOnce() -> i32) -> Option<i32> {
+    let at = |i: usize| path.get(i).copied().unwrap_or(0);
+    let c = at(0);
+    let is_letter = (0x41..=0x5a).contains(&c) || (0x61..=0x7a).contains(&c);
+    if !is_letter || at(1) != 0x3a {
+        return Some(current_drive());
+    }
+    if at(2) == 0 {
+        return None;
+    }
+    let lower = if (0x41..=0x5a).contains(&c) {
+        c + 0x20
+    } else {
+        c
+    };
+    Some(lower as i32 - 0x60)
+}
+
+/// `0x00ca58ed`: true when the wide char is a path separator (`\` or `/`).
+pub fn w34a56_is_path_separator(c: u16) -> bool {
+    c == 0x5c || c == 0x2f
+}
+
+#[cfg(test)]
+mod tests_wave34_agent56 {
+    use super::*;
+
+    #[test]
+    fn sep() {
+        assert!(w34a56_is_path_separator(0x5c));
+        assert!(w34a56_is_path_separator(0x2f));
+        assert!(!w34a56_is_path_separator(0x3a));
+    }
+
+    #[test]
+    fn drive() {
+        let w = |s: &str| s.encode_utf16().collect::<Vec<u16>>();
+        assert_eq!(w34a56_drive_number(&w("C:\\x"), || 9), Some(3));
+        assert_eq!(w34a56_drive_number(&w("a:x"), || 9), Some(1));
+        assert_eq!(w34a56_drive_number(&w("C:"), || 9), None);
+        assert_eq!(w34a56_drive_number(&w("x"), || 9), Some(9));
+    }
+
+    #[test]
+    fn fwd() {
+        assert_eq!(
+            w34a56_forward_with_minus_one(|a, b, c, d, e| (a, b, c, d, e), 1, 2, 3, 4),
+            (1, 0xffff_ffff, 2, 3, 4)
+        );
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave34/agent57.rs
+// ===========================================================================
+// Wave 34 translation batch 57.
+//
+// Two CRT helpers that release a handle unless it equals a global sentinel;
+// the sentinel and the release routine are caller-supplied.
+// FUN_00ca69a8 is skipped (locked stream write with unmodelled callees).
+
+/// `0x00caab9a`: if `*handle` differs from the sentinel global (the one at
+/// the first of the two adjacent slots), calls the release routine on it.
+pub fn w34a57_release_unless_sentinel_a(handle: &i32, sentinel: i32, release: &mut dyn FnMut(i32)) {
+    if *handle != sentinel {
+        release(*handle);
+    }
+}
+
+/// `0x00caabb5`: same as the neighbouring helper but compared against the
+/// second sentinel global.
+pub fn w34a57_release_unless_sentinel_b(handle: &i32, sentinel: i32, release: &mut dyn FnMut(i32)) {
+    if *handle != sentinel {
+        release(*handle);
+    }
+}
+
+#[cfg(test)]
+mod tests_wave34_agent57 {
+    use super::*;
+
+    #[test]
+    fn releases_only_when_different() {
+        let mut got = vec![];
+        w34a57_release_unless_sentinel_a(&5, 5, &mut |h| got.push(h));
+        assert!(got.is_empty());
+        w34a57_release_unless_sentinel_b(&6, 5, &mut |h| got.push(h));
+        assert_eq!(got, vec![6]);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave34/agent58.rs
+// ===========================================================================
+// Wave 34 translation batch 58.
+//
+// Skipped: FUN_00caafd9 (calls a non-modelled CRT initialiser),
+// FUN_00cad363 (SEH/CRT stream glue with uninitialised locals).
+
+/// `0xca_db44` helper (not cited as implemented): replicate low 6 bits.
+fn w34a58_replicate(v: u32) -> u32 {
+    (((v & 0x3f) << 8 | (v & 0x3f)) << 16) | v
+}
+
+/// Reorders the six exception-flag bits of an x87/SSE status value
+/// (helper body of the FPU status reader used by `0x00cad705`).
+fn w34a58_swizzle(s: u32) -> u32 {
+    let s = s & 0x3f;
+    (((s >> 1) & 1) << 5)
+        | (((s >> 2) & 1) << 3)
+        | (((s >> 3) & 1) << 2)
+        | (((s >> 4) & 1) * 2)
+        | ((s & 1) << 4)
+        | (s >> 5)
+}
+
+/// `0x00cad705`: CRT `_clearfp`-style status mask. `fpu_status` and
+/// `mxcsr` stand for the hardware registers, `has_sse` for the global
+/// feature flag. When `mask & 0x1f == 0` the output is 0, else the swizzled
+/// status word ANDed with the mask replicated across bytes. Returns 0.
+pub fn w34a58_fp_status_mask(
+    out: &mut u32,
+    mask: u32,
+    fpu_status: u16,
+    mxcsr: u32,
+    has_sse: bool,
+) -> u32 {
+    if mask & 0x1f == 0 {
+        *out = 0;
+    } else {
+        let x = w34a58_swizzle(fpu_status as u32);
+        let m = if has_sse {
+            w34a58_swizzle(mxcsr)
+        } else {
+            w34a58_swizzle(0)
+        };
+        let status = (((m << 8) | x) << 16) | m | x;
+        *out = w34a58_replicate(mask & 0x1f) & status;
+    }
+    0
+}
+
+#[cfg(test)]
+mod tests_wave34_agent58 {
+    use super::*;
+
+    #[test]
+    fn zero_mask() {
+        let mut o = 5;
+        assert_eq!(w34a58_fp_status_mask(&mut o, 0x20, 0x3f, 0x3f, true), 0);
+        assert_eq!(o, 0);
+    }
+
+    #[test]
+    fn masked() {
+        let mut o = 0;
+        w34a58_fp_status_mask(&mut o, 0x1f, 0x01, 0, false);
+        assert_eq!(o, 0x0010_0010 & 0x1f1f_1f1f | 0);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave34/agent59.rs
+// ===========================================================================
+// Wave 34 agent 59: CRT character-class helpers.
+
+/// `0x00caea06`: CRT `_isctype`-style lookup.  `0xffff` yields 0; values
+/// below 0x100 index the 16-bit ctype table and mask with `mask`; larger
+/// values call `wide(ch)` (the FUN_00cb7d3b wide lookup) and mask its result
+/// when it succeeds.
+pub fn w34a59_isctype(ch: u16, mask: u16, table: &[u16], wide: impl Fn(u16) -> Option<u16>) -> u16 {
+    if ch == 0xffff {
+        return 0;
+    }
+    if ch < 0x100 {
+        return table.get(ch as usize).copied().unwrap_or(0) & mask;
+    }
+    match wide(ch) {
+        Some(v) => v & mask,
+        None => 0,
+    }
+}
+
+/// `0x00caed87`: forwards its four arguments to the five-argument worker
+/// (FUN_00caec2a) with a trailing 0.
+pub fn w34a59_forward4<R>(
+    a: u32,
+    b: u32,
+    c: u32,
+    d: u32,
+    inner: impl FnOnce(u32, u32, u32, u32, u32) -> R,
+) -> R {
+    inner(a, b, c, d, 0)
+}
+
+/// `0x00cb16d9`: no-argument wrapper that just calls FUN_00cb1471.
+pub fn w34a59_call_inner<R>(inner: impl FnOnce() -> R) -> R {
+    inner()
+}
+
+#[cfg(test)]
+mod tests_wave34_agent59 {
+    use super::*;
+
+    #[test]
+    fn isctype() {
+        let t = [0x0003u16; 256];
+        assert_eq!(w34a59_isctype(0xffff, 0xff, &t, |_| Some(1)), 0);
+        assert_eq!(w34a59_isctype(5, 0x1, &t, |_| None), 1);
+        assert_eq!(w34a59_isctype(0x200, 0x2, &t, |_| Some(3)), 2);
+        assert_eq!(w34a59_isctype(0x200, 0x2, &t, |_| None), 0);
+    }
+
+    #[test]
+    fn wrappers() {
+        assert_eq!(
+            w34a59_forward4(1, 2, 3, 4, |a, b, c, d, e| a + b + c + d + e),
+            10
+        );
+        assert_eq!(w34a59_call_inner(|| 7), 7);
+    }
+}

@@ -74624,3 +74624,384 @@ mod tests_wave33_agent10 {
         assert_eq!((v, f), (i64::MIN, 1));
     }
 }
+
+// ===========================================================================
+// Merged from src/wave34/agent01.rs
+// ===========================================================================
+// Wave 34 translation batch 01.
+//
+// Thin wrappers around the code-point decoder FUN_007a5320 (already
+// translated as `w33a01_decode_step`); the decoder is passed as a closure.
+
+/// `0x007a7530`: calls the decoder with a (position, length) pair built from
+/// its two arguments and discards the code point; `pos` and `len` are updated
+/// by the decoder.
+pub fn w34a01_decode_discard(
+    pos: &mut usize,
+    len: &mut usize,
+    decode: &mut dyn FnMut(&mut usize, &mut usize) -> u32,
+) {
+    decode(pos, len);
+}
+
+/// `0x007a7560`: reads the `(pos, len)` pair from a two-word record and runs
+/// the decoder on local copies, discarding the result (the record itself is
+/// not written back).
+pub fn w34a01_decode_record(
+    record: &[usize; 2],
+    decode: &mut dyn FnMut(&mut usize, &mut usize) -> u32,
+) {
+    let (mut pos, mut len) = (record[0], record[1]);
+    decode(&mut pos, &mut len);
+}
+
+/// `0x007a7680`: runs the decoder on a (position, length) pair and returns
+/// whether the decoded code point equals `0xfeff` (byte order mark).
+pub fn w34a01_is_bom(
+    mut pos: usize,
+    mut len: usize,
+    decode: &mut dyn FnMut(&mut usize, &mut usize) -> u32,
+) -> bool {
+    decode(&mut pos, &mut len) == 0xfeff
+}
+
+#[cfg(test)]
+mod tests_wave34_agent01 {
+    #[test]
+    fn wrappers() {
+        let mut d = |p: &mut usize, l: &mut usize| {
+            *p += 1;
+            *l -= 1;
+            0xfeff
+        };
+        let (mut p, mut l) = (0, 3);
+        super::w34a01_decode_discard(&mut p, &mut l, &mut d);
+        assert_eq!((p, l), (1, 2));
+        assert!(super::w34a01_is_bom(0, 3, &mut d));
+        super::w34a01_decode_record(&[0, 3], &mut d);
+        let mut e = |_: &mut usize, _: &mut usize| 0x41;
+        assert!(!super::w34a01_is_bom(0, 1, &mut e));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave34/agent02.rs
+// ===========================================================================
+// Wave 34 translation batch 02.
+
+/// `0x00960460`: reads four bytes and combines them big-endian
+/// (`b0<<24 | b1<<16 | b2<<8 | b3`).  Returns `None` if fewer than four bytes.
+pub fn w34a02_read_be_u32(p: &[u8]) -> Option<u32> {
+    let b = p.get(..4)?;
+    Some(u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
+}
+
+#[cfg(test)]
+mod tests_wave34_agent02 {
+    use super::*;
+
+    #[test]
+    fn be_u32() {
+        assert_eq!(w34a02_read_be_u32(&[1, 2, 3, 4, 9]), Some(0x0102_0304));
+        assert_eq!(w34a02_read_be_u32(&[1, 2, 3]), None);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave34/agent03.rs
+// ===========================================================================
+// Wave 34 translation batch 03.
+//
+// The shared callee (FUN_009a16c0) is not modelled, so it is supplied by
+// the caller as a closure.
+
+/// `0x009c4e00`: forwards `param_2` to the callee with a constant 0 flag.
+pub fn w34a03_forward_zero(param_2: u32, callee: &mut dyn FnMut(u32, i32) -> i32) -> i32 {
+    callee(param_2, 0)
+}
+
+/// `0x009cce80`: maps mode 0/1/2 to the same value and calls the callee;
+/// any other mode returns `0x80070057`.  A nonzero callee result returns 1.
+/// On success the optional out pair receives (`out_value`, 0) and 0 is
+/// returned.
+pub fn w34a03_set_mode(
+    param_2: u32,
+    mode: i32,
+    out: Option<&mut [i32; 2]>,
+    out_value: i32,
+    callee: &mut dyn FnMut(u32, i32) -> i32,
+) -> u32 {
+    if !(0..=2).contains(&mode) {
+        return 0x8007_0057;
+    }
+    if callee(param_2, mode) != 0 {
+        return 1;
+    }
+    if let Some(o) = out {
+        o[0] = out_value;
+        o[1] = 0;
+    }
+    0
+}
+
+/// `0x009cdf20`: when bit 0 of the flags at +0x18c is set, forwards the
+/// signed byte `param_4` to the callee; otherwise returns `0xffffffff`.
+pub fn w34a03_forward_if_flag(
+    flags: u32,
+    param_2: u32,
+    param_4: i8,
+    callee: &mut dyn FnMut(u32, i32) -> u32,
+) -> u32 {
+    if flags & 1 != 0 {
+        callee(param_2, param_4 as i32)
+    } else {
+        0xffff_ffff
+    }
+}
+
+#[cfg(test)]
+mod tests_wave34_agent03 {
+    use super::*;
+
+    #[test]
+    fn forward_zero() {
+        assert_eq!(w34a03_forward_zero(7, &mut |a, b| (a as i32) + b), 7);
+    }
+
+    #[test]
+    fn set_mode_cases() {
+        let mut o = [9, 9];
+        assert_eq!(w34a03_set_mode(1, 3, None, 0, &mut |_, _| 0), 0x8007_0057);
+        assert_eq!(w34a03_set_mode(1, 1, Some(&mut o), 5, &mut |_, _| 1), 1);
+        assert_eq!(o, [9, 9]);
+        assert_eq!(
+            w34a03_set_mode(1, 2, Some(&mut o), 5, &mut |_, m| (m - 2) as i32),
+            0
+        );
+        assert_eq!(o, [5, 0]);
+    }
+
+    #[test]
+    fn flag_gate() {
+        assert_eq!(w34a03_forward_if_flag(0, 1, 2, &mut |_, _| 0), 0xffff_ffff);
+        assert_eq!(
+            w34a03_forward_if_flag(1, 1, -1, &mut |_, c| c as u32),
+            0xffff_ffff
+        );
+        assert_eq!(w34a03_forward_if_flag(3, 1, 4, &mut |_, c| c as u32), 4);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave34/agent04.rs
+// ===========================================================================
+// Wave 34 translation batch 04.
+
+/// `0x00c67c80`: incremental UTF-8 decoder step.  `state` packs the partial
+/// code point (low 24 bits), the bytes still expected (bits 28..29) and the
+/// sequence kind (bits 26..27).  Returns 0 when a complete code point was
+/// written to `out`, 1 when more bytes are needed, 3 on invalid input.
+pub fn w34a04_utf8_step(byte: u8, out: &mut u32, state: &mut u32) -> u32 {
+    let mut s = *state;
+    let b = byte as u32;
+    let kind = (s >> 0x1a) & 3;
+    // 0 = fall to continuation handling, 1 = reset state then return 3
+    let mut reset = false;
+    if kind == 0 {
+        if byte >= 0x80 {
+            if byte & 0xe0 == 0xc0 {
+                if byte < 0xc2 {
+                    return 3;
+                }
+                s = (s & 0xdf00_0000) | (b & 0x1f) | 0x1000_0000;
+            } else if byte & 0xf0 == 0xe0 {
+                s = (s & 0xef00_0000) | (b & 0xf) | 0x2000_0000;
+            } else {
+                if byte & 0xf8 != 0xf0 || byte > 0xf4 {
+                    return 3;
+                }
+                s = (s & 0xff00_0000) | (b & 7) | 0x3000_0000;
+            }
+        } else {
+            s = (s & 0xcf00_0000) | b;
+        }
+        *state = s;
+        if s & 0x3000_0000 != 0 {
+            *state = (s & 0xf7ff_ffff) | 0x0400_0000;
+            return 1;
+        }
+        *out = s & 0x00ff_ffff;
+        return 0;
+    }
+    let mut cont = true;
+    if kind == 1 {
+        let n = (s >> 0x1c) & 3;
+        let low = s & 0x00ff_ffff;
+        if n != 1 {
+            if n == 2 {
+                if low == 0 {
+                    if byte < 0xa0 {
+                        reset = true;
+                    }
+                } else if low == 0xd && byte > 0x9f {
+                    *state = s & 0xc3ff_ffff;
+                    return 3;
+                }
+            } else if n == 3 {
+                if low == 0 {
+                    if byte < 0x90 {
+                        reset = true;
+                    }
+                } else if low == 4 && byte > 0x8f {
+                    *state = s & 0xc3ff_ffff;
+                    return 3;
+                }
+            }
+        } else if low <= 1 {
+            reset = true;
+        }
+        if reset {
+            *state = s & 0xc3ff_ffff;
+            cont = false;
+        }
+    }
+    if cont {
+        if s & 0x3000_0000 != 0 {
+            if byte & 0xc0 != 0x80 {
+                *state = s & 0xc3ff_ffff;
+                return 3;
+            }
+            let mut u = ((s & 0x3_ffff) << 6) | (b & 0x3f) | (s & 0xff00_0000);
+            u = ((u.wrapping_add(0x0400_0000) ^ u) & 0x0c00_0000) ^ u;
+            s = ((((s >> 0x1c).wrapping_sub(1)).wrapping_mul(0x1000_0000) ^ u) & 0x3000_0000) ^ u;
+            *state = s;
+            if s & 0x3000_0000 != 0 {
+                return 1;
+            }
+        }
+        *state = s & 0xf3ff_ffff;
+        let cp = s & 0x00ff_ffff;
+        if cp > 0x10ffff || ((s & 0xfffe) != 0xfffe && cp.wrapping_sub(0xfdd0) > 0x1f) {
+            *out = cp;
+            return 0;
+        }
+    }
+    3
+}
+
+/// `0x00c6bd70`: runs the scanner `scan(start, arg, 0)` (callee
+/// `FUN_00cbcc80`, which returns the end position) from `*cursor`, and
+/// optionally stores the consumed length `end - start` into `consumed`.
+pub fn w34a04_scan_consumed(
+    cursor: i32,
+    consumed: Option<&mut i32>,
+    arg: u32,
+    scan: impl FnOnce(i32, u32, u32) -> i32,
+) {
+    let end = scan(cursor, arg, 0);
+    if let Some(c) = consumed {
+        *c = end.wrapping_sub(cursor);
+    }
+}
+
+#[cfg(test)]
+mod tests_wave34_agent04 {
+    use super::*;
+
+    fn decode(bytes: &[u8]) -> Vec<u32> {
+        let (mut st, mut out, mut r) = (0u32, 0u32, vec![]);
+        for &b in bytes {
+            if w34a04_utf8_step(b, &mut out, &mut st) == 0 {
+                r.push(out);
+            }
+        }
+        r
+    }
+
+    #[test]
+    fn utf8() {
+        assert_eq!(
+            decode("aé€😀".as_bytes()),
+            vec![0x61, 0xe9, 0x20ac, 0x1f600]
+        );
+        let (mut st, mut out) = (0u32, 0u32);
+        assert_eq!(w34a04_utf8_step(0xc1, &mut out, &mut st), 3);
+        assert_eq!(w34a04_utf8_step(0xf5, &mut out, &mut st), 3);
+        assert_eq!(w34a04_utf8_step(0xe2, &mut out, &mut st), 1);
+        assert_eq!(w34a04_utf8_step(0x41, &mut out, &mut st), 3);
+        // surrogate rejected
+        let (mut st, mut out) = (0u32, 0u32);
+        w34a04_utf8_step(0xed, &mut out, &mut st);
+        assert_eq!(w34a04_utf8_step(0xa0, &mut out, &mut st), 3);
+    }
+
+    #[test]
+    fn consumed() {
+        let mut c = 0;
+        w34a04_scan_consumed(100, Some(&mut c), 7, |s, a, z| {
+            assert_eq!((a, z), (7, 0));
+            s + 5
+        });
+        assert_eq!(c, 5);
+        w34a04_scan_consumed(1, None, 0, |s, _, _| s);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave34/agent05.rs
+// ===========================================================================
+// Wave 34 translation batch 05.
+
+/// `0x004bb260`: returns 1 when bit 25 (0x2000000, SSE) of the CPUID leaf-1
+/// feature word is set, else 0.
+pub fn w34a05_cpu_has_sse(feature_word: u32) -> u32 {
+    ((feature_word & 0x0200_0000) != 0) as u32
+}
+
+/// `0x00cae905`: CRT `_fpclass`-style classifier of a double given as low and
+/// high dwords.  `nan_kind` is the result of the NaN/Inf probe (callee
+/// FUN_00cae75b): 1 -> 0x200, 2 -> 4, 3 -> 2, other -> 1.
+pub fn w34a05_fpclass(low: u32, high: u32, nan_kind: i32) -> i32 {
+    if (high >> 16) & 0x7ff0 == 0x7ff0 {
+        return match nan_kind {
+            1 => 0x200,
+            2 => 4,
+            3 => 2,
+            _ => 1,
+        };
+    }
+    let neg = (high & 0x8000_0000) != 0;
+    let sign_mask = if neg { 0xffff_ffffu32 } else { 0 };
+    if high & 0x7ff0_0000 == 0 && ((high & 0xfffff) != 0 || low != 0) {
+        return ((sign_mask & 0xffff_ff90) as i32).wrapping_add(0x80);
+    }
+    if (high & 0x7fff_ffff) == 0 && low == 0 {
+        return ((sign_mask & 0xffff_ffe0) as i32).wrapping_add(0x40);
+    }
+    ((sign_mask & 0xffff_ff08) as i32).wrapping_add(0x100)
+}
+
+#[cfg(test)]
+mod tests_wave34_agent05 {
+    use super::*;
+
+    #[test]
+    fn sse_bit() {
+        assert_eq!(w34a05_cpu_has_sse(0x0200_0000), 1);
+        assert_eq!(w34a05_cpu_has_sse(!0x0200_0000), 0);
+    }
+
+    #[test]
+    fn fpclass_cases() {
+        assert_eq!(w34a05_fpclass(0, 0x7ff0_0000, 1), 0x200);
+        assert_eq!(w34a05_fpclass(0, 0x7ff0_0000, 2), 4);
+        assert_eq!(w34a05_fpclass(0, 0x7ff0_0000, 3), 2);
+        assert_eq!(w34a05_fpclass(0, 0x7ff0_0000, 0), 1);
+        assert_eq!(w34a05_fpclass(1, 0, 0), 0x80);
+        assert_eq!(w34a05_fpclass(1, 0x8000_0000, 0), 0x10);
+        assert_eq!(w34a05_fpclass(0, 0, 0), 0x40);
+        assert_eq!(w34a05_fpclass(0, 0x8000_0000, 0), 0x20);
+        assert_eq!(w34a05_fpclass(0, 0x3ff0_0000, 0), 0x100);
+        assert_eq!(w34a05_fpclass(0, 0xbff0_0000, 0), 8);
+    }
+}
