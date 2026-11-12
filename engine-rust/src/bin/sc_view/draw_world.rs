@@ -150,9 +150,9 @@ impl App {
         fb.clear(Rgb::new(0, 0, 0));
         // Walking / attack poses, bullets and explosions follow the ticks
         // the world ran since the last frame.
+        self.feed_dust_offsets();
         {
-            // Building fire / blood positions come from each image's damage
-            // LO file in the install (`unit\\<race>\\<name>.lof`).
+            // Building fire / blood: each image's damage LO file in the install.
             let _ = self.image_table();
             let install = self.install.as_ref();
             let data = self.data.clone();

@@ -147,7 +147,11 @@ GC_WALK_DIR=/tmp/walk ./target/release/sc_view --install "$SC_INSTALL" \
   `arm-silos` (every Nuclear Silo attached and loaded),
   `dump-units:NAME`, `shot:NAME`, `shot-cursor:NAME` (the pointer is
   painted too: cursors), `move:x:y` (screen point, no click),
-  `drag-hold:x0:y0:x1:y1` (box still held).
+  `drag-hold:x0:y0:x1:y1` (box still held).  `site:OWNER:TYPE:x:y:PCT` places a building under construction at PCT %
+  (it holds that stage: no builder).
+- Screenshots are not byte-identical between runs: the console portrait
+  is a video on the wall clock.  To prove two builds draw the same, mask
+  its box (73 x 82 at 946, 624 in a 1280 x 720 shot) and compare the rest.
 - `dump-units:NAME` writes `NAME.tsv` (id, owner, type, position, hp, order,
   path, animation); `game.tsv` has one line per step with the camera,
   resources and selection.  Use them to find where a unit is and what it is

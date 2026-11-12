@@ -35,12 +35,23 @@ fn run_building_anim(
     anim: usize,
     ticks: u32,
 ) -> (Option<u16>, Option<u32>) {
+    let (frame, signal, _) = run_building_anim_sounds(data, type_id, anim, ticks);
+    (frame, signal)
+}
+
+/// [`run_building_anim`] plus the sounds the script plays on its last tick.
+fn run_building_anim_sounds(
+    data: &GameData,
+    type_id: u16,
+    anim: usize,
+    ticks: u32,
+) -> (Option<u16>, Option<u32>, Vec<u16>) {
     let ty = data.unit(type_id);
     let Some(iscript) = data.unit_iscript_id(ty) else {
-        return (None, None);
+        return (None, None, Vec::new());
     };
     let Some(mut st) = data.iscript.start_animation(iscript, anim, 0) else {
-        return (None, None);
+        return (None, None, Vec::new());
     };
     let mut ctx = AnimContext {
         direction: 0,
@@ -52,12 +63,13 @@ fn run_building_anim(
         powerup_picked: false,
         hallucination: false,
     };
-    let (mut frame, mut signal) = (None, None);
+    let (mut frame, mut signal, mut sounds) = (None, None, Vec::new());
     for t in 1..=ticks {
         for ev in data.iscript.tick_anim(&mut st, &mut ctx) {
             match ev {
                 AnimEvent::Frame { raw, .. } => frame = Some(raw),
                 AnimEvent::Signal(_) if signal.is_none() => signal = Some(t),
+                AnimEvent::Sound(id) | AnimEvent::RandomSound(id) if t == ticks => sounds.push(id),
                 _ => {}
             }
         }
@@ -65,8 +77,15 @@ fn run_building_anim(
             break;
         }
     }
-    (frame, signal)
+    (frame, signal, sounds)
 }
+
+/// Used LO offsets of an image: (slot, dx, dy).
+pub type LoSlots = Vec<(u8, i8, i8)>;
+
+/// First of the nine landing-dust images (`thingy\dust01.grp` ..
+/// `dust09.grp`), the sprites OpenBW `create_dust_sprite` places.
+pub const DUST_IMAGE: u16 = 494;
 
 /// Length of a lift-off (`landing == false`) or landing in ticks: the 42 px
 /// move and the iscript's `LiftOff` / `Landing` animation up to its
@@ -92,7 +111,7 @@ pub fn building_lift_frame(data: &GameData, unit: &crate::sim::SimUnit) -> Optio
             } else {
                 crate::iscript::ANIM_LIFT_OFF
             };
-            run_building_anim(data, unit.type_id, anim, t as u32 + 1)
+            run_building_anim(data, unit.type_id, anim, (t as u32).max(1))
                 .0
                 .or_else(|| lifted_frame(data, unit.type_id))
         }
@@ -365,6 +384,13 @@ pub struct Animator {
     damage: HashMap<(u32, u8), (Track, i32, i32)>,
     /// Damage LO slots per building image, from the caller's lookup.
     damage_slots: HashMap<u16, Vec<(u8, i8, i8)>>,
+    /// Lift-off and landing dust LO offsets per building image, set by the
+    /// client (`set_dust_offsets`): (landing, lift-off).
+    dust_slots: HashMap<u16, (LoSlots, LoSlots)>,
+    /// Buildings seen setting down: dust when they touch the ground.
+    landing: std::collections::HashSet<u32>,
+    /// Buildings whose lift-off dust was raised.
+    lifting: std::collections::HashSet<u32>,
     units: HashMap<u32, UnitSeen>,
     bullets: HashMap<u32, BulletSeen>,
     effects: Vec<Effect>,
@@ -488,8 +514,10 @@ impl Animator {
             // stays, it only depends on the data).
             _ => {
                 let slots = std::mem::take(&mut self.damage_slots);
+                let dust = std::mem::take(&mut self.dust_slots);
                 *self = Self {
                     damage_slots: slots,
+                    dust_slots: dust,
                     ..Self::default()
                 };
                 1
@@ -502,6 +530,7 @@ impl Animator {
             self.step_damage(world, lo);
             self.step_construction(world);
             self.step_work(world);
+            self.step_lift(world);
         }
     }
 
@@ -639,6 +668,86 @@ impl Animator {
             }
         }
         out
+    }
+
+    /// Give the dust LO offsets (landing, lift-off) of a building image.
+    pub fn set_dust_offsets(
+        &mut self,
+        image: u16,
+        landing: Vec<(u8, i8, i8)>,
+        lift_off: Vec<(u8, i8, i8)>,
+    ) {
+        self.dust_slots.insert(image, (landing, lift_off));
+    }
+
+    /// Whether the client still has to give dust offsets for `image`.
+    pub fn needs_dust_offsets(&self, image: u16) -> bool {
+        !self.dust_slots.contains_key(&image)
+    }
+
+    /// Lift-off / landing sounds (`playsnd` in the iscript) on their tick,
+    /// and the dust (OpenBW `create_dust_sprite`: LO offsets 0..=8 and
+    /// 16..=24, dust images 1-9) as the building leaves or touches the
+    /// ground.
+    fn step_lift(&mut self, world: &World) {
+        let data = &*world.data;
+        for u in world.units.iter().filter(|u| u.alive) {
+            let Some(image) = unit_image(data, u.type_id) else {
+                continue;
+            };
+            let dust = |slots: &[(u8, i8, i8)], out: &mut Vec<Effect>| {
+                for &(k, dx, dy) in slots {
+                    let n = match k {
+                        0..=8 => k,
+                        16..=24 => k - 16,
+                        _ => continue,
+                    };
+                    let img = DUST_IMAGE + n as u16;
+                    if let Some(track) = Track::start(data, img, anim::INIT, 0) {
+                        out.push(Effect {
+                            image: img,
+                            x: u.x / 256 + dx as i32,
+                            y: u.y / 256 + dy as i32,
+                            facing: 0,
+                            frame: 0,
+                            track,
+                            age: 0,
+                        });
+                    }
+                }
+            };
+            match u.lift_phase {
+                Some((landing, t)) => {
+                    let a = if landing {
+                        crate::iscript::ANIM_LANDING
+                    } else {
+                        crate::iscript::ANIM_LIFT_OFF
+                    };
+                    // The world steps the phase before the animator sees
+                    // it: `t` ticks of the script have run.
+                    let (_, _, sounds) = run_building_anim_sounds(data, u.type_id, a, t as u32);
+                    for id in sounds {
+                        self.sounds.push((id, u.x / 256, u.y / 256));
+                    }
+                    if landing {
+                        self.landing.insert(u.id);
+                        self.lifting.remove(&u.id);
+                    } else if self.lifting.insert(u.id) {
+                        let slots = self.dust_slots.get(&image).map(|d| d.1.clone());
+                        let mut out = Vec::new();
+                        dust(slots.as_deref().unwrap_or(&[]), &mut out);
+                        self.effects.extend(out);
+                    }
+                }
+                None if !u.lifted && self.landing.remove(&u.id) => {
+                    let slots = self.dust_slots.get(&image).map(|d| d.0.clone());
+                    let mut out = Vec::new();
+                    dust(slots.as_deref().unwrap_or(&[]), &mut out);
+                    self.effects.extend(out);
+                }
+                _ => {}
+            }
+        }
     }
 
     fn step_work(&mut self, world: &World) {

@@ -102,6 +102,8 @@ use galaxycraft::voice::{VoiceBank, VoiceCue};
 #[path = "sc_view/gamepad.rs"]
 mod gamepad;
 /// Multiplayer front end (Select Connection, Games, Create, lobby, score).
+#[path = "sc_view/lift_fx.rs"]
+mod lift_fx;
 #[path = "sc_view/mp.rs"]
 mod mp;
 /// Controller radials and button prompts (Baldur's Gate 3 pad layout).
@@ -1508,59 +1510,6 @@ fn target_fps(options: &GameOptions) -> usize {
     } else {
         0
     }
-}
-
-/// Mouse Speed / Mouse Scaling factor for the software pointer.  The Speed
-/// tab's sensitivity slider (0..1) maps to 0.5..1.5 around the retail
-/// default, and "Use Mouse Scaling" compensates for resolutions above the
-/// original 480-line playfield.  A factor of exactly 1 keeps the system
-/// pointer position untouched.
-fn mouse_move_factor(options: &GameOptions, surface: (i32, i32)) -> f32 {
-    let base = if options.use_mouse_sensitivity {
-        0.5 + options.mouse_sensitivity.clamp(0.0, 1.0)
-    } else {
-        1.0
-    };
-    let scaled = if options.mouse_scaling {
-        base * (surface.1.max(1) as f32 / 480.0).clamp(0.5, 4.0)
-    } else {
-        base
-    };
-    scaled.clamp(0.25, 4.0)
-}
-
-/// StarCraft 1 selection normalisation: a building is selected alone, and
-/// mobile units stop at twelve.  `(id, is_building)` pairs are consumed in
-/// selection order.
-fn normalize_selection(entries: impl IntoIterator<Item = (u32, bool)>) -> Vec<u32> {
-    let mut out = Vec::new();
-    for (id, building) in entries {
-        if building {
-            return vec![id];
-        }
-        if out.len() < 12 {
-            out.push(id);
-        }
-    }
-    out
-}
-
-/// Advance a virtual pointer by the raw movement delta times `factor`.
-/// Only used when the factor differs from 1; the cursor remains inside the
-/// drawing surface.
-fn advance_virtual_pointer(
-    current: (f32, f32),
-    last: (f32, f32),
-    raw: (f32, f32),
-    factor: f32,
-    bounds: (i32, i32),
-) -> (f32, f32) {
-    let x = current.0 + (raw.0 - last.0) * factor;
-    let y = current.1 + (raw.1 - last.1) * factor;
-    (
-        x.clamp(0.0, (bounds.0 - 1).max(0) as f32),
-        y.clamp(0.0, (bounds.1 - 1).max(0) as f32),
-    )
 }
 
 /// One frame of in-game input in surface pixels (`App::handle_game_input`).
@@ -6208,6 +6157,11 @@ fn run_game_script(app: &mut App, fb: &mut Framebuffer, script: &str) {
                     num(3),
                     num(4),
                 );
+                frame(app, fb, base(mouse));
+            }
+            "site" => {
+                // `site:OWNER:TYPE:x:y:PCT`: a building under construction.
+                app.spawn_site(num(1), num(2), (num(3), num(4)), num(5));
                 frame(app, fb, base(mouse));
             }
             "arm-silos" => {
