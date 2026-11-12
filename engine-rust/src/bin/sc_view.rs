@@ -10533,6 +10533,7 @@ impl App {
         }
         self.scenario = scenario;
         self.tileset = tileset;
+        self.sprites.set_palette(self.tileset.palette.clone());
         self.chk_raw = raw;
         self.last_races = races.clone();
         world.recorder = Some(Recorder::new());
@@ -10793,6 +10794,7 @@ impl App {
         }
         self.scenario = scenario;
         self.tileset = tileset;
+        self.sprites.set_palette(self.tileset.palette.clone());
         if let Some(index) = self.saved_map_index(save) {
             self.map_index = index;
             self.menu_tab = usize::from(index >= self.campaign_len);
@@ -16020,10 +16022,21 @@ impl App {
             Act::MergeDarkArchon => self.merge_templars(true),
             Act::Load => self.load_transports(),
             Act::Unload => {
-                for id in self.selected_transports() {
-                    self.send_order(id, Order::Unload);
+                // A Bunker empties at once; a transport asks where (click
+                // the transport itself to unload on the spot), as retail.
+                let flying = self.selected_transports().into_iter().any(|id| {
+                    self.world
+                        .unit(id)
+                        .is_some_and(|u| !self.data.unit(u.type_id).is_building())
+                });
+                if flying {
+                    self.target_act = Some((Act::Unload, var));
+                } else {
+                    for id in self.selected_transports() {
+                        self.send_order(id, Order::Unload);
+                    }
+                    self.play_ack();
                 }
-                self.play_ack();
             }
             Act::Addon => {
                 if let Err(e) = self.world.build_addon(u.id, var) {
@@ -16267,6 +16280,23 @@ impl App {
                         self.show_sim_error(e);
                     }
                 }
+            }
+            Act::Unload => {
+                for id in self.selected_transports() {
+                    let Some(u) = self.world.unit(id) else {
+                        continue;
+                    };
+                    let here = target == Some(id)
+                        || self.data.unit(u.type_id).is_building()
+                        || ((u.x / 256 - pos.0).abs() <= 16 && (u.y / 256 - pos.1).abs() <= 16);
+                    let order = if here {
+                        Order::Unload
+                    } else {
+                        Order::MoveUnload { pos }
+                    };
+                    self.send_order(id, order);
+                }
+                self.play_ack();
             }
             Act::Heal => {
                 if let Some(t) = target {
@@ -18439,6 +18469,67 @@ impl App {
     }
 
     /// Facing byte the renderer should draw.
+    /// Turret of a Siege Tank or Goliath (`units.dat` subunit): its image
+    /// and heading (`SimUnit::turret_facing`).  Drawn on top of the base at
+    /// the same position.
+    fn turret_pose(&self, u: &galaxycraft::sim::SimUnit) -> Option<(u16, u8)> {
+        let ty = self.data.unit(u.type_id);
+        self.data.turret(ty)?;
+        let image = galaxycraft::unit_anim::unit_image(&self.data, ty.turret)?;
+        // The simulation turns the turret at its own rate.
+        Some((image, u.turret_facing))
+    }
+
+    /// Frame of the sieged tank's base (iscript 92): frames 0..=5 unfold
+    /// over the deploy animation (five frames of 5, then it holds 5) and
+    /// fold back at the end of the pack-up one (38 frames of hold first).
+    /// Frame of the sieged cannon (iscript 93) while the tank deploys or
+    /// packs up: it waits folded (17), then unfolds 34 / 51 / 68 / 85 three
+    /// frames apart and rests at 0; packing up runs 85 down to 17.  `None`
+    /// outside those animations.
+    fn siege_turret_frame(&self, u: &galaxycraft::sim::SimUnit) -> Option<u16> {
+        use galaxycraft::sim::{SIEGE_FRAMES, UNSIEGE_FRAMES};
+        if u.type_id != galaxycraft::ids::unit::SIEGE_MODE || u.order_wait == 0 {
+            return None;
+        }
+        let wait = u.order_wait as i32;
+        Some(match u.order {
+            Order::Siege => {
+                let e = SIEGE_FRAMES as i32 - (wait - 1);
+                match e {
+                    e if e < 42 => 17,
+                    e if e < 54 => (34 + 17 * ((e - 42) / 3)) as u16,
+                    _ => 0,
+                }
+            }
+            Order::Unsiege => {
+                let e = UNSIEGE_FRAMES as i32 - (wait - 1);
+                (85 - 17 * (e / 3)).max(17) as u16
+            }
+            _ => return None,
+        })
+    }
+
+    fn siege_base_frame(&self, u: &galaxycraft::sim::SimUnit) -> usize {
+        use galaxycraft::sim::{SIEGE_FRAMES, UNSIEGE_FRAMES};
+        let wait = u.order_wait as i32;
+        match u.order {
+            Order::Siege if wait > 0 => {
+                let elapsed = SIEGE_FRAMES as i32 - (wait - 1);
+                ((elapsed - 1) / 5).clamp(0, 5) as usize
+            }
+            Order::Unsiege if wait > 0 => {
+                let elapsed = UNSIEGE_FRAMES as i32 - (wait - 1);
+                if elapsed < 38 {
+                    5
+                } else {
+                    (4 - (elapsed - 38) / 5).clamp(0, 5) as usize
+                }
+            }
+            _ => 5,
+        }
+    }
+
     fn rendered_facing(&self, u: &galaxycraft::sim::SimUnit) -> u8 {
         self.smooth_facing
             .get(&u.id)
@@ -18570,8 +18661,45 @@ impl App {
             usize,
             (std::rc::Rc<galaxycraft::render::Grp>, usize),
         > = std::collections::HashMap::new();
+        // SD turrets: (turret GRP, frame, mirrored) per unit index.
+        let mut sd_turrets: std::collections::HashMap<
+            usize,
+            (std::rc::Rc<galaxycraft::render::Grp>, usize, bool),
+        > = std::collections::HashMap::new();
         if !hd {
             for &i in &order {
+                // The sieged tank's base is its own image, unfolding.
+                if self.world.units[i].type_id == galaxycraft::ids::unit::SIEGE_MODE {
+                    let frame = self.siege_base_frame(&self.world.units[i]);
+                    if let Some(image) = galaxycraft::unit_anim::unit_image(
+                        &self.data,
+                        galaxycraft::ids::unit::SIEGE_MODE,
+                    ) && let Some(grp) = self.sd_image_grp(image)
+                        && grp.frame(frame).is_some()
+                    {
+                        building_stage.insert(i, (grp, frame));
+                    }
+                }
+                if let Some((timage, tfacing)) = self.turret_pose(&self.world.units[i])
+                    && let Some(grp) = self.sd_image_grp(timage)
+                {
+                    let raw = self
+                        .siege_turret_frame(&self.world.units[i])
+                        .or_else(|| self.animator.turret_frame(self.world.units[i].id))
+                        .unwrap_or(0);
+                    let frame = galaxycraft::render::sd_frame_index(
+                        grp.frames.len(),
+                        tfacing,
+                        Some(raw),
+                        false,
+                        0,
+                    );
+                    let flip = galaxycraft::render::sd_frame_flip(grp.frames.len(), tfacing);
+                    sd_turrets.insert(i, (grp, frame, flip));
+                }
+                if building_stage.contains_key(&i) {
+                    continue;
+                }
                 let (type_id, stage) = {
                     let u = &self.world.units[i];
                     (
@@ -18657,6 +18785,23 @@ impl App {
                 .then(|| self.animator.unit_frame(u.id))
                 .flatten();
             let facing = self.rendered_facing(u);
+            // Status images behind the unit (Defensive Matrix back shell).
+            for (image, frame) in self.animator.status_underlays(u.id) {
+                let remap = self.data.image(image).map_or(0, |im| im.color_shift);
+                if let (Some(grp), Some(table)) =
+                    (self.sd_image_grp(image), self.remap_table(remap))
+                {
+                    galaxycraft::render::draw_grp_remapped(
+                        fb,
+                        &grp,
+                        frame as usize,
+                        (sx, sy),
+                        false,
+                        &table,
+                    );
+                }
+            }
+            let u = &self.world.units[i];
             // A cloaked unit we can see is drawn faded.
             let cloak = u
                 .status
@@ -18675,15 +18820,34 @@ impl App {
                         u.owner,
                     ))),
                 );
-            } else if !self
-                .sprites
-                .draw_unit_turned(fb, u, (sx, sy), self.world.tick, pose, facing)
-            {
+            } else if !self.sprites.draw_unit_turned(
+                fb,
+                u,
+                // Idle hover bob of flyers (`setvertpos`).
+                (sx, sy + self.animator.unit_vert(u.id)),
+                self.world.tick,
+                pose,
+                facing,
+            ) {
                 draw_unit_box(fb, u, &self.data, (sx, sy), selected);
             } else if selected {
                 let ty = self.data.unit(u.type_id);
                 let r = ((ty.dimensions.right - ty.dimensions.left) as i32 / 2).max(12) + 4;
                 fb.circle_outline(sx, sy, r, Rgb::new(80, 255, 80));
+            }
+            if let Some((grp, frame, flip)) = sd_turrets.get(&i) {
+                galaxycraft::render::draw_grp_posed(
+                    fb,
+                    grp,
+                    *frame,
+                    self.sprites.palette(),
+                    (sx, sy),
+                    *flip,
+                    galaxycraft::render::GrpInk::Solid(Some(galaxycraft::render::player_rgb(
+                        &self.world,
+                        u.owner,
+                    ))),
+                );
             }
             if let Some(saved) = &cloak {
                 fb.fade_rect(saved, galaxycraft::render::CLOAK_KEEP);
@@ -19158,6 +19322,12 @@ impl App {
             let posed = raw as usize + frame;
             if posed < img.header.frames.len() {
                 frame = posed;
+            }
+        }
+        if u.type_id == galaxycraft::ids::unit::SIEGE_MODE {
+            let f = self.siege_base_frame(u);
+            if f < img.header.frames.len() {
+                frame = f;
             }
         }
         let mut layer_list = self.hd_unit_layers(u.type_id, u.is_completed_building(&self.data));
@@ -19767,12 +19937,35 @@ impl App {
             return;
         }
         layer(true, fb);
+        // Idle hover bob of flyers (`setvertpos`), on the main image only.
+        let bob_y = sy + self.animator.unit_vert(u.id) as f32 * s;
+        // Status images behind the unit (Defensive Matrix back shell).
+        for (image, sframe) in self.animator.status_underlays(u.id) {
+            if let Some(si) = self
+                .hd_sprites
+                .image(self.data.hd_anim_id(image), |path| install?.read(path))
+                && (sframe as usize) < si.header.frames.len()
+            {
+                galaxycraft::hd_sprites::draw_frame_lit(
+                    fb,
+                    &si,
+                    sframe as usize,
+                    sx,
+                    sy,
+                    s,
+                    false,
+                    None,
+                    clip,
+                    env,
+                );
+            }
+        }
         galaxycraft::hd_sprites::draw_frame_lit(
             fb,
             &img,
             frame,
             sx,
-            sy,
+            bob_y,
             s,
             flip,
             Some(team),
@@ -19780,6 +19973,48 @@ impl App {
             env,
         );
         layer(false, fb);
+        // The turret (tank barrel, Goliath torso) on top, pointing at the
+        // target.
+        if let Some((timage, tfacing)) = self.turret_pose(u) {
+            let skin = unit_skin_id(u.type_id, &self.game_options);
+            if let Some(ti) =
+                self.hd_sprites
+                    .image_skin(self.data.hd_anim_id(timage), skin, |path| {
+                        install?.read(path)
+                    })
+            {
+                let n = ti.header.frames.len();
+                let raw = self
+                    .siege_turret_frame(u)
+                    .or_else(|| self.animator.turret_frame(u.id))
+                    .unwrap_or(0) as usize;
+                let (tframe, tflip) = if n >= 17 {
+                    let dir = ((tfacing as i32 + 4) / 8).rem_euclid(32);
+                    let (d, flip) = if dir <= 16 {
+                        (dir as usize, false)
+                    } else {
+                        ((32 - dir) as usize, true)
+                    };
+                    (if raw + d < n { raw + d } else { d }, flip)
+                } else {
+                    (0, false)
+                };
+                if tframe < n {
+                    galaxycraft::hd_sprites::draw_frame_lit(
+                        fb,
+                        &ti,
+                        tframe,
+                        sx,
+                        sy,
+                        s,
+                        tflip,
+                        Some(team),
+                        clip,
+                        env,
+                    );
+                }
+            }
+        }
         // Engine glow on top of a moving unit (the SCV's thruster, image
         // 249), on the unit's own frame.
         if let Some(glow) = self.animator.unit_glow(u.id) {
@@ -21483,7 +21718,10 @@ impl App {
         if let Some(up) = self.data.upgrade(ty.armor_upgrade) {
             boxes.push((up.icon, ty.armor_upgrade));
         }
-        for w in [ty.ground_weapon, ty.air_weapon] {
+        for w in [
+            self.data.ground_weapon_id(&ty),
+            self.data.air_weapon_id(&ty),
+        ] {
             if w != NO_WEAPON
                 && let Some(wt) = self.data.weapon(w)
                 && !boxes.iter().any(|(i, _)| *i == wt.icon)

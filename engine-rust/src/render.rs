@@ -409,7 +409,15 @@ impl Palette {
         if let Some(team) = team
             && (8..=15).contains(&index)
         {
-            return team;
+            // Palette entries 8..=15 are the player-colour ramp, brightest
+            // first.  Retail fills them from `game\tunit.pcx` (8 shades per
+            // player); these are the median brightness steps of its first
+            // eight players, applied to the player's colour.
+            const SHADE: [u32; 8] = [256, 216, 198, 162, 126, 110, 74, 42];
+            let k = SHADE[(index - 8) as usize];
+            let c = team.0;
+            let ch = |shift: u32| ((c >> shift) & 0xff) * k / 256;
+            return Rgb((ch(16) << 16) | (ch(8) << 8) | ch(0));
         }
         self.colors[index as usize]
     }
@@ -2329,6 +2337,14 @@ impl SpriteBank {
 
     pub fn palette(&self) -> &Palette {
         &self.palette
+    }
+
+    /// Draw with the map's terrain palette.  Retail draws SD units with the
+    /// tileset palette (`tileset\<era>.wpe`); the generic `unit.pal` has
+    /// placeholder blue in the tileset-dependent entries (203..=245 and
+    /// friends), which showed as a dotted blue outline on the Siege Tank.
+    pub fn set_palette(&mut self, palette: Palette) {
+        self.palette = palette;
     }
 
     /// Draw a unit sprite.  Returns false when the unit has no bundled GRP.

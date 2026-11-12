@@ -98,8 +98,17 @@ pub const MAX_PRODUCTION_QUEUE: usize = 5;
 /// The retail engine caps active Halo Rockets at 80; use the same hard cap for
 /// every projectile so a pathological custom map cannot grow without bound.
 pub const MAX_PROJECTILES: usize = 80;
-/// Spider mine arming delay in logical ticks (about one second).
-pub const SPIDER_MINE_ARM_TICKS: i64 = 24;
+/// Spider Mine (OpenBW `order_SpiderMine`): frames it waits before it
+/// burrows, frames of its Burrow / UnBurrow animation (iscript 87), and so
+/// the frames from laying to armed.
+pub const SPIDER_MINE_WAIT_FRAMES: i64 = 60;
+pub const SPIDER_MINE_BURROW_FRAMES: i64 = 4;
+pub const SPIDER_MINE_ARM_TICKS: i64 = SPIDER_MINE_WAIT_FRAMES + SPIDER_MINE_BURROW_FRAMES;
+/// Half side of the square an armed mine watches (3 tiles), how far it
+/// follows a victim, and the box distance at which it explodes.
+pub const SPIDER_MINE_SEEK_PX: i32 = 96;
+pub const SPIDER_MINE_CHASE_PX: i32 = 576;
+pub const SPIDER_MINE_BLAST_PX: i32 = 30;
 /// Hatchery/Lair/Hive larva interval: 37 status updates (`0x25` reloaded by
 /// `0x5dfa06`), one status update every 8 logical ticks.
 pub const LARVA_SPAWN_TICKS: i32 = 37 * 8;
@@ -274,7 +283,9 @@ impl Order {
             Order::Upgrade { .. } => 75,
             Order::Cast { .. } => 80,
             Order::EnterTransport { .. } => 90,
+            Order::PickupTransport { .. } => 94,
             Order::Unload => 110,
+            Order::MoveUnload { .. } => 111,
             Order::Burrow => 115,
             Order::Unburrow => 117,
             Order::Siege => 97,
@@ -492,7 +503,17 @@ pub enum Order {
     EnterTransport {
         transport: u32,
     },
+    /// A transport flying over to pick up a unit that asked to board
+    /// (orders.dat row 94, OpenBW `order_PickupTransport`).
+    PickupTransport {
+        unit: u32,
+    },
     Unload,
+    /// Fly to a point and unload there (orders.dat row 111, OpenBW
+    /// `order_MoveUnload`).
+    MoveUnload {
+        pos: (i32, i32),
+    },
     Burrow,
     Unburrow,
     Siege,
@@ -835,6 +856,24 @@ pub const NUKE_WARP_FRAMES: i32 = 250;
 pub const NUKE_ACCELERATION: i32 = 33;
 pub const NUKE_TOP_SPEED: i32 = 8533;
 
+/// Frames a tank is busy deploying into Siege Mode and packing up again
+/// (iscript 92: Init and SpecialState2 up to their `sigorder 1`).
+pub const SIEGE_FRAMES: u8 = 64;
+/// `units.dat` default directions x 8: the tank (and its turret) before
+/// sieging, and the sieged cannon at rest (iscript 93 ends its unfolding
+/// with `setfldirect 28`).
+pub const SIEGE_HEADING: i32 = 96;
+pub const SIEGED_TURRET_HEADING: i32 = 224;
+pub const UNSIEGE_FRAMES: u8 = 63;
+
+/// Frames between two units leaving a transport (OpenBW `unit_unload`:
+/// `container->main_order_timer = 15`).
+pub const TRANSPORT_UNLOAD_FRAMES: u8 = 15;
+
+/// The Yamato Gun's charge overlay (`images.dat` 543, iscript 314): its
+/// `castspell` releases the shot.
+pub const YAMATO_CHARGE_IMAGE: u16 = 543;
+
 /// Spell cues kept for the renderer.
 pub const SPELL_CUE_KEEP: usize = 64;
 
@@ -933,6 +972,15 @@ pub struct SimUnit {
     pub expires_at: i64,
     /// Tick at which a Spider Mine finishes arming.
     pub mine_armed_at: i64,
+    /// Air-unit repulse state (OpenBW `repulse_direction` / `repulse_flags`):
+    /// the direction a flyer drifts when it shares a 48 px cell with other
+    /// flyers, a 3-bit countdown before it picks a new one (low bits) and
+    /// its row of the adjust table (high nibble, 0 = not initialised).
+    pub repulse_dir: u8,
+    pub repulse_flags: u8,
+    /// Heading of the unit's turret (Siege Tank, Goliath), which turns on
+    /// its own at the turret's flingy turn rate.
+    pub turret_facing: u8,
     /// Fractional mineral debt for SCV repair, in 1/256 minerals.
     pub repair_debt: i32,
     /// Interceptors (Carrier) or scarabs (Reaver) currently in the hangar.
@@ -2850,6 +2898,9 @@ impl World {
             nydus_exit: None,
             expires_at: 0,
             mine_armed_at: 0,
+            repulse_dir: 0,
+            repulse_flags: 0,
+            turret_facing: 0,
             repair_debt: 0,
             hangar: default_hangar(type_id),
             hangar_capacity: default_hangar_capacity(type_id),
@@ -2979,6 +3030,9 @@ impl World {
             nydus_exit: None,
             expires_at: 0,
             mine_armed_at: 0,
+            repulse_dir: 0,
+            repulse_flags: 0,
+            turret_facing: 0,
             repair_debt: 0,
             hangar: default_hangar(type_id),
             hangar_capacity: default_hangar_capacity(type_id),
@@ -3923,7 +3977,7 @@ impl World {
     /// the Vulture carries three mines (`hangar`).
     pub fn place_spider_mine(&mut self, unit_id: u32, pos: (i32, i32)) -> Result<(), SimError> {
         let i = self.index_of(unit_id).ok_or(SimError::BadUnit)?;
-        if self.units[i].type_id != uid::VULTURE {
+        if !matches!(self.units[i].type_id, uid::VULTURE | 19) {
             return Err(SimError::Unsupported);
         }
         let owner = self.units[i].owner;
@@ -3933,11 +3987,15 @@ impl World {
         if self.units[i].hangar == 0 {
             return Err(SimError::QueueFull);
         }
-        self.spawn_temporary(owner, uid::SPIDER_MINE, pos, 0)
-            .ok_or(SimError::InvalidTarget)?;
-        self.units[i].hangar -= 1;
-        self.units[i].cooldown = self.units[i].cooldown.max(15);
-        Ok(())
+        // The Vulture drives to the point and lays the mine there
+        // (`order_PlaceMine`), like the Spider Mines button.
+        self.issue(
+            unit_id,
+            Order::Cast {
+                spell: Spell::SpiderMines,
+                target: SpellTarget::Point(pos.0, pos.1),
+            },
+        )
     }
 
     /// Find an owned completed parent building with a free add-on slot.
@@ -4505,6 +4563,14 @@ impl World {
         if !self.units[i].alive {
             return Err(SimError::BadUnit);
         }
+        // A tank in the middle of its siege / unsiege animation takes no
+        // orders (retail `status_flag_order_not_interruptible`).
+        if self.is_transforming(i) {
+            return Err(SimError::ProducerBusy);
+        }
+        // A new order drops whatever the old one was counting (a Yamato
+        // charge, an unload in progress).
+        self.units[i].order_wait = 0;
         self.cancel_nuke_for(unit_id);
         match &new_order {
             Order::AttackUnit { target } => {
@@ -4907,6 +4973,8 @@ impl World {
             }
         }
         self.resolve_collisions();
+        self.apply_air_repulse();
+        self.turn_turrets();
         if self.tick.is_multiple_of(CREEP_GROW_INTERVAL as u64) {
             self.grow_creep();
         }
@@ -4996,8 +5064,11 @@ impl World {
             let cloak_drain = if self.units[i].status.cloaked && !self.units[i].status.hallucination
             {
                 match self.units[i].type_id {
-                    uid::GHOST => GHOST_CLOAK_COST_PER_TICK,
-                    uid::WRAITH => WRAITH_CLOAK_COST_PER_TICK,
+                    // OpenBW `unit_cloak_energy_cost`: the Ghost heroes
+                    // (and Infested Kerrigan, 51) pay 10, Tom Kazansky's
+                    // Wraith (21) pays 13.
+                    t if is_ghost_type(t) || t == 51 => GHOST_CLOAK_COST_PER_TICK,
+                    uid::WRAITH | 21 => WRAITH_CLOAK_COST_PER_TICK,
                     _ => 0,
                 }
             } else {
@@ -5333,6 +5404,57 @@ impl World {
             .count()
     }
 
+    /// OpenBW `find_unit_placement`: the spot nearest to `center` (1/256
+    /// px), within 128 px, where unit `j`'s box is on walkable ground and
+    /// overlaps no other ground unit or building.  Searched on a 4 px grid,
+    /// ring by ring.
+    fn free_spot_near(&self, j: usize, center: (i32, i32)) -> Option<(i32, i32)> {
+        let ty = self.data.unit(self.units[j].type_id);
+        let (cx, cy) = (center.0 / fp(1), center.1 / fp(1));
+        let fits = |x: i32, y: i32| {
+            let r = ty.dimensions.rect_at((x, y));
+            if r.0 < 0 || r.1 < 0 {
+                return false;
+            }
+            let corners = [(r.0, r.1), (r.2, r.1), (r.0, r.3), (r.2, r.3), (x, y)];
+            if !corners
+                .iter()
+                .all(|&(px, py)| self.terrain.walkable_px(px, py))
+            {
+                return false;
+            }
+            !self.units.iter().enumerate().any(|(k, o)| {
+                k != j && o.alive && o.in_transport.is_none() && !self.is_air_unit(k) && {
+                    let b = self
+                        .data
+                        .unit(o.type_id)
+                        .dimensions
+                        .rect_at((o.x / fp(1), o.y / fp(1)));
+                    r.0 <= b.2 && b.0 <= r.2 && r.1 <= b.3 && b.1 <= r.3
+                }
+            })
+        };
+        for ring in 0..=32 {
+            let d = ring * 4;
+            let mut best: Option<(i64, (i32, i32))> = None;
+            for k in -ring..=ring {
+                for (dx, dy) in [(k * 4, -d), (k * 4, d), (-d, k * 4), (d, k * 4)] {
+                    let (x, y) = (cx + dx, cy + dy);
+                    if fits(x, y) {
+                        let dist = (dx as i64).pow(2) + (dy as i64).pow(2);
+                        if best.is_none_or(|(bd, _)| dist < bd) {
+                            best = Some((dist, (x, y)));
+                        }
+                    }
+                }
+            }
+            if let Some((_, (x, y))) = best {
+                return Some((x * fp(1), y * fp(1)));
+            }
+        }
+        None
+    }
+
     fn exit_position(&self, i: usize) -> (i32, i32) {
         let u = &self.units[i];
         let ty = self.data.unit(u.type_id);
@@ -5454,6 +5576,17 @@ impl World {
                 // Handled by update_production.
             }
             Order::Cast { spell, target } => {
+                // Yamato Gun charging: the shot leaves when the charge
+                // overlay (image 543, iscript 314) reaches `castspell`.
+                if spell == Spell::YamatoGun && self.units[i].order_wait > 0 {
+                    self.units[i].order_wait -= 1;
+                    if self.units[i].order_wait == 0 {
+                        let id = self.units[i].id;
+                        let _ = self.cast_unrecorded(id, spell, target);
+                        self.order_done(i);
+                    }
+                    return;
+                }
                 if think {
                     self.order_cast(i, spell, target);
                 } else {
@@ -5476,7 +5609,20 @@ impl World {
                 }
             }
             Order::EnterTransport { transport } => self.order_enter_transport(i, transport),
+            Order::PickupTransport { unit } => self.order_pickup_transport(i, unit),
             Order::Unload => self.order_unload(i),
+            // OpenBW `order_MoveUnload`: within 16 px of the point the
+            // transport starts unloading.
+            Order::MoveUnload { pos } => {
+                if self.distance_to_point(i, (pos.0 * fp(1), pos.1 * fp(1))) <= fp(16) {
+                    self.units[i].path.clear();
+                    self.units[i].path_goal = None;
+                    self.units[i].order = Order::Unload;
+                    self.units[i].order_wait = 0;
+                } else {
+                    self.move_towards(i, pos, fp(4));
+                }
+            }
             Order::Burrow => {
                 if think {
                     self.order_burrow(i, true);
@@ -5487,16 +5633,9 @@ impl World {
                     self.order_burrow(i, false);
                 }
             }
-            Order::Siege => {
-                if think {
-                    self.order_siege(i, true);
-                }
-            }
-            Order::Unsiege => {
-                if think {
-                    self.order_siege(i, false);
-                }
-            }
+            // The transformation counts frames, so it runs every tick.
+            Order::Siege => self.order_siege(i, true),
+            Order::Unsiege => self.order_siege(i, false),
             Order::Lift => {
                 let id = self.units[i].id;
                 let _ = self.lift_building(id);
@@ -5565,6 +5704,9 @@ impl World {
         if self.units[i].type_id == uid::SCV
             || self.units[i].type_id == uid::PROBE
             || self.units[i].type_id == uid::DRONE
+            // The Spider Mine runs its own state machine
+            // (`update_specials`), not the generic acquire-and-attack.
+            || self.units[i].type_id == uid::SPIDER_MINE
         {
             return;
         }
@@ -5649,6 +5791,24 @@ impl World {
         if attacking {
             return true;
         }
+        // A turret fires only once it points at the target, within the
+        // weapon's attack angle (OpenBW `unit_target_in_attack_angle` on
+        // the turret's heading).
+        if self
+            .data
+            .turret(self.data.unit(self.units[i].type_id))
+            .is_some()
+        {
+            let (dx, dy) = (
+                self.units[tidx].x - self.units[i].x,
+                self.units[tidx].y - self.units[i].y,
+            );
+            let want = direction_byte(dx, dy) as i32;
+            let diff = (want - self.units[i].turret_facing as i32).rem_euclid(256);
+            if diff.min(256 - diff) > weapon.attack_angle as i32 {
+                return true;
+            }
+        }
         if self.units[i].cooldown == 0 {
             let flying = self.is_air_unit(tidx);
             if !self.start_attack_animation(i, flying) {
@@ -5661,10 +5821,10 @@ impl World {
     fn weapon_for(&self, attacker: usize, target: usize) -> Option<(u8, WeaponType)> {
         let a_ty = self.data.unit(self.units[attacker].type_id);
         if self.is_air_unit(target) {
-            let id = a_ty.air_weapon;
+            let id = self.data.air_weapon_id(a_ty);
             self.data.air_weapon(a_ty).cloned().map(|w| (id, w))
         } else {
-            let id = a_ty.ground_weapon;
+            let id = self.data.ground_weapon_id(a_ty);
             self.data.ground_weapon(a_ty).cloned().map(|w| (id, w))
         }
     }
@@ -5780,6 +5940,11 @@ impl World {
             // (U-238 Shells, ...), as the attack itself measures it.
             let d = self.units_distance_px(i, other_idx) * fp(1);
             let limit = max_fp.max(self.weapon_max_range_px(i, other_idx, w) * fp(1));
+            // A target inside the weapon's minimum range (the sieged tank's
+            // 64 px) is not a candidate.
+            if d < w.min_range as i32 * fp(1) {
+                continue;
+            }
             if d <= limit && best.is_none_or(|(bd, _)| d < bd) {
                 best = Some((d, other.id));
             }
@@ -5989,7 +6154,16 @@ impl World {
         if u.status.stim_ticks > 0 {
             mods += 1;
         }
-        if self.data.unit(u.type_id).flags & 0x2000_0000 != 0 {
+        // OpenBW `update_unit_speed_upgrades`: Adrenal Glands for the
+        // Zergling; the Devouring One (54) always has it.
+        if self.data.unit(u.type_id).flags & 0x2000_0000 != 0
+            || u.type_id == 54
+            || (u.type_id == uid::ZERGLING
+                && self
+                    .players
+                    .get(u.owner as usize)
+                    .is_some_and(|p| p.upgrade_level(upgrade::ADRENAL_GLANDS) > 0))
+        {
             mods += 1;
         }
         if u.status.ensnare_ticks > 0 {
@@ -6117,6 +6291,44 @@ impl World {
     /// Create a stationary `bullet_type` 3 field at a point.  Psionic Storm
     /// uses this path (`0x568a5a`); `0x568aa5` re-applies its radial hit
     /// every seven updates for the weapon's 60-update lifetime.
+    /// A bullet that flies from `source` to a point on the ground and goes
+    /// off there (EMP Shockwave).
+    fn spawn_point_bullet(
+        &mut self,
+        source: usize,
+        weapon_id: u8,
+        weapon: &WeaponType,
+        target: (i32, i32),
+    ) {
+        if self.projectiles.len() >= MAX_PROJECTILES {
+            return;
+        }
+        let (owner, source_id, x, y) = {
+            let u = &self.units[source];
+            (u.owner, u.id, u.x, u.y)
+        };
+        self.projectiles.push(Projectile {
+            id: self.next_projectile_id,
+            owner,
+            source: source_id,
+            weapon: weapon_id,
+            behavior: behavior::FLY,
+            hit_type: weapon.explosion,
+            state: BulletState::Fly,
+            x,
+            y,
+            target: None,
+            target_pos: target,
+            speed: self.data.weapon_speed(weapon).max(256),
+            remaining_time: 300,
+            bounces_left: 0,
+            hit_flags: 0,
+            previous_target: None,
+            last_dot_tick: self.tick as i64,
+        });
+        self.next_projectile_id = self.next_projectile_id.wrapping_add(1).max(1);
+    }
+
     fn spawn_persistent_field(
         &mut self,
         source: usize,
@@ -6145,15 +6357,29 @@ impl World {
     }
 
     fn projectile_near_offset(&mut self, _attacker: usize) -> (i32, i32) {
-        // The retail engine cycles through a 14-entry table of small offsets
-        // so repeated Corrosive Acid shots do not stack exactly.  A
-        // deterministic ring preserves that behaviour.
-        let n = (self.next_projectile_id % 14) as i32;
-        let angle = n as f32 * std::f32::consts::TAU / 14.0;
-        (
-            (angle.cos() * 8.0 * fp(1) as f32) as i32,
-            (angle.sin() * 8.0 * fp(1) as f32) as i32,
-        )
+        // OpenBW `hit_near_target_positions`: bullets of type "attack
+        // target position" (Halo Rockets, Corrosive Acid) aim at the target
+        // plus the next of these 14 offsets, so a volley spreads around it.
+        // (Retail keeps the index per shooter; the bullet counter cycles
+        // through the same table.)
+        const NEAR: [(i32, i32); 14] = [
+            (-1, -1),
+            (-51, -31),
+            (-7, -12),
+            (36, 52),
+            (49, -25),
+            (-40, 46),
+            (4, 19),
+            (-28, -50),
+            (-50, 15),
+            (54, 13),
+            (-11, 53),
+            (-15, 9),
+            (19, -50),
+            (17, -8),
+        ];
+        let (x, y) = NEAR[(self.next_projectile_id % 14) as usize];
+        (x * fp(1), y * fp(1))
     }
 
     pub fn world_rand(&mut self) -> u32 {
@@ -6403,11 +6629,37 @@ impl World {
                 }
             }
             hit::EMP => {
+                // OpenBW `emp_shockwave`: every unit whose box touches the
+                // square of the weapon's inner splash radius (64 px) around
+                // the impact loses its energy and shields, except the
+                // caster and units in stasis; hallucinations die.
+                let half = weapon.inner_splash as i32;
+                let (ix, iy) = (pos.0 / fp(1), pos.1 / fp(1));
                 for j in 0..self.units.len() {
-                    if self.units[j].alive && self.distance_to_point(j, pos) <= fp(64) {
-                        self.units[j].shields = 0;
-                        self.units[j].set_energy_fixed(0);
+                    if !self.units[j].alive || j == source {
+                        continue;
                     }
+                    let rect = self
+                        .data
+                        .unit(self.units[j].type_id)
+                        .dimensions
+                        .rect_at((self.units[j].x / fp(1), self.units[j].y / fp(1)));
+                    if rect.2 < ix - half
+                        || rect.0 > ix + half
+                        || rect.3 < iy - half
+                        || rect.1 > iy + half
+                    {
+                        continue;
+                    }
+                    if self.units[j].status.hallucination {
+                        self.kill_unit(j);
+                        continue;
+                    }
+                    if self.units[j].status.stasis_ticks > 0 {
+                        continue;
+                    }
+                    self.units[j].shields = 0;
+                    self.units[j].set_energy_fixed(0);
                 }
             }
             hit::IRRADIATE => {
@@ -6554,6 +6806,10 @@ impl World {
         let inner = weapon.inner_splash as i64 * fp(1) as i64;
         let middle = weapon.middle_splash as i64 * fp(1) as i64;
         let outer = weapon.outer_splash as i64 * fp(1) as i64;
+        if air_only {
+            self.apply_air_splash(owner, source, weapon, target, impact);
+            return;
+        }
         for j in 0..self.units.len() {
             if !self.units[j].alive {
                 continue;
@@ -6612,6 +6868,78 @@ impl World {
             if weapon_id == wid::PSIONIC_STORM {
                 self.units[j].status.psi_storm_guard = 1;
             }
+            self.apply_hit_from(owner, source, j, weapon, divisor);
+        }
+    }
+
+    /// Air splash (Halo Rockets; OpenBW `bullet_deal_splash_damage` with
+    /// `is_air_splash`).  One unit takes the full hit: the bullet's target
+    /// if the rocket landed within the inner radius of it, else one valid
+    /// air unit in the outer radius picked at random.  Every other valid
+    /// unit in reach, except the bullet's target and Interceptors, takes
+    /// half within the middle radius and a quarter within the outer one.
+    /// The shooter's own units are spared unless they are the target.
+    fn apply_air_splash(
+        &mut self,
+        owner: u8,
+        source: usize,
+        weapon: &WeaponType,
+        target: Option<u32>,
+        impact: (i32, i32),
+    ) {
+        let (inner, middle, outer) = (
+            weapon.inner_splash as i32,
+            weapon.middle_splash as i32,
+            weapon.outer_splash as i32,
+        );
+        let (ix, iy) = (impact.0 / fp(1), impact.1 / fp(1));
+        // (unit, distance from the impact to its box)
+        let mut reach: Vec<(usize, i32)> = Vec::new();
+        for j in 0..self.units.len() {
+            let u = &self.units[j];
+            if !u.alive || j == source || !self.is_air_unit(j) {
+                continue;
+            }
+            if u.owner == owner && Some(u.id) != target {
+                continue;
+            }
+            let ty = self.data.unit(u.type_id);
+            if !weapon_can_target_unit(weapon, ty, true) {
+                continue;
+            }
+            let rect = ty.dimensions.rect_at((u.x / fp(1), u.y / fp(1)));
+            let dx = (rect.0 - ix).max(ix - rect.2).max(0) as i64;
+            let dy = (rect.1 - iy).max(iy - rect.3).max(0) as i64;
+            let d = isqrt(dx * dx + dy * dy) as i32;
+            if d <= outer {
+                reach.push((j, d));
+            }
+        }
+        if reach.is_empty() {
+            return;
+        }
+        let on_target = reach
+            .iter()
+            .find(|(j, d)| Some(self.units[*j].id) == target && *d <= inner)
+            .map(|(j, _)| *j);
+        let main = on_target.unwrap_or_else(|| {
+            if reach.len() == 1 {
+                reach[0].0
+            } else {
+                reach[self.world_rand() as usize % reach.len()].0
+            }
+        });
+        self.apply_hit_from(owner, source, main, weapon, 1);
+        for (j, d) in reach {
+            let u = &self.units[j];
+            if !u.alive
+                || Some(u.id) == target
+                || u.type_id == uid::INTERCEPTOR
+                || u.status.burrowed
+            {
+                continue;
+            }
+            let divisor = if d <= middle { 2 } else { 4 };
             self.apply_hit_from(owner, source, j, weapon, divisor);
         }
     }
@@ -6829,7 +7157,11 @@ impl World {
         let attacker_ty = self.data.unit(self.units[a].type_id).clone();
         let can_hit = |w: &World, i: usize| {
             let ty = w.data.unit(w.units[i].type_id);
-            if ty.is_worker() || !matches!(w.units[i].order, Order::Idle | Order::Stop) {
+            // (Spider Mines run their own state machine.)
+            if ty.is_worker()
+                || w.units[i].type_id == uid::SPIDER_MINE
+                || !matches!(w.units[i].order, Order::Idle | Order::Stop)
+            {
                 return false;
             }
             let weapon = if air {
@@ -7261,6 +7593,169 @@ impl World {
         Some(((hw.max(5)) * fp(1), (hh.max(5)) * fp(1)))
     }
 
+    /// Air units do not collide, but they do not stack either (OpenBW
+    /// `apply_repulse_field`).  The map is cut into 48 px cells; a flyer
+    /// that shares its cell with another drifts half a pixel per frame
+    /// along its repulse direction, faster the more crowded the cell when
+    /// it is standing still, with a small per-unit bias (the adjust table)
+    /// so a stack fans out instead of sliding as one.  Buildings,
+    /// Interceptors and units that cannot be interrupted are left alone.
+    fn apply_air_repulse(&mut self) {
+        const ADJUST: [i32; 32] = [
+            -5, -5, -5, 5, 5, -5, 5, 5, 5, -5, 5, 5, -5, -5, -5, 5, -5, 5, 5, -5, -5, -5, 5, 5, -5,
+            5, 5, -5, 5, 5, -5, -5,
+        ];
+        let movers: Vec<usize> = (0..self.units.len())
+            .filter(|&i| {
+                let u = &self.units[i];
+                u.alive
+                    && u.in_transport.is_none()
+                    && u.type_id != uid::INTERCEPTOR
+                    && u.type_id != uid::NUCLEAR_MISSILE
+                    && !self.data.unit(u.type_id).is_building()
+                    && self.is_air_unit(i)
+            })
+            .collect();
+        if movers.len() < 2 {
+            return;
+        }
+        let cell = |u: &SimUnit| (u.x / fp(48), u.y / fp(48));
+        let mut field: HashMap<(i32, i32), i32> = HashMap::new();
+        for &i in &movers {
+            *field.entry(cell(&self.units[i])).or_default() += 1;
+        }
+        let (map_w, map_h) = (
+            self.terrain.width as i32 * 32,
+            self.terrain.height as i32 * 32,
+        );
+        for i in movers {
+            let strength = field[&cell(&self.units[i])].min(255);
+            if self.units[i].repulse_flags & 0xf0 == 0 {
+                let v = self.world_rand();
+                self.units[i].repulse_dir = (v & 0xff) as u8;
+                let row = ((v >> 8) & 0xf0) as u8;
+                self.units[i].repulse_flags = if row == 0 { 0xf0 } else { row };
+            }
+            if strength <= 1 {
+                self.units[i].repulse_flags &= !7;
+                continue;
+            }
+            if self.is_transforming(i)
+                || self.units[i].status.lockdown_ticks > 0
+                || self.units[i].status.stasis_ticks > 0
+                || self.units[i].status.maelstrom_ticks > 0
+            {
+                continue;
+            }
+            let still = self.units[i].path.is_empty();
+            if self.units[i].repulse_flags & 7 != 0 {
+                self.units[i].repulse_flags -= 1;
+            } else {
+                self.units[i].repulse_flags |= 7;
+                // `update_repulse_direction`: while moving, keep the drift
+                // to the side of the travel direction; near a map edge,
+                // turn it back inwards.
+                let mut dir = self.units[i].repulse_dir;
+                if let Some(&(wx, wy)) = self.units[i].path.front() {
+                    let target = direction_byte(wx - self.units[i].x, wy - self.units[i].y) as i32;
+                    let index = (dir as i32 - target).rem_euclid(256);
+                    let side = index % 32 + if index < 128 { 32 } else { -64 };
+                    dir = (target + side).rem_euclid(256) as u8;
+                }
+                let (x, y) = (self.units[i].x / fp(1), self.units[i].y / fp(1));
+                // Directions 1..=127 point east, 129..=255 west; 65..=191
+                // south, the rest north.
+                let east = (1..128).contains(&dir);
+                let south = (65..192).contains(&dir);
+                if (x < 48 && !east && dir != 0 && dir != 128) || (x > map_w - 48 && east) {
+                    dir = 0u8.wrapping_sub(dir);
+                }
+                if (y < 48 && !south) || (y > map_h - 48 && south) {
+                    dir = 128u8.wrapping_sub(dir);
+                }
+                self.units[i].repulse_dir = dir;
+            }
+            let (vx, vy) = direction_vector(self.units[i].repulse_dir as i32);
+            let (mut rx, mut ry) = (vx / 2, vy / 2);
+            if still {
+                rx = rx * (strength / 4 + 1) / 2;
+                ry = ry * (strength / 4 + 1) / 2;
+            }
+            let row = (self.units[i].repulse_flags >> 4) as usize;
+            let (ax, ay) = (ADJUST[row * 2], ADJUST[row * 2 + 1]);
+            // Pull a strong component back by the bias and push a weak one
+            // further (OpenBW's four-way compare, folded).
+            let bias = |v: i32, a: i32| match v {
+                0 => 0,
+                v if v > 0 => {
+                    if v > a * 4 {
+                        v - a
+                    } else {
+                        v + a
+                    }
+                }
+                v => {
+                    if v < -a * 4 {
+                        v + a
+                    } else {
+                        v - a
+                    }
+                }
+            };
+            rx = bias(rx, ax);
+            ry = bias(ry, ay);
+            let nx = (self.units[i].x + rx).clamp(fp(8), fp(map_w - 8));
+            let ny = (self.units[i].y + ry).clamp(fp(8), fp(map_h - 8));
+            self.units[i].x = nx;
+            self.units[i].y = ny;
+        }
+    }
+
+    /// Turrets (Siege Tank, Goliath) turn towards the unit's target, or
+    /// back along the hull without one, by their flingy turn rate per
+    /// frame (17 for the Goliath's guns, 13 for the tank cannons).  A
+    /// freshly spawned or just-sieged turret starts along the hull.
+    fn turn_turrets(&mut self) {
+        for i in 0..self.units.len() {
+            let u = &self.units[i];
+            if !u.alive {
+                continue;
+            }
+            let ty = self.data.unit(u.type_id);
+            let Some(turret) = self.data.turret(ty) else {
+                continue;
+            };
+            let rate = self
+                .data
+                .flingy(turret.flingy)
+                .map_or(255, |f| f.turn_rate as i32)
+                .max(1);
+            // At rest: along the hull, or the sieged cannon's own rest
+            // heading once it has unfolded.
+            let rest = if u.type_id == uid::SIEGE_MODE
+                && !(matches!(u.order, Order::Siege) && u.order_wait > 0)
+            {
+                SIEGED_TURRET_HEADING
+            } else {
+                u.facing as i32
+            };
+            let want = u
+                .target
+                .and_then(|t| self.index_of(t))
+                .filter(|&t| self.units[t].alive)
+                .map_or(rest, |t| {
+                    direction_byte(self.units[t].x - u.x, self.units[t].y - u.y) as i32
+                });
+            let cur = u.turret_facing as i32;
+            let mut diff = (want - cur).rem_euclid(256);
+            if diff > 128 {
+                diff -= 256;
+            }
+            let step = diff.clamp(-rate, rate);
+            self.units[i].turret_facing = (cur + step).rem_euclid(256) as u8;
+        }
+    }
+
     fn try_shift(&mut self, i: usize, dx: i32, dy: i32) -> bool {
         if dx == 0 && dy == 0 {
             return true;
@@ -7412,7 +7907,7 @@ impl World {
             Some(f)
                 if f.movement_type == crate::data::MovementType::Flingy && f.acceleration > 0 =>
             {
-                let acc = f.acceleration as i32;
+                let acc = self.modified_rate(i, f.acceleration as i32);
                 let cur = if self.units[i].moved_tick + 1 == self.tick {
                     self.units[i].speed
                 } else {
@@ -7444,7 +7939,8 @@ impl World {
             .data
             .flingy(ty.flingy)
             .filter(|f| f.movement_type == crate::data::MovementType::Flingy && f.turn_rate > 0)
-            .map(|f| f.turn_rate as i32);
+            .map(|f| f.turn_rate as i32)
+            .map(|r| self.modified_rate(i, r));
         if let (Some(rate), Some(&(wx, wy))) = (turn_rate, self.units[i].path.front()) {
             let (dx, dy) = (wx - self.units[i].x, wy - self.units[i].y);
             if dx != 0 || dy != 0 {
@@ -7603,20 +8099,58 @@ impl World {
                 cycle[(u.anim_tick as usize) % cycle.len()]
             }
         };
-        speed = Self::modified_speed_for_mods(u.type_id, speed, u.a04_status_modifier_count());
+        speed = Self::modified_speed_for_mods(u.type_id, speed, self.movement_mods(i));
         // Lifted Terran buildings use their flingy speed when present;
         // otherwise they drift at the standard building air speed.
         if u.lifted && speed <= 0 {
             speed = 1280;
         }
-        let owner = u.owner as usize;
-        // Metabolic Boost is the Zergling speed upgrade; workers have none.
-        if u.type_id == uid::ZERGLING
-            && self.players[owner].upgrade_level(upgrade::METABOLIC_BOOST) > 0
-        {
-            speed = speed * 3 / 2;
-        }
         speed
+    }
+
+    /// OpenBW `update_unit_speed_upgrades`: whether this unit moves with
+    /// its speed upgrade (Ion Thrusters for the Vulture, Metabolic Boost
+    /// for the Zergling, ...) or is one of the units that always have it.
+    pub fn has_speed_upgrade(&self, i: usize) -> bool {
+        let u = &self.units[i];
+        let id = match u.type_id {
+            // 19 = Jim Raynor (Vulture).
+            uid::VULTURE | 19 => upgrade::ION_THRUSTERS,
+            uid::OVERLORD => upgrade::PNEUMATIZED_CARAPACE,
+            uid::ZERGLING => upgrade::METABOLIC_BOOST,
+            uid::HYDRALISK => upgrade::MUSCULAR_AUGMENTS,
+            uid::ZEALOT => upgrade::LEG_ENHANCEMENTS,
+            uid::SCOUT => upgrade::GRAVITIC_THRUSTERS,
+            uid::SHUTTLE => upgrade::GRAVITIC_DRIVE,
+            uid::OBSERVER => upgrade::GRAVITIC_BOOSTERS,
+            uid::ULTRALISK => upgrade::ANABOLIC_SYNTHESIS,
+            // Hunter Killer 53, Yggdrasill 57, Fenix (Zealot) 77, Mojo 80,
+            // Artanis 88 and every Lurker.
+            53 | 57 | 77 | 80 | 88 | uid::LURKER => return true,
+            _ => return false,
+        };
+        self.players
+            .get(u.owner as usize)
+            .is_some_and(|p| p.upgrade_level(id) > 0)
+    }
+
+    /// Movement modifier count (OpenBW `get_modified_unit_speed`): +1 for
+    /// Stim, +1 for a speed upgrade, -1 for Ensnare.  Positive: speed x1.5
+    /// (at least 3 1/3 px per frame), acceleration and turn rate x2;
+    /// negative: speed / 2, acceleration and turn rate - 1/4.
+    pub fn movement_mods(&self, i: usize) -> i32 {
+        let u = &self.units[i];
+        i32::from(u.status.stim_ticks > 0) + i32::from(u.flag_29 || self.has_speed_upgrade(i))
+            - i32::from(u.status.ensnare_ticks > 0)
+    }
+
+    /// Flingy acceleration or turn rate under the movement modifiers.
+    fn modified_rate(&self, i: usize, base: i32) -> i32 {
+        match self.movement_mods(i) {
+            m if m > 0 => base * 2,
+            m if m < 0 => base - base / 4,
+            _ => base,
+        }
     }
 
     // ------------------------------------------------------------------
@@ -7735,7 +8269,7 @@ impl World {
             self.data
                 .ground_weapon(&ty)
                 .cloned()
-                .map(|w| (ty.ground_weapon, w))
+                .map(|w| (self.data.ground_weapon_id(&ty), w))
         } else {
             self.weapon_for(i, tidx)
         };
@@ -7767,7 +8301,7 @@ impl World {
         let Some(w) = self.data.ground_weapon(&ty).cloned() else {
             return;
         };
-        let weapon_id = ty.ground_weapon;
+        let weapon_id = self.data.ground_weapon_id(&ty);
         self.units[i].cooldown = self.modified_cooldown(i, &w);
         self.units[i].attacks_fired = self.units[i].attacks_fired.saturating_add(1);
         if self.units[i].status.hallucination {
@@ -8387,6 +8921,32 @@ impl World {
         dx.max(dy)
     }
 
+    /// OpenBW `order_PickupTransport`: fly to a unit that wants to board
+    /// until the boxes touch; done when it is aboard or gave up.
+    fn order_pickup_transport(&mut self, i: usize, unit: u32) {
+        let waiting = self.index_of(unit).filter(|&p| {
+            self.units[p].alive
+                && self.units[p].in_transport.is_none()
+                && self.units[p].order
+                    == Order::EnterTransport {
+                        transport: self.units[i].id,
+                    }
+        });
+        let Some(p) = waiting else {
+            self.units[i].path.clear();
+            self.units[i].path_goal = None;
+            self.order_done(i);
+            return;
+        };
+        if self.box_gap_px(i, p) > 1 {
+            let (px, py) = (self.units[p].x / fp(1), self.units[p].y / fp(1));
+            self.move_towards(i, (px, py), fp(1));
+        } else {
+            self.units[i].path.clear();
+            self.units[i].path_goal = None;
+        }
+    }
+
     fn order_enter_transport(&mut self, i: usize, transport: u32) {
         let Some(tidx) = self.index_of(transport) else {
             self.order_done(i);
@@ -8401,12 +8961,28 @@ impl World {
             self.order_done(i);
             return;
         }
-        // Close enough when the two units.dat boxes are within 8 px of each
-        // other (a centre distance of 48 px left a Marine stuck on the
-        // corner of a Bunker it approached diagonally).
-        if self.box_gap_px(i, tidx) > 8 {
+        // A transport that can move comes to fetch its passenger (OpenBW
+        // `order_EnterTransport` queues `PickupTransport` on it) and the
+        // two board when their boxes touch (1 px).  A Bunker stays put and
+        // takes units within 8 px of its box (a centre distance of 48 px
+        // left a Marine stuck on the corner of a Bunker it approached
+        // diagonally).
+        let mobile = !self.data.unit(self.units[tidx].type_id).is_building();
+        if mobile && matches!(self.units[tidx].order, Order::Idle) {
+            self.units[tidx].order = Order::PickupTransport {
+                unit: self.units[i].id,
+            };
+            self.units[tidx].order_row = 94;
+        }
+        // OpenBW `order_EnterTransport`: board when the boxes are within
+        // 1 px.  A Bunker keeps 8 px: the engine's building footprint holds
+        // walkers a few pixels off its box, and at 1 px Marines stalled on
+        // its corners.
+        let reach = if mobile { 1 } else { 8 };
+        if self.box_gap_px(i, tidx) > reach {
             let (tx, ty) = (self.units[tidx].x, self.units[tidx].y);
-            self.move_towards(i, (tx / fp(1), ty / fp(1)), fp(24));
+            let stop = if mobile { fp(1) } else { fp(24) };
+            self.move_towards(i, (tx / fp(1), ty / fp(1)), stop);
             return;
         }
         let target_type = self.units[tidx].type_id;
@@ -8501,19 +9077,54 @@ impl World {
         Ok(())
     }
 
+    /// Unload (OpenBW `order_Unload` / `unit_unload`).  A Bunker empties at
+    /// once.  A transport lets one unit out every 15 frames; each one
+    /// lands with its weapon on cooldown, so a drop does not fire the
+    /// instant it touches the ground.
     fn order_unload(&mut self, i: usize) {
-        let cargo = std::mem::take(&mut self.units[i].cargo);
-        let (x, y) = self.exit_position(i);
-        for id in cargo {
-            if let Some(j) = self.index_of(id) {
-                self.units[j].alive = true;
-                self.units[j].clear_transport_link();
-                self.units[j].set_in_bunker(false);
-                self.units[j].x = x;
-                self.units[j].y = y;
+        let building = self.data.unit(self.units[i].type_id).is_building();
+        if !building && self.units[i].order_wait > 0 {
+            self.units[i].order_wait -= 1;
+            return;
+        }
+        let (cx, cy) = (self.units[i].x, self.units[i].y);
+        let count = if building {
+            self.units[i].cargo.len()
+        } else {
+            1.min(self.units[i].cargo.len())
+        };
+        for _ in 0..count {
+            let id = self.units[i].cargo.remove(0);
+            let Some(j) = self.index_of(id) else {
+                continue;
+            };
+            // OpenBW `unit_unload`: the nearest free spot to the container
+            // (`find_unit_placement`), not one shared exit point.
+            let (x, y) = self
+                .free_spot_near(j, (cx, cy))
+                .unwrap_or_else(|| self.exit_position(i));
+            self.units[j].alive = true;
+            self.units[j].clear_transport_link();
+            self.units[j].set_in_bunker(false);
+            self.units[j].x = x;
+            self.units[j].y = y;
+            if !building {
+                let ty = self.data.unit(self.units[j].type_id).clone();
+                let cooldown = [self.data.ground_weapon(&ty), self.data.air_weapon(&ty)]
+                    .into_iter()
+                    .flatten()
+                    .map(|w| self.modified_cooldown(j, w))
+                    .max()
+                    .unwrap_or(0);
+                self.units[j].cooldown = self.units[j].cooldown.max(cooldown);
             }
         }
-        self.order_done(i);
+        if building || self.units[i].cargo.is_empty() {
+            self.units[i].order_wait = 0;
+            self.order_done(i);
+        } else {
+            self.units[i].order_wait = TRANSPORT_UNLOAD_FRAMES;
+        }
     }
 
     // ------------------------------------------------------------------
@@ -8536,19 +9147,104 @@ impl World {
         self.order_done(i);
     }
 
+    /// Siege Mode and back (OpenBW `order_Sieging` / `order_Unsieging`).
+    /// Sieging: the tank stops, becomes the sieged type at once and is busy
+    /// for the 64 frames of its deploy animation (iscript 92 Init: `wait 1`,
+    /// five frames of 5, `wait 38`, `sigorder 1`).  Unsieging: it stays
+    /// sieged for the 63 frames of SpecialState2 (`wait 38`, five frames of
+    /// 5, `sigorder 1`) and only then becomes the tank again.  It cannot
+    /// fire or take another order meanwhile (`order_wait` counts down; 1
+    /// marks the last frame).
     fn order_siege(&mut self, i: usize, siege: bool) {
         if !self.players[self.units[i].owner as usize].has_tech(tech_id::TANK_SIEGE_MODE) {
+            self.units[i].order_wait = 0;
             self.order_done(i);
             return;
         }
-        if siege && self.units[i].type_id == uid::SIEGE_TANK {
-            self.units[i].status.sieged = true;
-            self.units[i].type_id = uid::SIEGE_MODE;
-        } else if !siege && self.units[i].type_id == uid::SIEGE_MODE {
+        let ty = self.units[i].type_id;
+        let wait = self.units[i].order_wait;
+        if siege {
+            if ty == uid::SIEGE_TANK {
+                self.units[i].path.clear();
+                self.units[i].path_goal = None;
+                self.units[i].target = None;
+                // OpenBW `order_Sieging`: hull and turret first turn to the
+                // type's default direction (`units.dat` 12, heading 96).
+                let rate = self
+                    .data
+                    .flingy(self.data.unit(ty).flingy)
+                    .map_or(255, |f| f.turn_rate as i32)
+                    .max(1);
+                let cur = self.units[i].facing as i32;
+                let mut diff = (SIEGE_HEADING - cur).rem_euclid(256);
+                if diff > 128 {
+                    diff -= 256;
+                }
+                self.units[i].facing = (cur + diff.clamp(-rate, rate)).rem_euclid(256) as u8;
+                if self.units[i].facing as i32 != SIEGE_HEADING
+                    || self.units[i].turret_facing as i32 != SIEGE_HEADING
+                {
+                    return;
+                }
+                // A tank that deploys on top of a building is destroyed.
+                if self.overlaps_grounded_building(i) {
+                    self.kill_unit(i);
+                    return;
+                }
+                self.units[i].status.sieged = true;
+                self.units[i].type_id = uid::SIEGE_MODE;
+                self.units[i].order_wait = SIEGE_FRAMES + 1;
+                return;
+            }
+            if ty == uid::SIEGE_MODE && wait > 1 {
+                self.units[i].order_wait = wait - 1;
+                return;
+            }
+        } else if ty == uid::SIEGE_MODE {
+            if wait == 0 {
+                self.units[i].target = None;
+                // The cannon swings back to its rest heading first.
+                if self.units[i].turret_facing as i32 != SIEGED_TURRET_HEADING {
+                    return;
+                }
+                self.units[i].order_wait = UNSIEGE_FRAMES + 1;
+                return;
+            }
+            if wait > 1 {
+                self.units[i].order_wait = wait - 1;
+                return;
+            }
             self.units[i].status.sieged = false;
             self.units[i].type_id = uid::SIEGE_TANK;
         }
+        self.units[i].order_wait = 0;
         self.order_done(i);
+    }
+
+    /// Whether unit `i`'s box overlaps a building on the ground.
+    fn overlaps_grounded_building(&self, i: usize) -> bool {
+        let r = self
+            .data
+            .unit(self.units[i].type_id)
+            .dimensions
+            .rect_at((self.units[i].x / fp(1), self.units[i].y / fp(1)));
+        self.units.iter().enumerate().any(|(k, b)| {
+            k != i && b.alive && !b.lifted && self.data.unit(b.type_id).is_building() && {
+                let o = self
+                    .data
+                    .unit(b.type_id)
+                    .dimensions
+                    .rect_at((b.x / fp(1), b.y / fp(1)));
+                r.0 <= o.2 && o.0 <= r.2 && r.1 <= o.3 && o.1 <= r.3
+            }
+        })
+    }
+
+    /// True while a tank is in the middle of its siege / unsiege animation.
+    pub fn is_transforming(&self, i: usize) -> bool {
+        self.units.get(i).is_some_and(|u| {
+            u.alive && matches!(u.order, Order::Siege | Order::Unsiege) && u.order_wait > 0
+        })
     }
 
     /// `0x005d4640`: Shield Battery target pre-check (different unit, same
@@ -8780,6 +9476,11 @@ impl World {
     /// has weapon 130 (Scanner Sweep, Recall, Meld, ...) have no weapon
     /// range and fall back to [`spell_range`].
     fn spell_range_px(&self, spell: Spell) -> Option<i32> {
+        // OpenBW `order_PlaceMine`: the Vulture lays the mine once it is
+        // within 20 px of the point.
+        if spell == Spell::SpiderMines {
+            return Some(20 * fp(1));
+        }
         spell
             .weapon_id()
             .and_then(|id| self.data.weapon(id))
@@ -8806,6 +9507,26 @@ impl World {
         {
             self.move_towards(i, (p.0 / fp(1), p.1 / fp(1)), range / fp(1));
             return;
+        }
+        if spell == Spell::YamatoGun {
+            // Stop and charge; the Battlecruiser's CastSpell animation
+            // shows the charge overlay.
+            let charge = self
+                .data
+                .image(YAMATO_CHARGE_IMAGE)
+                .and_then(|im| {
+                    self.data
+                        .iscript
+                        .frames_until(im.iscript_id as u16, 0, 0x27)
+                })
+                .unwrap_or(0);
+            if charge > 0 {
+                self.units[i].path.clear();
+                self.units[i].path_goal = None;
+                self.units[i].order_wait = charge.min(255) as u8;
+                self.start_animation(i, ANIM_CAST_SPELL);
+                return;
+            }
         }
         let has_anim = self
             .data
@@ -8841,7 +9562,14 @@ impl World {
                 self.push_spell_cue(SpellCueKind::Stim, id);
             }
             Spell::TankSiegeMode => {
-                self.order_siege(caster, self.units[caster].type_id == uid::SIEGE_TANK);
+                // The spell only starts the transformation order.
+                if !self.is_transforming(caster) {
+                    self.units[caster].order = if self.units[caster].type_id == uid::SIEGE_TANK {
+                        Order::Siege
+                    } else {
+                        Order::Unsiege
+                    };
+                }
             }
             Spell::CloakingField | Spell::PersonnelCloaking => {
                 self.units[caster].status.cloaked = !self.units[caster].status.cloaked;
@@ -8850,9 +9578,14 @@ impl World {
                 self.units[caster].status.burrowed = true;
             }
             Spell::YamatoGun => {
-                if let Some(t) = target_idx {
-                    let w = self.data.weapon(wid::YAMATO_GUN).cloned();
-                    if let Some(w) = w {
+                // The blast travels (weapons.dat row 30, a flying bullet)
+                // and deals its 260 on arrival.
+                if let Some(t) = target_idx
+                    && let Some(w) = self.data.weapon(wid::YAMATO_GUN).cloned()
+                {
+                    if Projectile::weapon_is_travelling(&w) {
+                        self.spawn_projectile(caster, t, wid::YAMATO_GUN, &w);
+                    } else {
                         self.apply_hit(caster, t, &w, 1);
                     }
                 }
@@ -8863,20 +9596,28 @@ impl World {
                 }
             }
             Spell::EmpShockwave => {
-                if let Some((tx, ty)) = point {
-                    for j in 0..self.units.len() {
-                        if self.units[j].alive && self.distance_to_point(j, (tx, ty)) <= fp(64) {
-                            self.units[j].shields = 0;
-                            self.units[j].set_energy_fixed(0);
-                        }
-                    }
+                // The EMP missile flies to the point (weapons.dat row 33)
+                // and goes off there (`hit::EMP`).
+                if let Some(p) = point
+                    && let Some(w) = self.data.weapon(wid::EMP_SHOCKWAVE).cloned()
+                {
+                    self.spawn_point_bullet(caster, wid::EMP_SHOCKWAVE, &w, p);
                 }
             }
             Spell::Irradiate => {
+                // Irradiate lands with its bullet (weapons.dat row 34,
+                // "appear on target"), a few frames after the cast.
                 if let Some(t) = target_idx
                     && !self.data.unit(self.units[t].type_id).is_building()
                 {
-                    self.units[t].status.apply_irradiate(IRRADIATE_UPDATES);
+                    let tid = self.units[t].id;
+                    let pos = (self.units[t].x, self.units[t].y);
+                    match self.data.weapon(wid::IRRADIATE).cloned() {
+                        Some(w) if w.explosion == hit::IRRADIATE => {
+                            self.instant_hit(c_owner, Some(tid), caster, wid::IRRADIATE, &w, pos);
+                        }
+                        _ => self.units[t].status.apply_irradiate(IRRADIATE_UPDATES),
+                    }
                 }
             }
             Spell::PsionicStorm => {
@@ -9162,8 +9903,10 @@ impl World {
                     && self.units[caster].hangar > 0
                     && let Some(idx) = self.spawn_temporary(c_owner, uid::SPIDER_MINE, (tx, ty), 0)
                 {
-                    self.units[idx].status.burrowed = true;
-                    self.units[idx].mine_armed_at = self.tick as i64 + SPIDER_MINE_ARM_TICKS;
+                    // The mine takes the Vulture's heading and starts in
+                    // the open (`update_specials` runs its state machine).
+                    self.units[idx].facing = self.units[caster].facing;
+                    self.units[idx].mine_armed_at = self.tick as i64 + SPIDER_MINE_WAIT_FRAMES;
                     self.units[caster].hangar -= 1;
                 }
             }
@@ -9216,7 +9959,7 @@ impl World {
         let owner = self.units[i].owner as usize;
         let (tech_id, spell) = match self.units[i].type_id {
             t if is_ghost_type(t) => (tech_id::PERSONNEL_CLOAKING, Spell::PersonnelCloaking),
-            uid::WRAITH => (tech_id::CLOAKING_FIELD, Spell::CloakingField),
+            uid::WRAITH | 21 => (tech_id::CLOAKING_FIELD, Spell::CloakingField),
             _ => return Err(SimError::Unsupported),
         };
         let hero = self.data.unit(self.units[i].type_id).flags & 0x40 != 0;
@@ -10068,41 +10811,88 @@ impl World {
         Some(idx)
     }
 
-    /// Spider mines arm after a short delay, then detonate on the first enemy
-    /// that enters their 96-pixel trigger radius.  The damage comes from the
-    /// recovered `weapons.dat` row 6 (Spider Mines: 125 damage, radial splash).
+    /// Spider Mines (OpenBW `order_SpiderMine`).  A new mine sits in the
+    /// open for 60 frames, takes 4 to burrow, and is then hidden and armed.
+    /// It wakes for the nearest enemy inside the 96 px square around it
+    /// (3 tiles of target acquisition) that is not invincible, a grounded
+    /// building, a flyer or a hovering unit; unburrows (4 frames), chases
+    /// it at 16 px per frame while it stays within 576 px, and explodes
+    /// when their boxes are within 30 px (weapons.dat row 6: 125 explosive,
+    /// radial splash 50 / 75 / 100).  A mine that loses its target digs in
+    /// again.  `mine_armed_at` is the tick of the next state change.
     fn update_specials(&mut self) {
-        let mut detonations: Vec<(usize, (i32, i32))> = Vec::new();
-        let mut mines: Vec<usize> = Vec::new();
+        let now = self.tick as i64;
+        let mut detonations: Vec<usize> = Vec::new();
         for i in 0..self.units.len() {
-            let u = &self.units[i];
-            if !u.alive || u.type_id != uid::SPIDER_MINE {
+            if !self.units[i].alive || self.units[i].type_id != uid::SPIDER_MINE {
                 continue;
             }
-            if !u.status.burrowed {
-                mines.push(i);
+            if self.units[i].status.lockdown_ticks > 0 || self.units[i].status.stasis_ticks > 0 {
                 continue;
             }
-            if self.tick as i64 >= u.mine_armed_at {
-                let enemy = self.units.iter().enumerate().any(|(ni, n)| {
-                    n.alive
-                        && self.hostile(u.owner, n.owner)
-                        && !self.is_air_unit(ni)
-                        && (n.x - u.x).abs() <= fp(32)
-                        && (n.y - u.y).abs() <= fp(32)
-                });
-                if enemy {
-                    detonations.push((i, (u.x, u.y)));
+            // Fresh mine: start the 60-frame wait.
+            if self.units[i].mine_armed_at == 0 {
+                self.units[i].mine_armed_at = now + SPIDER_MINE_WAIT_FRAMES;
+            }
+            let armed_at = self.units[i].mine_armed_at;
+            let target = self.units[i].target.and_then(|t| self.index_of(t));
+            if self.units[i].status.burrowed {
+                // Armed: look for a victim.
+                let (mx, my, owner) = (self.units[i].x, self.units[i].y, self.units[i].owner);
+                let half = SPIDER_MINE_SEEK_PX * fp(1);
+                let victim = (0..self.units.len())
+                    .filter(|&n| {
+                        let v = &self.units[n];
+                        n != i
+                            && v.alive
+                            && self.hostile(owner, v.owner)
+                            && !v.invincible
+                            && !self.data.unit(v.type_id).is_building()
+                            && !self.is_air_unit(n)
+                            && !is_hover_type(v.type_id)
+                            && (v.x - mx).abs() <= half
+                            && (v.y - my).abs() <= half
+                    })
+                    .map(|n| (self.distance(i, n), n))
+                    .min()
+                    .map(|(_, n)| n);
+                if let Some(v) = victim {
+                    self.units[i].status.burrowed = false;
+                    self.units[i].target = Some(self.units[v].id);
+                    self.units[i].mine_armed_at = now + SPIDER_MINE_BURROW_FRAMES;
+                }
+                continue;
+            }
+            match target {
+                // Waiting in the open, then burrowing.
+                None => {
+                    if now >= armed_at + SPIDER_MINE_BURROW_FRAMES {
+                        self.units[i].status.burrowed = true;
+                        self.units[i].path.clear();
+                        self.units[i].path_goal = None;
+                    }
+                }
+                // Unburrowing, then the chase.
+                Some(_) if now < armed_at => {}
+                Some(v) => {
+                    let alive = self.units[v].alive && !self.is_air_unit(v);
+                    let dist = self.units_distance_px(i, v);
+                    if !alive || dist > SPIDER_MINE_CHASE_PX {
+                        self.units[i].target = None;
+                        self.units[i].path.clear();
+                        self.units[i].path_goal = None;
+                        self.units[i].mine_armed_at = now + SPIDER_MINE_WAIT_FRAMES;
+                    } else if dist <= SPIDER_MINE_BLAST_PX {
+                        detonations.push(i);
+                    } else {
+                        let (vx, vy) = (self.units[v].x / fp(1), self.units[v].y / fp(1));
+                        self.move_towards(i, (vx, vy), fp(4));
+                    }
                 }
             }
         }
-        for i in mines {
-            // `0x005b4850` sets the hidden flag while the mine arms; the
-            // Rust model uses burrowed hidden state plus the arming timer.
-            self.units[i].status.burrowed = true;
-            self.units[i].mine_armed_at = self.tick as i64 + SPIDER_MINE_ARM_TICKS;
-        }
-        for (i, pos) in detonations {
+        for i in detonations {
+            let pos = (self.units[i].x, self.units[i].y);
             if let Some(w) = self.data.weapon(wid::SPIDER_MINES).cloned() {
                 let owner = self.units[i].owner;
                 self.resolve_hit_type(owner, None, i, wid::SPIDER_MINES, &w, pos, 1, 1);
@@ -10421,6 +11211,16 @@ fn direction_vector(direction: i32) -> (i32, i32) {
     (
         (angle.sin() * 256.0).round() as i32,
         (-angle.cos() * 256.0).round() as i32,
+    )
+}
+
+/// Hovering units (`units.dat` movement flags 0xC1): they do not set off
+/// Spider Mines.  Vulture, SCV, Spider Mine, Raynor's Vulture (19), Drone,
+/// Dark Archon (63), Probe, Archon, Tassadar/Zeratul (76).
+pub fn is_hover_type(type_id: u16) -> bool {
+    matches!(
+        type_id,
+        uid::VULTURE | uid::SCV | uid::SPIDER_MINE | 19 | uid::DRONE | 63 | uid::PROBE | 68 | 76
     )
 }
 
@@ -10956,7 +11756,6 @@ fn spell_range(spell: Spell) -> i32 {
         Spell::PsionicStorm
         | Spell::EmpShockwave
         | Spell::Irradiate
-        | Spell::DefensiveMatrix
         | Spell::StasisField
         | Spell::Maelstrom
         | Spell::Plague
@@ -10974,6 +11773,9 @@ fn spell_range(spell: Spell) -> i32 {
         | Spell::YamatoGun
         | Spell::Lockdown
         | Spell::Hallucination => 9,
+        // OpenBW `order_CastDefensiveMatrix`: the Science Vessel casts it
+        // from its sight range (10 tiles).
+        Spell::DefensiveMatrix => 10,
         Spell::ScannerSweep | Spell::DarkSwarm => 12,
         _ => 1,
     };
@@ -11469,8 +12271,20 @@ mod tests {
         let tank = w.spawn(0, uid::SIEGE_TANK, 8, 8).unwrap();
         w.players[0].techs[tech_id::TANK_SIEGE_MODE as usize] = true;
         w.issue(w.units[tank].id, Order::Siege).unwrap();
+        // It first turns to heading 96 (13 per frame from 0: 8 frames).
+        for _ in 0..8 {
+            w.step();
+            assert_eq!(w.units[tank].type_id, uid::SIEGE_TANK);
+        }
         w.step();
         assert_eq!(w.units[tank].type_id, uid::SIEGE_MODE);
+        // Busy for the deploy animation, then idle again.
+        assert!(w.is_transforming(tank));
+        for _ in 0..=SIEGE_FRAMES {
+            w.step();
+        }
+        assert!(!w.is_transforming(tank));
+        assert_eq!(w.units[tank].order, Order::Idle);
     }
 
     #[test]
@@ -12296,6 +13110,16 @@ mod tests {
                 _ => SpellTarget::Point(point.0, point.1),
             };
             w.apply_spell(caster, spell, target);
+            if spell == Spell::Irradiate {
+                // It lands with its bullet, a few frames after the cast.
+                assert_eq!(w.units[idx].status.irradiate_ticks, 0);
+                for _ in 0..10 {
+                    w.step();
+                    if w.units[idx].status.irradiate_ticks > 0 {
+                        break;
+                    }
+                }
+            }
             let s = &w.units[idx].status;
             let value = match field {
                 0 => s.ensnare_ticks,
@@ -27184,7 +28008,7 @@ impl World {
     /// zero-minimum row passes; otherwise the target must be at least
     /// `weapons.dat` minimum range away.
     pub fn a23_air_weapon_min_range_ok(&self, unit: &SimUnit, distance: i32) -> bool {
-        let weapon = self.data.unit(unit.type_id).air_weapon;
+        let weapon = self.data.air_weapon_id(self.data.unit(unit.type_id));
         if weapon > 0x81 {
             return false;
         }
@@ -27198,7 +28022,7 @@ impl World {
     /// (`units.dat` ground weapon, `0x82` sentinel, `weapons.dat` minimum
     /// range).
     pub fn a23_ground_weapon_min_range_ok(&self, unit: &SimUnit, distance: i32) -> bool {
-        let weapon = self.data.unit(unit.type_id).ground_weapon;
+        let weapon = self.data.ground_weapon_id(self.data.unit(unit.type_id));
         if weapon > 0x81 {
             return false;
         }

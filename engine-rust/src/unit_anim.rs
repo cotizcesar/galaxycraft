@@ -51,6 +51,13 @@ pub mod anim {
 /// Large`), Restoration 967..=969 (`tCure*`), Heal 970..=972 (`tmeHeal*`),
 /// Optical Flare hit 976..=978 (`TmeFlsh*`).
 pub const LOCKDOWN_FIELD_IMAGE: u16 = 361;
+/// Defensive Matrix front shell 371..=373 (`edmFronS/M/L`) and Irradiate
+/// cloud 380..=382 (`eradLrg`), by the target's size.
+pub const MATRIX_FRONT_IMAGE: u16 = 371;
+/// Defensive Matrix back shell 374..=376 (`edmBackS/M/L`), drawn behind
+/// the unit.
+pub const MATRIX_BACK_IMAGE: u16 = 374;
+pub const IRRADIATE_IMAGE: u16 = 380;
 pub const RESTORATION_IMAGE: u16 = 967;
 pub const HEAL_IMAGE: u16 = 970;
 pub const OPTICAL_FLARE_HIT_IMAGE: u16 = 976;
@@ -61,6 +68,10 @@ pub const STIM_SOUNDS: [u16; 2] = [278, 279];
 pub const OPTICAL_FLARE_CAST_SOUND: u16 = 1016;
 pub const OPTICAL_FLARE_HIT_SOUND: u16 = 1019;
 pub const RESTORATION_SOUND: u16 = 1017;
+
+fn is_underlay(image: u16) -> bool {
+    (MATRIX_BACK_IMAGE..MATRIX_BACK_IMAGE + 3).contains(&image)
+}
 
 /// Offset (0..=2) of a size-keyed overlay image for a unit type.
 fn size_slot(data: &GameData, type_id: u16) -> u16 {
@@ -131,6 +142,9 @@ struct UnitSeen {
     /// image 249): it follows the unit and shows its frame (`engframe`)
     /// until the unit stops.
     glow: Option<u16>,
+    /// Attack animation of the unit's turret image (tank barrel, Goliath
+    /// torso): its frames, firing sound and muzzle overlays.
+    turret: Option<Track>,
     cooldown: u32,
     x: i32,
     y: i32,
@@ -426,6 +440,15 @@ impl Animator {
             if u.status.lockdown_ticks > 0 {
                 wanted.push((u.id, LOCKDOWN_FIELD_IMAGE + size_slot(data, u.type_id)));
             }
+            // Defensive Matrix shell and Irradiate cloud, while they last.
+            if u.status.matrix_ticks > 0 {
+                let slot = size_slot(data, u.type_id);
+                wanted.push((u.id, MATRIX_FRONT_IMAGE + slot));
+                wanted.push((u.id, MATRIX_BACK_IMAGE + slot));
+            }
+            if u.status.irradiate_ticks > 0 {
+                wanted.push((u.id, IRRADIATE_IMAGE + size_slot(data, u.type_id)));
+            }
             if world.medic_is_healing(i)
                 && let Some(p) = u.target.and_then(|t| world.unit(t))
             {
@@ -451,10 +474,12 @@ impl Animator {
             .retain(|(id, _), _| world.unit(*id).is_some_and(|u| u.alive));
     }
 
-    /// The Lockdown fields and Heal glows showing a frame, on their units.
+    /// The Lockdown fields and Heal glows showing a frame, on their units
+    /// (drawn over them; see [`Self::status_underlays`] for the rest).
     pub fn status_overlays(&self, world: &World) -> Vec<BulletPose> {
         self.status
             .iter()
+            .filter(|((_, image), _)| !is_underlay(*image))
             .filter_map(|((id, image), t)| {
                 let u = world.unit(*id)?;
                 Some(BulletPose {
@@ -465,6 +490,16 @@ impl Animator {
                     frame: t.frame?,
                 })
             })
+            .collect()
+    }
+
+    /// Status images drawn behind unit `id` (the Defensive Matrix back
+    /// shell), as (image, frame).
+    pub fn status_underlays(&self, id: u32) -> Vec<(u16, u16)> {
+        self.status
+            .iter()
+            .filter(|((uid, image), _)| *uid == id && is_underlay(*image))
+            .filter_map(|((_, image), t)| Some((*image, t.frame?)))
             .collect()
     }
 
@@ -587,6 +622,7 @@ impl Animator {
             let seen = self.units.entry(u.id).or_insert_with(|| UnitSeen {
                 track: None,
                 glow: None,
+                turret: None,
                 cooldown: u.cooldown,
                 x: u.x,
                 y: u.y,
@@ -620,7 +656,8 @@ impl Animator {
                 .as_ref()
                 .is_some_and(|a| a.anim as usize == anim::CAST_SPELL);
             let fired = !working && !healing && !casting && u.cooldown > seen.cooldown;
-            let air = ty.ground_weapon == 255 && ty.air_weapon != 255
+            let (gw, aw) = (data.ground_weapon_id(ty), data.air_weapon_id(ty));
+            let air = gw >= 130 && aw < 130
                 || u.target
                     .and_then(|t| world.unit(t))
                     .is_some_and(|t| data.unit(t.type_id).is_flyer());
@@ -745,11 +782,50 @@ impl Animator {
                     }
                 }
             }
+            // The turret fires: its own image runs the attack animation
+            // (iscript 93 for the sieged cannon: sound 96 and the muzzle
+            // flash; the Goliath's guns likewise).
+            if fired
+                && data.turret(ty).is_some()
+                && let Some(timage) = unit_image(data, ty.turret)
+            {
+                let a = if air {
+                    anim::AIR_ATTK_INIT
+                } else {
+                    anim::GND_ATTK_INIT
+                };
+                if let Some(t) = Track::start(data, timage, a, u.facing) {
+                    seen.turret = Some(t);
+                }
+            }
+            if let Some(t) = seen.turret.as_mut() {
+                let spawned_now = t.tick(data, u.facing, &mut rng);
+                for id in t.sounds.drain(..) {
+                    self.sounds.push((id, u.x / 256, u.y / 256));
+                }
+                t.weapons.clear();
+                for (img, dx, dy) in spawned_now {
+                    if let Some(track) = Track::start(data, img, anim::INIT, u.facing) {
+                        spawned.push(Effect {
+                            image: img,
+                            x: u.x / 256 + dx as i32,
+                            y: u.y / 256 + dy as i32,
+                            facing: u.facing,
+                            frame: 0,
+                            track,
+                            age: 0,
+                        });
+                    }
+                }
+                if t.state.ended || t.state.ignore_rest {
+                    seen.turret = None;
+                }
+            }
             // Instant weapons (`appear at target unit / pos`, `appear at
             // source unit`, `self destruct`) never become a travelling
             // projectile: show their bullet image where it appears.
             if fired {
-                let weapon = if air { ty.air_weapon } else { ty.ground_weapon };
+                let weapon = if air { aw } else { gw };
                 let at = data.weapon(weapon).and_then(|w| {
                     use crate::projectile::behavior as b;
                     let target = u.target.and_then(|t| world.unit(t));
@@ -783,7 +859,16 @@ impl Animator {
             seen.image = image;
             seen.building = building;
         }
-        // Units that went away play their Death animation where they were.
+        // Units that went away play their Death animation where they were;
+        // one that boarded a transport or entered a Bunker (kept with
+        // `alive == false`) just disappears.
+        let loaded: Vec<u32> = world
+            .units
+            .iter()
+            .filter(|u| u.in_transport.is_some())
+            .map(|u| u.id)
+            .collect();
+        self.units.retain(|id, _| !loaded.contains(id));
         let gone: Vec<u32> = self
             .units
             .keys()
@@ -912,6 +997,21 @@ impl Animator {
     /// it has none (buildings, units without scripts).
     pub fn unit_frame(&self, id: u32) -> Option<u16> {
         self.units.get(&id)?.track.as_ref()?.frame
+    }
+
+    /// Vertical offset of the unit's image (`setvertpos`): the idle hover
+    /// bob of Wraiths, Dropships, Valkyries, Battlecruisers and friends.
+    pub fn unit_vert(&self, id: u32) -> i32 {
+        self.units
+            .get(&id)
+            .and_then(|s| s.track.as_ref())
+            .map_or(0, |t| t.state.vert as i32)
+    }
+
+    /// The `playfram` operand of the unit's turret while it runs its attack
+    /// animation, `None` otherwise (the renderer then shows frame 0).
+    pub fn turret_frame(&self, id: u32) -> Option<u16> {
+        self.units.get(&id)?.turret.as_ref()?.frame
     }
 
     /// The engine glow a moving unit shows on top (image), if any; it is

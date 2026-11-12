@@ -445,6 +445,15 @@ pub fn encode_order(out: &mut Vec<u8>, o: &Order) {
             w_u32(out, *transport);
         }
         Order::Unload => w_u8(out, 16),
+        Order::PickupTransport { unit } => {
+            w_u8(out, 26);
+            w_u32(out, *unit);
+        }
+        Order::MoveUnload { pos } => {
+            w_u8(out, 25);
+            w_i32(out, pos.0);
+            w_i32(out, pos.1);
+        }
         Order::Burrow => w_u8(out, 17),
         Order::Unburrow => w_u8(out, 18),
         Order::Siege => w_u8(out, 19),
@@ -532,6 +541,12 @@ pub fn decode_order(c: &mut Cursor<'_>) -> Option<Order> {
         }
         23 => Order::Die,
         24 => Order::Construct { building: c.u32()? },
+        26 => Order::PickupTransport { unit: c.u32()? },
+        25 => {
+            let x = c.i32()?;
+            let y = c.i32()?;
+            Order::MoveUnload { pos: (x, y) }
+        }
         _ => return None,
     })
 }

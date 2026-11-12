@@ -141,3 +141,35 @@ The rules marked OpenBW were read from its source (`bwgame.h`,
 `actions.h`) on 2026-11-12, not recalled.
 
 Open doubts are in `pending.md`.
+
+## Unit by unit: Vulture, Siege Tank, Goliath, Wraith, Dropship, Valkyrie, Science Vessel, Battlecruiser (2026-11-12)
+
+Method: `UNIT-FIDELITY-METHOD.md`; rules read from the OpenBW source.
+Tests: `tests/vehicles_retail.rs`, `tests/air_retail.rs`.  Checked on screen
+in HD and SD: turrets and the deployed tank, the air units fighting.
+
+| unit | aspect | retail / OpenBW | engine |
+|---|---|---|---|
+| Siege Tank, Goliath | weapons | carried by the turret unit (`units.dat` subunit) | **fixed**: they could not attack at all; the base now uses its turret row's weapons and acquisition range |
+| Siege Tank | Siege Mode | deploys for 64 frames, packs up for 63 (iscript 92), takes no orders meanwhile | **fixed** (was instant) |
+| Siege Tank | Arclite cannon | minimum range 64 px between boxes; a target inside it is not acquired; radial splash hits own units | **fixed** (the tank locked on a target it could not shoot) |
+| Vulture and others | speed upgrades | `update_unit_speed_upgrades`: speed x1.5, acceleration and turn rate x2 (Ion Thrusters, Metabolic Boost, Muscular Augments, Leg Enhancements, Gravitic Drive / Boosters / Thrusters, Pneumatized Carapace, Anabolic Synthesis); Adrenal Glands halves the Zergling's cooldown | **fixed** (none of them did anything) |
+| Vulture | laying a mine | drives to within 20 px of the point (`order_PlaceMine`) | **fixed** (10 px by spell, instant at any distance by raw order) |
+| Spider Mine | behaviour | 60 frames in the open, 4 to burrow; watches a 96 px square; ignores grounded buildings, flyers and hovering units; chases up to 576 px; explodes within 30 px | **fixed** (armed in 24 frames, 32 px, any ground unit, no chase) |
+| all | `attackwith 2` | fires the air weapon | **fixed**: it fired the ground weapon (the Valkyrie never shot; the Wraith lasered air units) |
+| Valkyrie | Halo Rockets | 8 per volley around the target (14 offsets); air splash: one full hit, others half within 50 px / a quarter within 100 px, own units spared | **fixed** |
+| Dropship | unload | one unit per 15 frames, weapons on cooldown; a Bunker empties at once | **fixed** (everything at once) |
+| Dropship | boarding | the transport flies over to fetch a unit that asks to board (`order_PickupTransport`); they board when the boxes touch | **fixed** (the unit walked all the way; 8 px) |
+| client | boarding | a unit that boards just disappears | **fixed**: it played its death animation |
+| Dropship, Bunker | unload placement | each unit on the nearest free spot to the container (`find_unit_placement`) | **fixed** (all on one exit point) |
+| Siege Tank, Goliath | turret heading | turns at the turret's flingy turn rate (13 / 17), fires within the weapon's attack angle | **fixed** (pointed at the target at once) |
+| client | Defensive Matrix | front and back shells | **fixed** (none, then front only) |
+| Dropship | unload at a point | `order_MoveUnload`: fly there, unload within 16 px; the Unload button asks for the spot | **fixed** (the order did not exist) |
+| Battlecruiser | Yamato Gun | charges until its overlay's `castspell`, then a travelling blast, 260 on arrival | **fixed** (instant damage) |
+| Science Vessel | EMP Shockwave | a missile; drains the 64 px square at the impact, not the caster or units in stasis; kills hallucinations | **fixed** (instant, circle, caster included) |
+| Science Vessel | Irradiate | lands with its bullet | **fixed** (instant) |
+| Science Vessel | Defensive Matrix | cast from sight range (10 tiles) | **fixed** (9) |
+| Science Vessel, all | detection | a cloaked / burrowed unit under Matrix, Lockdown, Maelstrom, Irradiate, Ensnare, Stasis, Plague or Acid Spores is seen by everyone; detectors must be complete and not disabled; range between boxes | **fixed** |
+| Wraith | hero cloak | Tom Kazansky drains 13, the Ghost heroes 10 | **fixed** (free) |
+| air units | stacking | units sharing a 48 px cell drift apart (`apply_repulse_field`) | **fixed** (they stacked on one pixel) |
+| client | turrets | drawn on top of the base, pointing at the target; the sieged base unfolds | **fixed** in HD and SD (tank without a barrel, Goliath without a torso) |

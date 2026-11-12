@@ -140,6 +140,9 @@ pub struct AnimState {
     pub signal: u8,
     /// Number of opcodes executed, useful for diagnostics and loop guards.
     pub steps: u32,
+    /// Vertical image offset set by `setvertpos` (the idle hover bob of
+    /// flyers, 0..=2 px down).
+    pub vert: i8,
 }
 
 /// Per-tick context supplied by the simulation.
@@ -300,12 +303,19 @@ impl Iscript {
     /// image exists before it deals its damage.  `None` when Init never
     /// reaches the opcode.
     pub fn frames_until_damage(&self, id: u16) -> Option<u32> {
-        let mut p = self.animation_offset(id, 0)? as usize;
+        self.frames_until(id, 0, 0x1b)
+    }
+
+    /// Frames from the start of animation `anim` of script `id` to its
+    /// first `opcode` (the sum of the `wait`s before it), e.g. the
+    /// `castspell` (0x27) of the Yamato charge overlay.
+    pub fn frames_until(&self, id: u16, anim: usize, opcode: u8) -> Option<u32> {
+        let mut p = self.animation_offset(id, anim)? as usize;
         let mut frames = 0u32;
         for _ in 0..256 {
             let op = *self.bytes.get(p)?;
             match op {
-                0x1b => return Some(frames),
+                o if o == opcode => return Some(frames),
                 0x05 => frames += *self.bytes.get(p + 1)? as u32,
                 0x07 => {
                     p = u16::from_le_bytes([*self.bytes.get(p + 1)?, *self.bytes.get(p + 2)?])
@@ -378,6 +388,7 @@ impl Iscript {
             repeat_attack: false,
             signal: 0,
             steps: 0,
+            vert: 0,
         })
     }
 
@@ -431,7 +442,7 @@ impl Iscript {
                 }
                 0x03 => {
                     // setvertpos <y>
-                    let _ = self.read_i8(st);
+                    st.vert = self.read_i8(st).unwrap_or(0);
                 }
                 0x04 => {
                     // setpos <x> <y>
@@ -606,8 +617,8 @@ impl Iscript {
                     out.push(AnimEvent::Signal(flag));
                 }
                 0x25 => {
-                    // attackwith <is_ground>
-                    let ground = self.read_u8(st).unwrap_or(0) != 0;
+                    // attackwith <1 = ground weapon, 2 = air weapon>
+                    let ground = self.read_u8(st).unwrap_or(0) == 1;
                     out.push(AnimEvent::Attack {
                         weapon: None,
                         melee: false,

@@ -39,3 +39,33 @@ energy, Medic heal rules and search square, Ghost paint range, the nuke's
   search (2026-11-12) found no source for the exact rule; the annoyed lines
   after repeated clicks are confirmed to exist (Blizzard, "The Sounds of
   Koprulu").
+
+## Vehicles and air units, 2026-11-12
+
+Rules read from the OpenBW source; these parts are simplified or not checked
+on screen.
+
+- **Turrets are folded into the base unit.**  The base fires the turret's
+  weapon; the turret turns at its own rate, gates the shot and plays its
+  firing animation, and the hull holds still while it fires (tested).
+- **Spider Mine.**  The hover list is a hardcoded type list rather than the
+  `units.dat` movement flags; the burrow / unburrow frames and sounds are
+  not drawn; a mine is nudged by collision while it waits.
+- **Bunker boarding** uses 8 px instead of retail's 1: the engine's
+  building footprint holds walkers a few pixels off the box, and at 1 px
+  Marines stalled on the corners (tested).  Transports use 1 px.
+- **Valkyrie.**  The near-target offset index is global, not per Valkyrie,
+  and the 80-bullet cap on Halo Rockets is not enforced.
+- **Yamato Gun.**  Energy is spent when the blast leaves, not when the
+  charge starts; the raw order row (113) casts without the charge.
+- **Irradiate** on a unit inside a transport or burrowed follows the old
+  rule (OpenBW: only the transport, or only the unit itself).
+- **Air repulse.**  The map-edge turn and the "cannot be interrupted"
+  exemptions are simplified.
+- **Team colour in SD** uses the median brightness steps of `tunit.pcx`
+  on the player's colour instead of each player's exact eight shades.
+- **Checked on screen only in outline** (scripted HD and SD sessions, small
+  crops): the siege deploy, a mine chasing and exploding, the Yamato charge
+  and blast, and the Matrix / Irradiate / EMP casts being accepted; the Matrix
+  shell and the Irradiate cloud on their targets (front and back shells).  A
+  Dropship loading, flying to a point and unloading was checked on screen.
