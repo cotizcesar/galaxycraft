@@ -18820,10 +18820,15 @@ impl App {
                         u.owner,
                     ))),
                 );
-            } else if !self
-                .sprites
-                .draw_unit_turned(fb, u, (sx, sy), self.world.tick, pose, facing)
-            {
+            } else if !self.sprites.draw_unit_turned(
+                fb,
+                u,
+                // Idle hover bob of flyers (`setvertpos`).
+                (sx, sy + self.animator.unit_vert(u.id)),
+                self.world.tick,
+                pose,
+                facing,
+            ) {
                 draw_unit_box(fb, u, &self.data, (sx, sy), selected);
             } else if selected {
                 let ty = self.data.unit(u.type_id);
@@ -19932,6 +19937,8 @@ impl App {
             return;
         }
         layer(true, fb);
+        // Idle hover bob of flyers (`setvertpos`), on the main image only.
+        let bob_y = sy + self.animator.unit_vert(u.id) as f32 * s;
         // Status images behind the unit (Defensive Matrix back shell).
         for (image, sframe) in self.animator.status_underlays(u.id) {
             if let Some(si) = self
@@ -19958,7 +19965,7 @@ impl App {
             &img,
             frame,
             sx,
-            sy,
+            bob_y,
             s,
             flip,
             Some(team),

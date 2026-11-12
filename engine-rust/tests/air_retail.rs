@@ -402,3 +402,20 @@ fn unloaded_units_land_on_separate_free_spots_under_the_transport() {
         }
     }
 }
+
+#[test]
+fn idle_flyers_bob_up_and_down() {
+    use galaxycraft::unit_anim::Animator;
+    let mut w = world();
+    let wraith = w.spawn_px(0, uid::WRAITH, 400, 400).unwrap();
+    let id = w.units[wraith].id;
+    let mut anim = Animator::default();
+    let mut seen = std::collections::HashSet::new();
+    for _ in 0..600 {
+        w.step();
+        anim.advance(&w);
+        seen.insert(anim.unit_vert(id));
+    }
+    // iscript 0x79a2: setvertpos 1, 2, 1, 0 with random waits.
+    assert!(seen.contains(&1) && seen.contains(&2), "{seen:?}");
+}

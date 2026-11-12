@@ -409,7 +409,15 @@ impl Palette {
         if let Some(team) = team
             && (8..=15).contains(&index)
         {
-            return team;
+            // Palette entries 8..=15 are the player-colour ramp, brightest
+            // first.  Retail fills them from `game\tunit.pcx` (8 shades per
+            // player); these are the median brightness steps of its first
+            // eight players, applied to the player's colour.
+            const SHADE: [u32; 8] = [256, 216, 198, 162, 126, 110, 74, 42];
+            let k = SHADE[(index - 8) as usize];
+            let c = team.0;
+            let ch = |shift: u32| ((c >> shift) & 0xff) * k / 256;
+            return Rgb((ch(16) << 16) | (ch(8) << 8) | ch(0));
         }
         self.colors[index as usize]
     }

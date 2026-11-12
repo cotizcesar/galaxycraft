@@ -140,6 +140,9 @@ pub struct AnimState {
     pub signal: u8,
     /// Number of opcodes executed, useful for diagnostics and loop guards.
     pub steps: u32,
+    /// Vertical image offset set by `setvertpos` (the idle hover bob of
+    /// flyers, 0..=2 px down).
+    pub vert: i8,
 }
 
 /// Per-tick context supplied by the simulation.
@@ -385,6 +388,7 @@ impl Iscript {
             repeat_attack: false,
             signal: 0,
             steps: 0,
+            vert: 0,
         })
     }
 
@@ -438,7 +442,7 @@ impl Iscript {
                 }
                 0x03 => {
                     // setvertpos <y>
-                    let _ = self.read_i8(st);
+                    st.vert = self.read_i8(st).unwrap_or(0);
                 }
                 0x04 => {
                     // setpos <x> <y>

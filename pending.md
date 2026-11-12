@@ -63,10 +63,8 @@ on screen.
   rule (OpenBW: only the transport, or only the unit itself).
 - **Air repulse.**  The map-edge turn and the "cannot be interrupted"
   exemptions are simplified.
-- **Not drawn.**  The hover bob of idle flyers (`setvertpos`).  SD units
-  now use the map's tileset palette (the generic one drew a blue dotted
-  outline on the Siege Tank); the team colour is still a flat colour
-  instead of the retail shaded ramp.
+- **Team colour in SD** uses the median brightness steps of `tunit.pcx`
+  on the player's colour instead of each player's exact eight shades.
 - **Checked on screen only in outline** (scripted HD and SD sessions, small
   crops): the siege deploy, a mine chasing and exploding, the Yamato charge
   and blast, and the Matrix / Irradiate / EMP casts being accepted; the Matrix

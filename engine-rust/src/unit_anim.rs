@@ -999,6 +999,15 @@ impl Animator {
         self.units.get(&id)?.track.as_ref()?.frame
     }
 
+    /// Vertical offset of the unit's image (`setvertpos`): the idle hover
+    /// bob of Wraiths, Dropships, Valkyries, Battlecruisers and friends.
+    pub fn unit_vert(&self, id: u32) -> i32 {
+        self.units
+            .get(&id)
+            .and_then(|s| s.track.as_ref())
+            .map_or(0, |t| t.state.vert as i32)
+    }
+
     /// The `playfram` operand of the unit's turret while it runs its attack
     /// animation, `None` otherwise (the renderer then shows frame 0).
     pub fn turret_frame(&self, id: u32) -> Option<u16> {
