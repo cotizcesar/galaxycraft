@@ -7,9 +7,14 @@ wire it into the engine**.  Read this file first, then
 
 ## Token budget rules (read before any tool call)
 
-1. **Never open a big module whole.**  `client.rs` is 60k lines, `runtime.rs`
-   33k, `sim.rs` 31k, `ai_recovered.rs` 12k.  Use `rg -n PATTERN FILE` and
-   then read a 40–80 line range.
+1. **Never open a big module whole.**  `engine-rust/docs/MODULES.md` lists
+   every file with its size and purpose; wave output lives one block per
+   file (`src/runtime/w31/a07.rs`, `src/client/...`, `src/sim/translated/...`)
+   and `World` / `App` methods are split by subsystem (`src/sim/*.rs`,
+   `src/bin/sc_view/*.rs`).  Still use `rg -n PATTERN` and read a 40–80
+   line range.  Hand-written files stay under 1 500 lines
+   (`scripts/check_file_sizes.py`; the files above it today are listed in
+   `docs/large-files.txt` and may only shrink).
 2. **Never read the ledger or triage whole** (56k / 52k rows).  Use
    `rg '^0xADDR' engine-rust/docs/decomp-ledger.tsv` or the scripts.
 3. Read only the pseudocode files listed in your assignment.  One body at a
@@ -71,7 +76,7 @@ python3 scripts/triage_corpus.py                       # refresh priorities
 python3 scripts/prepare_wave.py --wave W --queue engine-rust/docs/triage.tsv
 # ... translation agents work (see TRANSLATION-GUIDE.md) ...
 python3 scripts/validate_wave.py --wave W
-python3 scripts/merge_wave.py --wave W --map auto
+python3 scripts/merge_wave.py --wave W --map auto   # writes src/<module>/wNN/aNN.rs
 cd engine-rust && cargo fmt && cargo test -q --lib && \
   cargo clippy -q --all-targets -- -D warnings && cargo fmt --check && cd ..
 python3 scripts/decomp_ledger.py \
@@ -123,12 +128,12 @@ expected.  Do not retry skiplist rows until a callee they need is translated.
 
 | path | contents |
 |---|---|
-| `engine-rust/src/sim.rs` | deterministic `World`, units, orders, combat glue |
+| `engine-rust/src/sim/` | deterministic `World`: types in `mod.rs`, methods by subsystem (`spawn`, `step`, `orders`, `combat`, `damage`, `movement`, `spells`, `production`, ...), translated batches in `translated/` |
 | `engine-rust/src/{combat,orders,iscript,aiscript,ai,path,contour,vision,trigger,handlers,map,data}.rs` | rules subsystems |
-| `engine-rust/src/ai_recovered.rs` | translated AI-script / command dispatch helpers |
-| `engine-rust/src/runtime.rs` | translated STL/containers/JSON/runtime helpers |
-| `engine-rust/src/client.rs`, `render.rs`, `audio.rs`, `menu.rs` | client |
-| `engine-rust/src/bin/sc_view.rs` | playable client; `sc_assets` = data tool |
+| `engine-rust/src/ai_recovered/` | translated AI-script / command dispatch helpers (one file per wave block) |
+| `engine-rust/src/runtime/` | translated STL/containers/JSON/runtime helpers (one file per wave block) |
+| `engine-rust/src/client/`, `render.rs`, `audio.rs`, `menu.rs` | client |
+| `engine-rust/src/bin/sc_view.rs` + `sc_view/` | playable client; `impl App` split by screen; `sc_assets` = data tool |
 | `engine-rust/docs/` | ledger, triage, pipeline docs, RE evidence |
 | `scripts/` | corpus/wave pipeline, packaging, LAN and timeline tools |
 
@@ -141,6 +146,9 @@ expected.  Do not retry skiplist rows until a callee they need is translated.
 - `engine-rust/docs/TRANSLATED-INTEGRATION.md` — what is wired where.
 - `engine-rust/docs/TRANSLATION-PIPELINE.md`, `RESUME.md` — restore/regen.
 - `engine-rust/docs/evidence-recovery.md`, `IMPLEMENTATION-PHASES.md` — RE notes.
+- `engine-rust/docs/MODULES.md` — generated map of every source file
+  (`scripts/gen_modules_doc.py`).
+- `engine-rust/docs/MODULARIZATION-PLAN.md` — how the big files were split.
 - `engine-rust/docs/UNIT-FIDELITY-METHOD.md` — how one unit is audited against
   retail and fixed (reference tool `scripts/unit_ref.py`, tests, scripted
   HD / SD screenshots); results in `FIDELITY.md`, open doubts in `pending.md`.

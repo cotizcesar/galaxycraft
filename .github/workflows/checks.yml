@@ -1,0 +1,20 @@
+name: Checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  file-sizes:
+    # Keep files small enough for agents to read in parts
+    # (engine-rust/docs/MODULARIZATION-PLAN.md, phase 7).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Line limit per source file
+        run: python3 scripts/check_file_sizes.py
+      - name: Module map is current
+        run: |
+          python3 scripts/gen_modules_doc.py
+          git diff --exit-code engine-rust/docs/MODULES.md
