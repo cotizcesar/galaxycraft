@@ -857,21 +857,6 @@ impl App {
         out
     }
 
-    /// First `playfram` of an image's animation (the AlmostBuilt frame).
-    pub(super) fn first_frame_of(&self, image: u16, anim: usize) -> Option<usize> {
-        let script = self.data.image(image)?.iscript_id as u16;
-        let mut st = self.data.iscript.start_animation(script, anim, 0)?;
-        let mut ctx = galaxycraft::iscript::AnimContext::default();
-        for _ in 0..4 {
-            for e in self.data.iscript.tick_anim(&mut st, &mut ctx) {
-                if let galaxycraft::iscript::AnimEvent::Frame { raw, .. } = e {
-                    return Some(raw as usize);
-                }
-            }
-        }
-        None
-    }
-
     /// Overlays the unit's Init animation attaches (`imgul` shadows below,
     /// `imgol` glows above), from the retail iscript: image id, offset and
     /// whether it is drawn under the main image.
@@ -1130,6 +1115,7 @@ impl App {
     /// poses drawn at 1x from the images' SD GRPs.
     pub(super) fn draw_animated_images_sd(&mut self, fb: &mut Framebuffer) {
         let local = self.local_player as u8;
+        let mirrored = self.mirrored_effects();
         let poses: Vec<(u16, i32, i32, u8, u16)> = self
             .animator
             .damage_overlays(&self.world)
@@ -1192,7 +1178,8 @@ impl App {
                     &grp,
                     index,
                     (x - self.camera.0, y - self.camera.1),
-                    galaxycraft::render::sd_frame_flip(grp.frames.len(), facing),
+                    galaxycraft::render::sd_frame_flip(grp.frames.len(), facing)
+                        || mirrored.contains(&(image, x, y)),
                     &table,
                 );
                 continue;
@@ -1212,7 +1199,8 @@ impl App {
                 index,
                 self.sprites.palette(),
                 (x - self.camera.0, y - self.camera.1),
-                galaxycraft::render::sd_frame_flip(grp.frames.len(), facing),
+                galaxycraft::render::sd_frame_flip(grp.frames.len(), facing)
+                    || mirrored.contains(&(image, x, y)),
                 ink,
             );
         }
@@ -1250,7 +1238,8 @@ impl App {
                     &grp,
                     index,
                     (x - self.camera.0, y - self.camera.1),
-                    galaxycraft::render::sd_frame_flip(grp.frames.len(), facing),
+                    galaxycraft::render::sd_frame_flip(grp.frames.len(), facing)
+                        || mirrored.contains(&(image, x, y)),
                     &table,
                 );
                 continue;
@@ -1261,7 +1250,8 @@ impl App {
                 index,
                 self.sprites.palette(),
                 (x - self.camera.0, y - self.camera.1),
-                galaxycraft::render::sd_frame_flip(grp.frames.len(), facing),
+                galaxycraft::render::sd_frame_flip(grp.frames.len(), facing)
+                    || mirrored.contains(&(image, x, y)),
                 galaxycraft::render::GrpInk::Glow(Rgb::new(255, 150, 40)),
             );
         }
@@ -1346,6 +1336,7 @@ impl App {
         let (cx, cy, cw, ch) = content;
         let clip = (cx, cy, cx + cw, cy + ch);
         let install = self.install.as_ref();
+        let mirrored = self.mirrored_effects();
         let poses = self
             .animator
             .damage_overlays(&self.world)
@@ -1402,7 +1393,7 @@ impl App {
                     (raw as usize, false)
                 }
             } else {
-                (raw as usize, false)
+                (raw as usize, mirrored.contains(&(image, x, y)))
             };
             if frame >= n {
                 continue;

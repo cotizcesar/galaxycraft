@@ -223,3 +223,5 @@ working animations, cursors, cloak, fog memory.
 | all Terran buildings | construction | scaffold stages 1-3, AlmostBuilt, finished | checked on screen for all 18 in HD and SD (`site:` script step) |
 | all Terran buildings | IsWorking | frames (Barracks, Physics Lab, Machine Shop) or overlays (the other nine with one) while working, cleared by WorkingToIdle | tested for all 12 (`every_terran_building_with_is_working_animates_while_it_works`) |
 | modularization | equivalence | same state logs; screenshots identical outside the wall-clock portrait (0 differing pixels) | checked across the file-move commits |
+| cursor | scale and rate | `FUN_0069df10`: scale `height / 1920`, at least 0.25; every cursor built with the same frame time (10) | **fixed** floor (was 0.02); rate matches |
+| lifting buildings | dust mirror | offsets 16-24 drawn mirrored | **fixed** |

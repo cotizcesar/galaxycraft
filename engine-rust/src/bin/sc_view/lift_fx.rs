@@ -61,4 +61,28 @@ impl App {
         u.build_total = total;
         u.build_remaining = total * (100 - pct.clamp(0, 99)) / 100;
     }
+
+    /// Effects drawn mirrored (the second half of the building dust).
+    pub(super) fn mirrored_effects(&self) -> Vec<(u16, i32, i32)> {
+        self.animator
+            .effects()
+            .filter(|e| e.flip)
+            .map(|e| (e.image, e.x, e.y))
+            .collect()
+    }
+
+    /// First `playfram` of an image's animation (the AlmostBuilt frame).
+    pub(super) fn first_frame_of(&self, image: u16, anim: usize) -> Option<usize> {
+        let script = self.data.image(image)?.iscript_id as u16;
+        let mut st = self.data.iscript.start_animation(script, anim, 0)?;
+        let mut ctx = galaxycraft::iscript::AnimContext::default();
+        for _ in 0..4 {
+            for e in self.data.iscript.tick_anim(&mut st, &mut ctx) {
+                if let galaxycraft::iscript::AnimEvent::Frame { raw, .. } = e {
+                    return Some(raw as usize);
+                }
+            }
+        }
+        None
+    }
 }

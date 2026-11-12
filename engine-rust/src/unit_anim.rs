@@ -299,6 +299,8 @@ pub struct Effect {
     track: Track,
     /// Ticks run so far (looping overlays are dropped at [`MAX_EFFECT_TICKS`]).
     age: u32,
+    /// Drawn mirrored (the second half of the building dust).
+    pub flip: bool,
 }
 
 /// A bullet in flight, ready to draw.
@@ -578,6 +580,7 @@ impl Animator {
                     frame: 0,
                     track,
                     age: 0,
+                    flip: false,
                 });
             }
         }
@@ -697,9 +700,10 @@ impl Animator {
             };
             let dust = |slots: &[(u8, i8, i8)], out: &mut Vec<Effect>| {
                 for &(k, dx, dy) in slots {
-                    let n = match k {
-                        0..=8 => k,
-                        16..=24 => k - 16,
+                    // OpenBW draws offsets 16-24 with the frames mirrored.
+                    let (n, flip) = match k {
+                        0..=8 => (k, false),
+                        16..=24 => (k - 16, true),
                         _ => continue,
                     };
                     let img = DUST_IMAGE + n as u16;
@@ -712,6 +716,7 @@ impl Animator {
                             frame: 0,
                             track,
                             age: 0,
+                            flip,
                         });
                     }
                 }
@@ -1078,6 +1083,7 @@ impl Animator {
                                 frame: 0,
                                 track,
                                 age: 0,
+                                flip: false,
                             });
                         }
                     }
@@ -1098,6 +1104,7 @@ impl Animator {
                                 frame: 0,
                                 track,
                                 age: 0,
+                                flip: false,
                             });
                         }
                     }
@@ -1135,6 +1142,7 @@ impl Animator {
                             frame: 0,
                             track,
                             age: 0,
+                            flip: false,
                         });
                     }
                 }
@@ -1170,6 +1178,7 @@ impl Animator {
                         frame: 0,
                         track,
                         age: 0,
+                        flip: false,
                     });
                 }
             }
@@ -1222,6 +1231,7 @@ impl Animator {
                     frame: 0,
                     track,
                     age: 0,
+                    flip: false,
                 });
             }
         }
@@ -1274,6 +1284,7 @@ impl Animator {
                     frame: b.track.frame.unwrap_or(0),
                     track,
                     age: 0,
+                    flip: false,
                 });
             }
         }
@@ -1294,6 +1305,7 @@ impl Animator {
                         frame: 0,
                         track,
                         age: 0,
+                        flip: false,
                     });
                 }
             }

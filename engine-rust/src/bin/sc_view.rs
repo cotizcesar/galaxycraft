@@ -4743,18 +4743,6 @@ fn draw_health_bar(
     }
 }
 
-/// The box-selection rectangle `(x, y, w, h)` between the drag start and
-/// the pointer, once the pointer has moved (a plain click draws none).
-fn drag_box(start: Option<(i32, i32)>, now: (i32, i32)) -> Option<(i32, i32, i32, i32)> {
-    let s = start?;
-    if s == now {
-        return None;
-    }
-    let (x0, y0) = (s.0.min(now.0), s.1.min(now.1));
-    let (x1, y1) = (s.0.max(now.0), s.1.max(now.1));
-    Some((x0, y0, (x1 - x0).max(1), (y1 - y0).max(1)))
-}
-
 /// HUD element with a tooltip.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum HudHover {
@@ -10112,7 +10100,10 @@ mod retail_timing_tests {
         assert!((cursor_scale_for_height(1080) - 0.5625).abs() < 1e-6);
         assert!((cursor_scale_for_height(1920) - 1.0).abs() < 1e-6);
         // A tiny framebuffer still draws at least a pixel-scale arrow.
-        assert!(cursor_scale_for_height(1) > 0.0);
+        assert!(
+            (cursor_scale_for_height(1) - 0.25).abs() < 1e-6,
+            "retail floor"
+        );
     }
 
     #[test]

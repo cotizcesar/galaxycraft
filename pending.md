@@ -18,8 +18,10 @@ energy, Medic heal rules and search square, Ghost paint range, the nuke's
 - **Annoyed-line threshold.**  The client plays three "what?" lines and
   the annoyed ones from the fourth click (`voice::WHAT_CLICKS`, an
   inference); a fan wiki says "five or more" clicks.  A second web search
-  (2026-11-12) and OpenBW have no number.  Needs a check against the real
-  game.
+  (2026-11-12) and OpenBW have no number, and the decompiled corpus has no
+  readable reference to the units.dat what / annoyed arrays (0x00f903e0,
+  0x00f90770): the code that picks them is in the obfuscated part.  Needs
+  a check against the real game.
 - **Voice lines** for selection and orders are picked at random, from
   memory of the retail behaviour.  OpenBW has no voice logic and a web
   search (2026-11-12) found no source for the exact rule; the annoyed lines
@@ -51,9 +53,6 @@ on screen.
 
 ## Terran buildings and client, 2026-11-12
 
-- **Lift-off / landing dust** is drawn at the LO offsets with the nine
-  dust images, but the second set (offsets 16-24) is not mirrored as
-  OpenBW does.
 - **Abandoned add-ons** keep their owner in the engine (no neutral player
   slot); they are treated as neutral (no buttons, no research, yellow
   circle and cursor) and change owner when a building takes them.  Score
@@ -63,8 +62,8 @@ on screen.
 - **Fog memory** keeps a scouted building drawn as it is now (frame,
   damage), not as it was last seen, and forgets one destroyed in the fog
   (retail leaves its ghost until the area is seen again).
-- **Cursors**: every cursor shares the arrow's measured 6 fps clock; the
-  magnifier and drag rates are not measured.  Edge scrolling speed follows
-  the Mouse Scroll slider by inference.
+- **Edge scrolling speed** follows the Mouse Scroll slider by inference.
+  (Cursor rates are settled: the loader `FUN_0069df10` gives all eighteen
+  cursors the same frame time, 10, the arrow's measured 6 fps.)
 - **Wireframe damage**: the order in which sections turn yellow / red is a
   seeded permutation per unit (INFERENCE); retail picks them at random.
