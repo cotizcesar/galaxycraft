@@ -1,5 +1,7 @@
 # Implementing the decompiled corpus by phases
 
+> Status 2026-11-11 (release 0.1.18): 5,284 of 56,128 functions translated by queue-mode waves 15–31 (see `WAVES.md`, `CORPUS-STATUS.md`, `STATUS.md`).  The phase tables below record the early hand-ported work; Phase 5 is largely covered by the wave helpers.
+
 The runtime image has **56,128 functions**; **55,502** have pseudocode
 (55,501 clean + 1 warning) and **626** are documented non-decompilable
 (`decomp_failures_final.tsv`, with disassembly in

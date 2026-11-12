@@ -10,13 +10,12 @@ committed.
 
 | item | value |
 |---|---|
-| last merged wave | wave 14 |
-| ledger translated | **2801** functions |
-| ledger uncited | 52435 functions |
+| last merged wave | wave 31 (release 0.1.18) |
+| ledger translated | **5284** functions |
+| ledger uncited | 49952 functions |
 | ledger decompile-failed | 622 functions |
-| lib tests | **2802 passed** |
-| next address window | `0x00684000` |
-| next wave number | 15 |
+| lib tests | **4395 passed** (full suite 4672) |
+| next wave number | 32 (queue mode, tier 3 only: 516 rows) |
 
 Wave 13 added 174 exact ledger functions; wave 14 added 181.  The wave-13
 and wave-14 staging files and harnesses were deleted after merging.  The
@@ -101,7 +100,7 @@ not spend a wave on them again.
    `engine-rust/src/wave15/agentNN.rs` placeholders and
    `engine-rust/tests/wave15_agentNN.rs`.
 
-2. Launch ten agents in parallel, one per assignment.  Use
+2. Launch agents in parallel (20 per Agent batch, or Workflow shards of ~30), one per assignment.  Use
    `engine-rust/docs/WAVE-AGENT-INSTRUCTIONS.md` as the prompt; set `W=15`
    and `NN` to the agent number.  Each agent writes only its own staging
    file and runs `cargo test --test wave15_agentNN`.
@@ -168,9 +167,9 @@ not spend a wave on them again.
 At the time of writing:
 
 ```text
-cargo test --lib:                    2802 passed
+cargo test --lib:                    4395 passed
 cargo clippy --all-targets -- -D warnings: clean
 cargo fmt --check:                    clean
-ledger translated:                   2801
-next wave start:                     0x00684000
+ledger translated:                   5284
+next wave:                           32 (queue mode)
 ```
