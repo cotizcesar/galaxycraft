@@ -6279,6 +6279,15 @@ fn script_key(name: &str) -> Key {
     }
 }
 
+/// A pseudo-random voice take (presentation only: seeded from the clock and
+/// the previous value, never from the simulation's RNG).
+fn random_take(prev: usize) -> usize {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.subsec_nanos() as usize);
+    (prev.wrapping_mul(1_103_515_245).wrapping_add(nanos) >> 7) & 0xffff
+}
+
 /// Scripted in-game session (`--game-script`, map from `--shot-map`):
 /// synthetic [`GameInput`] frames through the real in-game handler, so
 /// selection, orders, the command card and building are testable without
@@ -9354,8 +9363,9 @@ impl App {
         if !self.game_options.unit_speech || !self.game_options.unit_acks {
             return;
         }
+        // Retail picks one of the unit's replies at random.
+        self.ack_variant = random_take(self.ack_variant);
         let take = self.ack_variant;
-        self.ack_variant = self.ack_variant.wrapping_add(1);
         if let Some(u) = self.first_selected() {
             let unit_type = u.type_id;
             if let Some(samples) = self.voices.cue(unit_type, VoiceCue::Yes, take) {
@@ -9532,6 +9542,14 @@ impl App {
         };
         let pissed = self.voices.takes(unit_type, VoiceCue::Pissed);
         let (cue, take, reset) = galaxycraft::voice::selection_cue(streak, pissed);
+        // The "what?" line is a random one; the annoyed lines keep their
+        // order.
+        let take = if cue == VoiceCue::What {
+            self.ack_variant = random_take(self.ack_variant);
+            self.ack_variant
+        } else {
+            take
+        };
         self.select_streak = Some((id, if reset { 0 } else { streak }, Instant::now()));
         if let Some(samples) = self.voices.cue(unit_type, cue, take) {
             self.audio.play(Some(&samples));

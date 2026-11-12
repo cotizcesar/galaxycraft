@@ -124,9 +124,8 @@ pub const MEDIC_HEAL_COST_PER_TICK: i32 = 100;
 /// A Medic heals a patient whose box is within 30 px of its own (OpenBW
 /// `order_MedicHeal`: `unit_target_in_range(u, 30)`).
 pub const MEDIC_REACH_PX: i32 = 30;
-/// An idle Medic looks for patients within 160 px (5 tiles).  INFERENCE
-/// from OpenBW's medic target search box; falsifier: a retail recording of
-/// an idle Medic ignoring a wounded Marine 4 tiles away.
+/// An idle Medic looks for patients in the square of 160 px around it
+/// (OpenBW `find_medic_target`: `square_at(position, 160)`).
 pub const MEDIC_SEARCH_PX: i32 = 160;
 /// Update count of one Acid Spore stack.  `FUN_005dc360` writes `0x96` into
 /// the chosen one of the nine `CUnit+0x127..+0x12f` timer slots and
@@ -788,6 +787,19 @@ pub struct NukeStrike {
     pub dot: bool,
     /// Warning cue already emitted.
     pub warned: bool,
+}
+
+/// One instant-weapon hit that lands when its bullet's script says so.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingHit {
+    /// Tick on which the damage is dealt.
+    pub due: u64,
+    pub owner: u8,
+    pub source: u32,
+    pub target: Option<u32>,
+    pub weapon: u8,
+    /// Impact point in 1/256 px.
+    pub pos: (i32, i32),
 }
 
 /// What a [`SpellCue`] announces.
@@ -1829,6 +1841,9 @@ pub struct World {
     /// which ones it has not seen yet.  Presentation only.
     pub spell_cues: std::collections::VecDeque<SpellCue>,
     pub spell_cue_seq: u64,
+    /// Hits of instant weapons waiting for their bullet image to reach
+    /// `domissiledmg` (see [`World::instant_hit`]).
+    pub pending_hits: Vec<PendingHit>,
     /// Staged nuclear launches.
     pub nuke_strikes: Vec<NukeStrike>,
     /// `(x, y)` warning cues produced during the current tick.
@@ -1895,6 +1910,7 @@ impl World {
             matrix_cues: Vec::new(),
             spell_cues: std::collections::VecDeque::new(),
             spell_cue_seq: 0,
+            pending_hits: Vec::new(),
             nuke_strikes: Vec::new(),
             nuke_warnings: Vec::new(),
             trigger_victory: false,
@@ -4880,6 +4896,7 @@ impl World {
             self.grow_creep();
         }
         self.update_specials();
+        self.update_pending_hits();
         self.update_projectiles();
         self.advance_nuke_strikes();
         self.update_larva();
@@ -5699,6 +5716,11 @@ impl World {
         if acq_range == 0 {
             return None;
         }
+        // OpenBW `unit_target_acquisition_range`: a cloaked Ghost does not
+        // pick targets on its own unless it is holding position.
+        if is_ghost_type(u.type_id) && u.status.cloaked && !matches!(u.order, Order::HoldPosition) {
+            return None;
+        }
         let max_fp = acq_range * fp(1);
         let mut best: Option<(i32, u32)> = None;
         for (other_idx, other) in self.units.iter().enumerate() {
@@ -5858,21 +5880,85 @@ impl World {
             let missed = weapon.bullet_type == behavior::APPEAR_AT_TARGET_UNIT
                 && self.target_dodges(attacker, target);
             if !missed {
+                let target_id = self.units[target].id;
+                let pos = (self.units[target].x, self.units[target].y);
                 for _ in 0..shots {
-                    self.resolve_hit_type(
-                        owner,
-                        Some(self.units[target].id),
-                        attacker,
-                        weapon_id,
-                        weapon,
-                        (self.units[target].x, self.units[target].y),
-                        1,
-                        1,
-                    );
+                    self.instant_hit(owner, Some(target_id), attacker, weapon_id, weapon, pos);
                 }
             }
         }
         self.units[attacker].cooldown = self.modified_cooldown(attacker, weapon);
+    }
+
+    /// Frames between an instant weapon firing and its damage: the bullet
+    /// image (weapon -> flingy -> sprite -> image) runs its Init script and
+    /// deals the damage on `domissiledmg`.  The Gauss Rifle, C-10 and Fusion
+    /// Cutter sparks take 2 frames, the Flame Thrower's bullet 7.
+    pub fn instant_hit_delay(&self, weapon: &WeaponType) -> u32 {
+        u16::try_from(weapon.flingy)
+            .ok()
+            .and_then(|f| self.data.flingy(f))
+            .and_then(|f| self.data.sprite(f.sprite))
+            .and_then(|s| self.data.image(s.image))
+            .and_then(|i| self.data.iscript.frames_until_damage(i.iscript_id as u16))
+            .unwrap_or(0)
+    }
+
+    /// Deal an instant weapon's hit when its bullet script reaches
+    /// `domissiledmg`: now when there is no delay, else queued.
+    fn instant_hit(
+        &mut self,
+        owner: u8,
+        target: Option<u32>,
+        source: usize,
+        weapon_id: u8,
+        weapon: &WeaponType,
+        pos: (i32, i32),
+    ) {
+        let delay = self.instant_hit_delay(weapon);
+        if delay == 0 {
+            self.resolve_hit_type(owner, target, source, weapon_id, weapon, pos, 1, 1);
+            return;
+        }
+        self.pending_hits.push(PendingHit {
+            due: self.tick + delay as u64,
+            owner,
+            source: self.units[source].id,
+            target,
+            weapon: weapon_id,
+            pos,
+        });
+    }
+
+    /// Land the queued instant hits whose time has come.
+    fn update_pending_hits(&mut self) {
+        if self.pending_hits.is_empty() {
+            return;
+        }
+        let tick = self.tick;
+        let (due, later): (Vec<PendingHit>, Vec<PendingHit>) =
+            std::mem::take(&mut self.pending_hits)
+                .into_iter()
+                .partition(|h| h.due <= tick);
+        self.pending_hits = later;
+        for h in due {
+            // The shooter may have died since; its bullet still lands.
+            let Some(source) = self.index_of(h.source) else {
+                continue;
+            };
+            let Some(weapon) = self.data.weapon(h.weapon).cloned() else {
+                continue;
+            };
+            // An "appear on target" bullet follows its target; the others
+            // (the flame) stay where they appeared.
+            let pos = match h.target.and_then(|t| self.index_of(t)) {
+                Some(t) if weapon.bullet_type == behavior::APPEAR_AT_TARGET_UNIT => {
+                    (self.units[t].x, self.units[t].y)
+                }
+                _ => h.pos,
+            };
+            self.resolve_hit_type(h.owner, h.target, source, h.weapon, &weapon, pos, 1, 1);
+        }
     }
 
     /// Cooldown modifiers recovered from the retail `get_modified_weapon_cooldown`
@@ -7699,7 +7785,7 @@ impl World {
         );
         let owner = self.units[i].owner;
         let target_id = self.units[tidx].id;
-        self.resolve_hit_type(owner, Some(target_id), i, weapon_id, &w, impact, 1, 1);
+        self.instant_hit(owner, Some(target_id), i, weapon_id, &w, impact);
     }
 
     fn animation_cast(&mut self, i: usize) {
@@ -8975,6 +9061,13 @@ impl World {
                 }
             }
             Spell::Restoration => {
+                // OpenBW `restore_unit`: a hallucination simply dies.
+                if let Some(t) = target_idx
+                    && self.units[t].status.hallucination
+                {
+                    self.kill_unit(t);
+                    return;
+                }
                 if let Some(t) = target_idx {
                     let s = &mut self.units[t].status;
                     // `0x005d2620`/`0x005dc300`/`0x005d2540`/`0x005d2660`
@@ -8999,6 +9092,14 @@ impl World {
                         }
                     }
                     self.spawn_temporary(c_owner, uid::DISRUPTION_WEB, (tx, ty), 360);
+                }
+            }
+            Spell::OpticalFlare
+                if target_idx.is_some_and(|t| self.units[t].status.hallucination) =>
+            {
+                // OpenBW `blind_unit`: a hallucination simply dies.
+                if let Some(t) = target_idx {
+                    self.kill_unit(t);
                 }
             }
             Spell::OpticalFlare => {
@@ -9544,8 +9645,8 @@ impl World {
     fn advance_nuke_strikes(&mut self) {
         // The Ghost paints the target from within its sight range: until it
         // is that close it walks towards the point and the countdown waits.
-        // INFERENCE from OpenBW `order_NukeGround` (range = sight range);
-        // falsifier: a retail Ghost painting a target outside its sight.
+        // OpenBW `order_CastNuclearStrike`: centre distance to the point
+        // greater than `unit_sight_range` keeps the Ghost walking.
         let mut waiting = Vec::new();
         for k in 0..self.nuke_strikes.len() {
             let (ghost, target) = (self.nuke_strikes[k].ghost, self.nuke_strikes[k].target);
@@ -10077,6 +10178,13 @@ impl World {
             && !self.is_enemy(self.units[medic].owner, t.owner)
             && ty.is_organic()
             && !ty.is_building()
+            // OpenBW `medic_can_heal_target`: not a flyer, not a
+            // hallucination, not disabled (lockdown, stasis, maelstrom).
+            && !self.is_air_unit(j)
+            && !t.status.hallucination
+            && t.status.lockdown_ticks == 0
+            && t.status.stasis_ticks == 0
+            && t.status.maelstrom_ticks == 0
             && t.hp < ty.hit_points_raw as i32
     }
 
@@ -10090,10 +10198,16 @@ impl World {
         {
             return Some(t);
         }
+        // OpenBW `find_medic_target`: the nearest healable unit inside the
+        // square of 160 px around the Medic.
+        let (mx, my) = (self.units[i].x, self.units[i].y);
+        let half = MEDIC_SEARCH_PX * fp(1);
         (0..self.units.len())
             .filter(|&j| self.medic_can_heal(i, j) && !taken.contains(&j))
-            .map(|j| (self.units_distance_px(i, j), j))
-            .filter(|(d, _)| *d <= MEDIC_SEARCH_PX)
+            .filter(|&j| {
+                (self.units[j].x - mx).abs() <= half && (self.units[j].y - my).abs() <= half
+            })
+            .map(|j| (self.distance(i, j), j))
             .min()
             .map(|(_, j)| j)
     }
@@ -10168,8 +10282,10 @@ impl World {
                 self.units[i].facing = direction_byte(dx, dy);
             }
             let max = self.data.unit(self.units[target].type_id).hit_points_raw as i32;
+            // OpenBW `medic_try_heal`: up to 200/256 hp for half as much
+            // energy (the last, smaller step costs less).
             let healed = MEDIC_HEAL_PER_TICK.min(max - self.units[target].hp);
-            if healed > 0 && self.units[i].spend_energy_fixed(MEDIC_HEAL_COST_PER_TICK) {
+            if healed > 0 && self.units[i].spend_energy_fixed(healed / 2) {
                 self.units[target].hp += healed;
             }
         }
@@ -11025,7 +11141,9 @@ mod tests {
             }
         }
         assert!(w.units[b].hp < start_hp);
-        assert_eq!(w.units[a].cooldown, 15);
+        // The cooldown started when the Marine fired; its bullet (iscript
+        // 238) dealt the damage two frames later.
+        assert_eq!(w.units[a].cooldown, 15 - 2);
     }
 
     #[test]
@@ -11044,8 +11162,9 @@ mod tests {
         }
         assert_eq!(
             fired,
-            Some(4),
-            "the Marine attackwith opcode is reached on the fourth logical tick"
+            Some(6),
+            "the Marine attackwith opcode is reached on the fourth logical tick \
+             and its bullet's domissiledmg two frames later"
         );
     }
 

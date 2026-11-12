@@ -16,7 +16,7 @@ is checked in the real client in both HD and SD.
 | Retail data in `fixtures/` (`units.dat`, `weapons.dat`, `flingy.dat`, `images.dat`, `sprites.dat`, `iscript.bin`, `sfxdata.*`, `techdata.dat`) | stats, costs, ranges, splash radii, animation scripts, sounds | `python3 scripts/unit_ref.py --unit ID` (below) |
 | The user's install (`SC_INSTALL`) | GRP art, `images.tbl`, maps | `sc_dump --install "$SC_INSTALL" --out DIR --include arr/images.tbl` |
 | Decompiled corpus (`~/.cache/galaxycraft/decomp_full`) | exact rules when a body exists | `python3 scripts/query_decomp.py --address 0xADDR`; many gameplay functions have no body, so do not count on it |
-| OpenBW's rules, from memory | order logic that is code, not data (collision of gathering workers, Medic orders, range upgrades) | write it in the code comment as `OpenBW <function>`; if you are not sure, mark it `INFERENCE` with a falsifier |
+| OpenBW source (`bwgame.h`, `actions.h`) | order logic that is code, not data (collision of gathering workers, Medic orders, range upgrades, nuke timers, splash) | download it to the scratchpad and `grep` it: `curl -sL -o bwgame.h https://raw.githubusercontent.com/OpenBW/openbw/master/bwgame.h` (same for `actions.h`); cite the function in the code comment as `OpenBW <function>`.  Never copy its code or commit the file; read it, then write the rule |
 | The user's recordings / replays | timings that are not in the data (mining dwell, construction stages) | `sc_retailrep`, existing `FACT (… recording)` comments |
 
 Anything you could not confirm goes in `pending.md` at the repository root or
@@ -178,6 +178,8 @@ the quickest way to see which images reach it; remove it afterwards.
   it does not finish the order): the Medic dropped every order.
 - An opcode silently ignored (`attkshiftproj`): the Firebat's three flames
   were one hit.
+- Damage applied on the frame the unit fires, where retail waits for the
+  bullet image's `domissiledmg` (2 frames for sparks, 7 for the flame).
 - A path left over from the approach: the renderer played the walk over the
   attack and the effect never appeared.
 - Invisible placeholder sprites drawn, glow images drawn with the palette,

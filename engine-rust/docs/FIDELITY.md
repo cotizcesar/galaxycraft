@@ -126,5 +126,11 @@ glow, Ghost cloak fade.
 | Medic | Restoration | removes lockdown, flare, irradiate, plague, ensnare, parasite, acid spores | matches; effect and sound added |
 | casters | energy | trained units start with a quarter of the maximum | **fixed** (started full) |
 | all (melee) | attack loop | repeat after `gotorepeatattk`; stand still in reach | **fixed** with the SCV |
+| all | instant bullets | damage on the bullet script's `domissiledmg`: 2 frames after firing for the Gauss Rifle, C-10 and Fusion Cutter, 7 for the Flame Thrower | **fixed** (`World::instant_hit_delay`, was immediate) |
+| Ghost | acquisition | a cloaked Ghost does not auto-attack unless on hold position | **fixed** |
+| all | voices | "what" and "yes" lines picked at random, annoyed lines in order | **fixed** (was cycling) |
+
+The rules marked OpenBW were read from its source (`bwgame.h`,
+`actions.h`) on 2026-11-12, not recalled.
 
 Open doubts are in `pending.md`.

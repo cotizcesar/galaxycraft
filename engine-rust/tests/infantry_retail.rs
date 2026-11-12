@@ -689,3 +689,86 @@ fn the_renderer_shows_the_firebat_flame_and_the_marine_gunfire() {
     assert!(marine_frames.contains(&51), "Marine muzzle frame");
     assert!(sounds.contains(&69), "gunfire sound: {sounds:?}");
 }
+
+#[test]
+fn instant_bullets_deal_their_damage_when_their_script_says() {
+    let w = world();
+    let d = GameData::bundled().expect("data");
+    // Bullet scripts: `wait 1, sigorder, wait 1, playfram, domissiledmg` for
+    // the Gauss Rifle / C-10 / Fusion Cutter sparks, five more frames for
+    // the Flame Thrower's (iscript 292).
+    assert_eq!(w.instant_hit_delay(d.weapon(0).unwrap()), 2);
+    assert_eq!(w.instant_hit_delay(d.weapon(2).unwrap()), 2);
+    assert_eq!(w.instant_hit_delay(d.weapon(13).unwrap()), 2);
+    assert_eq!(w.instant_hit_delay(d.weapon(25).unwrap()), 7);
+
+    // A Marine's shot: the cooldown starts when it fires, the damage lands
+    // two frames later.
+    let mut w = world();
+    let marine = w.spawn_px(0, uid::MARINE, 400, 400).unwrap();
+    let egg = w.spawn_px(1, uid::EGG, 480, 400).unwrap();
+    let hp = w.units[egg].hp;
+    let (mut fired_at, mut hit_at) = (None, None);
+    for t in 0..40 {
+        w.step();
+        if fired_at.is_none() && w.units[marine].cooldown > 0 {
+            fired_at = Some(t);
+        }
+        if hit_at.is_none() && w.units[egg].hp < hp {
+            hit_at = Some(t);
+            break;
+        }
+    }
+    assert_eq!(hit_at.unwrap() - fired_at.unwrap(), 2);
+}
+
+#[test]
+fn a_cloaked_ghost_holds_its_fire_unless_it_holds_position() {
+    let mut w = world();
+    w.players[0].techs[tech::PERSONNEL_CLOAKING as usize] = true;
+    let ghost = w.spawn_px(0, uid::GHOST, 400, 400).unwrap();
+    let egg = w.spawn_px(1, uid::EGG, 500, 400).unwrap();
+    let id = w.units[ghost].id;
+    w.units[ghost].set_energy_fixed(200 * ENERGY_SCALE);
+    w.set_cloak(id, true).unwrap();
+    let hp = w.units[egg].hp;
+    for _ in 0..60 {
+        w.step();
+    }
+    assert_eq!(w.units[egg].hp, hp, "cloaked and idle: no auto-attack");
+    w.issue(id, Order::HoldPosition).unwrap();
+    for _ in 0..60 {
+        w.step();
+    }
+    assert!(w.units[egg].hp < hp, "on hold position it fires");
+}
+
+#[test]
+fn a_medic_ignores_flyers_and_disabled_units_and_pays_half_the_heal() {
+    let mut w = world();
+    let medic = w.spawn_px(0, uid::MEDIC, 400, 400).unwrap();
+    // An organic flyer and a locked-down Marine are not patients.
+    let muta = w.spawn_px(0, uid::MUTALISK, 420, 400).unwrap();
+    let locked = w.spawn_px(0, uid::MARINE, 400, 425).unwrap();
+    w.units[muta].hp = fp(10);
+    w.units[locked].hp = fp(10);
+    w.units[locked].status.lockdown_ticks = 1000;
+    w.units[medic].set_energy_fixed(100 * ENERGY_SCALE);
+    for _ in 0..20 {
+        w.step();
+    }
+    // (The Mutalisk only gains its own slow Zerg regeneration; a Medic
+    // would have added 200 per frame.)
+    assert!(w.units[muta].hp < fp(11), "{}", w.units[muta].hp);
+    assert_eq!(w.units[locked].hp, fp(10));
+    // The last step of a heal costs half of what it heals: a Marine one
+    // point (256) short of full takes 200 then 56, for 100 + 28 energy.
+    let marine = w.spawn_px(0, uid::MARINE, 380, 400).unwrap();
+    w.units[marine].hp = fp(39);
+    let before = w.units[medic].energy_fixed();
+    w.step();
+    w.step();
+    assert_eq!(w.units[marine].hp, fp(40));
+    // Two frames of +8 regeneration on the Medic.
+    assert_eq!(before - w.units[medic].energy_fixed(), 100 + 28 - 16);
+}
