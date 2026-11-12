@@ -38,11 +38,6 @@ on screen.
   firing animation, and the hull holds still while it fires (tested).
 - **Spider Mine.**  A mine is nudged by collision while it waits (not
   checked against OpenBW's collision rules for it).
-- **Bunker boarding** uses 8 px instead of retail's 1: the engine's
-  pathing blocks walkers on a building's tiles (placement box), wider than
-  the collision box retail uses, and at 1 px Marines stalled on the
-  corners (tested).  Fixing it means modelling building collision by the
-  `units.dat` dimensions in the pathfinder.  Transports use 1 px.
 - **Air repulse.**  The map-edge turn and the "cannot be interrupted"
   exemptions are simplified.
 - **Team colour in SD** uses `tunit.pcx`'s exact shades for the slot
@@ -62,7 +57,9 @@ on screen.
   may still count them for the old owner.
 - **Landing** crushes nothing (OpenBW kills burrowed / immobile units
   under the building and lifts off again if blocked by one).
-- **Edge scrolling speed** follows the Mouse Scroll slider by inference.
+- **Edge scrolling speed** follows the Mouse Scroll slider by inference:
+  the executable only registers the `MouseScroll` option in readable code
+  (`FUN_008aa1d5`); the speed itself needs a measurement in the real game.
   (Cursor rates are settled: the loader `FUN_0069df10` gives all eighteen
   cursors the same frame time, 10, the arrow's measured 6 fps.)
 - **Wireframe damage**: the order in which sections turn yellow / red is a

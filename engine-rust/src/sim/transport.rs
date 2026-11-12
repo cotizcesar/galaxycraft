@@ -46,9 +46,7 @@ impl World {
         // A transport that can move comes to fetch its passenger (OpenBW
         // `order_EnterTransport` queues `PickupTransport` on it) and the
         // two board when their boxes touch (1 px).  A Bunker stays put and
-        // takes units within 8 px of its box (a centre distance of 48 px
-        // left a Marine stuck on the corner of a Bunker it approached
-        // diagonally).
+        // takes units the same way.
         let mobile = !self.data.unit(self.units[tidx].type_id).is_building();
         if mobile && matches!(self.units[tidx].order, Order::Idle) {
             self.units[tidx].order = Order::PickupTransport {
@@ -57,12 +55,29 @@ impl World {
             self.units[tidx].order_row = 94;
         }
         // OpenBW `order_EnterTransport`: board when the boxes are within
-        // 1 px.  A Bunker keeps 8 px: the engine's building footprint holds
-        // walkers a few pixels off its box, and at 1 px Marines stalled on
-        // its corners.
-        let reach = if mobile { 1 } else { 8 };
-        if self.box_gap_px(i, tidx) > reach {
+        // 1 px.
+        let gap = self.box_gap_px(i, tidx);
+        if gap > 1 {
             let (tx, ty) = (self.units[tidx].x, self.units[tidx].y);
+            if !mobile && gap <= 8 {
+                // The path grid ends a few pixels short of a building's box:
+                // close in straight towards its nearest point.
+                let ty_ = self.data.unit(self.units[tidx].type_id);
+                let r = unit_box_rect(ty_, (tx / fp(1), ty / fp(1)));
+                let (ux, uy) = (self.units[i].x, self.units[i].y);
+                let near = (
+                    (ux / fp(1)).clamp(r.left, r.right) * fp(1),
+                    (uy / fp(1)).clamp(r.top, r.bottom) * fp(1),
+                );
+                let (dx, dy) = ((near.0 - ux) as i64, (near.1 - uy) as i64);
+                let len = crate::sim::isqrt(dx * dx + dy * dy).max(1);
+                let step = ((gap - 1).min(4) * fp(1)) as i64;
+                self.units[i].x += (dx * step / len) as i32;
+                self.units[i].y += (dy * step / len) as i32;
+                self.units[i].path.clear();
+                self.units[i].path_goal = None;
+                return;
+            }
             let stop = if mobile { fp(1) } else { fp(24) };
             self.move_towards(i, (tx / fp(1), ty / fp(1)), stop);
             return;
