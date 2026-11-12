@@ -90,7 +90,12 @@ fn main() {
         header.map_name, header.map_width, header.map_height, header.frames, races
     );
     let mut world = World::from_scenario(data, &scenario, &tiles.data(), &races);
-    let tags = TagMap::new(&chk);
+    let static_ids = world
+        .units
+        .iter()
+        .find(|u| u.owner == 1)
+        .map_or(world.units.len() as u32, |u| u.id - 1);
+    let tags = TagMap::new(&chk, static_ids);
     if dump {
         for u in world.units.iter().take(120) {
             println!(
@@ -115,6 +120,29 @@ fn main() {
             let b = &rep.actions[next_block];
             st.apply_block(&mut world, &tags, b.frame, &b.data);
             next_block += 1;
+        }
+        if std::env::var("RETAIL_TRACE").is_ok_and(|v| v.split(',').any(|f| f.parse() == Ok(now))) {
+            println!(
+                "  t={now} minerals {} gas {} mined {}",
+                world.players[0].minerals, world.players[0].gas, world.players[0].minerals_gathered
+            );
+            for u in world.units.iter().filter(|u| {
+                u.alive
+                    && u.owner == 0
+                    && !u.is_resource()
+                    && u.type_id != galaxycraft::ids::unit::VESPENE_GEYSER
+            }) {
+                println!(
+                    "  t={now} #{} {} at ({},{}) order {:?} completed {} left {}",
+                    u.id,
+                    world.data.unit_name(u.type_id),
+                    u.x / 256,
+                    u.y / 256,
+                    u.order,
+                    u.completed,
+                    u.build_remaining
+                );
+            }
         }
         for ai in &mut ais {
             let target = world
@@ -154,7 +182,10 @@ struct TagMap {
 }
 
 impl TagMap {
-    fn new(chk: &[u8]) -> Self {
+    /// `static_ids`: engine ids `1..=static_ids` exist at game start on the
+    /// human side (map units and the human's starting force); only those have
+    /// derivable tags.
+    fn new(chk: &[u8], static_ids: u32) -> Self {
         let mut map_idx = Vec::new();
         let mut start_locations = 0;
         let mut o = 0usize;
@@ -181,7 +212,7 @@ impl TagMap {
             start_locations,
             idx_to_id: HashMap::new(),
         };
-        for id in 1..=(t.map_idx.len() as u32 + 64) {
+        for id in 1..=static_ids {
             t.idx_to_id.insert(t.index_of(id), id);
         }
         t
@@ -214,13 +245,41 @@ impl TagMap {
     }
 }
 
+/// One selected unit: bound to an engine unit, or a retail tag that is not
+/// bound yet (a unit created after the start, whose tag cannot be derived:
+/// retail allocates tags from one global slot list the Zerg AI also uses).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Sel {
+    Unit(u32),
+    Tag(u16),
+}
+
+/// What kind of engine unit a pending tag must be bound to, taken from the
+/// command that uses it.
+#[derive(Clone, Copy)]
+enum Class {
+    /// A unit that can produce `unit_type`.
+    Producer(u16),
+    Worker,
+    Military,
+    /// Any unit that can move (workers included).
+    Mobile,
+    AnyBuilding,
+}
+
 #[derive(Default)]
 struct Driver {
-    selection: HashMap<u8, Vec<u32>>,
-    groups: HashMap<(u8, u8), Vec<u32>>,
+    selection: HashMap<u8, Vec<Sel>>,
+    groups: HashMap<(u8, u8), Vec<Sel>>,
+    /// Tags bound by context: retail tag -> engine unit id.
+    bound: HashMap<u16, u32>,
     applied: BTreeMap<u8, usize>,
     unsupported: BTreeMap<u8, usize>,
     failures: Vec<(u32, u8, String)>,
+    binds: usize,
+    /// Minerals the driver had to add so a recorded build could start: the
+    /// engine economy was behind the recorded game by this much.
+    deficit: i64,
 }
 
 fn u16_at(d: &[u8], o: usize) -> u16 {
@@ -230,6 +289,10 @@ fn u16_at(d: &[u8], o: usize) -> u16 {
 impl Driver {
     fn fail(&mut self, frame: u32, kind: u8, msg: String) {
         self.failures.push((frame, kind, msg));
+    }
+
+    fn ok(&mut self, kind: u8) {
+        *self.applied.entry(kind).or_default() += 1;
     }
 
     fn apply_block(&mut self, w: &mut World, tags: &TagMap, frame: u32, mut d: &[u8]) {
@@ -264,21 +327,133 @@ impl Driver {
         }
     }
 
-    fn resolve(&mut self, tags: &TagMap, frame: u32, kind: u8, tag: u16) -> Option<u32> {
+    fn sel_of(&self, tags: &TagMap, tag: u16) -> Sel {
+        if let Some(id) = self.bound.get(&tag) {
+            return Sel::Unit(*id);
+        }
         match tags.id_of(tag) {
-            Ok(id) => Some(id),
-            Err(e) => {
-                self.fail(frame, kind, e);
-                None
+            Ok(id) => Sel::Unit(id),
+            Err(_) => Sel::Tag(tag),
+        }
+    }
+
+    fn is_bound(&self, id: u32) -> bool {
+        self.bound.values().any(|v| *v == id)
+    }
+
+    fn fits(w: &World, u: &galaxycraft::sim::SimUnit, class: Class) -> bool {
+        let t = w.data.unit(u.type_id);
+        match class {
+            Class::Worker => t.is_worker(),
+            Class::Military => !t.is_worker() && !t.is_building(),
+            Class::Mobile => !t.is_building(),
+            Class::AnyBuilding => t.is_building(),
+            Class::Producer(ty) => {
+                galaxycraft::tech::build_info(ty).is_some_and(|i| i.producer == u.type_id)
             }
         }
+    }
+
+    /// Bind the pending tags of `p`'s selection to unbound engine units of
+    /// `class`.  Older units have higher tags, so the pending tags are taken
+    /// in descending order against the candidates in creation order.
+    fn bind_selection(&mut self, w: &World, p: u8, class: Class) {
+        let Some(sel) = self.selection.get(&p).cloned() else {
+            return;
+        };
+        let mut pending: Vec<u16> = sel
+            .iter()
+            .filter_map(|s| if let Sel::Tag(t) = s { Some(*t) } else { None })
+            .collect();
+        if pending.is_empty() {
+            return;
+        }
+        pending.sort_unstable_by(|a, b| b.cmp(a));
+        let candidates: Vec<u32> = w
+            .units
+            .iter()
+            .filter(|u| {
+                u.alive
+                    && u.owner == p
+                    && !u.is_resource()
+                    && u.type_id != galaxycraft::ids::unit::VESPENE_GEYSER
+                    && !self.is_bound(u.id)
+                    && Self::fits(w, u, class)
+            })
+            .map(|u| u.id)
+            .collect();
+        // Units already selected by id are not candidates again.
+        let taken: Vec<u32> = sel
+            .iter()
+            .filter_map(|s| if let Sel::Unit(i) = s { Some(*i) } else { None })
+            .collect();
+        let mut it = candidates.into_iter().filter(|c| !taken.contains(c));
+        for tag in pending {
+            if let Some(id) = it.next() {
+                self.bound.insert(tag, id);
+                self.binds += 1;
+            }
+        }
+        let fresh: Vec<Sel> = sel
+            .iter()
+            .map(|s| match s {
+                Sel::Tag(t) => self.bound.get(t).map_or(*s, |id| Sel::Unit(*id)),
+                other => *other,
+            })
+            .collect();
+        self.selection.insert(p, fresh);
+    }
+
+    /// Alive units of the selection (after binding).
+    fn selected(&self, w: &World, p: u8) -> Vec<u32> {
+        self.selection
+            .get(&p)
+            .map(|s| {
+                s.iter()
+                    .filter_map(|x| match x {
+                        Sel::Unit(i) => w.unit(*i).filter(|u| u.alive).map(|u| u.id),
+                        Sel::Tag(_) => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// A target tag: a bound/static unit, else the nearest unbound unit of a
+    /// different owner (or a resource) around the click.
+    fn target_of(
+        &mut self,
+        w: &World,
+        tags: &TagMap,
+        p: u8,
+        tag: u16,
+        pos: (i32, i32),
+    ) -> Option<u32> {
+        if let Sel::Unit(id) = self.sel_of(tags, tag) {
+            return Some(id);
+        }
+        let near = w
+            .units
+            .iter()
+            .filter(|u| u.alive && u.owner != p && !self.is_bound(u.id))
+            .map(|u| {
+                (
+                    ((u.x / 256 - pos.0).pow(2) + (u.y / 256 - pos.1).pow(2)) as i64,
+                    u.id,
+                )
+            })
+            .filter(|(d, _)| *d <= 96 * 96)
+            .min()?;
+        self.bound.insert(tag, near.1);
+        self.binds += 1;
+        Some(near.1)
     }
 
     fn apply(&mut self, w: &mut World, tags: &TagMap, frame: u32, p: u8, kind: u8, b: &[u8]) {
         match kind {
             0x63..=0x65 => {
-                let ids: Vec<u32> = (0..b[0] as usize)
-                    .filter_map(|i| self.resolve(tags, frame, kind, u16_at(b, 1 + 4 * i)))
+                let ids: Vec<Sel> = (0..b[0] as usize)
+                    .map(|i| self.sel_of(tags, u16_at(b, 1 + 4 * i)))
                     .collect();
                 let sel = self.selection.entry(p).or_default();
                 match kind {
@@ -286,7 +461,7 @@ impl Driver {
                     0x64 => sel.extend(ids),
                     _ => sel.retain(|u| !ids.contains(u)),
                 }
-                *self.applied.entry(kind).or_default() += 1;
+                self.ok(kind);
             }
             0x13 => {
                 let sel = self.selection.get(&p).cloned().unwrap_or_default();
@@ -295,15 +470,43 @@ impl Driver {
                 } else if let Some(g) = self.groups.get(&(p, b[1])).cloned() {
                     self.selection.insert(p, g);
                 }
-                *self.applied.entry(kind).or_default() += 1;
+                self.ok(kind);
             }
             0x1f => {
                 let ty = u16_at(b, 0);
-                let Some(&first) = self.selection.get(&p).and_then(|s| s.first()) else {
-                    return self.fail(frame, kind, "train with an empty selection".into());
+                self.bind_selection(w, p, Class::Producer(ty));
+                let Some(&first) = self.selected(w, p).first() else {
+                    let blds: Vec<String> = w
+                        .units
+                        .iter()
+                        .filter(|u| {
+                            u.alive
+                                && u.owner == p
+                                && !u.is_resource()
+                                && u.type_id != galaxycraft::ids::unit::VESPENE_GEYSER
+                                && w.data.unit(u.type_id).is_building()
+                        })
+                        .map(|u| {
+                            format!(
+                                "{}#{}{}",
+                                w.data.unit_name(u.type_id),
+                                u.id,
+                                if u.completed {
+                                    String::new()
+                                } else {
+                                    format!("(building, {} left)", u.build_remaining)
+                                }
+                            )
+                        })
+                        .collect();
+                    return self.fail(
+                        frame,
+                        kind,
+                        format!("train: no producer in the selection; buildings {blds:?}"),
+                    );
                 };
                 match w.train(first, ty) {
-                    Ok(()) => *self.applied.entry(kind).or_default() += 1,
+                    Ok(()) => self.ok(kind),
                     Err(e) => self.fail(
                         frame,
                         kind,
@@ -328,9 +531,18 @@ impl Driver {
                     u16_at(b, 1) as i32 * 32 + pw / 2,
                     u16_at(b, 3) as i32 * 32 + ph / 2,
                 );
-                let Some(&builder) = self.selection.get(&p).and_then(|s| s.first()) else {
-                    return self.fail(frame, kind, "build with an empty selection".into());
+                self.bind_selection(w, p, Class::Worker);
+                let Some(&builder) = self.selected(w, p).first() else {
+                    return self.fail(frame, kind, "build: no worker in the selection".into());
                 };
+                let cost = w.data.unit(ty).mineral_cost as i32;
+                let have = w.players[p as usize].minerals;
+                if have < cost {
+                    // The recorded game had the money (the building exists
+                    // later); keep going and count the gap.
+                    self.deficit += (cost - have) as i64;
+                    w.players[p as usize].minerals = cost;
+                }
                 match w.placement_spot(ty, want) {
                     None => self.fail(
                         frame,
@@ -355,7 +567,7 @@ impl Driver {
                                 pos: spot,
                             },
                         ) {
-                            Ok(()) => *self.applied.entry(kind).or_default() += 1,
+                            Ok(()) => self.ok(kind),
                             Err(e) => self.fail(
                                 frame,
                                 kind,
@@ -368,28 +580,77 @@ impl Driver {
             0x60 | 0x61 => {
                 let pos = (u16_at(b, 0) as i32, u16_at(b, 2) as i32);
                 let tag = u16_at(b, 4);
-                let target = if tag != 0 {
-                    self.resolve(tags, frame, kind, tag)
-                } else {
-                    None
-                };
-                let order_id = if kind == 0x61 { Some(b[10]) } else { None };
-                let sel = self.selection.get(&p).cloned().unwrap_or_default();
+                let target = (tag != 0)
+                    .then(|| self.target_of(w, tags, p, tag, pos))
+                    .flatten();
+                let order_id = (kind == 0x61).then(|| b[10]);
+                let worker_job = target.and_then(|t| w.unit(t)).is_some_and(|t| {
+                    t.is_resource() || t.type_id == galaxycraft::ids::unit::REFINERY
+                });
+                self.bind_selection(
+                    w,
+                    p,
+                    if worker_job {
+                        Class::Worker
+                    } else {
+                        Class::Mobile
+                    },
+                );
+                let sel = self.selected(w, p);
                 if sel.is_empty() {
-                    return self.fail(frame, kind, "command with an empty selection".into());
+                    return self.fail(
+                        frame,
+                        kind,
+                        format!(
+                            "command: no bound unit in the selection {:?}",
+                            self.selection.get(&p)
+                        ),
+                    );
                 }
                 for id in sel {
-                    let order = classify(w, id, p, pos, target, order_id);
-                    match order {
-                        Some(o) => {
-                            if let Err(e) = w.issue(id, o) {
-                                self.fail(frame, kind, format!("issue failed: {e:?}"));
-                            } else {
-                                *self.applied.entry(kind).or_default() += 1;
-                            }
-                        }
+                    match classify(w, id, p, pos, target, order_id) {
+                        Some(o) => match w.issue(id, o) {
+                            Ok(()) => self.ok(kind),
+                            Err(e) => self.fail(frame, kind, format!("issue failed: {e:?}")),
+                        },
                         None => *self.unsupported.entry(kind).or_default() += 1,
                     }
+                }
+            }
+            0x20 | 0x26 | 0x2b | 0x2f | 0x30 | 0x32 => {
+                let class = match kind {
+                    0x26 | 0x2b => Class::Military,
+                    _ => Class::AnyBuilding,
+                };
+                self.bind_selection(w, p, class);
+                let Some(&first) = self.selected(w, p).first() else {
+                    return self.fail(
+                        frame,
+                        kind,
+                        format!(
+                            "command: no bound unit in the selection {:?}",
+                            self.selection.get(&p)
+                        ),
+                    );
+                };
+                let r = match kind {
+                    0x20 => w.dequeue_production(first).map(|_| ()),
+                    0x26 => w.issue(first, Order::Siege),
+                    0x2b => w.issue(first, Order::HoldPosition),
+                    0x2f => w.lift_building(first),
+                    0x30 => w.research(first, b[0]),
+                    _ => w.upgrade(first, b[0]),
+                };
+                match r {
+                    Ok(()) => self.ok(kind),
+                    Err(e) => self.fail(
+                        frame,
+                        kind,
+                        format!(
+                            "failed: {e:?} (minerals {})",
+                            w.players[p as usize].minerals
+                        ),
+                    ),
                 }
             }
             _ => *self.unsupported.entry(kind).or_default() += 1,
@@ -397,6 +658,10 @@ impl Driver {
     }
 
     fn report(&self) {
+        println!(
+            "tags bound by context: {}; mineral deficit covered for builds: {}",
+            self.binds, self.deficit
+        );
         println!("applied   {:02x?}", self.applied);
         println!(
             "unsupported (decoded, not executed) {:02x?}",
@@ -411,7 +676,9 @@ impl Driver {
             let e = groups.entry(key).or_insert((0, *frame, msg.clone()));
             e.0 += 1;
         }
-        for (key, (n, frame, msg)) in &groups {
+        let mut rows: Vec<_> = groups.iter().collect();
+        rows.sort_by_key(|(_, (_, frame, _))| *frame);
+        for (key, (n, frame, msg)) in rows {
             println!("  x{n:<4} first at frame {frame:>6}  [{key}]  {msg}");
         }
         let _ = SimError::BadUnit;
