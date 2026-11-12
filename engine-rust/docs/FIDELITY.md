@@ -173,3 +173,35 @@ in HD and SD: turrets and the deployed tank, the air units fighting.
 | Wraith | hero cloak | Tom Kazansky drains 13, the Ghost heroes 10 | **fixed** (free) |
 | air units | stacking | units sharing a 48 px cell drift apart (`apply_repulse_field`) | **fixed** (they stacked on one pixel) |
 | client | turrets | drawn on top of the base, pointing at the target; the sieged base unfolds | **fixed** in HD and SD (tank without a barrel, Goliath without a torso) |
+
+## Terran buildings and the in-game client (2026-11-12)
+
+Method: `UNIT-FIDELITY-METHOD.md`; rules from the OpenBW source, timings
+from the iscripts, placement from `units.dat`.  Tests:
+`tests/terran_buildings_retail.rs`.  Checked on screen in HD and SD:
+construction of the three scaffold sizes, a Barracks lifting off and
+landing, a Factory building, abandoning and re-taking its Machine Shop,
+working animations, cursors, cloak, fog memory.
+
+| subject | aspect | retail / OpenBW | engine |
+|---|---|---|---|
+| lifting buildings | lift-off | rises 42 px at 1 px per tick, iscript `LiftOff` frames, shadow left on the ground, takes no orders until the move and the script's `sigorder` are both done | **fixed** (instant, no animation, no height) |
+| lifting buildings | landing | flies to 42 px over the spot, checks the tiles, sets down with `Landing` (Barracks 48 ticks) | **fixed** (instant) |
+| lifting buildings | flight speed | 1 px per tick (`flingy_top_speed` is set to 1 and only restored for non-buildings) | **fixed** (5 px per tick) |
+| add-ons | position | `units.dat` add-on position: 128, 32 px from the parent's placement box | **fixed** (dimension boxes side by side) |
+| add-ons | lift-off | the add-on is abandoned (neutral, no buttons, no research); one under construction is cancelled | **fixed** (kept by the owner, still researching) |
+| add-ons | landing | re-attaches only on the exact tiles, for whoever lands | **fixed** (any add-on within 96 px, owner unchanged) |
+| production | add-on per producer | Siege Tank: Machine Shop on that Factory; Dropship, Science Vessel, Valkyrie, Battlecruiser: Control Tower on that Starport; nothing trains while the add-on is built | **fixed** (not checked; any add-on of the player counted) |
+| command card | add-on buttons | hidden once the building has one; unit buttons greyed without the producer's add-on | **fixed** |
+| placement | occupancy | tiles (placement boxes) | **fixed** (sprite boxes: a Factory could not land next to its own Machine Shop) |
+| working buildings | `IsWorking` | Barracks door frames, Machine Shop / Physics Lab frames, overlays with blinking lights (`tmprmgraphicstart/end`) while training, researching or upgrading | **fixed** (never played) |
+| construction | scaffolds | images 325-330 by stage, Refinery on its own image | matches (checked on screen) |
+| cursor | shapes | `MagG/R/Y` over units, `TargN/G/R/Y` while targeting, `Drag` for the box, `Scroll*` at the edges; hotspots from the executable's table | **fixed** (targeting cursor on hover, no drag / scroll cursors, minerals green) |
+| cursor | SD | the classic GRP cursors, 128 px canvas centred on the pointer | **fixed** (HD art in SD) |
+| camera | edge scroll | the pointer on a screen edge scrolls | **fixed** (missing) |
+| SD | selection | ovals 561+ in the relation colour, blinking target, ground marker | **fixed** (a green circle; no marker) |
+| status | wireframe | sections turn yellow and red as hit points fall | **fixed** (always green); which section turns first is an INFERENCE |
+| selection | other players | a click on an enemy or neutral unit shows its stats | **fixed** |
+| fog | memory | scouted enemy buildings stay drawn, darkened, and on the minimap | **fixed** (they vanished) |
+| cloak | look | the background shows through, displaced | **changed** from a fade; the shift and tint are tuned by eye |
+| cheats | first tick | resources survive the melee start-up trigger | **fixed** |

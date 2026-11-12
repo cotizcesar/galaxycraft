@@ -907,6 +907,11 @@ pub struct SimUnit {
     /// True while a Terran building is lifted off the ground (`orders.dat`
     /// rows 69-73).  Lifted buildings move as air units and cannot produce.
     pub lifted: bool,
+    /// Lift-off or landing in progress: `(landing, ticks elapsed)`.  The
+    /// building rises (or sets down) [`crate::unit_anim::LIFT_HEIGHT`] px at
+    /// 1 px per tick and takes no orders until the phase ends (OpenBW
+    /// `order_LiftingOff`, `order_BuildingLand`).
+    pub lift_phase: Option<(bool, u16)>,
     /// Add-on attachment state.  Lifted parents leave their add-on grounded
     /// and inactive; landing on it re-attaches it.
     pub addon_attached: bool,
@@ -1085,6 +1090,13 @@ pub struct SimUnit {
 }
 
 impl SimUnit {
+    /// A finished add-on with no building attached.  Retail gives it to
+    /// the neutral player (OpenBW `building_abandon_addon`): it trains,
+    /// researches and upgrades nothing until a building lands next to it.
+    pub fn is_detached_addon(&self) -> bool {
+        self.completed && !self.addon_attached && addon_parent(self.type_id).is_some()
+    }
+
     pub fn is_completed_building(&self, data: &GameData) -> bool {
         self.completed && data.unit(self.type_id).is_building()
     }
@@ -2556,6 +2568,14 @@ fn isqrt(n: i64) -> i64 {
 /// `units.dat` half-extents (`FUN_005b6a60/80/90/a0`).
 /// `0x005b52f0`: build the unit's `units.dat` rectangle from its centre
 /// (`x-left`, `y-top`, `x+right`, `y+bottom`).
+/// The tiles a building occupies: its `units.dat` placement box around
+/// `centre` (right / bottom exclusive).
+fn placement_rect(ty: &UnitType, centre: (i32, i32)) -> Rect {
+    let (w, h) = (ty.placement.x.max(1) as i32, ty.placement.y.max(1) as i32);
+    let (l, t) = (centre.0 - w / 2, centre.1 - h / 2);
+    Rect::new(l, t, l + w, t + h)
+}
+
 fn unit_box_rect(ty: &UnitType, centre: (i32, i32)) -> Rect {
     let (l, t, r, b) = ty.dimensions.rect_at(centre);
     Rect::new(l, t, r, b)

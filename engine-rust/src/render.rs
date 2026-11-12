@@ -47,11 +47,11 @@ pub struct SavedRect {
     pixels: Vec<u32>,
 }
 
-/// How much of a cloaked unit shows through for players who can see it
-/// (its owner, or an enemy with a detector).  INFERENCE: retail draws
-/// cloaked units with a palette distortion effect; this true-colour view
-/// fades them instead.
-pub const CLOAK_KEEP: u8 = 110;
+/// How much of a cloaked unit's own colour shows over the displaced
+/// background ([`Framebuffer::refract_rect`]) for players who can see it.
+/// INFERENCE: retail distorts through palette tables; the shift and this
+/// tint are tuned by eye.
+pub const CLOAK_KEEP: u8 = 70;
 
 /// Colour `owner`'s units, buildings and minimap blips are drawn in: its
 /// lobby colour, else the classic slot colour.
@@ -153,6 +153,46 @@ impl Framebuffer {
     /// Blend what was drawn over a saved rectangle back towards the saved
     /// pixels: `keep` (0..=255) is how much of the new drawing remains.  A
     /// cloaked unit is drawn normally and then faded this way.
+    /// Darken what was drawn over a saved rectangle (a building remembered
+    /// under the SD fog): each changed pixel is scaled by `keep` / 256.
+    pub fn dim_changed(&mut self, saved: &SavedRect, keep: u32) {
+        for yy in 0..saved.h {
+            let row = (saved.y + yy) as usize * self.width as usize + saved.x as usize;
+            for xx in 0..saved.w {
+                let old = saved.pixels[(yy * saved.w + xx) as usize];
+                let new = self.pixels[row + xx as usize];
+                if old != new {
+                    let ch = |s: u32| ((new >> s) & 0xff) * keep / 256;
+                    self.pixels[row + xx as usize] =
+                        (new & 0xff00_0000) | (ch(16) << 16) | (ch(8) << 8) | ch(0);
+                }
+            }
+        }
+    }
+
+    /// Cloak look: where something was drawn over the saved background,
+    /// show the background seen through it, displaced sideways by a
+    /// ripple that moves with `phase`, lightly lit by the unit (`keep` /
+    /// 256 of the unit's colour).  Retail's cloaked draw function shifts
+    /// the screen pixels behind the unit's shape the same way.
+    pub fn refract_rect(&mut self, saved: &SavedRect, keep: u8, phase: u32) {
+        for yy in 0..saved.h {
+            let row = (saved.y + yy) as usize * self.width as usize + saved.x as usize;
+            // Two to four pixels, changing every couple of rows.
+            let shift = 2 + ((yy as u32 / 2 + phase) % 3) as i32;
+            for xx in 0..saved.w {
+                let old = saved.pixels[(yy * saved.w + xx) as usize];
+                let new = self.pixels[row + xx as usize];
+                if old == new {
+                    continue;
+                }
+                let sx = (xx + shift).clamp(0, saved.w - 1);
+                let behind = Rgb(saved.pixels[(yy * saved.w + sx) as usize]);
+                self.pixels[row + xx as usize] = behind.blend(Rgb(new), keep).0;
+            }
+        }
+    }
+
     pub fn fade_rect(&mut self, saved: &SavedRect, keep: u8) {
         for yy in 0..saved.h {
             let row = (saved.y + yy) as usize * self.width as usize + saved.x as usize;
@@ -2092,6 +2132,30 @@ pub enum GrpInk {
 
 /// Draw GRP frame `index` centred on `screen`, optionally mirrored (the
 /// western directions of a directional GRP).
+/// Draw every opaque pixel of GRP frame `index` in one colour, centred on
+/// `screen` (`images.dat` draw function 13: selection circles and the
+/// right-click marker, recoloured by the engine).
+pub fn draw_grp_flat(
+    fb: &mut Framebuffer,
+    grp: &Grp,
+    index: usize,
+    screen: (i32, i32),
+    color: Rgb,
+) {
+    let Some(frame) = grp.frame(index) else {
+        return;
+    };
+    let ox = screen.0 - grp.width / 2 + frame.x;
+    let oy = screen.1 - grp.height / 2 + frame.y;
+    for y in 0..frame.h {
+        for x in 0..frame.w {
+            if frame.indices[(y * frame.w + x) as usize] != 0 {
+                fb.put(ox + x, oy + y, color);
+            }
+        }
+    }
+}
+
 pub fn draw_grp_posed(
     fb: &mut Framebuffer,
     grp: &Grp,

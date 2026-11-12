@@ -2538,8 +2538,10 @@ fn a_lifted_barracks_flies_to_the_snapped_spot_and_lands_there() {
     let u = &world.units[b];
     assert!(!u.lifted, "landed");
     assert_eq!((u.x / 256, u.y / 256), (cx, cy), "on the snapped spot");
-    // Blocked tiles refuse the landing.
-    let d = world.spawn_px(0, uid::SUPPLY_DEPOT, 1100, 500).unwrap();
+    // Blocked tiles refuse the landing.  Occupancy is by tiles (the
+    // placement box), so the depot sits on the grid as a placed one does:
+    // its 96 x 64 box covers x 1056..1152, y 480..544.
+    let d = world.spawn_px(0, uid::SUPPLY_DEPOT, 1104, 512).unwrap();
     world.units[d].completed = true;
     let (_, _, t2) = world.placement_tiles(uid::BARRACKS, (1100, 500), Some(id));
     assert!(

@@ -96,6 +96,7 @@ impl World {
             | AnimEvent::Move(_)
             | AnimEvent::SetFlingSpeed(_)
             | AnimEvent::Signal(_)
+            | AnimEvent::Visible(_)
             | AnimEvent::Overlay { .. }
             | AnimEvent::End
             | AnimEvent::IgnoreRest => {}

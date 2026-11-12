@@ -109,34 +109,77 @@ impl App {
         if self.pad_wheel.is_open() {
             return;
         }
-        let target = self.pointer.and_then(|(mx, my)| {
-            // Only the live playfield transforms the pointer; menus, briefing
-            // screens, dialogs and the command console keep the arrow.
-            if self.menu
-                || self.intro
-                || self.briefing
-                || self.overlay != 0
-                || self.game_dialog.is_some()
-                || my >= self.playfield_bottom()
-            {
-                return None;
-            }
-            let u = self.world.unit(self.unit_at(mx, my)?)?;
-            Some(if u.owner as usize == self.local_player {
-                CursorTarget::Own
-            } else if self.world.hostile(self.local_player as u8, u.owner) {
-                CursorTarget::Enemy
-            } else {
-                CursorTarget::Neutral
-            })
-        });
+        let shape = self.cursor_shape();
+        // Classic graphics use the classic (SD) cursors.
+        let sd = (!self.game_options.video_hd).then(|| self.sprites.palette());
         draw_virtual_cursor(
             fb,
             self.pointer,
             self.cursor_art.as_ref(),
-            target,
+            shape,
             self.cursor_started.elapsed(),
+            sd,
         );
+    }
+
+    /// Which retail cursor the pointer shows this frame: a scroll arrow at
+    /// a screen edge, the crosshair while a selection box is dragged, the
+    /// target cursors while a command waits for its target, the magnifier
+    /// over a unit, otherwise the arrow.
+    pub(super) fn cursor_shape(&self) -> CursorShape {
+        let Some((mx, my)) = self.pointer else {
+            return CursorShape::Arrow;
+        };
+        // Only the live game transforms the pointer; menus, briefing
+        // screens and dialogs keep the arrow.
+        if self.menu
+            || self.intro
+            || self.briefing
+            || self.overlay != 0
+            || self.game_dialog.is_some()
+            || self.ingame_options
+        {
+            return CursorShape::Arrow;
+        }
+        if let Some(dir) = self.edge_scroll {
+            return CursorShape::Scroll(dir);
+        }
+        if self.target_act.is_none()
+            && self.build_mode.is_none()
+            && drag_box(self.drag_start, (mx, my)).is_some()
+        {
+            return CursorShape::Drag;
+        }
+        // The console keeps the arrow.
+        if my >= self.playfield_bottom() {
+            return CursorShape::Arrow;
+        }
+        let relation = self
+            .unit_at(mx, my)
+            .and_then(|id| self.world.unit(id))
+            .map(|u| {
+                // Resources are stored under player 0: neutral first.
+                let neutral = u.is_resource()
+                    || u.type_id == galaxycraft::ids::unit::VESPENE_GEYSER
+                    || u.owner >= 11
+                    || u.is_detached_addon();
+                if neutral {
+                    CursorTarget::Neutral
+                } else if u.owner as usize == self.local_player {
+                    CursorTarget::Own
+                } else if self.world.hostile(self.local_player as u8, u.owner) {
+                    CursorTarget::Enemy
+                } else {
+                    CursorTarget::Neutral
+                }
+            });
+        if self.target_act.is_some() {
+            return CursorShape::Targ(relation);
+        }
+        if self.build_mode.is_some() {
+            return CursorShape::Arrow;
+        }
+        relation.map_or(CursorShape::Arrow, CursorShape::Mag)
     }
 
     /// Facing byte the renderer should draw.
@@ -401,7 +444,17 @@ impl App {
                             )
                         })
                     }
-                    None => None,
+                    // Lift-off, flight and landing frames of the
+                    // building's own image (iscript LiftOff / Landing).
+                    None => galaxycraft::unit_anim::building_lift_frame(
+                        &self.data,
+                        &self.world.units[i],
+                    )
+                    .or_else(|| self.animator.work_frame(self.world.units[i].id))
+                    .and_then(|frame| {
+                        galaxycraft::unit_anim::unit_image(&self.data, type_id)
+                            .map(|img| (img, frame as usize))
+                    }),
                 };
                 if let Some((image, frame)) = pick
                     && let Some(grp) = self.sd_image_grp(image)
@@ -432,16 +485,37 @@ impl App {
                 }
             }
         }
+        // Enemy buildings in sight are remembered for the fog.
+        let local = self.local_player as u8;
+        for (i, u) in self.world.units.iter().enumerate() {
+            if u.alive
+                && u.owner != local
+                && self.data.unit(u.type_id).is_building()
+                && self.world.can_see_unit(local, i)
+            {
+                self.seen_buildings.insert(u.id);
+            }
+        }
         let mut hd_units = Vec::new();
         for i in order {
             let u = &self.world.units[i];
             // Enemy units the fog hides; cloaked or burrowed ones without a
-            // detector are hidden even with the fog switched off.
+            // detector are hidden even with the fog switched off.  A
+            // scouted building stays drawn where it was seen.
+            let mut remembered = false;
             if u.owner as usize != self.local_player
                 && (self.fog_on() || u.status.cloaked || u.status.burrowed)
                 && !self.world.can_see_unit(self.local_player as u8, i)
             {
-                continue;
+                if self.fog_on()
+                    && !u.status.cloaked
+                    && !u.status.burrowed
+                    && self.seen_buildings.contains(&u.id)
+                {
+                    remembered = true;
+                } else {
+                    continue;
+                }
             }
             if hd && self.hd_unit_image(u.type_id).is_some() {
                 hd_units.push(i);
@@ -451,7 +525,31 @@ impl App {
             if sx < -160 || sy < -160 || sx > fb.width + 160 || sy > self.view.1 + 160 {
                 continue;
             }
-            let selected = self.selected.contains(&u.id);
+            // A right-clicked target blinks its circle like a selection.
+            let flashing = self
+                .order_flash
+                .is_some_and(|(id, t)| id == u.id && order_flash_on(t.elapsed().as_secs_f32()));
+            let selected = self.selected.contains(&u.id) || flashing;
+            // Selection circle (image 561 + size, draw function 13) under
+            // the unit, as in the HD pass.
+            if selected {
+                let sprite = self
+                    .data
+                    .flingy(self.data.unit(u.type_id).flingy)
+                    .and_then(|f| self.data.sprite(f.sprite))
+                    .map(|sp| (sp.selection_circle as u16, sp.selection_circle_vpos as i32));
+                let colour = circle_colour_for(
+                    u.owner as usize == self.local_player && !u.is_detached_addon(),
+                    u.is_resource() || u.owner >= 11 || u.is_detached_addon(),
+                    self.world.is_enemy(self.local_player as u8, u.owner),
+                );
+                if let Some((size, vpos)) = sprite
+                    && let Some(grp) = self.sd_image_grp(561 + size)
+                {
+                    galaxycraft::render::draw_grp_flat(fb, &grp, 0, (sx, sy + vpos), colour);
+                }
+            }
+            let u = &self.world.units[i];
             let pose = (!self.data.unit(u.type_id).is_building())
                 .then(|| self.animator.unit_frame(u.id))
                 .flatten();
@@ -478,6 +576,9 @@ impl App {
                 .status
                 .cloaked
                 .then(|| fb.save_rect(sx - 48, sy - 48, 96, 96));
+            // The SD fog is drawn under the units: darken a remembered
+            // building by hand.
+            let fogged = remembered.then(|| fb.save_rect(sx - 96, sy - 96, 192, 192));
             if let Some((grp, frame)) = building_stage.get(&i) {
                 galaxycraft::render::draw_grp_posed(
                     fb,
@@ -501,10 +602,6 @@ impl App {
                 facing,
             ) {
                 draw_unit_box(fb, u, &self.data, (sx, sy), selected);
-            } else if selected {
-                let ty = self.data.unit(u.type_id);
-                let r = ((ty.dimensions.right - ty.dimensions.left) as i32 / 2).max(12) + 4;
-                fb.circle_outline(sx, sy, r, Rgb::new(80, 255, 80));
             }
             if let Some((grp, frame, flip)) = sd_turrets.get(&i) {
                 galaxycraft::render::draw_grp_posed(
@@ -521,7 +618,16 @@ impl App {
                 );
             }
             if let Some(saved) = &cloak {
-                fb.fade_rect(saved, galaxycraft::render::CLOAK_KEEP);
+                fb.refract_rect(
+                    saved,
+                    galaxycraft::render::CLOAK_KEEP,
+                    (self.world.tick / 3) as u32,
+                );
+            }
+            if let Some(saved) = &fogged {
+                fb.dim_changed(saved, 110);
+                // No health bar or selection on a remembered building.
+                continue;
             }
             // Neutral resources are stored under player 0: no bar on them
             // unless selected.
@@ -536,6 +642,7 @@ impl App {
 
         if !hd {
             self.draw_animated_images_sd(&mut world_fb);
+            self.draw_order_marker_sd(&mut world_fb);
         }
 
         // Blit the logical frame scaled to the window, then draw the HUD in
@@ -582,7 +689,11 @@ impl App {
                 });
                 self.draw_unit_hd(fb_full, i, (cx, cy, cw, ch), scale, &env);
                 if let Some(saved) = &cloak {
-                    fb_full.fade_rect(saved, galaxycraft::render::CLOAK_KEEP);
+                    fb_full.refract_rect(
+                        saved,
+                        galaxycraft::render::CLOAK_KEEP,
+                        (self.world.tick / 3) as u32,
+                    );
                 }
             }
             self.draw_ctf_flags(fb_full, (cx, cy, cw, ch), scale, true);
@@ -1010,6 +1121,13 @@ impl App {
             }
         }
         let mut layer_list = self.hd_unit_layers(u.type_id, u.is_completed_building(&self.data));
+        // Lift-off, flight and landing frames (iscript LiftOff / Landing).
+        if let Some(f) = galaxycraft::unit_anim::building_lift_frame(&self.data, u)
+            .or_else(|| self.animator.work_frame(u.id))
+            && (f as usize) < img.header.frames.len()
+        {
+            frame = f as usize;
+        }
         if let Some(stage) = terran_construction_stage(u, ty) {
             match stage {
                 ConstructionStage::Scaffold(n) if ty.construction_image == 0 => {
@@ -1055,11 +1173,14 @@ impl App {
                 layer_list = self.hd_unit_layers(src, true);
             }
         }
+        // A lifted building's shadow stays on the ground below it.
+        let lift = galaxycraft::unit_anim::lift_offset(u);
         let layers = layer_list
             .into_iter()
             .filter_map(|(id, ox, oy, below)| {
                 let li = fetch(id)?;
                 let lf = frame.min(li.header.frames.len().saturating_sub(1));
+                let oy = oy as i32 + if below { lift } else { 0 };
                 Some(HdPart {
                     image_id: id,
                     img: li,
@@ -1180,6 +1301,7 @@ impl App {
                 self.animator
                     .status_overlays(&self.world)
                     .into_iter()
+                    .chain(self.animator.work_overlays(&self.world))
                     .map(|b| (b.image, b.x, b.y, b.facing, b.frame)),
             )
             .chain(
@@ -1395,6 +1517,7 @@ impl App {
                 self.animator
                     .status_overlays(&self.world)
                     .into_iter()
+                    .chain(self.animator.work_overlays(&self.world))
                     .map(|b| (b.image, b.x, b.y, b.facing, b.frame)),
             )
             .chain(
@@ -1445,23 +1568,37 @@ impl App {
     /// Green circle on the ground where a move order was given, blinking
     /// like the target flash.  INFERENCE: retail's cursor-marker sprite is
     /// approximated with the 32 px selection circle.
+    /// World point of the right-click ground marker while it blinks on.
+    fn order_marker_shown(&mut self) -> Option<(i32, i32)> {
+        let (at, t) = self.order_marker?;
+        let age = t.elapsed().as_secs_f32();
+        if age > ORDER_FLASH_SECS {
+            self.order_marker = None;
+            return None;
+        }
+        order_flash_on(age).then_some(at)
+    }
+
+    /// SD right-click marker: the 32 px selection oval (image 562) in green.
+    pub(super) fn draw_order_marker_sd(&mut self, fb: &mut Framebuffer) {
+        let Some((wx, wy)) = self.order_marker_shown() else {
+            return;
+        };
+        if let Some(grp) = self.sd_image_grp(562) {
+            let at = (wx - self.camera.0, wy - self.camera.1);
+            galaxycraft::render::draw_grp_flat(fb, &grp, 0, at, HUD_SELECT_GREEN);
+        }
+    }
+
     pub(super) fn draw_order_marker(
         &mut self,
         fb: &mut Framebuffer,
         clip: (i32, i32, i32, i32),
         scale: f32,
     ) {
-        let Some(((wx, wy), t)) = self.order_marker else {
+        let Some((wx, wy)) = self.order_marker_shown() else {
             return;
         };
-        let age = t.elapsed().as_secs_f32();
-        if age > ORDER_FLASH_SECS {
-            self.order_marker = None;
-            return;
-        }
-        if !order_flash_on(age) {
-            return;
-        }
         let install = self.install.as_ref();
         let Some(img) = self.hd_sprites.image(561 + 1, |path| install?.read(path)) else {
             return;
@@ -1575,8 +1712,8 @@ impl App {
             .is_some_and(|(id, t)| id == u.id && order_flash_on(t.elapsed().as_secs_f32()));
         let selected = self.selected.contains(&u.id) || flashing;
         let circle_colour = circle_colour_for(
-            u.owner as usize == self.local_player,
-            u.is_resource() || u.owner >= 11,
+            u.owner as usize == self.local_player && !u.is_detached_addon(),
+            u.is_resource() || u.owner >= 11 || u.is_detached_addon(),
             self.world.is_enemy(self.local_player as u8, u.owner),
         );
         let sprite = self

@@ -337,6 +337,10 @@ pub enum ButtonState {
 /// Visibility of one button for `unit` (`None` = hidden).
 pub fn state(world: &World, unit: &SimUnit, b: &Button) -> Option<ButtonState> {
     let player = world.players.get(unit.owner as usize)?;
+    // An abandoned add-on belongs to nobody in retail: no buttons.
+    if unit.is_detached_addon() {
+        return None;
+    }
     let busy = !unit.completed
         || !unit.production.is_empty()
         || unit.morph_to.is_some()
@@ -347,11 +351,19 @@ pub fn state(world: &World, unit: &SimUnit, b: &Button) -> Option<ButtonState> {
     let on = |shown: bool| shown.then_some(ButtonState::Enabled);
     match Cond::of(b.cond) {
         Cond::Always | Cond::Rally | Cond::Upgrade | Cond::Unclassified => on(true),
-        Cond::MakeUnit => Some(if world.has_requirements(unit.owner, b.cond_var) {
-            ButtonState::Enabled
-        } else {
-            ButtonState::Disabled
-        }),
+        // An add-on button disappears once the building has its add-on.
+        Cond::MakeUnit if world.unit_is_addon(b.cond_var) && unit.addon.is_some() => None,
+        Cond::MakeUnit => Some(
+            if world.has_requirements(unit.owner, b.cond_var)
+                && world
+                    .index_of(unit.id)
+                    .is_none_or(|i| world.producer_can_make(i, b.cond_var))
+            {
+                ButtonState::Enabled
+            } else {
+                ButtonState::Disabled
+            },
+        ),
         Cond::Cancel => on(busy),
         Cond::Research => on(!player.has_tech(b.cond_var as u8)),
         Cond::UseTech => on(

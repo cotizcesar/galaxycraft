@@ -530,6 +530,23 @@ impl App {
         if input.down {
             self.camera.1 += scroll;
         }
+        // Mouse at a screen edge.  INFERENCE: the rate follows the Mouse
+        // Scroll slider the way the Key Scroll one scales the keys.
+        if let Some(dir) = self.edge_scroll {
+            let step = (14.0 * (0.5 + self.game_options.mouse_scroll)).round() as i32;
+            let (dx, dy) = [
+                (0, -1),
+                (1, -1),
+                (1, 0),
+                (1, 1),
+                (0, 1),
+                (-1, 1),
+                (-1, 0),
+                (-1, -1),
+            ][dir as usize % 8];
+            self.camera.0 += dx * step;
+            self.camera.1 += dy * step;
+        }
         if input.wheel != 0.0 {
             // Mouse Scroll Speed: 0.5 is the retail default of 48 px/notch.
             let step = 48.0 * (0.5 + self.game_options.mouse_scroll);
@@ -601,11 +618,16 @@ impl App {
             } else if self.build_mode.is_some() && dist < 6 {
                 self.place_building(mx, my);
             } else if dist < 6 {
-                let id = self.unit_at(mx, my).filter(|id| {
+                let clicked = self.unit_at(mx, my);
+                let id = clicked.filter(|id| {
                     self.world
                         .unit(*id)
                         .is_some_and(|u| u.owner as usize == self.local_player)
                 });
+                // Retail: a plain click on an enemy, neutral or resource
+                // unit selects it alone to show its stats (no command
+                // card); Shift / Ctrl clicks only take the player's own.
+                let foreign = clicked.filter(|_| id.is_none());
                 if std::env::var("SC_VIEW_DEBUG").is_ok() {
                     eprintln!("select click at {} {} -> {:?}", mx, my, id);
                 }
@@ -640,6 +662,13 @@ impl App {
                     if let Some(id) = id {
                         self.select_unit(id, true);
                     }
+                } else if let Some(other) = foreign {
+                    self.selected = vec![other];
+                    self.refresh_commands();
+                    self.play("ui_click");
+                    self.drag_start = None;
+                    self.rmb_down = input.rmb && in_view;
+                    return;
                 } else {
                     self.selected = id.into_iter().collect();
                 }

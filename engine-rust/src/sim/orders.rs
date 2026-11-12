@@ -522,20 +522,51 @@ impl World {
             Order::Unsiege => self.order_siege(i, false),
             Order::Lift => {
                 let id = self.units[i].id;
-                let _ = self.lift_building(id);
+                if self.units[i].lift_phase.is_none() {
+                    if self.units[i].lifted || self.lift_building(id).is_err() {
+                        self.order_done(i);
+                        return;
+                    }
+                    // `lift_building` leaves the order Idle: keep lifting.
+                    self.units[i].order = Order::Lift;
+                    self.units[i].lift_phase = Some((false, 0));
+                }
+                if self.advance_lift_phase(i) {
+                    self.order_done(i);
+                }
             }
             Order::Land { pos } => {
-                // Fly to the grid-snapped spot (the preview's), then land
-                // (Desperate Alliance recording: the Barracks flies over and
-                // sets down in the green box).
+                // Fly to the grid-snapped spot (the preview's), hover
+                // 42 px over it, then set down (Desperate Alliance
+                // recording: the Barracks flies over and lands in the green
+                // box; OpenBW `order_BuildingLand`).
                 let id = self.units[i].id;
+                if let Some((true, _)) = self.units[i].lift_phase {
+                    if self.advance_lift_phase(i) {
+                        let ground = (self.units[i].x / fp(1), self.units[i].y / fp(1));
+                        if self.land_building(id, ground).is_err() {
+                            // Blocked at the last moment: back up and stay
+                            // in the air.
+                            self.units[i].y -= fp(crate::unit_anim::LIFT_HEIGHT);
+                        }
+                        self.order_done(i);
+                    }
+                    return;
+                }
                 let ty = self.units[i].type_id;
                 let ((cx, cy), _, tiles) = self.placement_tiles(ty, pos, Some(id));
+                let hover = (cx, cy - crate::unit_anim::LIFT_HEIGHT);
                 if !tiles.iter().all(|t| *t) {
                     self.order_done(i);
-                } else if self.distance_to_point(i, (cx * fp(1), cy * fp(1))) > fp(2) {
-                    self.move_towards(i, (cx, cy), fp(1));
-                } else if self.land_building(id, (cx, cy)).is_err() {
+                } else if self.distance_to_point(i, (hover.0 * fp(1), hover.1 * fp(1))) > fp(2) {
+                    self.move_towards(i, hover, fp(1));
+                } else if self.can_land_at(i, (cx, cy)) {
+                    self.units[i].x = hover.0 * fp(1);
+                    self.units[i].y = hover.1 * fp(1);
+                    self.units[i].path.clear();
+                    self.units[i].path_goal = None;
+                    self.units[i].lift_phase = Some((true, 0));
+                } else {
                     self.order_done(i);
                 }
             }

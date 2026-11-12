@@ -85,11 +85,37 @@ impl World {
         })
     }
 
+    /// Retail rules that depend on the producing building itself (OpenBW
+    /// `unit_can_build`): nothing trains while the building constructs its
+    /// add-on, the Siege Tank needs a Machine Shop on *this* Factory, and
+    /// the Dropship, Science Vessel, Valkyrie and Battlecruiser a Control
+    /// Tower on *this* Starport.
+    pub fn producer_can_make(&self, producer: usize, unit_type: u16) -> bool {
+        let Some(p) = self.units.get(producer) else {
+            return false;
+        };
+        let addon = p.addon.and_then(|id| self.unit(id));
+        if addon.is_some_and(|a| !a.completed) {
+            return false;
+        }
+        let needed = match unit_type {
+            uid::SIEGE_TANK => uid::MACHINE_SHOP,
+            uid::DROPSHIP | uid::SCIENCE_VESSEL | uid::VALKYRIE | uid::BATTLECRUISER => {
+                uid::CONTROL_TOWER
+            }
+            _ => return true,
+        };
+        if self.players[p.owner as usize].cheats.build_anything {
+            return true;
+        }
+        addon.is_some_and(|a| a.type_id == needed && a.addon_attached)
+    }
+
     pub fn train(&mut self, building_id: u32, unit_type: u16) -> Result<(), SimError> {
         let i = self.index_of(building_id).ok_or(SimError::BadUnit)?;
         let owner = self.units[i].owner;
         let building_type = self.units[i].type_id;
-        if !self.units[i].completed || self.units[i].lifted {
+        if !self.units[i].completed || self.units[i].lifted || self.units[i].is_detached_addon() {
             return Err(SimError::MissingRequirements);
         }
         if !self.building_powered(i) {
@@ -100,6 +126,9 @@ impl World {
             return Err(SimError::MissingRequirements);
         }
         if !self.has_requirements(owner, unit_type) {
+            return Err(SimError::MissingRequirements);
+        }
+        if !self.producer_can_make(i, unit_type) {
             return Err(SimError::MissingRequirements);
         }
         if !self.unit_available(owner, unit_type) {
@@ -288,7 +317,7 @@ impl World {
                     return None;
                 }
                 let (ux, uy) = (u.x / fp(1), u.y / fp(1));
-                Some(unit_box_rect(ut, (ux, uy)))
+                Some(placement_rect(ut, (ux, uy)))
             })
             .collect();
         let mut tiles = Vec::new();
@@ -445,6 +474,18 @@ impl World {
         Ok(())
     }
 
+    /// Placement box (top-left, size in px) of an `addon_type` built by
+    /// the building at index `parent`.
+    pub fn addon_box(&self, parent: usize, addon_type: u16) -> ((i32, i32), (i32, i32)) {
+        let pt = self.data.unit(self.units[parent].type_id);
+        let at = self.data.unit(addon_type);
+        let (pw, ph) = (pt.placement.x as i32, pt.placement.y as i32);
+        let (aw, ah) = (at.placement.x as i32, at.placement.y as i32);
+        let left = self.units[parent].x / fp(1) - pw / 2 + at.addon_position.x as i32;
+        let top = self.units[parent].y / fp(1) - ph / 2 + at.addon_position.y as i32;
+        ((left, top), (aw, ah))
+    }
+
     pub(super) fn build_addon_unrecorded(
         &mut self,
         parent_id: u32,
@@ -472,21 +513,15 @@ impl World {
         if self.players[owner as usize].gas < ty.gas_cost as i32 {
             return Err(SimError::NotEnoughGas);
         }
-        let parent_ty = self.data.unit(self.units[p].type_id).clone();
-        let addon_hw = ty.dimensions.right.max(0).max(ty.dimensions.left.max(0)) as i32;
-        let parent_hw = parent_ty
-            .dimensions
-            .right
-            .max(0)
-            .max(parent_ty.dimensions.left.max(0)) as i32;
-        let px = self.units[p].x + (parent_hw + addon_hw).max(8) * fp(1);
-        let py = self.units[p].y;
-        if !self.terrain.footprint_buildable(
-            px / fp(1) - addon_hw,
-            py / fp(1) - addon_hw,
-            px / fp(1) + addon_hw,
-            py / fp(1) + addon_hw,
-        ) {
+        // `units.dat` add-on position: the add-on's placement box sits
+        // that many pixels from the parent's placement box top-left.
+        let ((left, top), (aw, ah)) = self.addon_box(p, addon_type);
+        let px = (left + aw / 2) * fp(1);
+        let py = (top + ah / 2) * fp(1);
+        if !self
+            .terrain
+            .footprint_buildable(left, top, left + aw, top + ah)
+        {
             return Err(SimError::InvalidTarget);
         }
         {
@@ -584,12 +619,19 @@ impl World {
         if self.units[i].lifted {
             return Err(SimError::ProducerBusy);
         }
-        if let Some(addon_id) = self.units[i].addon.take()
+        // The add-on stays on the ground, abandoned (OpenBW
+        // `building_abandon_addon`); one still under construction is
+        // cancelled (`make_unit_neutral`).
+        if let Some(addon_id) = self.units[i].addon
             && let Some(a) = self.index_of(addon_id)
         {
-            // Add-ons stay grounded and become inactive, not destroyed.
-            self.units[a].addon_attached = false;
+            if self.units[a].completed {
+                self.units[a].addon_attached = false;
+            } else {
+                let _ = self.cancel_addon_unrecorded(building_id);
+            }
         }
+        self.units[i].addon = None;
         self.units[i].lifted = true;
         self.units[i].order = Order::Idle;
         self.units[i].path.clear();
@@ -597,27 +639,48 @@ impl World {
         Ok(())
     }
 
-    /// Land a lifted building at `pos` (pixels).  The footprint must be
-    /// buildable and free of other structures/units.
-    pub fn land_building(&mut self, building_id: u32, pos: (i32, i32)) -> Result<(), SimError> {
-        let i = self.index_of(building_id).ok_or(SimError::BadUnit)?;
-        if !self.units[i].alive || !self.units[i].lifted {
-            return Err(SimError::InvalidTarget);
+    /// One tick of a lift-off or landing: move 1 px (up or down) until the
+    /// building has travelled [`crate::unit_anim::LIFT_HEIGHT`] px; true
+    /// once the phase is over (the move done and the iscript's `sigorder`
+    /// reached).
+    pub(super) fn advance_lift_phase(&mut self, i: usize) -> bool {
+        let Some((landing, t)) = self.units[i].lift_phase else {
+            return true;
+        };
+        if (t as i32) < crate::unit_anim::LIFT_HEIGHT {
+            self.units[i].y += if landing { fp(1) } else { -fp(1) };
         }
-        let ty = self.data.unit(self.units[i].type_id).clone();
-        let hw = ty.dimensions.right.max(0).max(ty.dimensions.left.max(0)) as i32;
-        let hh = ty.dimensions.bottom.max(0).max(ty.dimensions.top.max(0)) as i32;
-        let left = pos.0 - hw;
-        let top = pos.1 - hh;
-        if left < 0
-            || top < 0
+        let t = t.saturating_add(1);
+        let total = crate::unit_anim::lift_phase_ticks(&self.data, self.units[i].type_id, landing);
+        if t as u32 >= total {
+            self.units[i].lift_phase = None;
+            true
+        } else {
+            self.units[i].lift_phase = Some((landing, t));
+            false
+        }
+    }
+
+    /// Whether the lifted building `i` may set down centred on `pos`.
+    pub(super) fn can_land_at(&self, i: usize, pos: (i32, i32)) -> bool {
+        self.landing_blocked(i, pos).is_ok()
+    }
+
+    fn landing_blocked(&self, i: usize, pos: (i32, i32)) -> Result<(), SimError> {
+        let building_id = self.units[i].id;
+        let ty = self.data.unit(self.units[i].type_id);
+        // Tiles, as retail: the placement box, not the sprite's dimensions
+        // (a Machine Shop's box reaches 39 px left, into its Factory's
+        // last column).
+        let rect = placement_rect(ty, pos);
+        if rect.left < 0
+            || rect.top < 0
             || !self
                 .terrain
-                .footprint_buildable(left, top, pos.0 + hw, pos.1 + hh)
+                .footprint_buildable(rect.left, rect.top, rect.right, rect.bottom)
         {
             return Err(SimError::InvalidTarget);
         }
-        let rect = Rect::new(left, top, pos.0 + hw, pos.1 + hh);
         let blocked = self.units.iter().any(|u| {
             if !u.alive || u.id == building_id || !u.completed || u.lifted {
                 return false;
@@ -628,30 +691,51 @@ impl World {
             }
             let ux = u.x / fp(1);
             let uy = u.y / fp(1);
-            rect.intersects(&unit_box_rect(ut, (ux, uy)))
+            let other = placement_rect(ut, (ux, uy));
+            // Touching edges are fine; overlapping tiles are not.
+            rect.left < other.right
+                && other.left < rect.right
+                && rect.top < other.bottom
+                && other.top < rect.bottom
         });
         if blocked {
             return Err(SimError::InvalidTarget);
         }
+        Ok(())
+    }
+
+    /// Land a lifted building at `pos` (pixels).  The footprint must be
+    /// buildable and free of other structures/units.
+    pub fn land_building(&mut self, building_id: u32, pos: (i32, i32)) -> Result<(), SimError> {
+        let i = self.index_of(building_id).ok_or(SimError::BadUnit)?;
+        if !self.units[i].alive || !self.units[i].lifted {
+            return Err(SimError::InvalidTarget);
+        }
+        self.landing_blocked(i, pos)?;
         self.units[i].x = pos.0 * fp(1);
         self.units[i].y = pos.1 * fp(1);
         self.units[i].lifted = false;
+        self.units[i].lift_phase = None;
         self.units[i].order = Order::Idle;
         self.units[i].path.clear();
         self.units[i].path_goal = None;
-        // Landing on/near a grounded add-on of the right type re-attaches it.
+        // Landing exactly where an abandoned add-on of the right type
+        // expects its parent re-attaches it, whoever built it: it becomes
+        // the lander's (OpenBW `find_connecting_addon` compares the tiles
+        // of the two placement boxes, `connect_addon` gives it away).
         let parent_type = self.units[i].type_id;
-        let (px, py) = (pos.0 * fp(1), pos.1 * fp(1));
         let found = self.units.iter().position(|u| {
-            u.alive
-                && u.completed
-                && !u.addon_attached
-                && addon_parent(u.type_id) == Some(parent_type)
-                && (u.x - px).abs() <= fp(96)
-                && (u.y - py).abs() <= fp(96)
+            if !(u.alive && u.is_detached_addon() && addon_parent(u.type_id) == Some(parent_type)) {
+                return false;
+            }
+            let ((left, top), (aw, ah)) = self.addon_box(i, u.type_id);
+            let ul = u.x / fp(1) - aw / 2;
+            let ut = u.y / fp(1) - ah / 2;
+            ul.div_euclid(32) == left.div_euclid(32) && ut.div_euclid(32) == top.div_euclid(32)
         });
         if let Some(a) = found {
             self.units[a].addon_attached = true;
+            self.units[a].owner = self.units[i].owner;
             let addon_id = self.units[a].id;
             self.units[i].a14_set_addon_link(addon_id);
         }
@@ -989,7 +1073,7 @@ impl World {
             self.players[owner as usize].techs[tech_id as usize] = true;
             return Ok(());
         }
-        if !self.units[i].completed || self.units[i].lifted {
+        if !self.units[i].completed || self.units[i].lifted || self.units[i].is_detached_addon() {
             return Err(SimError::MissingRequirements);
         }
         if !self.building_powered(i) {
@@ -1067,7 +1151,7 @@ impl World {
             }
             return Ok(());
         }
-        if !self.units[i].completed || self.units[i].lifted {
+        if !self.units[i].completed || self.units[i].lifted || self.units[i].is_detached_addon() {
             return Err(SimError::MissingRequirements);
         }
         if !self.building_powered(i) {

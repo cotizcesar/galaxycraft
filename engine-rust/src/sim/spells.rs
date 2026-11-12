@@ -119,7 +119,9 @@ impl World {
     /// True while a tank is in the middle of its siege / unsiege animation.
     pub fn is_transforming(&self, i: usize) -> bool {
         self.units.get(i).is_some_and(|u| {
-            u.alive && matches!(u.order, Order::Siege | Order::Unsiege) && u.order_wait > 0
+            u.alive
+                && ((matches!(u.order, Order::Siege | Order::Unsiege) && u.order_wait > 0)
+                    || u.lift_phase.is_some())
         })
     }
 

@@ -22,6 +22,101 @@ use crate::data::GameData;
 use crate::iscript::{AnimContext, AnimEvent, AnimState};
 use crate::sim::{Order, World};
 
+/// Height a Terran building rises when it lifts off, in pixels: OpenBW
+/// `order_LiftingOff` moves it 42 px up at 1 px per tick (the shadow stays
+/// on the ground), and `order_BuildingLand` sets it down the same way.
+pub const LIFT_HEIGHT: i32 = 42;
+
+/// Run a building's `anim` for `ticks` ticks (the first tick included) and
+/// report the last frame shown and the tick its `sigorder` fired.
+fn run_building_anim(
+    data: &GameData,
+    type_id: u16,
+    anim: usize,
+    ticks: u32,
+) -> (Option<u16>, Option<u32>) {
+    let ty = data.unit(type_id);
+    let Some(iscript) = data.unit_iscript_id(ty) else {
+        return (None, None);
+    };
+    let Some(mut st) = data.iscript.start_animation(iscript, anim, 0) else {
+        return (None, None);
+    };
+    let mut ctx = AnimContext {
+        direction: 0,
+        tileset: 0,
+        rng: 0,
+        target_distance: None,
+        target_angle: None,
+        lifted: false,
+        powerup_picked: false,
+        hallucination: false,
+    };
+    let (mut frame, mut signal) = (None, None);
+    for t in 1..=ticks {
+        for ev in data.iscript.tick_anim(&mut st, &mut ctx) {
+            match ev {
+                AnimEvent::Frame { raw, .. } => frame = Some(raw),
+                AnimEvent::Signal(_) if signal.is_none() => signal = Some(t),
+                _ => {}
+            }
+        }
+        if st.ended {
+            break;
+        }
+    }
+    (frame, signal)
+}
+
+/// Length of a lift-off (`landing == false`) or landing in ticks: the 42 px
+/// move and the iscript's `LiftOff` / `Landing` animation up to its
+/// `sigorder 16`, whichever ends later (OpenBW waits for both).
+pub fn lift_phase_ticks(data: &GameData, type_id: u16, landing: bool) -> u32 {
+    let anim = if landing {
+        crate::iscript::ANIM_LANDING
+    } else {
+        crate::iscript::ANIM_LIFT_OFF
+    };
+    let signal = run_building_anim(data, type_id, anim, 400).1.unwrap_or(0);
+    signal.max(LIFT_HEIGHT as u32)
+}
+
+/// Frame of a Terran building that can lift: the `LiftOff` / `Landing`
+/// script frame while either runs, the lifted frame in the air, `None` on
+/// the ground (the caller's usual frame).
+pub fn building_lift_frame(data: &GameData, unit: &crate::sim::SimUnit) -> Option<u16> {
+    match unit.lift_phase {
+        Some((landing, t)) => {
+            let anim = if landing {
+                crate::iscript::ANIM_LANDING
+            } else {
+                crate::iscript::ANIM_LIFT_OFF
+            };
+            run_building_anim(data, unit.type_id, anim, t as u32 + 1)
+                .0
+                .or_else(|| lifted_frame(data, unit.type_id))
+        }
+        None if unit.lifted => lifted_frame(data, unit.type_id),
+        None => None,
+    }
+}
+
+/// How far a building is above its shadow: [`LIFT_HEIGHT`] in the air,
+/// growing while it lifts off and shrinking while it lands.
+pub fn lift_offset(unit: &crate::sim::SimUnit) -> i32 {
+    match unit.lift_phase {
+        Some((false, t)) => (t as i32 + 1).min(LIFT_HEIGHT),
+        Some((true, t)) => (LIFT_HEIGHT - t as i32 - 1).max(0),
+        None if unit.lifted => LIFT_HEIGHT,
+        None => 0,
+    }
+}
+
+/// The frame a lifted building holds: the last one of its `LiftOff`.
+fn lifted_frame(data: &GameData, type_id: u16) -> Option<u16> {
+    run_building_anim(data, type_id, crate::iscript::ANIM_LIFT_OFF, 400).0
+}
+
 /// iscript animation entries (`iscript.bin` header order).
 pub mod anim {
     pub const INIT: usize = 0;
@@ -131,6 +226,20 @@ struct Track {
     sounds: Vec<u16>,
     /// `useweapon` operands since the last drain.
     weapons: Vec<u8>,
+    /// Hidden by `tmprmgraphicstart` until `tmprmgraphicend`.
+    hidden: bool,
+}
+
+/// A building's `IsWorking` animation while it trains, researches or
+/// upgrades (OpenBW `secondary_order_Train`, `order_ResearchTech`,
+/// `order_Upgrade`), with the overlays it attached (`imgol`: the Command
+/// Center's blinking lights, the Factory's crane...).  `WorkingToIdle`
+/// ends it: the main image goes back to its idle frame and the overlays'
+/// scripts end.
+#[derive(Clone, Debug)]
+struct WorkState {
+    main: Track,
+    overlays: Vec<(Track, i8, i8)>,
 }
 
 /// What the animator remembers about a unit between ticks.
@@ -259,6 +368,7 @@ pub struct Animator {
     /// their script ends: the Lockdown field and the Heal glow on a
     /// patient, keyed by (unit id, base image).
     status: HashMap<(u32, u16), Track>,
+    work: HashMap<u32, WorkState>,
     /// [`World::spell_cue_seq`] already turned into effects and sounds.
     cue_seq: u64,
 }
@@ -307,6 +417,7 @@ impl Track {
             frame: None,
             sounds: Vec::new(),
             weapons: Vec::new(),
+            hidden: false,
         })
     }
 
@@ -324,6 +435,7 @@ impl Track {
         for e in data.iscript.tick_anim(&mut self.state, &mut ctx) {
             match e {
                 AnimEvent::Frame { raw, .. } => self.frame = Some(raw),
+                AnimEvent::Visible(shown) => self.hidden = !shown,
                 AnimEvent::Sound(id) | AnimEvent::RandomSound(id) => self.sounds.push(id),
                 AnimEvent::Attack {
                     weapon: Some(w), ..
@@ -383,6 +495,7 @@ impl Animator {
             self.step(world);
             self.step_damage(world, lo);
             self.step_construction(world);
+            self.step_work(world);
         }
     }
 
@@ -491,6 +604,85 @@ impl Animator {
                 })
             })
             .collect()
+    }
+
+    /// Frame of building `id`'s `IsWorking` animation (the Barracks door,
+    /// the Machine Shop's arm), `None` when it is idle.
+    pub fn work_frame(&self, id: u32) -> Option<u16> {
+        self.work.get(&id).and_then(|w| w.main.frame)
+    }
+
+    /// Visible overlays of working buildings, ready to draw.
+    pub fn work_overlays(&self, world: &World) -> Vec<BulletPose> {
+        let mut out = Vec::new();
+        for (id, w) in &self.work {
+            let Some(u) = world.unit(*id) else { continue };
+            for (t, dx, dy) in &w.overlays {
+                if t.hidden || t.state.ended {
+                    continue;
+                }
+                if let Some(frame) = t.frame {
+                    out.push(BulletPose {
+                        image: t.image,
+                        x: u.x / 256 + *dx as i32,
+                        y: u.y / 256 + *dy as i32,
+                        facing: 0,
+                        frame,
+                    });
+                }
+            }
+        }
+        out
+    }
+
+    fn step_work(&mut self, world: &World) {
+        let data = &*world.data;
+        let mut rng = self.rng ^ 0x5bd1_e995;
+        let working: Vec<u32> = world
+            .units
+            .iter()
+            .filter(|u| {
+                u.alive
+                    && u.completed
+                    && !u.lifted
+                    && data.unit(u.type_id).is_building()
+                    && (!u.production.is_empty()
+                        || matches!(u.order, Order::Research { .. } | Order::Upgrade { .. }))
+            })
+            .map(|u| u.id)
+            .collect();
+        self.work.retain(|id, _| working.contains(id));
+        for id in working {
+            let Some(u) = world.unit(id) else { continue };
+            if let std::collections::hash_map::Entry::Vacant(e) = self.work.entry(id) {
+                let Some(image) = unit_image(data, u.type_id) else {
+                    continue;
+                };
+                let Some(main) = Track::start(data, image, crate::iscript::ANIM_IS_WORKING, 0)
+                else {
+                    continue;
+                };
+                e.insert(WorkState {
+                    main,
+                    overlays: Vec::new(),
+                });
+            }
+            let Some(w) = self.work.get_mut(&id) else {
+                continue;
+            };
+            for (image, dx, dy) in w.main.tick(data, 0, &mut rng) {
+                if let Some(t) = Track::start(data, image, anim::INIT, 0) {
+                    w.overlays.push((t, dx, dy));
+                }
+            }
+            for id in w.main.sounds.drain(..) {
+                self.sounds.push((id, u.x / 256, u.y / 256));
+            }
+            for (t, _, _) in &mut w.overlays {
+                t.tick(data, 0, &mut rng);
+            }
+        }
+        self.rng = rng;
     }
 
     /// Status images drawn behind unit `id` (the Defensive Matrix back

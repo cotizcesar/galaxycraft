@@ -90,6 +90,10 @@ pub struct UnitType {
     /// `units.dat` construction image (`images.dat` id, 0 = none): the
     /// Terran scaffold `TBldLrg` 325 / `tBldMed` 327 / `TBldSml` 329-330.
     pub construction_image: u16,
+    /// `units.dat` add-on position (units 106..=201 only): the add-on's
+    /// placement box top-left, in pixels from its parent's placement box
+    /// top-left (OpenBW `find_connecting_addon`).
+    pub addon_position: Point16,
 }
 
 impl UnitType {
@@ -896,6 +900,14 @@ fn parse_units(d: &[u8]) -> Result<Vec<UnitType>, DataError> {
             portrait: u16_at(d, unit_off::PORTRAIT, i),
             rank: u8_at(d, unit_off::SUBLABEL, i),
             construction_image: u32_at(d, unit_off::CONSTRUCTION, i) as u16,
+            addon_position: if (106..=201).contains(&i) {
+                Point16 {
+                    x: i16_at(d, unit_off::ADDON, (i - 106) * 2),
+                    y: i16_at(d, unit_off::ADDON, (i - 106) * 2 + 1),
+                }
+            } else {
+                Point16 { x: 0, y: 0 }
+            },
         });
     }
     Ok(units)
