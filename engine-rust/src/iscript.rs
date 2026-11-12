@@ -71,6 +71,9 @@ pub enum AnimEvent {
         melee: bool,
         ground: bool,
     },
+    /// `attkshiftproj <distance>`: the ground weapon's bullet appears
+    /// `distance` px ahead of the unit (the Firebat's three flames).
+    AttackShift(u8),
     /// `castspell`: spend the current order's spell at this frame.
     CastSpell,
     /// `move <n>`: pixels per tick in 1/256 units.
@@ -289,7 +292,7 @@ impl Iscript {
     /// own animation is a plain wait loop with no event, so the rules engine
     /// must fall back to firing on the order tick.
     pub fn animation_has_attack(&self, id: u16, anim: usize) -> bool {
-        self.animation_has_opcode(id, anim, &[0x1b, 0x1c, 0x25, 0x26, 0x44])
+        self.animation_has_opcode(id, anim, &[0x1b, 0x1c, 0x25, 0x26, 0x31, 0x44])
     }
 
     /// True when the animation reaches `castspell`.
@@ -628,8 +631,10 @@ impl Iscript {
                     stop = true;
                 }
                 0x31 => {
-                    // attkshiftproj <distance>
-                    let _ = self.read_u8(st);
+                    // attkshiftproj <distance>: fire the ground weapon
+                    // with its bullet `distance` px ahead of the unit.
+                    let distance = self.read_u8(st).unwrap_or(0);
+                    out.push(AnimEvent::AttackShift(distance));
                 }
                 0x32 => {
                     // tmprmgraphicstart: hide the image.

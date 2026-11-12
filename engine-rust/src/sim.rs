@@ -50,6 +50,9 @@ pub const MAX_ENERGY_UPGRADED: i32 = 250;
 /// Retail stores energy in 1/256 points (`CUnit+0xa2`), like shields and HP.
 /// Ability costs in `techdata.dat` are whole points and are scaled by this.
 pub const ENERGY_SCALE: i32 = 256;
+/// Stim Pack duration in frames: retail sets the stim timer to 37 and
+/// counts it down once every 8 frames.
+pub const STIM_FRAMES: i32 = 37 * 8;
 pub const MINERALS_PER_TRIP: i32 = 8;
 pub const GAS_PER_TRIP: i32 = 8;
 /// Retail MiningMinerals timer: `CUnit+0x54 = 0x4b` (75), written by
@@ -57,8 +60,11 @@ pub const GAS_PER_TRIP: i32 = 8;
 /// `0x5a0520`: Bunker Guard reloads `CUnit+0x54` with 0xf when it has no
 /// target and only reacquires when the counter reaches zero.
 pub const BUNKER_GUARD_RETRY_TICKS: u8 = 15;
-/// Bunkers grant their occupants one extra tile (32 px) of range.
-pub const BUNKER_GUARD_RANGE_BONUS_PX: i32 = 32;
+/// Units firing from a Bunker get 64 px of weapon range (OpenBW
+/// `weapon_max_range`: `if (u_in_bunker(u)) r += 64`).  The occupant
+/// stands at the Bunker's centre, so from the Bunker's edge this is the
+/// familiar "+1 range".
+pub const BUNKER_GUARD_RANGE_BONUS_PX: i32 = 64;
 /// `0x005cc810`: Broodlings (and dying units) receive `0x546` = 1350
 /// frames from `0x005b5e20`.  Earlier revisions used 1800 from a secondary
 /// source; the retail constant is 1350.
@@ -115,6 +121,13 @@ pub const WRAITH_CLOAK_COST_PER_TICK: i32 = 13;
 /// Medic healing: 200/256 HP restored for 100/256 energy per tick.
 pub const MEDIC_HEAL_PER_TICK: i32 = 200;
 pub const MEDIC_HEAL_COST_PER_TICK: i32 = 100;
+/// A Medic heals a patient whose box is within 30 px of its own (OpenBW
+/// `order_MedicHeal`: `unit_target_in_range(u, 30)`).
+pub const MEDIC_REACH_PX: i32 = 30;
+/// An idle Medic looks for patients within 160 px (5 tiles).  INFERENCE
+/// from OpenBW's medic target search box; falsifier: a retail recording of
+/// an idle Medic ignoring a wounded Marine 4 tiles away.
+pub const MEDIC_SEARCH_PX: i32 = 160;
 /// Update count of one Acid Spore stack.  `FUN_005dc360` writes `0x96` into
 /// the chosen one of the nine `CUnit+0x127..+0x12f` timer slots and
 /// `FUN_005dc940` decrements them once per status update.  The spore timer
@@ -2632,6 +2645,17 @@ impl World {
     /// Sensor Array and Apial Sensors *replace* the unit's sight with 11
     /// tiles; they do not add two.  The Scout's `units.dat` sight is 8, so
     /// the retail switch jumps it straight to 11.
+    /// Sight of one unit in tiles: [`Self::sight_range`], or 2 while it is
+    /// blinded by Optical Flare.
+    pub fn unit_sight_range(&self, i: usize) -> i32 {
+        let u = &self.units[i];
+        if u.status.optical_flare_ticks > 0 {
+            2
+        } else {
+            self.sight_range(u.owner, u.type_id)
+        }
+    }
+
     pub fn sight_range(&self, owner: u8, type_id: u16) -> i32 {
         let base = self.data.unit(type_id).sight_range as i32;
         let upgrade_id = match type_id {
@@ -4948,7 +4972,6 @@ impl World {
             s.stim_ticks = (s.stim_ticks - 1).max(0);
             s.psi_storm_guard = s.psi_storm_guard.saturating_sub(1);
             s.disruption_ticks = (s.disruption_ticks - 1).max(0);
-            s.optical_flare_ticks = (s.optical_flare_ticks - 1).max(0);
             s.revealed_ticks = (s.revealed_ticks - 1).max(0);
             (irradiate_due, plague_due, matrix_expired)
         };
@@ -5107,9 +5130,17 @@ impl World {
                     unit_type,
                     spawn_pos.0 / fp(1),
                     spawn_pos.1 / fp(1),
-                ) && let Some(rally) = rally
-                {
-                    self.units[new_idx].order = Order::Move { pos: rally };
+                ) {
+                    // A trained caster starts with a quarter of its maximum
+                    // energy: 50, or 62.5 with its reactor upgrade (retail
+                    // `finish_building_unit`: `energy = max_energy / 4`).
+                    if self.units[new_idx].energy_cap > 0 {
+                        let quarter = self.units[new_idx].energy_cap / 4;
+                        self.units[new_idx].set_energy_fixed(quarter);
+                    }
+                    if let Some(rally) = rally {
+                        self.units[new_idx].order = Order::Move { pos: rally };
+                    }
                 }
                 self.units[i].order = Order::Idle;
                 self.start_next_production(i);
@@ -5246,7 +5277,7 @@ impl World {
             // Already in weapon reach: stand still (walking on into the
             // target shoved both fighters across the map).
             if let Some((_, w)) = self.weapon_for(i, tidx)
-                && self.units_distance_px(i, tidx) <= w.max_range as i32
+                && self.units_distance_px(i, tidx) <= self.weapon_max_range_px(i, tidx, &w)
             {
                 return;
             }
@@ -5278,6 +5309,14 @@ impl World {
                 }
             }
             Order::AttackMove { pos } => {
+                // Retail `HealMove`: a Medic on attack-move stops for a
+                // patient; `medic_healing` walks it there and heals.
+                if self.units[i].type_id == uid::MEDIC
+                    && self.units[i].energy_fixed() >= MEDIC_HEAL_COST_PER_TICK
+                    && self.medic_pick_target(i, &[]).is_some()
+                {
+                    return;
+                }
                 if think && let Some(target) = self.acquire_target(i) {
                     self.units[i].resume_order = Some(Order::AttackMove { pos });
                     if self.units[i].type_id == uid::CARRIER {
@@ -5504,7 +5543,8 @@ impl World {
         } else {
             self.a23_ground_weapon_min_range_ok(&self.units[i], distance)
         };
-        if !self.units[i].a21_attack_range_max_gate(distance, weapon.max_range as i32) || !min_ok {
+        let max_range = self.weapon_max_range_px(i, tidx, &weapon);
+        if !self.units[i].a21_attack_range_max_gate(distance, max_range) || !min_ok {
             return false;
         }
         if self.units[i].status.disruption_ticks > 0 {
@@ -5650,8 +5690,11 @@ impl World {
             if !weapon_can_target(w, t_ty) {
                 continue;
             }
-            let d = self.distance_ids(i, other.id);
-            if d <= max_fp && best.is_none_or(|(bd, _)| d < bd) {
+            // Box-to-box distance, and the weapon's range with its upgrade
+            // (U-238 Shells, ...), as the attack itself measures it.
+            let d = self.units_distance_px(i, other_idx) * fp(1);
+            let limit = max_fp.max(self.weapon_max_range_px(i, other_idx, w) * fp(1));
+            if d <= limit && best.is_none_or(|(bd, _)| d < bd) {
                 best = Some((d, other.id));
             }
         }
@@ -5666,6 +5709,58 @@ impl World {
         let uj = &self.units[bi];
         let dx = (ui.x - uj.x) as i64;
         let dy = (ui.y - uj.y) as i64;
+        isqrt(dx * dx + dy * dy) as i32
+    }
+
+    /// Range upgrades (OpenBW `weapon_max_range`): U-238 Shells +32 for
+    /// Marines, Grooved Spines +32 for Hydralisks, Singularity Charge +64
+    /// for Dragoons, Charon Boosters +96 for the Goliath's air weapon.  The
+    /// hero versions (Fenix Dragoon, Alan Schezar) always have theirs.
+    pub fn weapon_range_bonus_px(&self, i: usize, target: usize) -> i32 {
+        let u = &self.units[i];
+        let has = |id: u8| {
+            self.players
+                .get(u.owner as usize)
+                .is_some_and(|p| p.upgrade_level(id) > 0)
+        };
+        match u.type_id {
+            uid::MARINE if has(upgrade::U238_SHELLS) => 32,
+            uid::HYDRALISK if has(upgrade::GROOVED_SPINES) => 32,
+            uid::DRAGOON if has(upgrade::SINGULARITY_CHARGE) => 64,
+            // 75 = Fenix (Dragoon).
+            75 => 64,
+            uid::GOLIATH | uid::GOLIATH_TURRET
+                if self.is_air_unit(target) && has(upgrade::CHARON_BOOSTERS) =>
+            {
+                96
+            }
+            // 17 / 18 = Alan Schezar (Goliath) and his turret.
+            17 | 18 if self.is_air_unit(target) => 96,
+            _ => 0,
+        }
+    }
+
+    /// Maximum range in pixels of `weapon` fired by unit `i` at `target`.
+    pub fn weapon_max_range_px(&self, i: usize, target: usize, weapon: &WeaponType) -> i32 {
+        weapon.max_range as i32 + self.weapon_range_bonus_px(i, target)
+    }
+
+    /// Box-to-box distance in pixels from a Bunker occupant (standing at
+    /// the Bunker's centre `(bx, by)`, 1/256 px) to `target`.
+    fn bunker_distance_px(&self, o: usize, target: usize, bx: i32, by: i32) -> i32 {
+        let a0 = self
+            .data
+            .unit(self.units[o].type_id)
+            .dimensions
+            .rect_at((bx / fp(1), by / fp(1)));
+        let t = &self.units[target];
+        let b0 = self
+            .data
+            .unit(t.type_id)
+            .dimensions
+            .rect_at((t.x / fp(1), t.y / fp(1)));
+        let dx = (b0.0 - a0.2).max(a0.0 - b0.2).max(0) as i64;
+        let dy = (b0.1 - a0.3).max(a0.1 - b0.3).max(0) as i64;
         isqrt(dx * dx + dy * dy) as i32
     }
 
@@ -6331,9 +6426,6 @@ impl World {
             if weapon_id == wid::PSIONIC_STORM && self.units[j].status.psi_storm_guard != 0 {
                 continue;
             }
-            if self.fog_of_war && !self.can_see_unit(owner, j) {
-                continue;
-            }
             let air = self.is_air_unit(j);
             if air_only && !air {
                 continue;
@@ -6348,9 +6440,23 @@ impl World {
             if !weapon_can_target_unit(weapon, &victim_ty, air) {
                 continue;
             }
-            let dx = (self.units[j].x - impact.0) as i64;
-            let dy = (self.units[j].y - impact.1) as i64;
-            let d = isqrt(dx * dx + dy * dy);
+            // Distance from the impact point to the victim's box, not to its
+            // centre (OpenBW `unit_distance_to`): a large unit is hit when
+            // any part of it is inside the ring.
+            let rect = victim_ty
+                .dimensions
+                .rect_at((self.units[j].x / fp(1), self.units[j].y / fp(1)));
+            let (ix, iy) = (impact.0 / fp(1), impact.1 / fp(1));
+            let d = if weapon_id == wid::PSIONIC_STORM {
+                // The storm keeps its recovered centre-distance rule.
+                let dx = (self.units[j].x - impact.0) as i64;
+                let dy = (self.units[j].y - impact.1) as i64;
+                isqrt(dx * dx + dy * dy)
+            } else {
+                let dx = (rect.0 - ix).max(ix - rect.2).max(0) as i64 * fp(1) as i64;
+                let dy = (rect.1 - iy).max(iy - rect.3).max(0) as i64 * fp(1) as i64;
+                isqrt(dx * dx + dy * dy)
+            };
             if d > outer {
                 continue;
             }
@@ -7424,6 +7530,7 @@ impl World {
                 melee,
                 ground,
             } => self.animation_attack(i, weapon, melee, ground),
+            AnimEvent::AttackShift(distance) => self.animation_attack_shift(i, distance),
             AnimEvent::CastSpell => self.animation_cast(i),
             AnimEvent::OrderDone(_) => {
                 let blocked = self.units[i]
@@ -7484,6 +7591,44 @@ impl World {
             self.fire(i, tidx, weapon_id, &w);
         }
         self.units[i].attacks_fired = self.units[i].attacks_fired.saturating_add(1);
+    }
+
+    /// `attkshiftproj`: one bullet of the ground weapon `distance` px ahead
+    /// of the attacker, along the line to its target.  The Firebat's attack
+    /// runs it three times (24, 52 and 80 px): each flame is an enemy-only
+    /// splash of the full weapon damage, so a target next to the Firebat is
+    /// burnt by the first two.
+    fn animation_attack_shift(&mut self, i: usize, distance: u8) {
+        let Some(tidx) = self.units[i].target.and_then(|t| self.index_of(t)) else {
+            return;
+        };
+        if !self.units[tidx].alive {
+            return;
+        }
+        let ty = self.data.unit(self.units[i].type_id).clone();
+        let Some(w) = self.data.ground_weapon(&ty).cloned() else {
+            return;
+        };
+        let weapon_id = ty.ground_weapon;
+        self.units[i].cooldown = self.modified_cooldown(i, &w);
+        self.units[i].attacks_fired = self.units[i].attacks_fired.saturating_add(1);
+        if self.units[i].status.hallucination {
+            return;
+        }
+        let (ax, ay) = (self.units[i].x, self.units[i].y);
+        let (dx, dy) = (
+            (self.units[tidx].x - ax) as i64,
+            (self.units[tidx].y - ay) as i64,
+        );
+        let len = isqrt(dx * dx + dy * dy).max(1);
+        let reach = distance as i64 * fp(1) as i64;
+        let impact = (
+            ax + (dx * reach / len) as i32,
+            ay + (dy * reach / len) as i32,
+        );
+        let owner = self.units[i].owner;
+        let target_id = self.units[tidx].id;
+        self.resolve_hit_type(owner, Some(target_id), i, weapon_id, &w, impact, 1, 1);
     }
 
     fn animation_cast(&mut self, i: usize) {
@@ -8385,6 +8530,11 @@ impl World {
         if !caster_can_cast(self.units[i].type_id, spell) {
             return Err(SimError::Unsupported);
         }
+        // Stim Packs cost 10 hit points and are refused at 10 or fewer
+        // (OpenBW `Stimpacks`: `if (u->hp <= 10_fp8) return`).
+        if spell == Spell::StimPacks && self.units[i].hp <= fp(10) {
+            return Err(SimError::InvalidTarget);
+        }
         // `0x005cbea0` validates the target through `FUN_0059ca70` before
         // reading and spending the techdata energy.  A rejected target must
         // therefore leave the energy pool untouched.
@@ -8411,7 +8561,16 @@ impl World {
                     return Err(SimError::InvalidTarget);
                 }
             }
-            if let Some(weapon) = spell.weapon_id() {
+            // Optical Flare blinds any unit, air included (its weapons.dat
+            // row says ground only, but the tech is not gated by it: the
+            // classic use is on Observers and Overlords); only buildings
+            // are refused.
+            if spell == Spell::OpticalFlare && self.data.unit(self.units[t].type_id).is_building() {
+                return Err(SimError::InvalidTarget);
+            }
+            if let Some(weapon) = spell.weapon_id()
+                && spell != Spell::OpticalFlare
+            {
                 let info = WeaponTarget {
                     unit: self.data.unit(self.units[t].type_id),
                     owner: self.units[t].owner,
@@ -8442,7 +8601,10 @@ impl World {
         }
         // Lurker Aspect is a unit morph, not an energy ability; the techdata
         // energy column is unused for it.
-        let cost = if spell == Spell::LurkerAspect {
+        // Switching a cloak off is free; only cloaking costs energy.
+        let decloak = matches!(spell, Spell::CloakingField | Spell::PersonnelCloaking)
+            && self.units[i].status.cloaked;
+        let cost = if spell == Spell::LurkerAspect || decloak {
             0
         } else {
             spell_energy_cost(&self.data, spell)
@@ -8516,7 +8678,7 @@ impl World {
             Spell::StimPacks => {
                 let hp = self.units[caster].hp;
                 self.units[caster].hp = (hp - fp(10)).max(1);
-                self.units[caster].status.stim_ticks = 336;
+                self.units[caster].status.stim_ticks = STIM_FRAMES;
             }
             Spell::TankSiegeMode => {
                 self.order_siege(caster, self.units[caster].type_id == uid::SIEGE_TANK);
@@ -8770,9 +8932,10 @@ impl World {
                 }
             }
             Spell::Healing => {
+                // The Heal command only names the patient: the Medic then
+                // walks to it and heals it at the normal rate.
                 if let Some(t) = target_idx {
-                    let max = self.data.unit(self.units[t].type_id).hit_points_raw as i32;
-                    self.units[t].hp = (self.units[t].hp + fp(20)).min(max);
+                    self.units[caster].target = Some(self.units[t].id);
                 }
             }
             Spell::Lockdown => {
@@ -8875,14 +9038,23 @@ impl World {
     fn set_cloak_unrecorded(&mut self, unit_id: u32, cloaked: bool) -> Result<(), SimError> {
         let i = self.index_of(unit_id).ok_or(SimError::BadUnit)?;
         let owner = self.units[i].owner as usize;
-        let tech_id = match self.units[i].type_id {
-            uid::GHOST => tech_id::PERSONNEL_CLOAKING,
-            uid::WRAITH => tech_id::CLOAKING_FIELD,
+        let (tech_id, spell) = match self.units[i].type_id {
+            t if is_ghost_type(t) => (tech_id::PERSONNEL_CLOAKING, Spell::PersonnelCloaking),
+            uid::WRAITH => (tech_id::CLOAKING_FIELD, Spell::CloakingField),
             _ => return Err(SimError::Unsupported),
         };
         let hero = self.data.unit(self.units[i].type_id).flags & 0x40 != 0;
         if cloaked && !self.players[owner].has_tech(tech_id) && !hero {
             return Err(SimError::MissingTech);
+        }
+        // Cloaking costs the techdata energy (25); decloaking is free.
+        if cloaked
+            && !self.units[i].status.cloaked
+            && !self.players[owner].cheats.infinite_energy
+            && !self.units[i]
+                .spend_energy_fixed(spell_energy_cost(&self.data, spell) * ENERGY_SCALE)
+        {
+            return Err(SimError::NotEnoughEnergy);
         }
         self.units[i].status.cloaked = cloaked;
         Ok(())
@@ -9699,11 +9871,14 @@ impl World {
                     if !weapon_can_target(&w, ty) {
                         continue;
                     }
-                    let dx = self.units[j].x - bx;
-                    let dy = self.units[j].y - by;
-                    let dist = isqrt(dx as i64 * dx as i64 + dy as i64 * dy as i64) as i32;
-                    let max_range = (w.max_range as i32 + BUNKER_GUARD_RANGE_BONUS_PX) * fp(1);
-                    if dist <= max_range && dist >= w.min_range as i32 * fp(1) {
+                    let dist = self.bunker_distance_px(o, j, bx, by);
+                    let max_range =
+                        self.weapon_max_range_px(o, j, &w) + BUNKER_GUARD_RANGE_BONUS_PX;
+                    // The nearest legal target, not the last one scanned.
+                    if dist <= max_range
+                        && dist >= w.min_range as i32
+                        && best.is_none_or(|(bd, _)| dist < bd)
+                    {
                         best = Some((dist, self.units[j].id));
                     }
                 }
@@ -9747,54 +9922,124 @@ impl World {
         if !weapon_can_target(&w, self.data.unit(self.units[ti].type_id)) {
             return;
         }
-        let dx = self.units[ti].x - bx;
-        let dy = self.units[ti].y - by;
-        let dist = isqrt(dx as i64 * dx as i64 + dy as i64 * dy as i64) as i32;
-        let max_range = (w.max_range as i32 + BUNKER_GUARD_RANGE_BONUS_PX) * fp(1);
-        if dist > max_range || dist < w.min_range as i32 * fp(1) {
+        let dist = self.bunker_distance_px(o, ti, bx, by);
+        let max_range = self.weapon_max_range_px(o, ti, &w) + BUNKER_GUARD_RANGE_BONUS_PX;
+        if dist > max_range || dist < w.min_range as i32 {
             return;
         }
+        let (dx, dy) = (self.units[ti].x - bx, self.units[ti].y - by);
         self.units[o].facing = direction_byte(dx, dy);
         self.fire(o, ti, wid, &w);
     }
 
-    /// Medics automatically heal the nearest injured organic friendly unit.
-    /// The retail unit spends energy per point healed; this rules-level
-    /// version uses one energy for two hit points.
+    /// Whether `medic` may heal `j` (OpenBW `medic_can_heal_target`): a
+    /// living, wounded, organic, non-building ally that is not the Medic
+    /// itself and is not loaded in a transport or Bunker.
+    fn medic_can_heal(&self, medic: usize, j: usize) -> bool {
+        let t = &self.units[j];
+        let ty = self.data.unit(t.type_id);
+        j != medic
+            && t.alive
+            && t.in_transport.is_none()
+            && !t.in_bunker
+            && !t.invincible
+            && !self.is_enemy(self.units[medic].owner, t.owner)
+            && ty.is_organic()
+            && !ty.is_building()
+            && t.hp < ty.hit_points_raw as i32
+    }
+
+    /// The unit a Medic is (or will be) healing: its current target while
+    /// that stays healable, else the nearest healable unit whose box is
+    /// within [`MEDIC_SEARCH_PX`] and that no other Medic has taken.
+    fn medic_pick_target(&self, i: usize, taken: &[usize]) -> Option<usize> {
+        if let Some(t) = self.units[i].target.and_then(|t| self.index_of(t))
+            && self.medic_can_heal(i, t)
+            && !taken.contains(&t)
+        {
+            return Some(t);
+        }
+        (0..self.units.len())
+            .filter(|&j| self.medic_can_heal(i, j) && !taken.contains(&j))
+            .map(|j| (self.units_distance_px(i, j), j))
+            .filter(|(d, _)| *d <= MEDIC_SEARCH_PX)
+            .min()
+            .map(|(_, j)| j)
+    }
+
+    /// True while Medic `i` stands in reach of its heal target with the
+    /// energy to heal it (the renderer plays the heal animation then).
+    pub fn medic_is_healing(&self, i: usize) -> bool {
+        let Some(u) = self.units.get(i) else {
+            return false;
+        };
+        u.alive
+            && u.type_id == uid::MEDIC
+            && u.energy_fixed() >= MEDIC_HEAL_COST_PER_TICK
+            && u.target.and_then(|t| self.index_of(t)).is_some_and(|t| {
+                self.medic_can_heal(i, t) && self.units_distance_px(i, t) <= MEDIC_REACH_PX
+            })
+    }
+
+    /// Medics heal wounded organic allies: 200/256 hit points for 100/256
+    /// energy per frame, one Medic per patient.  An idle Medic (or one on
+    /// attack-move, retail `HealMove`) walks to a patient within
+    /// [`MEDIC_SEARCH_PX`]; on hold position it only heals what it can
+    /// reach.  A Medic inside a transport or Bunker does nothing.
     fn medic_healing(&mut self) {
+        let mut taken: Vec<usize> = Vec::new();
         for i in 0..self.units.len() {
             if !self.units[i].alive
                 || self.units[i].type_id != uid::MEDIC
-                || self.units[i].energy_fixed() < MEDIC_HEAL_COST_PER_TICK
-                // Translation batch 08 (`0x005c4da0`): hold-position idle.
-                || (!matches!(self.units[i].order, Order::Idle)
-                    && !self.units[i].a08_is_hold_position_idle())
+                || self.units[i].in_transport.is_some()
+                || self.units[i].in_bunker
+                || self.units[i].status.lockdown_ticks > 0
+                || self.units[i].status.stasis_ticks > 0
+                || self.units[i].status.maelstrom_ticks > 0
             {
                 continue;
             }
-            let owner = self.units[i].owner;
-            let mut best: Option<(i32, usize)> = None;
-            for j in 0..self.units.len() {
-                let ty = self.data.unit(self.units[j].type_id);
-                if !self.units[j].alive
-                    || self.is_enemy(owner, self.units[j].owner)
-                    || !ty.is_organic()
-                    || ty.is_building()
-                    || self.units[j].hp >= ty.hit_points_raw as i32
-                {
+            let hold = self.units[i].a08_is_hold_position_idle();
+            let roaming = matches!(self.units[i].order, Order::Idle | Order::AttackMove { .. });
+            if !hold && !roaming {
+                continue;
+            }
+            if self.units[i].energy_fixed() < MEDIC_HEAL_COST_PER_TICK {
+                self.units[i].target = None;
+                continue;
+            }
+            let Some(target) = self.medic_pick_target(i, &taken) else {
+                self.units[i].target = None;
+                continue;
+            };
+            let dist = self.units_distance_px(i, target);
+            if dist > MEDIC_REACH_PX {
+                if hold {
+                    self.units[i].target = None;
                     continue;
                 }
-                let d = self.distance(i, j);
-                if d <= fp(64) && best.is_none_or(|(bd, _)| d < bd) {
-                    best = Some((d, j));
-                }
+                // Walk up to the patient.
+                self.units[i].target = Some(self.units[target].id);
+                taken.push(target);
+                let (tx, ty) = (self.units[target].x / fp(1), self.units[target].y / fp(1));
+                self.move_towards(i, (tx, ty), fp(8));
+                continue;
             }
-            if let Some((_, target)) = best {
-                let max = self.data.unit(self.units[target].type_id).hit_points_raw as i32;
-                let healed = MEDIC_HEAL_PER_TICK.min(max - self.units[target].hp);
-                if healed > 0 && self.units[i].spend_energy_fixed(MEDIC_HEAL_COST_PER_TICK) {
-                    self.units[target].hp += healed;
-                }
+            self.units[i].target = Some(self.units[target].id);
+            taken.push(target);
+            self.units[i].path.clear();
+            self.units[i].path_goal = None;
+            let (dx, dy) = (
+                self.units[target].x - self.units[i].x,
+                self.units[target].y - self.units[i].y,
+            );
+            if dx != 0 || dy != 0 {
+                self.units[i].facing = direction_byte(dx, dy);
+            }
+            let max = self.data.unit(self.units[target].type_id).hit_points_raw as i32;
+            let healed = MEDIC_HEAL_PER_TICK.min(max - self.units[target].hp);
+            if healed > 0 && self.units[i].spend_energy_fixed(MEDIC_HEAL_COST_PER_TICK) {
+                self.units[target].hp += healed;
             }
         }
     }
@@ -9812,10 +10057,26 @@ fn direction_vector(direction: i32) -> (i32, i32) {
     )
 }
 
+/// Marine and its hero (20 = Jim Raynor).
+pub fn is_marine_type(type_id: u16) -> bool {
+    matches!(type_id, uid::MARINE | 20)
+}
+
+/// Firebat and its hero (10 = Gui Montag).
+pub fn is_firebat_type(type_id: u16) -> bool {
+    matches!(type_id, uid::FIREBAT | 10)
+}
+
+/// Ghost and its heroes (16 Sarah Kerrigan, 99 Samir Duran, 100 Alexei
+/// Stukov, 104 Infested Duran).
+pub fn is_ghost_type(type_id: u16) -> bool {
+    matches!(type_id, uid::GHOST | 16 | 99 | 100 | 104)
+}
+
 fn caster_can_cast(type_id: u16, spell: Spell) -> bool {
     match spell {
-        Spell::StimPacks => matches!(type_id, uid::MARINE | uid::FIREBAT),
-        Spell::Lockdown => type_id == uid::GHOST,
+        Spell::StimPacks => is_marine_type(type_id) || is_firebat_type(type_id),
+        Spell::Lockdown => is_ghost_type(type_id),
         Spell::EmpShockwave | Spell::DefensiveMatrix | Spell::Irradiate => {
             type_id == uid::SCIENCE_VESSEL
         }
@@ -9825,7 +10086,7 @@ fn caster_can_cast(type_id: u16, spell: Spell) -> bool {
         Spell::TankSiegeMode => matches!(type_id, uid::SIEGE_TANK | uid::SIEGE_MODE),
         Spell::YamatoGun => type_id == uid::BATTLECRUISER,
         Spell::CloakingField => type_id == uid::WRAITH,
-        Spell::PersonnelCloaking => type_id == uid::GHOST,
+        Spell::PersonnelCloaking => is_ghost_type(type_id),
         Spell::Burrowing => matches!(
             type_id,
             uid::DRONE
@@ -10958,13 +11219,20 @@ mod tests {
         // 25 ticks * 10/256 drained, no +8 regen while cloaked.
         assert_eq!(
             w.units[ghost].energy_fixed(),
-            MAX_ENERGY * ENERGY_SCALE - 25 * GHOST_CLOAK_COST_PER_TICK
+            // 25 energy to cloak (techdata), then the drain.
+            MAX_ENERGY * ENERGY_SCALE - 25 * ENERGY_SCALE - 25 * GHOST_CLOAK_COST_PER_TICK
         );
         assert!(w.units[ghost].status.cloaked);
 
         let wraith = w.spawn(0, uid::WRAITH, 20, 20).unwrap();
         w.players[0].techs[tech_id::CLOAKING_FIELD as usize] = true;
+        // Under the 25-energy cost the cloak is refused.
         w.units[wraith].set_energy_fixed(1000);
+        assert_eq!(
+            w.set_cloak(w.units[wraith].id, true),
+            Err(SimError::NotEnoughEnergy)
+        );
+        w.units[wraith].set_energy_fixed(1000 + 25 * ENERGY_SCALE);
         w.set_cloak(w.units[wraith].id, true).unwrap();
         w.step();
         assert_eq!(
