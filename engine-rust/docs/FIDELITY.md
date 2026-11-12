@@ -87,8 +87,18 @@ Checked against the retail data (iscript 84, `weapons.dat` rows 13 / 14,
 | sight | 7 tiles | matches |
 | collision | a gathering worker collides only with buildings | **fixed**: `World::is_gathering` units are skipped by `resolve_collisions` |
 
-Still approximate: the construction walk (the SCV changes spot every 48
-ticks at a hashed point of the building's edge; retail picks random points),
-the 93-frame mining dwell (75 in retail plus an unmodelled wait) and the exit
-position after gas (retail places the worker at the building's edge towards
-the depot).
+
+| aspect | retail | engine |
+|---|---|---|
+| gas exit | the worker reappears on the building's edge towards its depot | **fixed**: `World::place_at_gas_exit` |
+| building stages | scaffold frames 0 / 1 / 2 then AlmostBuilt; the Refinery uses its own frames 1 / 2 / 3 / 4 | **fixed**: SD now draws the stages too, and the Refinery (construction image 0) runs them on its own image |
+
+Checked on screen (HD and `--sd`, scripted sessions on a melee map): mining
+pose and spark, mineral chunk and gas tank, worker hidden inside the
+Refinery and its exit side, welding with sparks, the construction stages.
+
+Measured rather than derived: the mining dwell is the 93 frames recorded
+from the retail game (75-frame timer plus the wait around it,
+`tests/economy_original.rs`), and the welding walk follows the Boot Camp
+recording (the SCV works the left, front and right edges, changing spot);
+retail draws those spots from its RNG, so the exact sequence differs.

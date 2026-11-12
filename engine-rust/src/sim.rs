@@ -7731,6 +7731,55 @@ impl World {
         self.units[i].carry_kind = kind;
         self.units[i].resource_target = Some(resource);
         self.units[i].order = Order::ReturnCargo { depot: 0 };
+        if gas {
+            self.place_at_gas_exit(i, ridx);
+        }
+    }
+
+    /// Retail `order_HarvestGas`: the worker that was hidden inside the gas
+    /// building reappears on the building's edge, on the side of the depot it
+    /// will return to, already facing it.
+    fn place_at_gas_exit(&mut self, i: usize, ridx: usize) {
+        let Some(d) = self.nearest_depot(i) else {
+            return;
+        };
+        let (rx, ry) = (self.units[ridx].x / fp(1), self.units[ridx].y / fp(1));
+        let (dx, dy) = (
+            (self.units[d].x / fp(1) - rx) as i64,
+            (self.units[d].y / fp(1) - ry) as i64,
+        );
+        if dx == 0 && dy == 0 {
+            return;
+        }
+        let rd = self.data.unit(self.units[ridx].type_id).dimensions;
+        let wd = self.data.unit(self.units[i].type_id).dimensions;
+        // Half extents of the building's box grown by the worker's own.
+        let hw = (if dx >= 0 {
+            rd.right + wd.left
+        } else {
+            rd.left + wd.right
+        }) as i64
+            + 1;
+        let hh = (if dy >= 0 {
+            rd.bottom + wd.top
+        } else {
+            rd.top + wd.bottom
+        }) as i64
+            + 1;
+        // Where the line to the depot leaves that box.
+        let (ex, ey) = if dx.abs() * hh >= dy.abs() * hw {
+            (hw * dx.signum(), dy * hw / dx.abs())
+        } else {
+            (dx * hh / dy.abs(), hh * dy.signum())
+        };
+        let (nx, ny) = (rx + ex as i32, ry + ey as i32);
+        if self.terrain.walkable_px(nx, ny) {
+            self.units[i].x = nx * fp(1);
+            self.units[i].y = ny * fp(1);
+            self.units[i].path.clear();
+            self.units[i].path_goal = None;
+        }
+        self.units[i].facing = direction_byte(dx as i32, dy as i32);
     }
 
     fn order_return(&mut self, i: usize, depot: u32) {

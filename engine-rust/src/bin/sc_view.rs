@@ -4538,6 +4538,10 @@ const GROUP_BOX_HERO: usize = 19;
 /// iscript animation of a Terran building past its scaffold.
 const ALMOST_BUILT_ANIM: usize = 15;
 
+/// iscript animations of the three early construction stages: Init,
+/// SpecialState1, SpecialState2 (then AlmostBuilt).
+const CONSTRUCTION_STAGE_ANIMS: [usize; 3] = [0, 13, 14];
+
 /// How an unfinished Terran building is drawn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ConstructionStage {
@@ -4557,7 +4561,14 @@ fn terran_construction_stage(
     u: &SimUnit,
     ty: &galaxycraft::data::UnitType,
 ) -> Option<ConstructionStage> {
-    if u.completed || !ty.is_building() || !(325..=330).contains(&ty.construction_image) {
+    // The Refinery has no scaffold (`units.dat` construction image 0): it
+    // runs the same stages on its own image (iscript 125: Init frame 1,
+    // SpecialState1 frame 2, SpecialState2 frame 3, AlmostBuilt frame 4).
+    let own_stages = u.type_id == galaxycraft::ids::unit::REFINERY;
+    if u.completed
+        || !ty.is_building()
+        || !((325..=330).contains(&ty.construction_image) || own_stages)
+    {
         return None;
     }
     let total = u.build_total.max(1) as i64;
@@ -18507,6 +18518,55 @@ impl App {
             };
             (self.data.unit(u.type_id).elevation, y)
         });
+        // SD: a Terran building under construction shows its scaffold
+        // (`units.dat` construction image) and then its AlmostBuilt frame,
+        // at the same progress marks as the HD path.
+        let mut building_stage: std::collections::HashMap<
+            usize,
+            (std::rc::Rc<galaxycraft::render::Grp>, usize),
+        > = std::collections::HashMap::new();
+        if !hd {
+            for &i in &order {
+                let (type_id, stage) = {
+                    let u = &self.world.units[i];
+                    (
+                        u.type_id,
+                        terran_construction_stage(u, self.data.unit(u.type_id)),
+                    )
+                };
+                let pick = match stage {
+                    Some(ConstructionStage::Scaffold(n))
+                        if self.data.unit(type_id).construction_image == 0 =>
+                    {
+                        galaxycraft::unit_anim::unit_image(&self.data, type_id).map(|img| {
+                            (
+                                img,
+                                self.first_frame_of(img, CONSTRUCTION_STAGE_ANIMS[n.min(2)])
+                                    .unwrap_or(0),
+                            )
+                        })
+                    }
+                    Some(ConstructionStage::Scaffold(n)) => {
+                        Some((self.data.unit(type_id).construction_image, n))
+                    }
+                    Some(ConstructionStage::AlmostBuilt) => {
+                        galaxycraft::unit_anim::unit_image(&self.data, type_id).map(|img| {
+                            (
+                                img,
+                                self.first_frame_of(img, ALMOST_BUILT_ANIM).unwrap_or(0),
+                            )
+                        })
+                    }
+                    None => None,
+                };
+                if let Some((image, frame)) = pick
+                    && let Some(grp) = self.sd_image_grp(image)
+                    && grp.frame(frame).is_some()
+                {
+                    building_stage.insert(i, (grp, frame));
+                }
+            }
+        }
         let mut hd_units = Vec::new();
         for i in order {
             let u = &self.world.units[i];
@@ -18529,7 +18589,15 @@ impl App {
                 .then(|| self.animator.unit_frame(u.id))
                 .flatten();
             let facing = self.rendered_facing(u);
-            if !self
+            if let Some((grp, frame)) = building_stage.get(&i) {
+                galaxycraft::render::draw_grp_centered(
+                    fb,
+                    grp,
+                    *frame,
+                    self.sprites.palette(),
+                    (sx, sy),
+                );
+            } else if !self
                 .sprites
                 .draw_unit_turned(fb, u, (sx, sy), self.world.tick, pose, facing)
             {
@@ -18539,7 +18607,10 @@ impl App {
                 let r = ((ty.dimensions.right - ty.dimensions.left) as i32 / 2).max(12) + 4;
                 fb.circle_outline(sx, sy, r, Rgb::new(80, 255, 80));
             }
-            if selected || u.owner as usize == self.local_player {
+            // Neutral resources are stored under player 0: no bar on them
+            // unless selected.
+            let neutral = u.is_resource() || u.type_id == galaxycraft::ids::unit::VESPENE_GEYSER;
+            if selected || (u.owner as usize == self.local_player && !neutral) {
                 self.sprites.draw_health(fb, u, &self.data, (sx, sy));
             }
         }
@@ -19000,6 +19071,11 @@ impl App {
         let mut layer_list = self.hd_unit_layers(u.type_id, u.is_completed_building(&self.data));
         if let Some(stage) = terran_construction_stage(u, ty) {
             match stage {
+                ConstructionStage::Scaffold(n) if ty.construction_image == 0 => {
+                    frame = self
+                        .first_frame_of(image_id, CONSTRUCTION_STAGE_ANIMS[n.min(2)])
+                        .unwrap_or(frame);
+                }
                 ConstructionStage::Scaffold(n) => {
                     if let Some(si) = fetch(ty.construction_image) {
                         image_id = ty.construction_image;

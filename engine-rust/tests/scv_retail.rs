@@ -119,7 +119,7 @@ fn an_scv_inside_a_refinery_is_hidden_and_comes_out_with_a_gas_tank() {
     let (sid, rid) = (w.units[scv].id, w.units[refinery].id);
     w.issue(sid, Order::Gather { resource: rid }).unwrap();
     let mut anim = Animator::default();
-    let (mut inside, mut tank) = (0, false);
+    let (mut inside, mut tank, mut exit_checked) = (0, false, false);
     for _ in 0..800 {
         w.step();
         anim.advance(&w);
@@ -130,6 +130,18 @@ fn an_scv_inside_a_refinery_is_hidden_and_comes_out_with_a_gas_tank() {
         }
         if w.units[scv].carry_kind == CarryKind::Gas {
             assert!(!w.inside_gas_building(scv), "out again with its load");
+            if !exit_checked {
+                exit_checked = true;
+                // The depot is to the left: the worker reappears on the
+                // refinery's left edge, level with it, facing west (192).
+                let (r, u) = (&w.units[refinery], &w.units[scv]);
+                assert!(
+                    u.x < r.x && (u.y - r.y).abs() < 4 * 256,
+                    "{:?}",
+                    (u.x / 256, u.y / 256)
+                );
+                assert_eq!(u.facing, 192);
+            }
             tank |= anim.carry_overlays(&w).iter().any(|o| o.image == 403);
         }
         if w.players[0].gas_gathered > 0 {
@@ -226,4 +238,48 @@ fn an_scv_welding_its_building_loops_the_cutter_animation_facing_it() {
     assert!(welding_ticks > 50, "welded for {welding_ticks} ticks");
     assert!(frames.contains(&34) && frames.contains(&17), "{frames:?}");
     assert!(sparks > 0);
+}
+
+#[test]
+fn an_scv_builds_a_refinery_on_a_geyser_and_then_gathers_from_it() {
+    let mut w = world();
+    w.players[0].minerals = 500;
+    let cc = w.spawn_px(0, uid::COMMAND_CENTER, 400, 400).unwrap();
+    w.units[cc].completed = true;
+    let geyser = w.spawn_px(0, uid::VESPENE_GEYSER, 720, 400).unwrap();
+    w.units[geyser].resource_amount = 5000;
+    let scv = w.spawn_px(0, uid::SCV, 560, 400).unwrap();
+    let sid = w.units[scv].id;
+    let (gx, gy) = (w.units[geyser].x / 256, w.units[geyser].y / 256);
+    w.issue(
+        sid,
+        Order::Build {
+            unit_type: uid::REFINERY,
+            pos: (gx, gy),
+        },
+    )
+    .unwrap();
+    for _ in 0..3000 {
+        w.step();
+        if w.units
+            .iter()
+            .any(|u| u.alive && u.type_id == uid::REFINERY && u.completed)
+        {
+            break;
+        }
+    }
+    let refinery = w
+        .units
+        .iter()
+        .find(|u| u.alive && u.type_id == uid::REFINERY && u.completed)
+        .map(|u| u.id)
+        .expect("the refinery is built on the geyser");
+    w.issue(sid, Order::Gather { resource: refinery }).unwrap();
+    for _ in 0..800 {
+        w.step();
+        if w.players[0].gas_gathered > 0 {
+            break;
+        }
+    }
+    assert_eq!(w.players[0].gas_gathered, 8);
 }
