@@ -19,3 +19,23 @@ is fixed.
   already refuses them in LAN games (`apply_cheat_code` in
   `engine-rust/src/bin/sc_view.rs`).  Expected: enabled in single player and
   Play Custom, ignored in multiplayer, as in retail.
+
+## Infantry (Marine, Firebat, Ghost, Medic), 2026-11-12
+
+Checked against the OpenBW source (`bwgame.h`, `actions.h`) on 2026-11-12:
+Stim Packs, range upgrades, Bunker +64, cloak cost and drain, starting
+energy, Medic heal rules and search square, Ghost paint range, the nuke's
+90 / 45 frame timers and 320 px drop, splash rings measured to unit boxes,
+`attkshiftproj`, Lockdown 131, blind / restore.  What is still open:
+
+- **Cloak look.**  Retail distorts cloaked units through the palette; the
+  client fades them (`render::CLOAK_KEEP`) in SD and HD.
+- **Annoyed-line threshold.**  The client plays three "what?" lines and
+  the annoyed ones from the fourth click (`voice::WHAT_CLICKS`, an
+  inference); a fan wiki says "five or more" clicks.  Needs a check against
+  the real game.
+- **Voice lines** for selection and orders are picked at random, from
+  memory of the retail behaviour.  OpenBW has no voice logic and a web
+  search (2026-11-12) found no source for the exact rule; the annoyed lines
+  after repeated clicks are confirmed to exist (Blizzard, "The Sounds of
+  Koprulu").

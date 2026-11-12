@@ -102,3 +102,42 @@ from the retail game (75-frame timer plus the wait around it,
 `tests/economy_original.rs`), and the welding walk follows the Boot Camp
 recording (the SCV works the left, front and right edges, changing spot);
 retail draws those spots from its RNG, so the exact sequence differs.
+
+## Unit by unit: Marine, Firebat, Ghost, Medic (2026-11-12)
+
+Method: `UNIT-FIDELITY-METHOD.md`.  Tests: `tests/infantry_retail.rs`.
+Checked on screen in HD and SD: Marine gunfire, Firebat flame, Medic heal
+glow, Ghost cloak fade.
+
+| unit | aspect | retail | engine |
+|---|---|---|---|
+| all | stats | units.dat / weapons.dat | matches (asserted) |
+| all | weapon range | between unit boxes; U-238 Shells +32 (also Grooved Spines, Singularity Charge, Charon Boosters) | **fixed**: the upgrades did nothing; acquisition and attack both use boxes |
+| all | Bunker | +64 px from an occupant at the centre; SCVs, Civilians and heroes may enter; an SCV does not fire | **fixed** (+32 from centre, last target scanned, four types only) |
+| all | voices | 1 ready, 4 what, 4 yes, 7 annoyed lines (Ghost 4); annoyed lines after repeated clicks | matches (asserted against sfxdata.tbl) |
+| Marine / Firebat | Stim Pack | 10 hp, refused at 10 hp or fewer, 37 x 8 frames, heroes too, sound 278 / 279 | **fixed** (allowed at any hp, 336 frames, no heroes, no sound, bypassed the network queue) |
+| Firebat | attack | `attkshiftproj` 24 / 52 / 80: three flames, each an 8 damage enemy-only splash 15 / 20 / 25 px from the victim's box; flame overlay `imgol 421` | **fixed**: the opcode was ignored (one hit at the target); the invisible `circle14` bullet was drawn as a white disc; a stale path hid the flame |
+| Ghost | cloak | 25 energy to cloak, free to decloak, hidden from enemies without a detector | **fixed** (was free; enemies saw it with fog off); drawn faded for players who can see it |
+| Ghost | Lockdown | missile (weapons.dat row 32), 131 updates on landing, mechanical only | **fixed** (was instant); field overlay 361..363 |
+| Ghost | Nuclear Strike | silo builds the missile (200 / 200, build time 1500); Ghost paints from its sight range; damage max(500, 2/3 hp) in rings 128 / 192 / 256 | **fixed** (missile was free and instant for players, no range, flat 128 px) |
+| Medic | heal | 200/256 hp for 100/256 energy per frame, patient within 30 px, one Medic per patient, never itself, not from a transport or Bunker, walks to patients, stops on attack-move | **fixed** (64 px centre range, healed itself, never walked, instant +20 Heal command) |
+| Medic | orders | `orderdone` clears a signal bit | **fixed**: the Medic dropped every order when it started to walk |
+| Medic | Optical Flare | permanent, sight 2, no detection, any non-building unit | **fixed** (600 frames, no effect on sight, refused air units) |
+| Medic | Restoration | removes lockdown, flare, irradiate, plague, ensnare, parasite, acid spores | matches; effect and sound added |
+| casters | energy | trained units start with a quarter of the maximum | **fixed** (started full) |
+| all (melee) | attack loop | repeat after `gotorepeatattk`; stand still in reach | **fixed** with the SCV |
+| all | instant bullets | damage on the bullet script's `domissiledmg`: 2 frames after firing for the Gauss Rifle, C-10 and Fusion Cutter, 7 for the Flame Thrower | **fixed** (`World::instant_hit_delay`, was immediate) |
+| Ghost | acquisition | a cloaked Ghost does not auto-attack unless on hold position | **fixed** |
+| all | voices | "what" and "yes" lines picked at random, annoyed lines in order | **fixed** (was cycling) |
+
+| Medic | Optical Flare delivery | a bullet that follows its target (weapons.dat row 107) | **fixed** (was instant) |
+| Ghost | nuclear missile | a unit that leaves the silo, climbs for 90 frames, is off the map for 250 (WarpIn), falls on the target and explodes (`imgol 428`, `sprol 267`); 8 supply while stored | **fixed** (was a 90-frame countdown and a fast bullet: the bomb landed about 10 s early, with no missile and no explosion) |
+| Ghost | nuclear missile motion | starts its climb and its fall from rest, acceleration 33, top speed 8533 (flingy 109) | **fixed** |
+| all (SD) | glow images (draw function 9) | drawn through the tileset's remap table (`ofire` / `gfire` / `bfire` / `bexpl`) | **fixed**: SD reads the tables from the install (was a tint approximation) |
+| Medic | Restoration delivery | lands with its bullet, 7 frames after the cast | **fixed** (was instant) |
+| other | Psionic Storm | 48 px from the victim's box | **fixed** (was centre distance) |
+
+The rules marked OpenBW were read from its source (`bwgame.h`,
+`actions.h`) on 2026-11-12, not recalled.
+
+Open doubts are in `pending.md`.

@@ -341,7 +341,12 @@ impl World {
                 continue;
             }
             let ty = self.data.unit(u.type_id);
-            let range = self.sight_range(u.owner, u.type_id);
+            let range = if u.status.optical_flare_ticks > 0 {
+                // Blinded by Optical Flare: sight 2.
+                2
+            } else {
+                self.sight_range(u.owner, u.type_id)
+            };
             if range <= 0 {
                 continue;
             }
@@ -449,7 +454,11 @@ impl World {
                 continue;
             }
             let dty = self.data.unit(detector.type_id);
-            if !dty.is_detector() || detector.status.hallucination {
+            // A blinded unit (Optical Flare) no longer detects.
+            if !dty.is_detector()
+                || detector.status.hallucination
+                || detector.status.optical_flare_ticks > 0
+            {
                 continue;
             }
             // `detector.x`/`target.x` are 1/256-pixel values, so scale the

@@ -2657,6 +2657,10 @@ struct App {
     /// SD GRPs of free-standing images (bullets, explosions, fire) for the
     /// SD view, read from the install on first use.
     sd_image_grps: std::collections::HashMap<u16, Option<std::rc::Rc<galaxycraft::render::Grp>>>,
+    /// Retail remap tables of the current tileset (`ofire` 1, `gfire` 2,
+    /// `bfire` 3, `bexpl` 4), read from the install on first use.
+    remap_tables:
+        std::collections::HashMap<(u16, u8), Option<std::rc::Rc<galaxycraft::render::RemapTable>>>,
     /// Mixer gains last sent to the audio thread.
     volumes_sent: Option<(f32, f32)>,
     /// Left edge of the 16:9 content box (pillarbox offset).
@@ -6279,13 +6283,22 @@ fn script_key(name: &str) -> Key {
     }
 }
 
+/// A pseudo-random voice take (presentation only: seeded from the clock and
+/// the previous value, never from the simulation's RNG).
+fn random_take(prev: usize) -> usize {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.subsec_nanos() as usize);
+    (prev.wrapping_mul(1_103_515_245).wrapping_add(nanos) >> 7) & 0xffff
+}
+
 /// Scripted in-game session (`--game-script`, map from `--shot-map`):
 /// synthetic [`GameInput`] frames through the real in-game handler, so
 /// selection, orders, the command card and building are testable without
 /// a window.  Steps (comma separated; points are window pixels):
 /// `move:x:y`, `click:x:y`, `shift-click:x:y`, `rclick:x:y`,
 /// `drag:x0:y0:x1:y1`, `drag-hold:x0:y0:x1:y1`, `hold:<arrow>:N`,
-/// `spawn:OWNER:TYPE_ID:x:y`, `key:K`, `ctrl-key:K`, `ticks:N` (simulation ticks),
+/// `spawn:OWNER:TYPE_ID:x:y`, `arm-silos`, `key:K`, `ctrl-key:K`, `ticks:N` (simulation ticks),
 /// `click-unit:NAME` / `rclick-unit:NAME` (the nearest on-screen unit whose
 /// name contains NAME), `click-cmd:N` (command-card slot N, 1..9),
 /// `click-world:x:y` / `rclick-world:x:y` (world game px), `click-view:px:py` / `rclick-view`
@@ -6368,6 +6381,18 @@ fn run_game_script(app: &mut App, fb: &mut Framebuffer, script: &str) {
                     num(3),
                     num(4),
                 );
+                frame(app, fb, base(mouse));
+            }
+            "arm-silos" => {
+                // Test fixture: every Nuclear Silo is attached and holds a
+                // missile (a scripted `spawn` cannot build one).
+                for u in app.world.units.iter_mut() {
+                    if u.type_id == galaxycraft::ids::unit::NUCLEAR_SILO {
+                        u.completed = true;
+                        u.addon_attached = true;
+                        u.nuke_ready = true;
+                    }
+                }
                 frame(app, fb, base(mouse));
             }
             "cheat" => {
@@ -7885,6 +7910,7 @@ fn main() {
         animator: galaxycraft::unit_anim::Animator::default(),
         image_names: None,
         sd_image_grps: std::collections::HashMap::new(),
+        remap_tables: std::collections::HashMap::new(),
         volumes_sent: None,
         content_x0: 0,
         mouse_was_down: false,
@@ -9354,8 +9380,9 @@ impl App {
         if !self.game_options.unit_speech || !self.game_options.unit_acks {
             return;
         }
+        // Retail picks one of the unit's replies at random.
+        self.ack_variant = random_take(self.ack_variant);
         let take = self.ack_variant;
-        self.ack_variant = self.ack_variant.wrapping_add(1);
         if let Some(u) = self.first_selected() {
             let unit_type = u.type_id;
             if let Some(samples) = self.voices.cue(unit_type, VoiceCue::Yes, take) {
@@ -9532,6 +9559,14 @@ impl App {
         };
         let pissed = self.voices.takes(unit_type, VoiceCue::Pissed);
         let (cue, take, reset) = galaxycraft::voice::selection_cue(streak, pissed);
+        // The "what?" line is a random one; the annoyed lines keep their
+        // order.
+        let take = if cue == VoiceCue::What {
+            self.ack_variant = random_take(self.ack_variant);
+            self.ack_variant
+        } else {
+            take
+        };
         self.select_streak = Some((id, if reset { 0 } else { streak }, Instant::now()));
         if let Some(samples) = self.voices.cue(unit_type, cue, take) {
             self.audio.play(Some(&samples));
@@ -15673,9 +15708,9 @@ impl App {
             if !u.alive || self.world.inside_gas_building(i) {
                 continue;
             }
-            // Cannot click an enemy the fog hides.
-            if self.fog_on()
-                && u.owner as usize != self.local_player
+            // Cannot click an enemy the fog (or an undetected cloak) hides.
+            if u.owner as usize != self.local_player
+                && (self.fog_on() || u.status.cloaked || u.status.burrowed)
                 && !self.world.can_see_unit(self.local_player as u8, i)
             {
                 continue;
@@ -15997,11 +16032,21 @@ impl App {
             }
             Act::StimPacks => {
                 for id in self.selected_mobile() {
-                    let _ = self.world.cast(
-                        id,
-                        galaxycraft::sim::Spell::StimPacks,
-                        galaxycraft::sim::SpellTarget::None,
-                    );
+                    // In a network game the cast goes through the lockstep
+                    // queue like every other act.
+                    if self.net.is_some() {
+                        self.queue_act(galaxycraft::replay::RecAct::Cast {
+                            caster: id,
+                            spell: galaxycraft::sim::Spell::StimPacks,
+                            target: galaxycraft::sim::SpellTarget::None,
+                        });
+                    } else {
+                        let _ = self.world.cast(
+                            id,
+                            galaxycraft::sim::Spell::StimPacks,
+                            galaxycraft::sim::SpellTarget::None,
+                        );
+                    }
                 }
             }
             Act::Research => {
@@ -18564,14 +18609,37 @@ impl App {
                     && grp.frame(frame).is_some()
                 {
                     building_stage.insert(i, (grp, frame));
+                } else if pick.is_none()
+                    && !self.sprites.has_unit(type_id)
+                    && let Some(image) = galaxycraft::unit_anim::unit_image(&self.data, type_id)
+                    && let Some(grp) = self.sd_image_grp(image)
+                {
+                    // A unit the bundled SD sheets do not cover (the
+                    // nuclear missile): its GRP straight from the install.
+                    let (id, facing) = {
+                        let u = &self.world.units[i];
+                        (u.id, u.facing)
+                    };
+                    let frame = galaxycraft::render::sd_frame_index(
+                        grp.frames.len(),
+                        facing,
+                        self.animator.unit_frame(id),
+                        false,
+                        0,
+                    );
+                    if grp.frame(frame).is_some() {
+                        building_stage.insert(i, (grp, frame));
+                    }
                 }
             }
         }
         let mut hd_units = Vec::new();
         for i in order {
             let u = &self.world.units[i];
-            if self.fog_on()
-                && u.owner as usize != self.local_player
+            // Enemy units the fog hides; cloaked or burrowed ones without a
+            // detector are hidden even with the fog switched off.
+            if u.owner as usize != self.local_player
+                && (self.fog_on() || u.status.cloaked || u.status.burrowed)
                 && !self.world.can_see_unit(self.local_player as u8, i)
             {
                 continue;
@@ -18589,13 +18657,23 @@ impl App {
                 .then(|| self.animator.unit_frame(u.id))
                 .flatten();
             let facing = self.rendered_facing(u);
+            // A cloaked unit we can see is drawn faded.
+            let cloak = u
+                .status
+                .cloaked
+                .then(|| fb.save_rect(sx - 48, sy - 48, 96, 96));
             if let Some((grp, frame)) = building_stage.get(&i) {
-                galaxycraft::render::draw_grp_centered(
+                galaxycraft::render::draw_grp_posed(
                     fb,
                     grp,
                     *frame,
                     self.sprites.palette(),
                     (sx, sy),
+                    false,
+                    galaxycraft::render::GrpInk::Solid(Some(galaxycraft::render::player_rgb(
+                        &self.world,
+                        u.owner,
+                    ))),
                 );
             } else if !self
                 .sprites
@@ -18606,6 +18684,9 @@ impl App {
                 let ty = self.data.unit(u.type_id);
                 let r = ((ty.dimensions.right - ty.dimensions.left) as i32 / 2).max(12) + 4;
                 fb.circle_outline(sx, sy, r, Rgb::new(80, 255, 80));
+            }
+            if let Some(saved) = &cloak {
+                fb.fade_rect(saved, galaxycraft::render::CLOAK_KEEP);
             }
             // Neutral resources are stored under player 0: no bar on them
             // unless selected.
@@ -18656,7 +18737,18 @@ impl App {
             };
             marks.push(("lights", Instant::now()));
             for &i in &hd_units {
+                // A cloaked unit we can see is drawn faded.
+                let u = &self.world.units[i];
+                let cloak = u.status.cloaked.then(|| {
+                    let sx = cx + ((u.x / 256 - self.camera.0) as f32 * scale) as i32;
+                    let sy = cy + ((u.y / 256 - self.camera.1) as f32 * scale) as i32;
+                    let half = (56.0 * scale) as i32;
+                    fb_full.save_rect(sx - half, sy - half, half * 2, half * 2)
+                });
                 self.draw_unit_hd(fb_full, i, (cx, cy, cw, ch), scale, &env);
+                if let Some(saved) = &cloak {
+                    fb_full.fade_rect(saved, galaxycraft::render::CLOAK_KEEP);
+                }
             }
             self.draw_ctf_flags(fb_full, (cx, cy, cw, ch), scale, true);
             self.draw_animated_images(fb_full, (cx, cy, cw, ch), scale, &env);
@@ -19237,6 +19329,12 @@ impl App {
             )
             .chain(
                 self.animator
+                    .status_overlays(&self.world)
+                    .into_iter()
+                    .map(|b| (b.image, b.x, b.y, b.facing, b.frame)),
+            )
+            .chain(
+                self.animator
                     .effects()
                     .map(|e| (e.image, e.x, e.y, e.facing, e.frame)),
             )
@@ -19255,6 +19353,38 @@ impl App {
             } else {
                 raw as usize
             };
+            // `images.dat` draw function 9 (remapped glows: fire, heal,
+            // lockdown, smoke): the pixel values are strengths of a tinted
+            // light, not palette colours.  INFERENCE: tints approximate
+            // the `ofire` / `gfire` / `bfire` / `bexpl` remap tables.
+            let glow = self
+                .data
+                .image(image)
+                .filter(|i| i.modifier == 9)
+                .map(|i| i.color_shift);
+            // The retail way: through the tileset's remap table.
+            if let Some(remap) = glow
+                && let Some(table) = self.remap_table(remap)
+            {
+                galaxycraft::render::draw_grp_remapped(
+                    fb,
+                    &grp,
+                    index,
+                    (x - self.camera.0, y - self.camera.1),
+                    galaxycraft::render::sd_frame_flip(grp.frames.len(), facing),
+                    &table,
+                );
+                continue;
+            }
+            // Without the install's table: a tinted light.
+            let ink = match glow {
+                Some(shift) => galaxycraft::render::GrpInk::Glow(match shift {
+                    2 => Rgb::new(90, 255, 90),
+                    3 | 4 => Rgb::new(90, 170, 255),
+                    _ => Rgb::new(255, 150, 40),
+                }),
+                None => galaxycraft::render::GrpInk::Solid(None),
+            };
             galaxycraft::render::draw_grp_posed(
                 fb,
                 &grp,
@@ -19262,7 +19392,7 @@ impl App {
                 self.sprites.palette(),
                 (x - self.camera.0, y - self.camera.1),
                 galaxycraft::render::sd_frame_flip(grp.frames.len(), facing),
-                galaxycraft::render::GrpInk::Solid(None),
+                ink,
             );
         }
         // Engine glows of moving units (the SCV's thruster, image 249):
@@ -19292,6 +19422,18 @@ impl App {
             };
             let index =
                 galaxycraft::render::sd_frame_index(grp.frames.len(), facing, Some(set), false, 0);
+            let remap = self.data.image(image).map_or(1, |i| i.color_shift);
+            if let Some(table) = self.remap_table(remap) {
+                galaxycraft::render::draw_grp_remapped(
+                    fb,
+                    &grp,
+                    index,
+                    (x - self.camera.0, y - self.camera.1),
+                    galaxycraft::render::sd_frame_flip(grp.frames.len(), facing),
+                    &table,
+                );
+                continue;
+            }
             galaxycraft::render::draw_grp_posed(
                 fb,
                 &grp,
@@ -19302,6 +19444,31 @@ impl App {
                 galaxycraft::render::GrpInk::Glow(Rgb::new(255, 150, 40)),
             );
         }
+    }
+
+    /// The remap table an image's `images.dat` remapping names, for the
+    /// current tileset.
+    fn remap_table(&mut self, remap: u8) -> Option<std::rc::Rc<galaxycraft::render::RemapTable>> {
+        let name = match remap {
+            1 => "ofire",
+            2 => "gfire",
+            3 => "bfire",
+            4 => "bexpl",
+            _ => return None,
+        };
+        let era = self.scenario.era;
+        if let Some(t) = self.remap_tables.get(&(era, remap)) {
+            return t.clone();
+        }
+        let path = format!("tileset/{}/{name}.pcx", galaxycraft::render::era_name(era));
+        let table = self
+            .install
+            .as_ref()
+            .and_then(|i| i.read(&path))
+            .and_then(|b| galaxycraft::render::RemapTable::parse(&b))
+            .map(std::rc::Rc::new);
+        self.remap_tables.insert((era, remap), table.clone());
+        table
     }
 
     /// `arr/images.tbl` (index n = entry n - 1), read once from the install.
@@ -19366,6 +19533,12 @@ impl App {
             .chain(
                 self.animator
                     .carry_overlays(&self.world)
+                    .into_iter()
+                    .map(|b| (b.image, b.x, b.y, b.facing, b.frame)),
+            )
+            .chain(
+                self.animator
+                    .status_overlays(&self.world)
                     .into_iter()
                     .map(|b| (b.image, b.x, b.y, b.facing, b.frame)),
             )

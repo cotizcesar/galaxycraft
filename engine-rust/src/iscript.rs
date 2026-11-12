@@ -71,6 +71,9 @@ pub enum AnimEvent {
         melee: bool,
         ground: bool,
     },
+    /// `attkshiftproj <distance>`: the ground weapon's bullet appears
+    /// `distance` px ahead of the unit (the Firebat's three flames).
+    AttackShift(u8),
     /// `castspell`: spend the current order's spell at this frame.
     CastSpell,
     /// `move <n>`: pixels per tick in 1/256 units.
@@ -289,7 +292,38 @@ impl Iscript {
     /// own animation is a plain wait loop with no event, so the rules engine
     /// must fall back to firing on the order tick.
     pub fn animation_has_attack(&self, id: u16, anim: usize) -> bool {
-        self.animation_has_opcode(id, anim, &[0x1b, 0x1c, 0x25, 0x26, 0x44])
+        self.animation_has_opcode(id, anim, &[0x1b, 0x1c, 0x25, 0x26, 0x31, 0x44])
+    }
+
+    /// Frames from the start of script `id`'s Init animation to its first
+    /// `domissiledmg` (the sum of the `wait`s before it): how long a bullet
+    /// image exists before it deals its damage.  `None` when Init never
+    /// reaches the opcode.
+    pub fn frames_until_damage(&self, id: u16) -> Option<u32> {
+        let mut p = self.animation_offset(id, 0)? as usize;
+        let mut frames = 0u32;
+        for _ in 0..256 {
+            let op = *self.bytes.get(p)?;
+            match op {
+                0x1b => return Some(frames),
+                0x05 => frames += *self.bytes.get(p + 1)? as u32,
+                0x07 => {
+                    p = u16::from_le_bytes([*self.bytes.get(p + 1)?, *self.bytes.get(p + 2)?])
+                        as usize;
+                    continue;
+                }
+                0x16 | 0x36 | 0x30 => return None,
+                _ => {}
+            }
+            p += 1;
+            if op == 0x19 || op == 0x1c {
+                let n = *self.bytes.get(p)? as usize;
+                p += 1 + n * 2;
+            } else {
+                p += opcode_operand_len(op);
+            }
+        }
+        None
     }
 
     /// True when the animation reaches `castspell`.
@@ -628,8 +662,10 @@ impl Iscript {
                     stop = true;
                 }
                 0x31 => {
-                    // attkshiftproj <distance>
-                    let _ = self.read_u8(st);
+                    // attkshiftproj <distance>: fire the ground weapon
+                    // with its bullet `distance` px ahead of the unit.
+                    let distance = self.read_u8(st).unwrap_or(0);
+                    out.push(AnimEvent::AttackShift(distance));
                 }
                 0x32 => {
                     // tmprmgraphicstart: hide the image.

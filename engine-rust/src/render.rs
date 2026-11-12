@@ -38,6 +38,21 @@ impl Rgb {
     }
 }
 
+/// Pixels saved by [`Framebuffer::save_rect`].
+pub struct SavedRect {
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    pixels: Vec<u32>,
+}
+
+/// How much of a cloaked unit shows through for players who can see it
+/// (its owner, or an enemy with a detector).  INFERENCE: retail draws
+/// cloaked units with a palette distortion effect; this true-colour view
+/// fades them instead.
+pub const CLOAK_KEEP: u8 = 110;
+
 /// Colour `owner`'s units, buildings and minimap blips are drawn in: its
 /// lobby colour, else the classic slot colour.
 pub fn player_rgb(world: &crate::sim::World, owner: u8) -> Rgb {
@@ -112,6 +127,42 @@ impl Framebuffer {
     pub fn put(&mut self, x: i32, y: i32, color: Rgb) {
         if x >= 0 && y >= 0 && x < self.width && y < self.height {
             self.pixels[y as usize * self.width as usize + x as usize] = color.0;
+        }
+    }
+
+    /// Copy of the pixels of a rectangle (clipped), for [`Self::fade_rect`].
+    pub fn save_rect(&self, x: i32, y: i32, w: i32, h: i32) -> SavedRect {
+        let x0 = x.clamp(0, self.width);
+        let y0 = y.clamp(0, self.height);
+        let x1 = (x + w).clamp(0, self.width);
+        let y1 = (y + h).clamp(0, self.height);
+        let mut pixels = Vec::with_capacity(((x1 - x0) * (y1 - y0)).max(0) as usize);
+        for yy in y0..y1 {
+            let row = yy as usize * self.width as usize;
+            pixels.extend_from_slice(&self.pixels[row + x0 as usize..row + x1 as usize]);
+        }
+        SavedRect {
+            x: x0,
+            y: y0,
+            w: x1 - x0,
+            h: y1 - y0,
+            pixels,
+        }
+    }
+
+    /// Blend what was drawn over a saved rectangle back towards the saved
+    /// pixels: `keep` (0..=255) is how much of the new drawing remains.  A
+    /// cloaked unit is drawn normally and then faded this way.
+    pub fn fade_rect(&mut self, saved: &SavedRect, keep: u8) {
+        for yy in 0..saved.h {
+            let row = (saved.y + yy) as usize * self.width as usize + saved.x as usize;
+            for xx in 0..saved.w {
+                let old = Rgb(saved.pixels[(yy * saved.w + xx) as usize]);
+                let new = Rgb(self.pixels[row + xx as usize]);
+                if old.0 != new.0 {
+                    self.pixels[row + xx as usize] = old.blend(new, keep).0;
+                }
+            }
         }
     }
 
@@ -1891,6 +1942,134 @@ pub fn draw_grp_centered(
     draw_grp_posed(fb, grp, index, palette, screen, false, GrpInk::Solid(None));
 }
 
+/// A retail remap table (`tileset\<era>\ofire.pcx`, `gfire`, `bfire`,
+/// `bexpl`): 256 columns, one row per glow strength.  A glow image
+/// (`images.dat` draw function 9) does not carry colours: each pixel value
+/// `p` replaces the screen's palette index `d` with `table[p - 1][d]`.
+pub struct RemapTable {
+    rows: usize,
+    data: Vec<u8>,
+    colors: [Rgb; 256],
+    /// Screen colour -> palette index, filled as colours are met.
+    nearest: std::cell::RefCell<HashMap<u32, u8>>,
+}
+
+impl RemapTable {
+    /// Decode an 8-bit, single-plane PCX with its trailing palette.
+    pub fn parse(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() < 128 + 769 || bytes[0] != 10 || bytes[3] != 8 || bytes[65] != 1 {
+            return None;
+        }
+        let u16_at = |o: usize| u16::from_le_bytes([bytes[o], bytes[o + 1]]) as usize;
+        let width = u16_at(8) - u16_at(4) + 1;
+        let rows = u16_at(10) - u16_at(6) + 1;
+        let stride = u16_at(66);
+        if width != 256 || stride < width || rows == 0 {
+            return None;
+        }
+        let pal = bytes.len() - 768;
+        if bytes[pal - 1] != 12 {
+            return None;
+        }
+        let mut raw = Vec::with_capacity(stride * rows);
+        let mut p = 128;
+        while raw.len() < stride * rows && p < pal - 1 {
+            let b = bytes[p];
+            p += 1;
+            if b >= 0xc0 {
+                let v = *bytes.get(p)?;
+                p += 1;
+                raw.extend(std::iter::repeat_n(v, (b & 0x3f) as usize));
+            } else {
+                raw.push(b);
+            }
+        }
+        if raw.len() < stride * rows {
+            return None;
+        }
+        let mut data = Vec::with_capacity(256 * rows);
+        for r in 0..rows {
+            data.extend_from_slice(&raw[r * stride..r * stride + 256]);
+        }
+        let mut colors = [Rgb(0); 256];
+        for (i, c) in colors.iter_mut().enumerate() {
+            *c = Rgb::new(
+                bytes[pal + 3 * i],
+                bytes[pal + 3 * i + 1],
+                bytes[pal + 3 * i + 2],
+            );
+        }
+        Some(Self {
+            rows,
+            data,
+            colors,
+            nearest: std::cell::RefCell::new(HashMap::new()),
+        })
+    }
+
+    /// Palette index closest to a screen colour.
+    fn index_of(&self, color: Rgb) -> u8 {
+        if let Some(i) = self.nearest.borrow().get(&color.0) {
+            return *i;
+        }
+        let ch = |c: u32, s: u32| ((c >> s) & 0xff) as i32;
+        let best = (0..256usize)
+            .min_by_key(|&i| {
+                let p = self.colors[i].0;
+                (0..3)
+                    .map(|k| {
+                        let d = ch(p, 8 * k) - ch(color.0, 8 * k);
+                        d * d
+                    })
+                    .sum::<i32>()
+            })
+            .unwrap_or(0) as u8;
+        self.nearest.borrow_mut().insert(color.0, best);
+        best
+    }
+
+    /// What a glow pixel of strength `p` (1-based) turns `under` into.
+    pub fn apply(&self, p: u8, under: Rgb) -> Rgb {
+        if p == 0 {
+            return under;
+        }
+        let row = (p as usize - 1).min(self.rows - 1);
+        self.colors[self.data[row * 256 + self.index_of(under) as usize] as usize]
+    }
+}
+
+/// Draw GRP frame `index` centred on `screen` through a remap table (the
+/// retail way to draw fire, heal, lockdown and engine glows).
+pub fn draw_grp_remapped(
+    fb: &mut Framebuffer,
+    grp: &Grp,
+    index: usize,
+    screen: (i32, i32),
+    flip: bool,
+    table: &RemapTable,
+) {
+    let Some(frame) = grp.frame(index) else {
+        return;
+    };
+    let fx = if flip {
+        grp.width - frame.x - frame.w
+    } else {
+        frame.x
+    };
+    let ox = screen.0 - grp.width / 2 + fx;
+    let oy = screen.1 - grp.height / 2 + frame.y;
+    for y in 0..frame.h {
+        for x in 0..frame.w {
+            let sx = if flip { frame.w - 1 - x } else { x };
+            let c = frame.indices[(y * frame.w + sx) as usize];
+            if c != 0 && ox + x >= 0 && oy + y >= 0 && ox + x < fb.width && oy + y < fb.height {
+                let under = fb.get(ox + x, oy + y);
+                fb.put(ox + x, oy + y, table.apply(c, under));
+            }
+        }
+    }
+}
+
 /// How [`draw_grp_posed`] writes a pixel.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum GrpInk {
@@ -1937,10 +2116,14 @@ pub fn draw_grp_posed(
                     let d = fb.get(ox + x, oy + y).0;
                     // The pixel value is the glow's strength (`tscGlow`:
                     // 1 at the rim up to 46 on the two exhausts).
+                    // Weak pixels only lighten what is under them; strong
+                    // ones take the tint (the remap tables go from a faint
+                    // haze to the saturated colour).
                     let k = (c as u32).min(48);
                     let add = |shift: u32| {
-                        (((d >> shift) & 0xff) + ((tint.0 >> shift) & 0xff) * k / 48).min(255)
-                            << shift
+                        let t = (tint.0 >> shift) & 0xff;
+                        let colour = (255 * (48 - k) + t * k) / 48;
+                        (((d >> shift) & 0xff) + colour * k / 64).min(255) << shift
                     };
                     Rgb(add(16) | add(8) | add(0))
                 }
@@ -2020,6 +2203,11 @@ pub struct SpriteBank {
     palette: Palette,
 }
 impl SpriteBank {
+    /// Whether the bank has a sprite sheet for this unit type.
+    pub fn has_unit(&self, type_id: u16) -> bool {
+        self.grps.contains_key(&type_id)
+    }
+
     pub fn load(asset_root: &Path) -> Self {
         let pal = fs::read(asset_root.join("unit.pal"))
             .or_else(|_| fs::read(asset_root.join("units.pal")))
