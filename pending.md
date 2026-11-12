@@ -39,3 +39,36 @@ energy, Medic heal rules and search square, Ghost paint range, the nuke's
   search (2026-11-12) found no source for the exact rule; the annoyed lines
   after repeated clicks are confirmed to exist (Blizzard, "The Sounds of
   Koprulu").
+
+## Vehicles and air units, 2026-11-12
+
+Rules read from the OpenBW source; these parts are simplified or not checked
+on screen.
+
+- **Turrets are folded into the base unit.**  The base fires the turret's
+  weapon; there is no separate turret unit, so the turret has no turn rate
+  of its own (it is drawn pointing at the target at once), its attack
+  animation and muzzle overlays (iscript 93 and friends) are not played,
+  and the hull is not held still while it fires.
+- **Siege Mode.**  The tank does not turn to its default direction before
+  deploying, is not destroyed when a building occupies its spot, and the
+  sieged turret's unfolding frames are not drawn (only the base's).
+- **Spider Mine.**  The hover list is a hardcoded type list rather than the
+  `units.dat` movement flags; the burrow / unburrow frames and sounds are
+  not drawn; a mine is nudged by collision while it waits.
+- **Dropship.**  No "unload at a point" order (`order_MoveUnload`), units
+  board from 8 px instead of 1 and the transport does not come to fetch
+  them, and unloaded units all appear at the exit position (collision
+  spreads them).
+- **Valkyrie.**  The near-target offset index is global, not per Valkyrie,
+  and the 80-bullet cap on Halo Rockets is not enforced.
+- **Yamato Gun.**  Energy is spent when the blast leaves, not when the
+  charge starts; the raw order row (113) casts without the charge.
+- **Irradiate** on a unit inside a transport or burrowed follows the old
+  rule (OpenBW: only the transport, or only the unit itself).
+- **Air repulse.**  The map-edge turn and the "cannot be interrupted"
+  exemptions are simplified.
+- **Not drawn.**  The hover bob of idle flyers (`setvertpos`), and the SD
+  tank hull shows a dotted blue outline (its shadow image).
+- **Not checked on screen.**  The siege transformation, mines, Yamato, EMP,
+  Irradiate, Matrix, and a Dropship unloading (covered by tests only).
