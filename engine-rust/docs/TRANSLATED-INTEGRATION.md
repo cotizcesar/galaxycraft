@@ -231,3 +231,7 @@ call graph so those rows are no longer queued.  Waves are paused.
 
 +596 exact ledger functions (ledger 4688 -> 5284): `runtime.rs` (~380 helpers: STL/string/hash/tree plans, CRT and locale helpers, utf-16 and ctype tables, MD5/RC4-style primitives), `client.rs` (UI/video kernels) and `audio.rs`.  No rules-core counterpart; the helpers stay auditable reference code.  27 agents returned only skips.  Tier 2 of the queue is now empty.  Only 385 of 3147 wave helpers have a non-test caller (`scripts/corpus_audit.py`): wiring is a separate integration task.
 
+## Wave 32 (2026-11-11, triage queue, tier 3, 150 agents)
+
++228 exact ledger functions (ledger 4688+596 -> 5512) in `client.rs` and `runtime.rs`: UI/tree/time helpers, STL and string plans, hook-table records.  No rules-core counterpart; the helpers stay auditable reference code.  35 agents returned only skips.
+

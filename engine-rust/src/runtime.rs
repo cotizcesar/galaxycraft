@@ -84906,3 +84906,7249 @@ mod tests_wave31_agent142 {
         assert_eq!(w31a142_mbsdec(&b, 0, 3, true, tr), Some(2));
     }
 }
+
+// ===========================================================================
+// Merged from src/wave32/agent38.rs
+// ===========================================================================
+// Wave 32 translation batch 38: MSVC exception copy constructors.
+
+/// Which vftable an exception object points at after construction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum W32a38Vtable {
+    StdException,
+    RuntimeError,
+    StreamError,
+}
+
+/// Exception object: vtable tag plus the two-word name holder at `+4`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct W32a38Exception {
+    pub vtable: W32a38Vtable,
+    pub name: Option<String>,
+    pub owned: bool,
+}
+
+fn w32a38_base_copy(src: &W32a38Exception) -> W32a38Exception {
+    // Zero the holder, then copy via the name-copy helper (owning sources
+    // are duplicated, non-owning ones shared).
+    let mut dst = W32a38Exception {
+        vtable: W32a38Vtable::StdException,
+        name: None,
+        owned: false,
+    };
+    match (&src.name, src.owned) {
+        (Some(s), true) => {
+            dst.name = Some(s.clone());
+            dst.owned = true;
+        }
+        _ => dst.name = src.name.clone(),
+    }
+    dst
+}
+
+/// `0x00535570`: `std::exception` copy constructor.
+pub fn w32a38_exception_copy(src: &W32a38Exception) -> W32a38Exception {
+    w32a38_base_copy(src)
+}
+
+/// `0x005355a0`: `std::runtime_error` copy constructor (base copy, then
+/// the runtime_error vftable is installed).
+pub fn w32a38_runtime_error_copy(src: &W32a38Exception) -> W32a38Exception {
+    let mut d = w32a38_base_copy(src);
+    d.vtable = W32a38Vtable::RuntimeError;
+    d
+}
+
+/// `0x005355e0`: `stdext::stream_error` copy constructor.
+pub fn w32a38_stream_error_copy(src: &W32a38Exception) -> W32a38Exception {
+    let mut d = w32a38_base_copy(src);
+    d.vtable = W32a38Vtable::StreamError;
+    d
+}
+
+#[cfg(test)]
+mod tests_wave32_agent38 {
+    use super::*;
+
+    fn src(owned: bool) -> W32a38Exception {
+        W32a38Exception {
+            vtable: W32a38Vtable::RuntimeError,
+            name: Some("x".into()),
+            owned,
+        }
+    }
+
+    #[test]
+    fn copies() {
+        let d = w32a38_exception_copy(&src(true));
+        assert_eq!(d.vtable, W32a38Vtable::StdException);
+        assert!(d.owned);
+        assert_eq!(
+            w32a38_runtime_error_copy(&src(false)).vtable,
+            W32a38Vtable::RuntimeError
+        );
+        let s = w32a38_stream_error_copy(&src(false));
+        assert_eq!(s.vtable, W32a38Vtable::StreamError);
+        assert!(!s.owned);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent39.rs
+// ===========================================================================
+// Wave 32 agent 39 translations.
+
+/// One node of the singly linked list walked by `0x0056ff90`: the next link
+/// (index) and the node's key bytes (pointer at +4, length at +8).
+pub struct W32a39Node<'a> {
+    pub next: Option<usize>,
+    pub key: &'a [u8],
+}
+
+/// `0x0056ff90`: walks a singly linked list from `head` comparing each node
+/// key with `needle` (memcmp over the shorter length, then length
+/// difference).  Returns `None` when the result is the list head pointer
+/// itself (empty list, or match on the first node), otherwise `Some(i)`: the
+/// node visited before the match, or the last node when nothing matched.
+pub fn w32a39_find_prev_node(
+    head: Option<usize>,
+    nodes: &[W32a39Node<'_>],
+    needle: &[u8],
+) -> Option<usize> {
+    let mut cur = head?;
+    let mut result: Option<usize> = None;
+    loop {
+        let node = &nodes[cur];
+        let n = node.key.len().min(needle.len());
+        let mut c = match needle[..n].cmp(&node.key[..n]) {
+            std::cmp::Ordering::Equal => 0,
+            _ => 1,
+        };
+        if c == 0 {
+            c = (needle.len() as u32).wrapping_sub(node.key.len() as u32);
+        }
+        if c == 0 {
+            return result;
+        }
+        result = Some(cur);
+        match node.next {
+            None => return Some(cur),
+            Some(nx) => cur = nx,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests_wave32_agent39 {
+    use super::*;
+
+    #[test]
+    fn walk() {
+        let nodes = [
+            W32a39Node {
+                next: Some(1),
+                key: b"a",
+            },
+            W32a39Node {
+                next: Some(2),
+                key: b"bb",
+            },
+            W32a39Node {
+                next: None,
+                key: b"c",
+            },
+        ];
+        assert_eq!(w32a39_find_prev_node(None, &nodes, b"a"), None);
+        assert_eq!(w32a39_find_prev_node(Some(0), &nodes, b"a"), None);
+        assert_eq!(w32a39_find_prev_node(Some(0), &nodes, b"bb"), Some(0));
+        assert_eq!(w32a39_find_prev_node(Some(0), &nodes, b"c"), Some(1));
+        assert_eq!(w32a39_find_prev_node(Some(0), &nodes, b"zz"), Some(2));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent41.rs
+// ===========================================================================
+// Wave 32 batch 41: `args::` exception copy constructors (MSVC `std::exception` layout).
+
+/// Vtable tag of a copied exception object.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum W32a41Vtable {
+    /// `std::exception::vftable` (intermediate state during construction).
+    StdException,
+    /// `args::ParseError::vftable`.
+    ParseError,
+    /// `args::RequiredError::vftable`.
+    RequiredError,
+    /// `args::UsageError::vftable`.
+    UsageError,
+}
+
+/// Exception object: vtable slot plus the 8-byte message record at +4.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct W32a41Exception {
+    pub vtable: W32a41Vtable,
+    pub msg: Option<String>,
+}
+
+fn w32a41_copy_ctor<F: FnOnce(&Option<String>, &mut Option<String>)>(
+    src: &W32a41Exception,
+    final_vtable: W32a41Vtable,
+    copy_msg: F,
+) -> W32a41Exception {
+    // std::exception base: vtable set, message record zeroed, then copied.
+    let mut out = W32a41Exception {
+        vtable: W32a41Vtable::StdException,
+        msg: None,
+    };
+    copy_msg(&src.msg, &mut out.msg);
+    out.vtable = final_vtable;
+    out
+}
+
+/// `0x005f25b0`: copy constructor of `args::ParseError`.
+pub fn w32a41_parse_error_copy(src: &W32a41Exception) -> W32a41Exception {
+    w32a41_copy_ctor(src, W32a41Vtable::ParseError, |s, d| d.clone_from(s))
+}
+
+/// `0x005f2810`: copy constructor of `args::RequiredError`.
+pub fn w32a41_required_error_copy(src: &W32a41Exception) -> W32a41Exception {
+    w32a41_copy_ctor(src, W32a41Vtable::RequiredError, |s, d| d.clone_from(s))
+}
+
+/// `0x005f28a0`: copy constructor of `args::UsageError`.
+pub fn w32a41_usage_error_copy(src: &W32a41Exception) -> W32a41Exception {
+    w32a41_copy_ctor(src, W32a41Vtable::UsageError, |s, d| d.clone_from(s))
+}
+
+#[cfg(test)]
+mod tests_wave32_agent41 {
+    use super::*;
+
+    #[test]
+    fn copies_keep_message_and_set_vtable() {
+        let s = W32a41Exception {
+            vtable: W32a41Vtable::ParseError,
+            msg: Some("x".into()),
+        };
+        let a = w32a41_parse_error_copy(&s);
+        let b = w32a41_required_error_copy(&s);
+        let c = w32a41_usage_error_copy(&s);
+        assert_eq!(
+            (a.vtable, a.msg.as_deref()),
+            (W32a41Vtable::ParseError, Some("x"))
+        );
+        assert_eq!(b.vtable, W32a41Vtable::RequiredError);
+        assert_eq!(c.vtable, W32a41Vtable::UsageError);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent42.rs
+// ===========================================================================
+// Wave 32 translation batch 42: exception copy constructors.
+
+/// Class tag written as the final vftable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum W32a42Kind {
+    ValidationError,
+    SystemError,
+    BadCast,
+}
+
+/// Copy-constructed exception object: name holder plus optional error words.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct W32a42Exception {
+    pub kind: W32a42Kind,
+    pub name: crate::runtime::W31a125Name,
+    /// `this[3]`, `this[4]` (system error code and category), if present.
+    pub code: Option<(u32, u32)>,
+}
+
+fn w32a42_copy(
+    kind: W32a42Kind,
+    src: &crate::runtime::W31a125Name,
+    code: Option<(u32, u32)>,
+) -> W32a42Exception {
+    let mut name = crate::runtime::W31a125Name::default();
+    crate::runtime::w31a125_name_copy(src, &mut name);
+    W32a42Exception { kind, name, code }
+}
+
+/// `0x005f2930`: copy constructor of `args::ValidationError`; copies the name
+/// holder via `0xc8_94fe` and sets the final vftable.
+pub fn w32a42_validation_error_copy(src: &crate::runtime::W31a125Name) -> W32a42Exception {
+    w32a42_copy(W32a42Kind::ValidationError, src, None)
+}
+
+/// `0x005f2c10`: copy constructor of `std::_System_error`; as above plus the
+/// two words at source offsets `0xc` and `0x10`.
+pub fn w32a42_system_error_copy(
+    src: &crate::runtime::W31a125Name,
+    code: u32,
+    category: u32,
+) -> W32a42Exception {
+    w32a42_copy(W32a42Kind::SystemError, src, Some((code, category)))
+}
+
+/// `0x005f2c60`: copy constructor of `std::bad_cast`.
+pub fn w32a42_bad_cast_copy(src: &crate::runtime::W31a125Name) -> W32a42Exception {
+    w32a42_copy(W32a42Kind::BadCast, src, None)
+}
+
+#[cfg(test)]
+mod tests_wave32_agent42 {
+    use super::*;
+    use crate::runtime::W31a125Name;
+
+    #[test]
+    fn copies() {
+        let owned = W31a125Name {
+            data: Some("x".into()),
+            owned: true,
+        };
+        let e = w32a42_validation_error_copy(&owned);
+        assert_eq!(e.kind, W32a42Kind::ValidationError);
+        assert!(e.name.owned);
+        let shared = W31a125Name {
+            data: Some("y".into()),
+            owned: false,
+        };
+        let e = w32a42_system_error_copy(&shared, 5, 7);
+        assert!(!e.name.owned);
+        assert_eq!(e.code, Some((5, 7)));
+        assert_eq!(w32a42_bad_cast_copy(&owned).kind, W32a42Kind::BadCast);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent43.rs
+// ===========================================================================
+// Wave 32 agent 43: MSVC `std::system_error` family copy constructors.
+
+/// Model of the 0x14-byte exception object: vftable tag, 8-byte message
+/// slot (words 1..2), error value (word 3) and category pointer (word 4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct W32a43SystemError {
+    pub vftable: u32,
+    pub msg: u64,
+    pub code_value: u32,
+    pub category: u32,
+}
+
+pub const W32A43_VT_EXCEPTION: u32 = 1;
+pub const W32A43_VT_SYSTEM_ERROR_BASE: u32 = 2;
+pub const W32A43_VT_SYSTEM_ERROR: u32 = 3;
+pub const W32A43_VT_IOS_FAILURE: u32 = 4;
+
+fn w32a43_copy_ctor(
+    src: &W32a43SystemError,
+    copy_msg: impl Fn(u64) -> u64,
+    final_vt: u32,
+) -> W32a43SystemError {
+    // vftable is set to std::exception, message cleared then copied by the
+    // exception-copy helper, then the _System_error vftable, code and
+    // category copied, finally the most-derived vftable.
+    let _ = (W32A43_VT_EXCEPTION, W32A43_VT_SYSTEM_ERROR_BASE);
+    W32a43SystemError {
+        vftable: final_vt,
+        msg: copy_msg(src.msg),
+        code_value: src.code_value,
+        category: src.category,
+    }
+}
+
+/// `0x005f2ca0`: `std::ios_base::failure` copy constructor.
+pub fn w32a43_ios_failure_copy(
+    src: &W32a43SystemError,
+    copy_msg: impl Fn(u64) -> u64,
+) -> W32a43SystemError {
+    w32a43_copy_ctor(src, copy_msg, W32A43_VT_IOS_FAILURE)
+}
+
+/// `0x005f2eb0`: `std::system_error` copy constructor.
+pub fn w32a43_system_error_copy(
+    src: &W32a43SystemError,
+    copy_msg: impl Fn(u64) -> u64,
+) -> W32a43SystemError {
+    w32a43_copy_ctor(src, copy_msg, W32A43_VT_SYSTEM_ERROR)
+}
+
+#[cfg(test)]
+mod tests_wave32_agent43 {
+    use super::*;
+
+    #[test]
+    fn copies_fields() {
+        let s = W32a43SystemError {
+            vftable: 9,
+            msg: 5,
+            code_value: 7,
+            category: 11,
+        };
+        let a = w32a43_ios_failure_copy(&s, |m| m);
+        assert_eq!(a.vftable, W32A43_VT_IOS_FAILURE);
+        assert_eq!((a.msg, a.code_value, a.category), (5, 7, 11));
+        let b = w32a43_system_error_copy(&s, |m| m + 1);
+        assert_eq!(b.vftable, W32A43_VT_SYSTEM_ERROR);
+        assert_eq!(b.msg, 6);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent46.rs
+// ===========================================================================
+// Wave 32 agent 46.
+
+/// `0x006ae9a0`: maps a pointer into the 0x150-byte record table to a
+/// derived value.  `ptr` is the value read through `this+0xc`; zero or a
+/// pointer outside `[table_base, table_base + count * 0x150)` yields 0.
+/// Otherwise returns `(ptr - table_base) / 0x150 * stride + base`, where
+/// `stride`/`base` come from the record at `param_1 + 0x10c` (+0x20 / +0x18).
+pub fn w32a46_record_index_value(
+    ptr: u32,
+    table_base: u32,
+    count: i32,
+    stride: i32,
+    base: i32,
+) -> i32 {
+    if ptr == 0 {
+        return 0;
+    }
+    let end = (count as u32).wrapping_mul(0x150).wrapping_add(table_base);
+    if table_base <= ptr && ptr < end {
+        let idx = (ptr.wrapping_sub(table_base) as i32) / 0x150;
+        return idx.wrapping_mul(stride).wrapping_add(base);
+    }
+    0
+}
+
+#[cfg(test)]
+mod tests_wave32_agent46 {
+    use super::*;
+
+    #[test]
+    fn maps_index() {
+        assert_eq!(w32a46_record_index_value(0, 0x1000, 4, 8, 3), 0);
+        assert_eq!(
+            w32a46_record_index_value(0x1000 + 0x150 * 2 + 5, 0x1000, 4, 8, 3),
+            19
+        );
+        assert_eq!(
+            w32a46_record_index_value(0x1000 + 0x150 * 4, 0x1000, 4, 8, 3),
+            0
+        );
+        assert_eq!(w32a46_record_index_value(0xfff, 0x1000, 4, 8, 3), 0);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent47.rs
+// ===========================================================================
+// Wave 32 agent 47 translations.
+
+/// `0x00715ef0`: stores the 16-bit table entry `table[idx]` at offset `0x3e`
+/// of the record and ORs `flags` into the 32-bit field at offset `0x30`.
+/// Returns false when the record is too short or the index is out of range.
+pub fn w32a47_set_entry_and_flags(rec: &mut [u8], table: &[u16], idx: u16, flags: u32) -> bool {
+    if rec.len() < 0x42 {
+        return false;
+    }
+    let Some(&v) = table.get(idx as usize) else {
+        return false;
+    };
+    rec[0x3e..0x40].copy_from_slice(&v.to_le_bytes());
+    let cur = u32::from_le_bytes([rec[0x30], rec[0x31], rec[0x32], rec[0x33]]);
+    rec[0x30..0x34].copy_from_slice(&(cur | flags).to_le_bytes());
+    true
+}
+
+#[cfg(test)]
+mod tests_wave32_agent47 {
+    #[test]
+    fn sets_fields() {
+        let mut r = [0u8; 0x48];
+        r[0x30] = 1;
+        assert!(super::w32a47_set_entry_and_flags(
+            &mut r,
+            &[7, 0x1234],
+            1,
+            4
+        ));
+        assert_eq!(r[0x30], 5);
+        assert_eq!(&r[0x3e..0x40], &[0x34, 0x12]);
+        assert!(!super::w32a47_set_entry_and_flags(&mut r, &[7], 3, 0));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent48.rs
+// ===========================================================================
+// Wave 32 agent 48 translations.
+
+/// `0x0077e060`: clamps `value` to 100, runs the pre-step callee, then passes
+/// the clamped value (a zero stays zero) as a one-element slice to the sink.
+pub fn w32a48_set_clamped(value: u32, pre: &mut dyn FnMut(), sink: &mut dyn FnMut(&[u32])) {
+    let v = value.min(100);
+    pre();
+    sink(&[v]);
+}
+
+/// `0x007b3450`: true when the readiness probe passes and the global state
+/// equals 2.
+pub fn w32a48_state_is_two(ready: bool, state: u32) -> bool {
+    ready && state == 2
+}
+
+#[cfg(test)]
+mod tests_wave32_agent48 {
+    use super::*;
+
+    #[test]
+    fn clamp() {
+        let mut got = vec![];
+        let mut n = 0;
+        w32a48_set_clamped(250, &mut || n += 1, &mut |s| got.extend_from_slice(s));
+        w32a48_set_clamped(7, &mut || n += 1, &mut |s| got.extend_from_slice(s));
+        assert_eq!(got, vec![100, 7]);
+        assert_eq!(n, 2);
+    }
+
+    #[test]
+    fn state() {
+        assert!(w32a48_state_is_two(true, 2));
+        assert!(!w32a48_state_is_two(true, 1));
+        assert!(!w32a48_state_is_two(false, 2));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent49.rs
+// ===========================================================================
+// Wave 32 agent 49: red-black tree in-order successor.
+
+/// Null link marker for [`w32a49_tree_next`].
+pub const W32A49_NULL: usize = usize::MAX;
+
+/// `0x007e4760`: in-order successor of `node` in a tree whose nodes are
+/// `[parent, left, right]` index triples (std::map iterator increment).
+/// With a right child, descends to the leftmost node of the right subtree;
+/// otherwise climbs while the node is its parent's right child, and keeps
+/// the parent unless the node's right link already equals it (header case).
+pub fn w32a49_tree_next(nodes: &[[usize; 3]], node: usize) -> usize {
+    let right = nodes[node][2];
+    if right != W32A49_NULL {
+        let mut cur = right;
+        while nodes[cur][1] != W32A49_NULL {
+            cur = nodes[cur][1];
+        }
+        return cur;
+    }
+    let mut cur = node;
+    let mut parent = nodes[cur][0];
+    while cur == nodes[parent][2] {
+        cur = parent;
+        parent = nodes[cur][0];
+    }
+    if nodes[cur][2] != parent {
+        cur = parent;
+    }
+    cur
+}
+
+#[cfg(test)]
+mod tests_wave32_agent49 {
+    use super::*;
+    const N: usize = W32A49_NULL;
+
+    #[test]
+    fn successor() {
+        // 0 = header (root at left? use right link = root), 1 root, 2 left, 3 right
+        let nodes = [[N, N, 1], [0, 2, 3], [1, N, N], [1, N, N]];
+        let mut nodes = nodes.to_vec();
+        nodes[0] = [1, 1, 1];
+        assert_eq!(w32a49_tree_next(&nodes, 2), 1);
+        assert_eq!(w32a49_tree_next(&nodes, 1), 3);
+        assert_eq!(w32a49_tree_next(&nodes, 3), 0);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent50.rs
+// ===========================================================================
+// Wave 32 translation batch 50 (staging).
+//
+// Skipped: FUN_007e8490 (opaque callee), FUN_00802c00 (non-returning throw).
+
+/// `0x007f50e0`: vector<bool> iterator arithmetic.  Given the base word
+/// index `base` (in 32-bit words), bit offset `bit` (0..32) and a signed
+/// displacement `delta`, returns the new (word index, bit offset).
+pub fn w32a50_vecbool_iter_add(base: u32, bit: u32, delta: i32) -> (u32, u32) {
+    let new_bit = bit.wrapping_add(delta as u32) & 0x1f;
+    if delta < 0 && bit < delta.wrapping_neg() as u32 {
+        let t = !(bit.wrapping_add(delta as u32)) >> 5;
+        (
+            base.wrapping_sub(t.wrapping_mul(4).wrapping_add(4)),
+            new_bit,
+        )
+    } else {
+        (
+            base.wrapping_add((bit.wrapping_add(delta as u32) >> 5).wrapping_mul(4)),
+            new_bit,
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests_wave32_agent50 {
+    use super::*;
+
+    #[test]
+    fn forward_and_backward() {
+        assert_eq!(w32a50_vecbool_iter_add(100, 5, 30), (104, 3));
+        assert_eq!(w32a50_vecbool_iter_add(100, 5, 2), (100, 7));
+        assert_eq!(w32a50_vecbool_iter_add(100, 5, -3), (100, 2));
+        assert_eq!(w32a50_vecbool_iter_add(100, 5, -6), (96, 31));
+        assert_eq!(w32a50_vecbool_iter_add(100, 0, -32), (96, 0));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent51.rs
+// ===========================================================================
+// Wave 32 agent 51: bit-vector iterator and string compare helpers.
+
+/// `0x00802f60`: converts a bit-vector size/offset `bits` (signed view of
+/// the u32 at +12) into a `(word_byte_offset, bit_index)` pair relative to
+/// the base pointer.  Negative values round toward the previous word.
+pub fn w32a51_bit_position(base: i32, bits: u32) -> (i32, u32) {
+    let off = if (bits as i32) < 0 && bits != 0 {
+        -((((!bits) >> 5) * 4 + 4) as i32)
+    } else {
+        ((bits >> 5) * 4) as i32
+    };
+    (base.wrapping_add(off), bits & 0x1f)
+}
+
+/// `0x00814cc0`: compares a counted buffer (`own`) with a NUL-terminated
+/// string.  Compares `min(len, own.len())` bytes (memcmp, result -1/0/1);
+/// when equal returns `own.len() - len` (wrapping, as unsigned).
+pub fn w32a51_compare_cstr(own: &[u8], other: &[u8]) -> i32 {
+    let len = other.iter().position(|&b| b == 0).unwrap_or(other.len());
+    let n = len.min(own.len());
+    for i in 0..n {
+        if own[i] != other[i] {
+            return if own[i] < other[i] { -1 } else { 1 };
+        }
+    }
+    (own.len() as u32).wrapping_sub(len as u32) as i32
+}
+
+#[cfg(test)]
+mod tests_wave32_agent51 {
+    use super::*;
+
+    #[test]
+    fn bit_position() {
+        assert_eq!(w32a51_bit_position(100, 0), (100, 0));
+        assert_eq!(w32a51_bit_position(100, 33), (104, 1));
+        assert_eq!(w32a51_bit_position(100, 0xFFFF_FFFF), (96, 31));
+    }
+
+    #[test]
+    fn compare() {
+        assert_eq!(w32a51_compare_cstr(b"abc", b"abc\0"), 0);
+        assert_eq!(w32a51_compare_cstr(b"abcd", b"abc\0"), 1);
+        assert_eq!(w32a51_compare_cstr(b"ab", b"abc\0"), -1);
+        assert_eq!(w32a51_compare_cstr(b"abd", b"abc\0"), 1);
+        assert_eq!(w32a51_compare_cstr(b"abb", b"abc\0"), -1);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent52.rs
+// ===========================================================================
+// Wave 32 agent 52 translations.
+
+/// `0x0083b650`: invokes a stored callable (std::function-like slot at
+/// object offset 0x28).  Bit 0 of the slot word tags an out-of-line
+/// pointer (mask `0xfffffffe`); when the resolved target is null nothing
+/// happens, otherwise the callable's vtable entry at +4 is invoked with
+/// both arguments.  Returns whether the callable was invoked.
+pub fn w32a52_invoke_slot<F: FnOnce(u32, u32)>(slot: u32, a: u32, b: u32, call: F) -> bool {
+    let target = if slot & 1 != 0 {
+        slot & 0xffff_fffe
+    } else {
+        slot
+    };
+    if target == 0 {
+        return false;
+    }
+    call(a, b);
+    true
+}
+
+#[cfg(test)]
+mod tests_wave32_agent52 {
+    use super::*;
+
+    #[test]
+    fn invoke_slot() {
+        let mut got = None;
+        assert!(w32a52_invoke_slot(0x1001, 1, 2, |a, b| got = Some((a, b))));
+        assert_eq!(got, Some((1, 2)));
+        assert!(!w32a52_invoke_slot(1, 1, 2, |_, _| panic!()));
+        assert!(!w32a52_invoke_slot(0, 1, 2, |_, _| panic!()));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent53.rs
+// ===========================================================================
+// Wave 32 agent 53 translations.
+
+/// `0x0084f6d0`: membership test in a chained hash table keyed by a
+/// `(u32, i32)` pair.  The hash mixes the first key with a murmur3-style
+/// finalizer, masked by `bucket_count - 1`; each chain node is compared on
+/// both key words.  `chains` is the bucket array (each bucket is a list of
+/// `(key_a, key_b)` nodes).  An empty bucket array reports `false`.
+pub fn w32a53_hash_contains(chains: &[Vec<(u32, i32)>], key_a: u32, key_b: i32) -> bool {
+    if chains.is_empty() {
+        return false;
+    }
+    let mut h = (key_a >> 16 ^ key_a).wrapping_mul(0x85eb_ca6b);
+    h = (h >> 13 ^ h).wrapping_mul(0xc2b2_ae35);
+    let idx = ((h >> 16 ^ h) as usize) & (chains.len().wrapping_sub(1));
+    chains
+        .get(idx)
+        .is_some_and(|b| b.iter().any(|&(a, b2)| a == key_a && b2 == key_b))
+}
+
+#[cfg(test)]
+mod tests_wave32_agent53 {
+    use super::*;
+
+    #[test]
+    fn empty_is_false() {
+        assert!(!w32a53_hash_contains(&[], 1, 2));
+    }
+
+    #[test]
+    fn finds_inserted() {
+        let mut t: Vec<Vec<(u32, i32)>> = vec![Vec::new(); 8];
+        let mut h = (7u32 >> 16 ^ 7).wrapping_mul(0x85eb_ca6b);
+        h = (h >> 13 ^ h).wrapping_mul(0xc2b2_ae35);
+        let i = ((h >> 16 ^ h) & 7) as usize;
+        t[i].push((7, 3));
+        assert!(w32a53_hash_contains(&t, 7, 3));
+        assert!(!w32a53_hash_contains(&t, 7, 4));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent54.rs
+// ===========================================================================
+// Wave 32 agent 54: glues::Control construction and widget move.
+
+/// `0x0087b0a0`: glues::Control constructor body.  `base_ctor` stands for
+/// the base constructor call; `obj` is the object as 32-bit words.
+pub fn w32a54_control_ctor(
+    obj: &mut [u32],
+    param_1: u32,
+    param_2: u32,
+    vftable: u32,
+    base_ctor: &mut dyn FnMut(&mut [u32]),
+) {
+    base_ctor(obj);
+    obj[0xd] = param_1;
+    obj[0xe] = param_2;
+    obj[0] = vftable;
+    // Byte at word 0xf is cleared; the rest of that word is untouched.
+    obj[0xf] &= !0xff;
+    obj[0x10] = 0;
+    obj[0x11] = 0;
+    obj[0x12] = 0;
+    obj[0x13] = 0xffff_ffff;
+}
+
+fn w32a54_rd(b: &[u8], off: usize) -> i16 {
+    i16::from_le_bytes([b[off], b[off + 1]])
+}
+
+fn w32a54_add(b: &mut [u8], off: usize, d: i16) {
+    let v = w32a54_rd(b, off).wrapping_add(d);
+    b[off..off + 2].copy_from_slice(&v.to_le_bytes());
+}
+
+/// `0x0087c580`: moves a widget record (`w`, the object at `this+4`) so its
+/// origin becomes (`x`, `y`).  Type 0xe widgets also shift the extra
+/// coordinate fields.  `apply` receives `[left, top, right, bottom]` offset
+/// per axis (the callee `FUN_0087c750`), once per axis.
+pub fn w32a54_move_widget(w: &mut [u8], x: i16, y: i16, apply: &mut dyn FnMut([i16; 4])) {
+    let dx = x.wrapping_sub(w32a54_rd(w, 4));
+    if w32a54_rd(w, 0x3c) == 0xe {
+        for off in [0x60, 0x64, 0x50, 0x54] {
+            w32a54_add(w, off, dx);
+        }
+    }
+    apply([
+        w32a54_rd(w, 4).wrapping_add(dx),
+        w32a54_rd(w, 6),
+        w32a54_rd(w, 8).wrapping_add(dx),
+        w32a54_rd(w, 10),
+    ]);
+    let dy = y.wrapping_sub(w32a54_rd(w, 6));
+    if w32a54_rd(w, 0x3c) == 0xe {
+        for off in [0x62, 0x66, 0x52, 0x56] {
+            w32a54_add(w, off, dy);
+        }
+    }
+    apply([
+        w32a54_rd(w, 4),
+        w32a54_rd(w, 6).wrapping_add(dy),
+        w32a54_rd(w, 8),
+        w32a54_rd(w, 10).wrapping_add(dy),
+    ]);
+}
+
+#[cfg(test)]
+mod tests_wave32_agent54 {
+    use super::*;
+
+    #[test]
+    fn ctor_sets_fields() {
+        let mut o = [7u32; 0x14];
+        w32a54_control_ctor(&mut o, 1, 2, 0x99, &mut |_| {});
+        assert_eq!((o[0xd], o[0xe], o[0]), (1, 2, 0x99));
+        assert_eq!(o[0xf], 0);
+        assert_eq!(o[0x13], u32::MAX);
+    }
+
+    #[test]
+    fn move_type_e() {
+        let mut w = [0u8; 0x70];
+        w[0x3c] = 0xe;
+        w[4..6].copy_from_slice(&10i16.to_le_bytes());
+        w[8..10].copy_from_slice(&20i16.to_le_bytes());
+        let mut calls = vec![];
+        w32a54_move_widget(&mut w, 15, 0, &mut |r| calls.push(r));
+        assert_eq!(calls[0], [15, 0, 25, 0]);
+        assert_eq!(w32a54_rd(&w, 0x60), 5);
+        assert_eq!(calls.len(), 2);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent55.rs
+// ===========================================================================
+// Wave 32 agent 55.
+
+/// `0x00880220`: scans the pointer-sized entry list (begin/count at object
+/// offsets 0x148/0x14c) and returns the first entry whose key, computed by
+/// `key_of` (the callee FUN_00609780 modelled as a closure), equals `wanted`;
+/// returns 0 when no entry matches.
+pub fn w32a55_find_entry(entries: &[u32], wanted: i32, key_of: impl Fn(u32) -> i32) -> u32 {
+    entries
+        .iter()
+        .copied()
+        .find(|&e| key_of(e) == wanted)
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests_wave32_agent55 {
+    use super::*;
+
+    #[test]
+    fn finds_first_match() {
+        let v = [10u32, 20, 30, 20];
+        assert_eq!(w32a55_find_entry(&v, 2, |e| (e / 10) as i32), 20);
+    }
+
+    #[test]
+    fn missing_returns_zero() {
+        assert_eq!(w32a55_find_entry(&[1, 2], 9, |e| e as i32), 0);
+        assert_eq!(w32a55_find_entry(&[], 0, |e| e as i32), 0);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent56.rs
+// ===========================================================================
+// Wave 32 translation batch 56: thiscall forwarders over an object whose
+// field at +4 is the inner target.
+
+/// `0x00886cb0`: when the event handler `handled` returns zero, forwards
+/// `(inner, event)` to `forward`; otherwise does nothing.
+pub fn w32a56_forward_unless_handled<E: Copy, I: Copy>(
+    inner: I,
+    event: E,
+    handled: impl FnOnce(E) -> u8,
+    forward: impl FnOnce(I, E),
+) {
+    if handled(event) == 0 {
+        forward(inner, event);
+    }
+}
+
+/// `0x00892460`: same shape as the 0x00886cb0 forwarder with a different
+/// forward target: runs `forward(inner, event)` only if `handled` is zero.
+pub fn w32a56_forward_unless_handled_b<E: Copy, I: Copy>(
+    inner: I,
+    event: E,
+    handled: impl FnOnce(E) -> u8,
+    forward: impl FnOnce(I, E),
+) {
+    if handled(event) == 0 {
+        forward(inner, event);
+    }
+}
+
+/// `0x00897750`: unconditionally forwards `(inner, arg)` to `forward`.
+pub fn w32a56_forward<E, I, R>(inner: I, arg: E, forward: impl FnOnce(I, E) -> R) -> R {
+    forward(inner, arg)
+}
+
+#[cfg(test)]
+mod tests_wave32_agent56 {
+    use super::*;
+
+    #[test]
+    fn forwards_only_when_unhandled() {
+        let mut got = vec![];
+        w32a56_forward_unless_handled(7u32, 9u32, |_| 0, |i, e| got.push((i, e)));
+        w32a56_forward_unless_handled(7u32, 9u32, |_| 1, |i, e| got.push((i + 1, e)));
+        w32a56_forward_unless_handled_b(1u32, 2u32, |_| 0, |i, e| got.push((i, e)));
+        assert_eq!(got, vec![(7, 9), (1, 2)]);
+    }
+
+    #[test]
+    fn plain_forward() {
+        assert_eq!(w32a56_forward(3, 4, |i, e| i * 10 + e), 34);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent58.rs
+// ===========================================================================
+// Wave 32 translation batch 58.
+//
+// Skipped: FUN_008a7060 (pure chain of unmodelled calls).
+
+/// `0x008a7d40`: walks a circular intrusive list (sentinel at object offset
+/// 0x800, first link at 0x804, next link at node+4) looking for a node whose
+/// short at +0x24 equals the object's short at 0x6f8; calls `visit` with the
+/// node payload offset (node+8) on the first match.  `links` maps a node
+/// offset to `(next, key)`.
+pub fn w32a58_visit_matching_node(
+    first: usize,
+    sentinel: usize,
+    wanted: i16,
+    links: &dyn Fn(usize) -> (usize, i16),
+    mut visit: impl FnMut(usize),
+) -> bool {
+    let mut node = first;
+    while node != sentinel {
+        let (next, key) = links(node);
+        if key == wanted {
+            visit(node + 8);
+            return true;
+        }
+        node = next;
+    }
+    false
+}
+
+/// `0x008c5130`: when the predicate (the event-type lookup) returns zero for
+/// `param`, forwards `param` to the fallback handler.  Returns whether the
+/// fallback ran.
+pub fn w32a58_forward_if_unmapped(
+    param: u32,
+    lookup: impl FnOnce(u32) -> u32,
+    fallback: impl FnOnce(u32),
+) -> bool {
+    if lookup(param) == 0 {
+        fallback(param);
+        true
+    } else {
+        false
+    }
+}
+
+#[cfg(test)]
+mod tests_wave32_agent58 {
+    use super::*;
+
+    #[test]
+    fn finds_node() {
+        // nodes at 0x10 -> 0x20 -> sentinel 0x800
+        let links = |n: usize| match n {
+            0x10 => (0x20, 1),
+            _ => (0x800, 7),
+        };
+        let mut got = None;
+        assert!(w32a58_visit_matching_node(0x10, 0x800, 7, &links, |p| {
+            got = Some(p)
+        }));
+        assert_eq!(got, Some(0x28));
+        assert!(!w32a58_visit_matching_node(0x10, 0x800, 9, &links, |_| {}));
+        assert!(!w32a58_visit_matching_node(0x800, 0x800, 1, &links, |_| {}));
+    }
+
+    #[test]
+    fn forwards() {
+        let mut seen = 0;
+        assert!(w32a58_forward_if_unmapped(5, |_| 0, |p| seen = p));
+        assert_eq!(seen, 5);
+        assert!(!w32a58_forward_if_unmapped(5, |_| 1, |_| panic!()));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent59.rs
+// ===========================================================================
+// Wave 32 translation batch 59: small forwarding helpers with callees
+// supplied by the caller.
+
+/// `0x008c5190`: if the event dispatcher (`FUN_0087c220`) does not handle
+/// the event (returns 0), forwards the event to the fallback handler
+/// (`FUN_0097e630`) using the object's field at offset 4.
+pub fn w32a59_dispatch_or_forward<E: Copy, T: Copy>(
+    event: E,
+    target: T,
+    dispatch: impl FnOnce(E) -> u8,
+    forward: impl FnOnce(T, E),
+) -> bool {
+    if dispatch(event) == 0 {
+        forward(target, event);
+        true
+    } else {
+        false
+    }
+}
+
+/// `0x008c6900`: thin forwarder of `(x, y)` to the point-in-rect test.
+pub fn w32a59_forward_point_test(x: i32, y: i32, test: impl FnOnce(i32, i32) -> bool) -> bool {
+    test(x, y)
+}
+
+/// `0x008df83e`: runs three teardown steps in order; the middle one takes 0.
+pub fn w32a59_teardown_sequence(
+    first: impl FnOnce(),
+    second: impl FnOnce(u32),
+    third: impl FnOnce(),
+) {
+    first();
+    second(0);
+    third();
+}
+
+#[cfg(test)]
+mod tests_wave32_agent59 {
+    #[test]
+    fn dispatch() {
+        let mut log = vec![];
+        assert!(super::w32a59_dispatch_or_forward(
+            1,
+            2,
+            |_| 0,
+            |t, e| log.push((t, e))
+        ));
+        assert_eq!(log, vec![(2, 1)]);
+        assert!(!super::w32a59_dispatch_or_forward(
+            1,
+            2,
+            |_| 1,
+            |_, _| panic!()
+        ));
+    }
+    #[test]
+    fn point() {
+        assert!(super::w32a59_forward_point_test(3, 4, |x, y| x + y == 7));
+    }
+    #[test]
+    fn teardown() {
+        let log = std::cell::RefCell::new(vec![]);
+        super::w32a59_teardown_sequence(
+            || log.borrow_mut().push(1),
+            |v| log.borrow_mut().push(10 + v),
+            || log.borrow_mut().push(3),
+        );
+        assert_eq!(*log.borrow(), vec![1, 10, 3]);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent60.rs
+// ===========================================================================
+// Wave 32 translation batch 60.
+//
+// Skipped: FUN_008f9980 (ends in a non-returning call), FUN_008ff6d0
+// (SEH / lambda glue ending in a non-returning call).
+
+/// `0x008ee0b0`: linear search of a table of 0x28-byte records for an exact
+/// byte-string key.  Each entry is `(data, len)` (data pointer at +8, length
+/// at +0xc).  The first `min(len, key_len)` bytes are compared with the
+/// word/byte memcmp (`FUN_0055c520`); on equality the result is
+/// `len - key_len`, so only equal-length entries match.  Returns the index
+/// of the first match, or `entries.len()` (the end iterator) when none.
+pub fn w32a60_find_record(entries: &[(&[u8], u32)], key: &[u8], key_len: u32) -> usize {
+    for (i, (data, len)) in entries.iter().enumerate() {
+        let n = (*len).min(key_len) as usize;
+        let mut diff = 0u32;
+        if data[..n] != key[..n] {
+            diff = 1;
+        }
+        if diff == 0 {
+            diff = len.wrapping_sub(key_len);
+        }
+        if diff == 0 {
+            return i;
+        }
+    }
+    entries.len()
+}
+
+#[cfg(test)]
+mod tests_wave32_agent60 {
+    use super::*;
+
+    #[test]
+    fn finds_exact_length_match() {
+        let e: [(&[u8], u32); 3] = [(b"abc", 3), (b"abcd", 4), (b"xyz", 3)];
+        assert_eq!(w32a60_find_record(&e, b"abcd", 4), 1);
+        assert_eq!(w32a60_find_record(&e, b"xyz", 3), 2);
+        assert_eq!(w32a60_find_record(&e, b"abd", 3), 3);
+        assert_eq!(w32a60_find_record(&[], b"a", 1), 0);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent62.rs
+// ===========================================================================
+// Wave 32 translation batch 62: tiny forwarding wrappers.
+
+/// `0x00910600`: forwards a constant zero argument to the callee
+/// (FUN_0087b4a0); the callee is caller-supplied.
+pub fn w32a62_call_with_zero<F: FnOnce(u32)>(callee: F) {
+    callee(0);
+}
+
+/// `0x00917d00`: control-flow-guard check on an indirect call, then a tail
+/// call to FUN_009233d0 (modelled as a closure).
+pub fn w32a62_guarded_forward<F: FnOnce()>(callee: F) {
+    callee();
+}
+
+/// `0x00918290`: invokes the virtual method at vtable offset `0x78` of the
+/// receiver with `param`, and always returns 1.
+pub fn w32a62_vcall_0x78_returns_one<F: FnOnce(u32)>(vcall: F, param: u32) -> u32 {
+    vcall(param);
+    1
+}
+
+#[cfg(test)]
+mod tests_wave32_agent62 {
+    use super::*;
+
+    #[test]
+    fn wrappers_forward() {
+        let mut v = 9;
+        w32a62_call_with_zero(|a| v = a);
+        assert_eq!(v, 0);
+        let mut hit = false;
+        w32a62_guarded_forward(|| hit = true);
+        assert!(hit);
+        let mut got = 0;
+        assert_eq!(w32a62_vcall_0x78_returns_one(|p| got = p, 7), 1);
+        assert_eq!(got, 7);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent64.rs
+// ===========================================================================
+// Wave 32 agent 64: path trimming helpers.
+
+fn w32a64_cstr_len(buf: &[u8]) -> usize {
+    buf.iter().position(|&b| b == 0).unwrap_or(buf.len())
+}
+
+/// `0x0093f380`: truncates a NUL-terminated path in place after its last
+/// `/` or `\` separator (keeping the separator), i.e. removes the file name.
+/// When the cut point lies inside the root prefix, the string is cut at the
+/// root length instead.
+pub fn w32a64_strip_filename(buf: &mut [u8]) {
+    let len = w32a64_cstr_len(buf);
+    let mut cut = 0usize;
+    for (i, &c) in buf[..len].iter().enumerate() {
+        if c == b'/' || c == b'\\' {
+            cut = i + 1;
+        }
+    }
+    if len != 0 && cut != 0 {
+        let root = crate::runtime::w31a57_path_root_len(buf);
+        if cut < root {
+            buf[root] = 0;
+            return;
+        }
+    }
+    buf[cut] = 0;
+}
+
+/// `0x0093f3d0`: when the path is longer than its root prefix, drops one
+/// trailing separator and then strips the last path component with
+/// the routine at `0x0093f380`.
+pub fn w32a64_strip_last_component(buf: &mut [u8]) {
+    let len = w32a64_cstr_len(buf);
+    let root = crate::runtime::w31a57_path_root_len(buf);
+    if root < len {
+        if buf[len - 1] == b'\\' || buf[len - 1] == b'/' {
+            buf[len - 1] = 0;
+        }
+        w32a64_strip_filename(buf);
+    }
+}
+
+#[cfg(test)]
+mod tests_wave32_agent64 {
+    use super::*;
+
+    fn s(b: &[u8]) -> String {
+        let n = w32a64_cstr_len(b);
+        String::from_utf8_lossy(&b[..n]).into_owned()
+    }
+
+    #[test]
+    fn strip_filename_cases() {
+        let mut a = b"C:\\dir\\file.txt\0".to_vec();
+        w32a64_strip_filename(&mut a);
+        assert_eq!(s(&a), "C:\\dir\\");
+        let mut b = b"file\0".to_vec();
+        w32a64_strip_filename(&mut b);
+        assert_eq!(s(&b), "");
+    }
+
+    #[test]
+    fn strip_last_component_cases() {
+        let mut a = b"C:\\dir\\sub\\\0".to_vec();
+        w32a64_strip_last_component(&mut a);
+        assert_eq!(s(&a), "C:\\dir\\");
+        let mut b = b"C:\\\0".to_vec();
+        w32a64_strip_last_component(&mut b);
+        assert_eq!(s(&b), "C:\\");
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent65.rs
+// ===========================================================================
+// Wave 32 agent 65 translations (runtime helpers).
+
+/// `0x0093fe50`: returns 1 when `path` is non-empty and the attribute query
+/// yields a value that is not `0xffffffff` and lacks the directory bit
+/// (`0x10`); otherwise 0.  `attrs` models the callee at `FUN_0093ff30`.
+pub fn w32a65_is_regular_file(path: Option<&str>, attrs: impl FnOnce(&str) -> u32) -> u32 {
+    match path {
+        Some(p) if !p.is_empty() => {
+            let a = attrs(p);
+            u32::from(a != 0xffff_ffff && (a & 0x10) == 0)
+        }
+        _ => 0,
+    }
+}
+
+/// Allocator vtable model used by the two helpers below.
+pub trait W32a65Allocator {
+    /// vtable slot +4: allocate(size, align)
+    fn alloc(&mut self, size: u32, align: u32) -> u32;
+    /// vtable slot +8: realloc(ptr, size, align)
+    fn realloc(&mut self, ptr: u32, size: u32, align: u32) -> u32;
+    /// vtable slot +0xc: usable size(ptr, size)
+    fn size_of(&mut self, ptr: u32, size: u32) -> u32;
+    /// vtable slot +0x10: free(ptr)
+    fn free(&mut self, ptr: u32);
+}
+
+/// `0x0094be90`: realloc-style entry.  A null `ptr` allocates
+/// `max(size,1)` bytes aligned 8; a zero `size` frees and returns 0;
+/// otherwise reallocates to `size + 0x10` aligned 8.
+pub fn w32a65_realloc(a: &mut dyn W32a65Allocator, ptr: u32, size: u32) -> u32 {
+    if ptr == 0 {
+        let n = if size != 0 { size } else { 1 };
+        return a.alloc(n, 8);
+    }
+    if size == 0 {
+        a.free(ptr);
+        return 0;
+    }
+    a.realloc(ptr, size.wrapping_add(0x10), 8)
+}
+
+/// `0x0094bf00`: returns 0 for a null `ptr`, else the allocator's size
+/// query for `(ptr, size + 0x10)`.
+pub fn w32a65_msize(a: &mut dyn W32a65Allocator, ptr: u32, size: u32) -> u32 {
+    if ptr == 0 {
+        return 0;
+    }
+    a.size_of(ptr, size.wrapping_add(0x10))
+}
+
+#[cfg(test)]
+mod tests_wave32_agent65 {
+    use super::*;
+
+    #[derive(Default)]
+    struct M(Vec<String>);
+    impl W32a65Allocator for M {
+        fn alloc(&mut self, s: u32, a: u32) -> u32 {
+            self.0.push(format!("a{s},{a}"));
+            100
+        }
+        fn realloc(&mut self, p: u32, s: u32, a: u32) -> u32 {
+            self.0.push(format!("r{p},{s},{a}"));
+            200
+        }
+        fn size_of(&mut self, p: u32, s: u32) -> u32 {
+            self.0.push(format!("s{p},{s}"));
+            s
+        }
+        fn free(&mut self, p: u32) {
+            self.0.push(format!("f{p}"));
+        }
+    }
+
+    #[test]
+    fn file_check() {
+        assert_eq!(w32a65_is_regular_file(None, |_| 0), 0);
+        assert_eq!(w32a65_is_regular_file(Some(""), |_| 0), 0);
+        assert_eq!(w32a65_is_regular_file(Some("x"), |_| 0xffff_ffff), 0);
+        assert_eq!(w32a65_is_regular_file(Some("x"), |_| 0x10), 0);
+        assert_eq!(w32a65_is_regular_file(Some("x"), |_| 0x20), 1);
+    }
+
+    #[test]
+    fn realloc_paths() {
+        let mut m = M::default();
+        assert_eq!(w32a65_realloc(&mut m, 0, 0), 100);
+        assert_eq!(w32a65_realloc(&mut m, 0, 5), 100);
+        assert_eq!(w32a65_realloc(&mut m, 7, 0), 0);
+        assert_eq!(w32a65_realloc(&mut m, 7, 5), 200);
+        assert_eq!(m.0, ["a1,8", "a5,8", "f7", "r7,21,8"]);
+    }
+
+    #[test]
+    fn msize_paths() {
+        let mut m = M::default();
+        assert_eq!(w32a65_msize(&mut m, 0, 4), 0);
+        assert_eq!(w32a65_msize(&mut m, 3, 4), 20);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent66.rs
+// ===========================================================================
+// Wave 32 agent 66 translations.
+
+/// `0x00955c30`: maps a key to a byte.  When the feature flag is off it
+/// fails; when `count < 2` the key's low byte is returned directly;
+/// otherwise the 8-byte records (`u32` key, byte at +4) are searched and the
+/// matching record's byte is returned.
+pub fn w32a66_lookup_byte(flag: bool, key: u32, count: u32, table: &[[u8; 8]]) -> Option<u8> {
+    if !flag {
+        return None;
+    }
+    if count < 2 {
+        return Some(key as u8);
+    }
+    table
+        .iter()
+        .take(0xfb)
+        .find(|r| u32::from_le_bytes([r[0], r[1], r[2], r[3]]) == key)
+        .map(|r| r[4])
+}
+
+#[cfg(test)]
+mod tests_wave32_agent66 {
+    use super::*;
+
+    #[test]
+    fn lookup() {
+        let t = [[7, 0, 0, 0, 9, 0, 0, 0]];
+        assert_eq!(w32a66_lookup_byte(false, 7, 5, &t), None);
+        assert_eq!(w32a66_lookup_byte(true, 0x1ff, 1, &t), Some(0xff));
+        assert_eq!(w32a66_lookup_byte(true, 7, 5, &t), Some(9));
+        assert_eq!(w32a66_lookup_byte(true, 8, 5, &t), None);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent67.rs
+// ===========================================================================
+// Wave 32 agent 67.
+
+/// `0x0095b830`: exact-key lookup in a sorted map (std::map lower_bound
+/// then equality check).  Returns the index of the entry whose key equals
+/// `wanted`, or `None` (the original returns a null value pointer).
+pub fn w32a67_map_find_index(keys_sorted: &[u32], wanted: u32) -> Option<usize> {
+    let i = keys_sorted.partition_point(|&k| k < wanted);
+    if i < keys_sorted.len() && keys_sorted[i] <= wanted {
+        Some(i)
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests_wave32_agent67 {
+    use super::*;
+
+    #[test]
+    fn finds_exact_key() {
+        let k = [1, 5, 9];
+        assert_eq!(w32a67_map_find_index(&k, 5), Some(1));
+        assert_eq!(w32a67_map_find_index(&k, 6), None);
+        assert_eq!(w32a67_map_find_index(&k, 10), None);
+        assert_eq!(w32a67_map_find_index(&[], 1), None);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent69.rs
+// ===========================================================================
+// Wave 32 agent 69.
+
+/// Node fields touched by `0x009814d0`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct W32a69Node {
+    pub a: i16,
+    pub b: i16,
+    pub last_adjust: i16,
+}
+
+/// `0x009814d0`: walks the node list; removes the previous adjustment from
+/// both fields, then re-applies a new one: 0 when `is_flagged(i)`, else
+/// `delta(i)` halved (truncating toward zero) unless `is_full(i)`.
+pub fn w32a69_update_nodes(
+    nodes: &mut [W32a69Node],
+    is_flagged: impl Fn(usize) -> bool,
+    is_full: impl Fn(usize) -> bool,
+    delta: impl Fn(usize) -> i32,
+) {
+    for (i, n) in nodes.iter_mut().enumerate() {
+        n.a = n.a.wrapping_sub(n.last_adjust);
+        n.b = n.b.wrapping_sub(n.last_adjust);
+        let v = if is_flagged(i) {
+            0
+        } else {
+            let full = is_full(i);
+            let d = delta(i);
+            if full { d } else { d / 2 }
+        };
+        let s = v as i16;
+        n.a = n.a.wrapping_add(s);
+        n.b = n.b.wrapping_add(s);
+        n.last_adjust = s;
+    }
+}
+
+#[cfg(test)]
+mod tests_wave32_agent69 {
+    use super::*;
+    #[test]
+    fn adjusts() {
+        let mut n = [W32a69Node {
+            a: 10,
+            b: 20,
+            last_adjust: 2,
+        }];
+        w32a69_update_nodes(&mut n, |_| false, |_| false, |_| 7);
+        assert_eq!(
+            n[0],
+            W32a69Node {
+                a: 11,
+                b: 21,
+                last_adjust: 3
+            }
+        );
+        w32a69_update_nodes(&mut n, |_| true, |_| false, |_| 7);
+        assert_eq!(
+            n[0],
+            W32a69Node {
+                a: 8,
+                b: 18,
+                last_adjust: 0
+            }
+        );
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent70.rs
+// ===========================================================================
+// Wave 32 translation batch 70.
+
+/// `0x009866f0`: writes an object's name string into a caller sink.  The
+/// byte count is clamped to 0x100; when flag 0x1000000 of `flags` is set the
+/// string is wide and only `count / 2` units are copied.  A missing string
+/// uses `(null)` (wide) or the default narrow text.  Returns 0x25 when there
+/// is no destination, else 0.
+pub fn w32a70_copy_name(
+    has_dest: bool,
+    requested: i32,
+    flags: u32,
+    narrow: Option<&[u8]>,
+    wide: Option<&[u16]>,
+    default_narrow: &[u8],
+    mut copy_narrow: impl FnMut(&[u8], i32),
+    mut copy_wide: impl FnMut(&[u16], i32),
+) -> u32 {
+    if !has_dest {
+        return 0x25;
+    }
+    let count = if requested < 0x101 { requested } else { 0x100 };
+    let is_wide = flags & 0x100_0000 != 0;
+    if is_wide {
+        match wide {
+            Some(w) => copy_wide(w, count / 2),
+            None => {
+                let null: Vec<u16> = "(null)".encode_utf16().chain(Some(0)).collect();
+                copy_wide(&null, count / 2)
+            }
+        }
+    } else {
+        match narrow {
+            Some(n) => copy_narrow(n, count),
+            None => copy_narrow(default_narrow, count),
+        }
+    }
+    0
+}
+
+/// `0x00986db0`: reports a surface/format description.  Optionally copies a
+/// name, then fills `out` by `query` (2 = field 0x18, 1 = `query_one`, 4 =
+/// byte size computed from `format`, `row_count` and `class_map`).
+/// Returns 0x25 on missing arguments, else 0.
+pub fn w32a70_format_query(
+    has_obj: bool,
+    has_name_dest: bool,
+    name_copy: &mut dyn FnMut(),
+    out: Option<&mut u32>,
+    query: u32,
+    field18: u32,
+    format: u32,
+    row_count: u32,
+    class_map: &[u8],
+    query_one: u32,
+) -> u32 {
+    if !has_obj {
+        return 0x25;
+    }
+    let out = if has_name_dest {
+        name_copy();
+        match out {
+            None => return 0,
+            Some(o) => o,
+        }
+    } else {
+        match out {
+            None => return 0x25,
+            Some(o) => o,
+        }
+    };
+    match query {
+        2 => {
+            *out = field18;
+            return 0;
+        }
+        1 => {
+            *out = query_one;
+            return 0;
+        }
+        4 => {}
+        _ => return 0,
+    }
+    let u = field18;
+    let bits = match format {
+        0 | 6..=15 => {
+            let c = class_map.get(format as usize).copied().unwrap_or(5);
+            match c {
+                0 => *out = 0,
+                1 => {
+                    let v = ((u as u64 + 0xd) * 0x1_2492_4925) >> 0x21;
+                    *out = ((v as u32) & 0xffff_fff8).wrapping_mul(row_count);
+                }
+                2 => {
+                    *out = (u.wrapping_add(0x3f) >> 6)
+                        .wrapping_mul(0x24)
+                        .wrapping_mul(row_count)
+                }
+                3 => {
+                    let v = ((u as u64 + 0x1b) * 0x1_2492_4925) >> 0x21;
+                    *out = ((v as u32) & 0xffff_fff0).wrapping_mul(row_count);
+                }
+                4 => *out = u,
+                _ => {}
+            }
+            return 0;
+        }
+        1 => 8u64,
+        2 => 0x10,
+        3 => 0x18,
+        4 | 5 => 0x20,
+        _ => return 0,
+    };
+    *out = (((bits * u as u64) >> 3) as u32).wrapping_mul(row_count);
+    0
+}
+
+#[cfg(test)]
+mod tests_wave32_agent70 {
+    use super::*;
+
+    #[test]
+    fn copy_name_clamps() {
+        let mut got = (0, 0);
+        let r = w32a70_copy_name(
+            true,
+            999,
+            0,
+            Some(b"ab"),
+            None,
+            b"x",
+            |_, n| got.0 = n,
+            |_, _| {},
+        );
+        assert_eq!((r, got.0), (0, 0x100));
+        let r = w32a70_copy_name(
+            true,
+            10,
+            0x100_0000,
+            None,
+            None,
+            b"x",
+            |_, _| {},
+            |s, n| got.1 = n + s.len() as i32,
+        );
+        assert_eq!((r, got.1), (0, 5 + 7));
+        assert_eq!(
+            w32a70_copy_name(false, 1, 0, None, None, b"", |_, _| {}, |_, _| {}),
+            0x25
+        );
+    }
+
+    #[test]
+    fn format_query_sizes() {
+        let mut o = 0;
+        w32a70_format_query(true, false, &mut || {}, Some(&mut o), 4, 16, 3, 2, &[], 0);
+        assert_eq!(o, ((0x18 * 16) >> 3) * 2);
+        w32a70_format_query(true, false, &mut || {}, Some(&mut o), 2, 77, 0, 0, &[], 0);
+        assert_eq!(o, 77);
+        assert_eq!(
+            w32a70_format_query(true, false, &mut || {}, None, 2, 0, 0, 0, &[], 0),
+            0x25
+        );
+        w32a70_format_query(
+            true,
+            false,
+            &mut || {},
+            Some(&mut o),
+            4,
+            100,
+            6,
+            3,
+            &[0, 0, 0, 0, 0, 0, 2],
+            0,
+        );
+        assert_eq!(o, (100 + 0x3f >> 6) * 0x24 * 3);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent71.rs
+// ===========================================================================
+// Wave 32 agent 71: small object-record getters.
+
+/// Bounded string copy (callee 0099ed50 shape): copies up to `n` bytes of
+/// `src`, stopping after the NUL terminator.
+pub fn w32a71_copy_bounded(dst: &mut [u8], src: &[u8], n: usize) {
+    for i in 0..n.min(dst.len()) {
+        let c = src.get(i).copied().unwrap_or(0);
+        dst[i] = c;
+        if c == 0 {
+            break;
+        }
+    }
+}
+
+/// Unbounded NUL-terminated copy (callee 0099eba0 shape), including the NUL.
+pub fn w32a71_copy_cstr(dst: &mut [u8], src: &[u8]) {
+    for i in 0..dst.len() {
+        let c = src.get(i).copied().unwrap_or(0);
+        dst[i] = c;
+        if c == 0 {
+            break;
+        }
+    }
+}
+
+/// Fields read by `0x0099d6a0` (object offsets 0x6c name, 0x8c, 0x90, 0xbc, 0xc0).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct W32a71Info {
+    pub name: [u8; 0x20],
+    pub f8c: u32,
+    pub f90: u32,
+    pub fbc: u32,
+    pub fc0: u32,
+}
+
+/// `0x0099d6a0`: optional-output getter; copies up to 0x20 name bytes and
+/// the four scalar fields into whichever outputs are supplied.  Returns 0.
+pub fn w32a71_get_info(
+    info: &W32a71Info,
+    name: Option<&mut [u8]>,
+    a: Option<&mut u32>,
+    b: Option<&mut u32>,
+    c: Option<&mut u32>,
+    d: Option<&mut u32>,
+) -> u32 {
+    if let Some(n) = name {
+        w32a71_copy_bounded(n, &info.name, 0x20);
+    }
+    if let Some(x) = a {
+        *x = info.f8c;
+    }
+    if let Some(x) = b {
+        *x = info.f90;
+    }
+    if let Some(x) = c {
+        *x = info.fbc;
+    }
+    if let Some(x) = d {
+        *x = info.fc0;
+    }
+    0
+}
+
+/// One 0x30-byte record: +0 u32, +4 u32, +0xc name, +0x1c name, +0x2c text.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct W32a71Entry {
+    pub v0: u32,
+    pub v4: u32,
+    pub name_c: Vec<u8>,
+    pub name_1c: Vec<u8>,
+    /// `None` models a null pointer at +0x2c.
+    pub text: Option<Vec<u8>>,
+}
+
+/// `0x0099db60`: fetch record `index` into optional outputs.  Returns
+/// 0x25 when `index` is out of range, else 0.
+#[allow(clippy::too_many_arguments)]
+pub fn w32a71_get_entry(
+    entries: &[W32a71Entry],
+    index: i32,
+    out_c: Option<&mut [u8]>,
+    out_1c: Option<&mut [u8]>,
+    text: Option<&mut [u8]>,
+    out0: Option<&mut u32>,
+    out4: Option<&mut u32>,
+) -> u32 {
+    if index < 0 || index as usize >= entries.len() {
+        return 0x25;
+    }
+    let e = &entries[index as usize];
+    if let Some(o) = out_c {
+        w32a71_copy_cstr(o, &e.name_c);
+    }
+    if let Some(t) = text {
+        if !t.is_empty() {
+            match &e.text {
+                None => t[0] = 0,
+                Some(s) => {
+                    let n = t.len();
+                    w32a71_copy_bounded(t, s, n);
+                }
+            }
+        }
+    }
+    if let Some(o) = out_1c {
+        w32a71_copy_cstr(o, &e.name_1c);
+    }
+    if let Some(o) = out0 {
+        *o = e.v0;
+    }
+    if let Some(o) = out4 {
+        *o = e.v4;
+    }
+    0
+}
+
+#[cfg(test)]
+mod tests_wave32_agent71 {
+    use super::*;
+
+    #[test]
+    fn info_getter() {
+        let mut info = W32a71Info {
+            f8c: 1,
+            f90: 2,
+            fbc: 3,
+            fc0: 4,
+            ..Default::default()
+        };
+        info.name[..3].copy_from_slice(b"ab\0");
+        let mut n = [9u8; 0x20];
+        let (mut a, mut b, mut c, mut d) = (0, 0, 0, 0);
+        let r = w32a71_get_info(
+            &info,
+            Some(&mut n),
+            Some(&mut a),
+            Some(&mut b),
+            Some(&mut c),
+            Some(&mut d),
+        );
+        assert_eq!((r, a, b, c, d), (0, 1, 2, 3, 4));
+        assert_eq!(&n[..4], b"ab\0\x09");
+        assert_eq!(w32a71_get_info(&info, None, None, None, None, None), 0);
+    }
+
+    #[test]
+    fn entry_getter() {
+        let es = vec![W32a71Entry {
+            v0: 7,
+            v4: 8,
+            name_c: b"x\0".to_vec(),
+            name_1c: b"y\0".to_vec(),
+            text: None,
+        }];
+        let (mut o0, mut o4) = (0, 0);
+        let mut c = [5u8; 4];
+        let mut t = [5u8; 4];
+        let r = w32a71_get_entry(
+            &es,
+            0,
+            Some(&mut c),
+            None,
+            Some(&mut t),
+            Some(&mut o0),
+            Some(&mut o4),
+        );
+        assert_eq!((r, o0, o4, c[0], t[0]), (0, 7, 8, b'x', 0));
+        assert_eq!(w32a71_get_entry(&es, 1, None, None, None, None, None), 0x25);
+        assert_eq!(
+            w32a71_get_entry(&es, -1, None, None, None, None, None),
+            0x25
+        );
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent74.rs
+// ===========================================================================
+// Wave 32 translation batch 74: FMOD glue (shutdown callback, name copy, no-sound driver name).
+
+/// `0x009c2f50`: shutdown/close hook.  Calls the object-level callback
+/// (`+0x1d0`) if set, else the fallback from the parent (`+0x5734`), with the
+/// two user words (`+0x1e4`, `+0x1e8`); then releases the handle at `+0x1c8`
+/// through `release` and clears it.  Always returns 0.
+pub fn w32a74_close_hook(
+    own_cb: Option<&dyn Fn(u32, u32)>,
+    parent_cb: Option<&dyn Fn(u32, u32)>,
+    user: (u32, u32),
+    handle: &mut u32,
+    release: &mut dyn FnMut(u32),
+) -> u32 {
+    if let Some(cb) = own_cb.or(parent_cb) {
+        cb(user.0, user.1);
+    }
+    if *handle != 0 {
+        release(*handle);
+        *handle = 0;
+    }
+    0
+}
+
+/// `0x009c57f0`: copies a NUL-terminated name into `dst[1..]` (up to 0x100
+/// bytes, zero padded).  Returns 0x25 (invalid param) when the length exceeds
+/// 0xff.
+pub fn w32a74_set_name(dst: &mut [u8], name: &[u8]) -> u32 {
+    let len = name.iter().position(|&b| b == 0).unwrap_or(name.len());
+    if len > 0xff {
+        return 0x25;
+    }
+    for i in 0..0x100usize {
+        if let Some(d) = dst.get_mut(1 + i) {
+            *d = if i < len { name[i] } else { 0 };
+        }
+    }
+    0
+}
+
+/// `0x009cfb40`: reports the driver name "NoSound Driver" into `out`
+/// (copy of at most `max` bytes, NUL padded).  Returns 0.
+pub fn w32a74_nosound_driver_name(out: &mut [u8], max: usize) -> u32 {
+    let src = b"NoSound Driver\0";
+    for i in 0..max.min(out.len()) {
+        out[i] = src.get(i).copied().unwrap_or(0);
+    }
+    0
+}
+
+#[cfg(test)]
+mod tests_wave32_agent74 {
+    use super::*;
+
+    #[test]
+    fn close_hook_prefers_own() {
+        let c = std::cell::Cell::new(0);
+        let own = |a: u32, b: u32| c.set(a + b);
+        let par = |_: u32, _: u32| c.set(99);
+        let mut h = 5;
+        let mut rel = 0;
+        let r = w32a74_close_hook(Some(&own), Some(&par), (1, 2), &mut h, &mut |x| rel = x);
+        assert_eq!((r, c.get(), h, rel), (0, 3, 0, 5));
+    }
+
+    #[test]
+    fn set_name_limits() {
+        let mut d = vec![0xffu8; 0x110];
+        assert_eq!(w32a74_set_name(&mut d, b"ab\0"), 0);
+        assert_eq!(&d[1..4], b"ab\0");
+        let long = vec![b'x'; 0x100];
+        assert_eq!(w32a74_set_name(&mut d, &long), 0x25);
+    }
+
+    #[test]
+    fn nosound() {
+        let mut o = [1u8; 20];
+        assert_eq!(w32a74_nosound_driver_name(&mut o, 20), 0);
+        assert_eq!(&o[..14], b"NoSound Driver");
+        assert_eq!(o[15], 0);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent75.rs
+// ===========================================================================
+// Wave 32 agent 75: small D3D wrapper glue modelled with caller closures.
+
+/// `0x009d0bc0`: adjusts the interface pointer by `-0x1c` (null stays null),
+/// asks `lookup(base + 0xe4)` for a handle and stores it at `base + 0x204`.
+/// A zero handle yields error `0x17`; otherwise the result of `follow_up`.
+pub fn w32a75_resolve_interface(
+    param: u32,
+    lookup: &mut dyn FnMut(u32) -> u32,
+    store: &mut dyn FnMut(u32, u32),
+    follow_up: &mut dyn FnMut() -> u32,
+) -> u32 {
+    let base = if param != 0 {
+        param.wrapping_sub(0x1c)
+    } else {
+        0
+    };
+    let handle = lookup(base.wrapping_add(0xe4));
+    store(base.wrapping_add(0x204), handle);
+    if handle == 0 {
+        return 0x17;
+    }
+    follow_up()
+}
+
+/// `0x009d7640`: runs the base step; if it succeeds and the object's field at
+/// `+0x18c` is non-null, runs the release step then the bind step on it.
+/// The first non-zero code is returned, else 0.
+pub fn w32a75_release_and_bind(
+    field_18c: u32,
+    base_step: &mut dyn FnMut() -> i32,
+    release_step: &mut dyn FnMut() -> i32,
+    bind_step: &mut dyn FnMut(u32) -> i32,
+) -> i32 {
+    let r = base_step();
+    if r != 0 {
+        return r;
+    }
+    if field_18c != 0 {
+        let r = release_step();
+        if r != 0 {
+            return r;
+        }
+        let r = bind_step(field_18c);
+        if r != 0 {
+            return r;
+        }
+    }
+    0
+}
+
+#[cfg(test)]
+mod tests_wave32_agent75 {
+    use super::*;
+
+    #[test]
+    fn resolve_interface_paths() {
+        let mut stored = Vec::new();
+        let r = w32a75_resolve_interface(
+            0x100,
+            &mut |a| {
+                assert_eq!(a, 0x100 - 0x1c + 0xe4);
+                0
+            },
+            &mut |a, v| stored.push((a, v)),
+            &mut || 7,
+        );
+        assert_eq!(r, 0x17);
+        assert_eq!(stored, vec![(0x100 - 0x1c + 0x204, 0)]);
+        let r = w32a75_resolve_interface(
+            0,
+            &mut |a| {
+                assert_eq!(a, 0xe4);
+                5
+            },
+            &mut |_, _| {},
+            &mut || 7,
+        );
+        assert_eq!(r, 7);
+    }
+
+    #[test]
+    fn release_and_bind_paths() {
+        assert_eq!(
+            w32a75_release_and_bind(1, &mut || 3, &mut || 0, &mut |_| 0),
+            3
+        );
+        assert_eq!(
+            w32a75_release_and_bind(0, &mut || 0, &mut || 9, &mut |_| 9),
+            0
+        );
+        assert_eq!(
+            w32a75_release_and_bind(1, &mut || 0, &mut || 4, &mut |_| 9),
+            4
+        );
+        assert_eq!(
+            w32a75_release_and_bind(2, &mut || 0, &mut || 0, &mut |p| p as i32 + 1),
+            3
+        );
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent76.rs
+// ===========================================================================
+// Wave 32 translation batch 76.
+//
+// Skipped: FUN_009d9900 and FUN_009daca0 (D3D device-object glue over opaque
+// vtable/struct layouts and unmodelled callees).
+
+/// `0x009d8f40`: if `param_1 != param_2` or `force` is set, first tries
+/// `release_cached` (only when `param_1 != 0` and its field `+0x20` is
+/// non-zero; the result is returned when non-zero), then `fallback`; the
+/// first non-zero result is returned, else 0.
+pub fn w32a76_try_refresh(
+    param_1: i32,
+    param_2: i32,
+    force: bool,
+    field_20_of_param_1: i32,
+    release_cached: impl FnOnce() -> i32,
+    fallback: impl FnOnce() -> i32,
+) -> i32 {
+    if param_1 == param_2 && !force {
+        return 0;
+    }
+    if param_1 != 0 && field_20_of_param_1 != 0 {
+        let r = release_cached();
+        if r != 0 {
+            return r;
+        }
+    }
+    fallback()
+}
+
+#[cfg(test)]
+mod tests_wave32_agent76 {
+    use super::*;
+
+    #[test]
+    fn refresh_paths() {
+        assert_eq!(w32a76_try_refresh(1, 1, false, 1, || 5, || 6), 0);
+        assert_eq!(w32a76_try_refresh(1, 1, true, 1, || 5, || 6), 5);
+        assert_eq!(w32a76_try_refresh(1, 2, false, 0, || 5, || 6), 6);
+        assert_eq!(w32a76_try_refresh(0, 2, false, 1, || 5, || 0), 0);
+        assert_eq!(w32a76_try_refresh(1, 2, false, 1, || 0, || 7), 7);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent77.rs
+// ===========================================================================
+// Wave 32 translation batch 77.
+//
+// CRT-style stream helpers: open, seek and bit-reader byte fill.
+
+/// Stream state used by the `0x009e40d0` / `0x009e4260` helpers (`this`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct W32a77Stream {
+    /// Underlying handle (0 = none).
+    pub handle: i32,
+    /// Current position.
+    pub pos: u32,
+    /// Memory-mode flag (byte at dword index 0x11).
+    pub mem_mode: bool,
+}
+
+/// `0x009e40d0`: opens a stream through `open`; stores handle, clears
+/// position, returns 0 on success or 0x17 when the open failed.
+pub fn w32a77_open(s: &mut W32a77Stream, open: impl FnOnce() -> i32) -> u32 {
+    let h = open();
+    s.pos = 0;
+    s.handle = h;
+    if h != 0 { 0 } else { 0x17 }
+}
+
+/// `0x009e4260`: seek to `target`. 0x21 when no handle; in memory mode a
+/// target before the current position is 0x25, otherwise `skip(delta)`
+/// result; else `seek` returning 0 updates the position, failure is 0x14.
+pub fn w32a77_seek(
+    s: &mut W32a77Stream,
+    target: u32,
+    skip: impl FnOnce(u32) -> u32,
+    seek: impl FnOnce(i32, u32) -> i32,
+) -> u32 {
+    if s.handle == 0 {
+        return 0x21;
+    }
+    if s.mem_mode {
+        if target < s.pos {
+            return 0x25;
+        }
+        return skip(target - s.pos);
+    }
+    if seek(s.handle, target) == 0 {
+        s.pos = target;
+        0
+    } else {
+        0x14
+    }
+}
+
+/// `0x009e4850`: fills `out` with bytes, each read as an 8-bit value.
+pub fn w32a77_read_bytes(out: &mut [u8], mut read_bits: impl FnMut(u32) -> u8) {
+    for b in out.iter_mut() {
+        *b = read_bits(8);
+    }
+}
+
+#[cfg(test)]
+mod tests_wave32_agent77 {
+    use super::*;
+
+    #[test]
+    fn open_codes() {
+        let mut s = W32a77Stream {
+            pos: 5,
+            ..Default::default()
+        };
+        assert_eq!(w32a77_open(&mut s, || 0), 0x17);
+        assert_eq!(s.pos, 0);
+        assert_eq!(w32a77_open(&mut s, || 3), 0);
+        assert_eq!(s.handle, 3);
+    }
+
+    #[test]
+    fn seek_paths() {
+        let mut s = W32a77Stream::default();
+        assert_eq!(w32a77_seek(&mut s, 4, |_| 0, |_, _| 0), 0x21);
+        s.handle = 1;
+        assert_eq!(w32a77_seek(&mut s, 4, |_| 0, |_, _| 0), 0);
+        assert_eq!(s.pos, 4);
+        assert_eq!(w32a77_seek(&mut s, 9, |_| 0, |_, _| 1), 0x14);
+        s.mem_mode = true;
+        assert_eq!(w32a77_seek(&mut s, 2, |_| 0, |_, _| 0), 0x25);
+        assert_eq!(w32a77_seek(&mut s, 6, |d| d + 10, |_, _| 0), 12);
+    }
+
+    #[test]
+    fn read_bytes() {
+        let mut o = [0u8; 3];
+        let mut n = 0;
+        w32a77_read_bytes(&mut o, |b| {
+            assert_eq!(b, 8);
+            n += 1;
+            n
+        });
+        assert_eq!(o, [1, 2, 3]);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent78.rs
+// ===========================================================================
+/// `0x009f0b40`: integer k-th root used for codebook quantisation values
+/// (`dim` = exponent, `entries` = value).  Starting from `guess` (the
+/// retail code seeds it from a floating-point exp/log estimate, which is
+/// supplied by the caller), it walks up or down until
+/// `r^dim <= entries < (r+1)^dim`.  Products use wrapping 32-bit math.
+pub fn w32a78_quant_values(dim: i32, entries: i32, guess: i32) -> i32 {
+    let mut r = guess;
+    loop {
+        let mut lo: i32 = 1;
+        let mut hi: i32 = 1;
+        let mut n = dim;
+        if n > 0 {
+            while n != 0 {
+                lo = lo.wrapping_mul(r);
+                hi = hi.wrapping_mul(r.wrapping_add(1));
+                n -= 1;
+            }
+        }
+        if lo <= entries && entries < hi {
+            return r;
+        }
+        r = r.wrapping_add(if lo <= entries { 1 } else { -1 });
+        if r.unsigned_abs() > 1 << 20 {
+            return r;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests_wave32_agent78 {
+    use super::*;
+
+    #[test]
+    fn quant_values_roots() {
+        assert_eq!(w32a78_quant_values(2, 16, 3), 4);
+        assert_eq!(w32a78_quant_values(3, 26, 5), 2);
+        assert_eq!(w32a78_quant_values(3, 27, 1), 3);
+        assert_eq!(w32a78_quant_values(1, 9, 9), 9);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent79.rs
+// ===========================================================================
+// Wave 32 translation batch 79: libogg page sync.
+//
+// Skipped: FUN_009f38e0, FUN_009f3960 (libvorbis mapping/floor setup that
+// depend on unmodelled bit-reader and allocator callees).
+
+/// Sync state mirroring the int-array layout used by the retail routine:
+/// `[0]` data, `[1]` returned-flag (negative = error), `[2]` fill,
+/// `[3]` returned offset, `[4]` unsynced, `[5]` header bytes, `[6]` body bytes.
+#[derive(Debug, Clone, Default)]
+pub struct W32a79OggSync {
+    pub data: Vec<u8>,
+    pub error: i32,
+    pub fill: i32,
+    pub returned: i32,
+    pub unsynced: i32,
+    pub headerbytes: i32,
+    pub bodybytes: i32,
+}
+
+/// Page location returned by the sync routine (offsets into `data`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct W32a79OggPage {
+    pub header: usize,
+    pub header_len: i32,
+    pub body: usize,
+    pub body_len: i32,
+}
+
+/// Ogg CRC-32 table (poly 0x04c11db7, MSB first), as stored in the retail image.
+pub fn w32a79_crc_table() -> [u32; 256] {
+    let mut t = [0u32; 256];
+    for (i, e) in t.iter_mut().enumerate() {
+        let mut r = (i as u32) << 24;
+        for _ in 0..8 {
+            r = if r & 0x8000_0000 != 0 {
+                (r << 1) ^ 0x04c1_1db7
+            } else {
+                r << 1
+            };
+        }
+        *e = r;
+    }
+    t
+}
+
+/// `0x009f2620`: ogg_sync_pageseek.  Returns the page length when a valid
+/// page is available (filling `page`), a negative skip count when bytes had
+/// to be dropped, and 0 when more data is needed.
+pub fn w32a79_ogg_sync_pageseek(oy: &mut W32a79OggSync, page: Option<&mut W32a79OggPage>) -> i32 {
+    if oy.error < 0 {
+        return 0;
+    }
+    let base = oy.returned as usize;
+    let bytes = oy.fill - oy.returned;
+    let mut resync = false;
+    if oy.headerbytes == 0 {
+        if bytes < 0x1b {
+            return 0;
+        }
+        if &oy.data[base..base + 4] != b"OggS" {
+            resync = true;
+        } else {
+            let segs = oy.data[base + 0x1a] as i32;
+            let headerbytes = segs + 0x1b;
+            if bytes < headerbytes {
+                return 0;
+            }
+            for i in 0..segs as usize {
+                oy.bodybytes += oy.data[base + 0x1b + i] as i32;
+            }
+            oy.headerbytes = headerbytes;
+        }
+    }
+    if !resync {
+        if oy.bodybytes + oy.headerbytes > bytes {
+            return 0;
+        }
+        let hb = oy.headerbytes as usize;
+        let bb = oy.bodybytes as usize;
+        let table = w32a79_crc_table();
+        let saved = u32::from_le_bytes(oy.data[base + 0x16..base + 0x1a].try_into().unwrap());
+        oy.data[base + 0x16..base + 0x1a].fill(0);
+        let mut crc = 0u32;
+        for &b in &oy.data[base..base + hb + bb] {
+            crc = (crc << 8) ^ table[((b as u32) ^ (crc >> 24)) as usize];
+        }
+        if crc == saved {
+            oy.data[base + 0x16..base + 0x1a].copy_from_slice(&crc.to_le_bytes());
+            if let Some(p) = page {
+                p.header = base;
+                p.header_len = oy.headerbytes;
+                p.body = base + hb;
+                p.body_len = oy.bodybytes;
+            }
+            oy.unsynced = 0;
+            let total = oy.headerbytes + oy.bodybytes;
+            oy.headerbytes = 0;
+            oy.bodybytes = 0;
+            oy.returned += total;
+            return total;
+        }
+        oy.data[base + 0x16..base + 0x1a].copy_from_slice(&saved.to_le_bytes());
+    }
+    oy.headerbytes = 0;
+    oy.bodybytes = 0;
+    let next = oy.data[base + 1..base + 1 + (bytes - 1) as usize]
+        .iter()
+        .position(|&b| b == b'O')
+        .map(|p| base + 1 + p)
+        .unwrap_or(oy.fill as usize);
+    oy.returned = next as i32;
+    base as i32 - next as i32
+}
+
+#[cfg(test)]
+mod tests_wave32_agent79 {
+    use super::*;
+
+    fn make_page(body: &[u8]) -> Vec<u8> {
+        let mut v = b"OggS".to_vec();
+        v.resize(0x1a, 0);
+        v.push(1);
+        v.push(body.len() as u8);
+        v.extend_from_slice(body);
+        let t = w32a79_crc_table();
+        let mut crc = 0u32;
+        for &b in &v {
+            crc = (crc << 8) ^ t[((b as u32) ^ (crc >> 24)) as usize];
+        }
+        v[0x16..0x1a].copy_from_slice(&crc.to_le_bytes());
+        v
+    }
+
+    #[test]
+    fn crc_table_known() {
+        let t = w32a79_crc_table();
+        assert_eq!(t[1], 0x04c1_1db7);
+        assert_eq!(t[255], 0xb1f7_40b4);
+    }
+
+    #[test]
+    fn seek_valid_page_and_resync() {
+        let page = make_page(b"hello");
+        let mut oy = W32a79OggSync {
+            data: page.clone(),
+            fill: page.len() as i32,
+            ..Default::default()
+        };
+        let mut p = W32a79OggPage::default();
+        assert_eq!(
+            w32a79_ogg_sync_pageseek(&mut oy, Some(&mut p)),
+            page.len() as i32
+        );
+        assert_eq!((p.body, p.body_len), (28, 5));
+        assert_eq!(oy.returned, page.len() as i32);
+
+        let mut data = b"xxxO".to_vec();
+        data.extend_from_slice(&page);
+        let mut oy = W32a79OggSync {
+            fill: data.len() as i32,
+            data,
+            ..Default::default()
+        };
+        assert_eq!(w32a79_ogg_sync_pageseek(&mut oy, None), -3);
+        assert_eq!(w32a79_ogg_sync_pageseek(&mut oy, None), -1);
+    }
+
+    #[test]
+    fn seek_needs_more_and_bad_crc() {
+        let mut oy = W32a79OggSync {
+            data: vec![0; 10],
+            fill: 10,
+            ..Default::default()
+        };
+        assert_eq!(w32a79_ogg_sync_pageseek(&mut oy, None), 0);
+        let mut page = make_page(b"hi");
+        let n = page.len();
+        page[n - 1] ^= 1;
+        let mut oy = W32a79OggSync {
+            data: page,
+            fill: n as i32,
+            ..Default::default()
+        };
+        assert!(w32a79_ogg_sync_pageseek(&mut oy, None) < 0);
+        assert_eq!(oy.headerbytes, 0);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent80.rs
+// ===========================================================================
+// Wave 32 translation batch 80: Vorbis-style codec helpers.
+
+/// `0x009f6bc0`: fills `out` with one byte per call of `read_bits(8)`
+/// (the 8-bit LSB-first reader at 0xaa_d220), in order.
+pub fn w32a80_read_bytes(out: &mut [u8], mut read_bits: impl FnMut(u32) -> u32) {
+    for b in out.iter_mut() {
+        *b = read_bits(8) as u8;
+    }
+}
+
+/// Result state of `0x009f3af0` (`param_2` dword fields that it writes).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct W32a80BlockState {
+    pub f0: i32,
+    pub f6: i32,
+    pub f7: i32,
+    pub f8: i32,
+    pub f9: i32,
+    pub f10: i32,
+    pub f11: i32,
+    pub f12_15: [i32; 4],
+}
+
+/// `0x009f3af0`: Vorbis block header parse.  `pre` models the first call
+/// (0x9f_34a0, non-zero result is returned as is), `init_buf` the buffer
+/// init (0x9f_03b0) from `src[0]`, `src[1]`, `read` the bit reader.
+/// `mode_bits` is the field at +0x10 of the mode info, `mode_blockflag(m)`
+/// the first dword of mode entry `m`.  `src` has 8 dwords.  Returns the
+/// status (0, -0x87, -0x88, or `pre`'s value).
+pub fn w32a80_block_header(
+    st: &mut W32a80BlockState,
+    src: &[i32; 8],
+    mode_bits: u32,
+    pre: impl FnOnce() -> i32,
+    init_buf: impl FnOnce(i32, i32),
+    mut read: impl FnMut(u32) -> i32,
+    mode_blockflag: impl Fn(i32) -> i32,
+) -> i32 {
+    let r = pre();
+    if r != 0 {
+        return r;
+    }
+    init_buf(src[0], src[1]);
+    if read(1) != 0 {
+        return -0x87;
+    }
+    let mode = read(mode_bits);
+    if mode != -1 {
+        st.f10 = mode;
+        let flag = mode_blockflag(mode);
+        st.f7 = flag;
+        let mut ok = true;
+        if flag == 0 {
+            st.f6 = 0;
+            st.f8 = 0;
+        } else {
+            st.f6 = read(1);
+            let v = read(1);
+            st.f8 = v;
+            ok = v != -1;
+        }
+        if ok {
+            st.f12_15 = [src[4], src[5], src[6], src[7]];
+            st.f11 = src[3];
+            st.f9 = 0;
+            st.f0 = 0;
+            return 0;
+        }
+    }
+    -0x88
+}
+
+/// `0x009f4610`: Vorbis floor1 packet decode.  `info` is the dword view of
+/// `param_3` (`[0x100]` posts, `[0x102]` range, `[0x82..]` neighbour
+/// table), `fl` the floor setup (`piVar1`).  `read_bits(n)` reads n bits,
+/// `decode(book)` is 0x9f_11a0 on codebook `book` (-1 as `u32::MAX`).
+/// Returns the post values or `None` (unused packet / error).
+pub fn w32a80_floor1_decode(
+    info: &[i32],
+    fl: &[i32],
+    mut read_bits: impl FnMut(u32) -> i32,
+    mut decode: impl FnMut(i32) -> u32,
+) -> Option<Vec<u32>> {
+    if read_bits(1) != 1 {
+        return None;
+    }
+    let n = *info.get(0x100)?;
+    let q = *info.get(0x102)?;
+    if n < 2 {
+        return None;
+    }
+    let mut out = vec![0u32; n as usize];
+    let mut bits = 0u32;
+    let mut t = (q - 1) as u32;
+    while t != 0 {
+        bits += 1;
+        t >>= 1;
+    }
+    out[0] = read_bits(bits) as u32;
+    out[1] = read_bits(bits) as u32;
+    let mut pos = 2usize;
+    for i in 0..*fl.first()? {
+        let cls = *fl.get(1 + i as usize)? as usize;
+        let cdim = *fl.get(cls + 0x20)?;
+        let csub = *fl.get(cls + 0x30)?;
+        let mut cval = 0u32;
+        if csub != 0 {
+            cval = decode(*fl.get(cls + 0x40)?);
+            if cval == u32::MAX {
+                return None;
+            }
+        }
+        for _ in 0..cdim {
+            let m = (1u32 << (csub as u32 & 31)) - 1;
+            let sel = cval & m;
+            cval = ((cval as i32) >> (csub as u32 & 31)) as u32;
+            let book = *fl.get(sel as usize + cls * 8 + 0x50)?;
+            let slot = out.get_mut(pos)?;
+            if book < 0 {
+                *slot = 0;
+            } else {
+                let v = decode(book);
+                *slot = v;
+                if v == u32::MAX {
+                    return None;
+                }
+            }
+            pos += 1;
+        }
+    }
+    for k in 2..n as usize {
+        let lo = *info.get(0x82 + k - 2)? as usize;
+        let hi = *info.get(0x82 + k - 2 + 0x3f)? as usize;
+        let xk = *fl.get(0xd3 + k - 2)?;
+        let xhi = *fl.get(hi + 0xd1)?;
+        let xlo = *fl.get(lo + 0xd1)?;
+        let _ = (xhi, xlo);
+        // piVar11 = info+0x82+(k-2): *piVar11 = lo, piVar11[0x3f] = hi.
+        let d = (out[lo] & 0x7fff).wrapping_sub(out[hi] & 0x7fff) as i32;
+        let den = xlo.wrapping_sub(xhi);
+        if den == 0 {
+            return None;
+        }
+        let mag = (d.wrapping_abs()).wrapping_mul(xk.wrapping_sub(xhi)) / den;
+        let adj = if d >= 0 { mag } else { -mag };
+        let pred = (out[hi] & 0x7fff).wrapping_add(adj as u32);
+        let cur = out[k];
+        if cur == 0 {
+            out[k] = pred | 0x8000;
+        } else {
+            let room = (q as u32).wrapping_sub(pred);
+            let lim = if (room as i32) < (pred as i32) {
+                room
+            } else {
+                pred
+            };
+            let step: i32 = if (cur as i32) < (lim as i32).wrapping_mul(2) {
+                if cur & 1 == 0 {
+                    (cur as i32) >> 1
+                } else {
+                    -(((cur + 1) as i32) >> 1)
+                }
+            } else if (pred as i32) < (room as i32) {
+                cur.wrapping_sub(pred) as i32
+            } else {
+                (room.wrapping_sub(cur) as i32) - 1
+            };
+            out[k] = (step as u32).wrapping_add(pred);
+            out[hi] &= 0x7fff;
+            out[lo] &= 0x7fff;
+        }
+    }
+    Some(out)
+}
+
+#[cfg(test)]
+mod tests_wave32_agent80 {
+    use super::*;
+
+    #[test]
+    fn bytes() {
+        let mut o = [0u8; 3];
+        let mut n = 0;
+        w32a80_read_bytes(&mut o, |b| {
+            assert_eq!(b, 8);
+            n += 1;
+            n
+        });
+        assert_eq!(o, [1, 2, 3]);
+    }
+
+    #[test]
+    fn header() {
+        let mut st = W32a80BlockState::default();
+        let src = [1, 2, 3, 4, 5, 6, 7, 8];
+        let mut seq = vec![0, 1, 0, 1].into_iter();
+        let r = w32a80_block_header(
+            &mut st,
+            &src,
+            3,
+            || 0,
+            |_, _| {},
+            |_| seq.next().unwrap(),
+            |_| 1,
+        );
+        assert_eq!(r, 0);
+        assert_eq!((st.f10, st.f7, st.f6, st.f8, st.f11), (1, 1, 0, 1, 4));
+        assert_eq!(st.f12_15, [5, 6, 7, 8]);
+        let r = w32a80_block_header(&mut st, &src, 3, || 0, |_, _| {}, |_| 1, |_| 0);
+        assert_eq!(r, -0x87);
+        let r = w32a80_block_header(&mut st, &src, 3, || 5, |_, _| {}, |_| 0, |_| 0);
+        assert_eq!(r, 5);
+        let r = w32a80_block_header(
+            &mut st,
+            &src,
+            3,
+            || 0,
+            |_, _| {},
+            |b| if b == 1 { 0 } else { -1 },
+            |_| 0,
+        );
+        assert_eq!(r, -0x88);
+    }
+
+    #[test]
+    fn floor_unused() {
+        assert!(w32a80_floor1_decode(&[0; 0x200], &[0; 0x200], |_| 0, |_| 0).is_none());
+    }
+
+    #[test]
+    fn floor_two_posts() {
+        let mut info = vec![0i32; 0x200];
+        info[0x100] = 2;
+        info[0x102] = 128;
+        let fl = vec![0i32; 0x200];
+        let mut c = 0;
+        let r = w32a80_floor1_decode(
+            &info,
+            &fl,
+            |b| {
+                c += 1;
+                if b == 1 { 1 } else { 10 + c }
+            },
+            |_| 0,
+        )
+        .unwrap();
+        assert_eq!(r, vec![12, 13]);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent81.rs
+// ===========================================================================
+// Wave 32 agent 81: Vorbis header helpers (comment unpack, quant values).
+
+/// Bit source consumed by the comment unpacker (models the reader object).
+pub trait W32a81Reader {
+    /// Reads `bits` bits as a signed value (the bit-read helper).
+    fn read(&mut self, bits: u32) -> i32;
+    /// Total bit budget field of the reader.
+    fn total(&self) -> i32;
+    /// Current position helper value.
+    fn pos(&self) -> i32;
+}
+
+/// Unpacked comment block: vendor bytes plus comment strings.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct W32a81Comment {
+    pub vendor: Vec<u8>,
+    pub comments: Vec<Vec<u8>>,
+}
+
+/// `0x009f6e90`: unpacks a Vorbis comment header; `None` on any bounds
+/// failure or a missing framing bit (the original frees and returns -133).
+pub fn w32a81_comment_unpack<R: W32a81Reader>(r: &mut R) -> Option<W32a81Comment> {
+    let vlen = r.read(0x20);
+    if vlen < 0 || vlen > r.total() - 8 {
+        return None;
+    }
+    let mut out = W32a81Comment::default();
+    for _ in 0..vlen {
+        out.vendor.push(r.read(8) as u8);
+    }
+    let n = r.read(0x20);
+    if n < 0 || n > (r.total() - r.pos()) >> 2 {
+        return None;
+    }
+    for _ in 0..n {
+        let len = r.read(0x20);
+        if len < 0 || r.total() - r.pos() < len {
+            return None;
+        }
+        let mut s = Vec::with_capacity(len as usize);
+        for _ in 0..len {
+            s.push(r.read(8) as u8);
+        }
+        out.comments.push(s);
+    }
+    if r.read(1) == 1 { Some(out) } else { None }
+}
+
+/// `0x009f8640`: largest integer `v` with `v^dim <= entries < (v+1)^dim`
+/// (Vorbis lookup-table quantization values).  `None` for `dim <= 0`.
+pub fn w32a81_quantvals(dim: i32, entries: i32) -> Option<i32> {
+    if dim <= 0 || entries < 1 {
+        return None;
+    }
+    let mut v = (entries as f64).powf(1.0 / dim as f64) as i32;
+    loop {
+        let (mut lo, mut hi) = (1i64, 1i64);
+        for _ in 0..dim {
+            lo = lo.wrapping_mul(v as i64);
+            hi = hi.wrapping_mul(v as i64 + 1);
+        }
+        let e = entries as i64;
+        if lo <= e && e < hi {
+            return Some(v);
+        }
+        v += if lo <= e { 1 } else { -1 };
+        if v < 0 {
+            return None;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests_wave32_agent81 {
+    use super::*;
+
+    struct R(Vec<u8>, usize);
+    impl W32a81Reader for R {
+        fn read(&mut self, bits: u32) -> i32 {
+            let mut v: u64 = 0;
+            for i in 0..bits as usize / 8 + (bits % 8 != 0) as usize {
+                v |= (*self.0.get(self.1 + i).unwrap_or(&0) as u64) << (8 * i);
+            }
+            self.1 += bits as usize / 8;
+            if bits == 1 {
+                self.1 += 1;
+            }
+            (v & ((1u64 << bits) - 1)) as i32
+        }
+        fn total(&self) -> i32 {
+            self.0.len() as i32
+        }
+        fn pos(&self) -> i32 {
+            self.1 as i32
+        }
+    }
+
+    #[test]
+    fn quantvals() {
+        assert_eq!(w32a81_quantvals(2, 16), Some(4));
+        assert_eq!(w32a81_quantvals(3, 26), Some(2));
+        assert_eq!(w32a81_quantvals(0, 5), None);
+    }
+
+    #[test]
+    fn comment() {
+        let mut b = vec![2, 0, 0, 0, b'a', b'b', 1, 0, 0, 0, 1, 0, 0, 0, b'x', 1];
+        let c = w32a81_comment_unpack(&mut R(b.clone(), 0)).unwrap();
+        assert_eq!(c.vendor, b"ab");
+        assert_eq!(c.comments, vec![b"x".to_vec()]);
+        b.pop();
+        b.push(0);
+        assert!(w32a81_comment_unpack(&mut R(b, 0)).is_none());
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent83.rs
+// ===========================================================================
+// Wave 32 translation batch 83.
+
+/// Context record (7 dwords) initialised by `w32a83_init_context`.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct W32a83Ctx {
+    pub first: u32,
+    pub desc_present: bool,
+    pub status: u32,
+    pub field3: u32,
+    pub flags: u32,
+    pub param: u32,
+    pub state: Option<u32>,
+}
+
+/// Descriptor (4 dwords): word0, kind (must be 5), flags, init callback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct W32a83Desc {
+    pub word0: u32,
+    pub kind: u32,
+    pub flags: u32,
+}
+
+/// `0x00a04e50`: validates version 10 and the descriptor, then runs the
+/// descriptor's init callback.  `init` returns (status, optional state word
+/// stored at ctx[6]); `cleanup` stands for the teardown helper called on
+/// failure.  Returns the status, also stored in `ctx.status` when present.
+pub fn w32a83_init_context(
+    ctx: Option<&mut W32a83Ctx>,
+    desc: Option<&W32a83Desc>,
+    param3: u32,
+    req_flags: u32,
+    version: i32,
+    init: impl FnOnce(&mut W32a83Ctx) -> u32,
+    cleanup: impl FnOnce(&mut W32a83Ctx),
+) -> u32 {
+    let mut ctx = ctx;
+    let status = (|| {
+        if version != 10 {
+            return 3;
+        }
+        let (Some(c), Some(d)) = (ctx.as_deref_mut(), desc) else {
+            return 8;
+        };
+        if d.kind != 5 {
+            return 3;
+        }
+        if (req_flags & 0x10000 != 0 && d.flags & 0x40000 == 0)
+            || (req_flags & 0x20000 != 0 && d.flags & 0x80000 == 0)
+            || (req_flags & 0x40000 != 0 && d.flags & 0x100000 == 0)
+            || d.flags & 1 == 0
+        {
+            return 4;
+        }
+        *c = W32a83Ctx {
+            first: d.word0,
+            desc_present: true,
+            status: 0,
+            field3: 0,
+            flags: req_flags,
+            param: param3,
+            state: None,
+        };
+        let r = init(c);
+        if r != 0 {
+            c.field3 = c.state.unwrap_or(0);
+            cleanup(c);
+        }
+        r
+    })();
+    if let Some(c) = ctx {
+        c.status = status;
+    }
+    status
+}
+
+#[cfg(test)]
+mod tests_wave32_agent83 {
+    use super::*;
+
+    const D: W32a83Desc = W32a83Desc {
+        word0: 7,
+        kind: 5,
+        flags: 1,
+    };
+
+    #[test]
+    fn init_paths() {
+        let mut c = W32a83Ctx::default();
+        assert_eq!(
+            w32a83_init_context(Some(&mut c), Some(&D), 0, 0, 9, |_| 0, |_| {}),
+            3
+        );
+        assert_eq!(
+            w32a83_init_context(None, Some(&D), 0, 0, 10, |_| 0, |_| {}),
+            8
+        );
+        let bad = W32a83Desc { kind: 4, ..D };
+        assert_eq!(
+            w32a83_init_context(Some(&mut c), Some(&bad), 0, 0, 10, |_| 0, |_| {}),
+            3
+        );
+        assert_eq!(
+            w32a83_init_context(Some(&mut c), Some(&D), 0, 0x10000, 10, |_| 0, |_| {}),
+            4
+        );
+        let nf = W32a83Desc { flags: 0, ..D };
+        assert_eq!(
+            w32a83_init_context(Some(&mut c), Some(&nf), 0, 0, 10, |_| 0, |_| {}),
+            4
+        );
+        assert_eq!(
+            w32a83_init_context(Some(&mut c), Some(&D), 5, 0, 10, |_| 0, |_| {}),
+            0
+        );
+        assert_eq!(c.first, 7);
+        assert_eq!(c.param, 5);
+        let mut called = false;
+        let r = w32a83_init_context(Some(&mut c), Some(&D), 5, 0, 10, |_| 2, |_| called = true);
+        assert_eq!((r, called, c.status), (2, true, 2));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent86.rs
+// ===========================================================================
+// Wave 32 agent 86 translations.
+
+/// `0x00a76070`: reads an EBML-style variable-length integer at the 64-bit
+/// offset `pos`.  `read(pos, buf)` models the stream callback (negative =
+/// error, positive = end of data, zero = one byte stored).  The length is
+/// the position of the first set bit among the top four bits of the first
+/// byte; the marker bit is kept in the value.  Returns `Ok((value, length))`
+/// or `Err(-2)` for malformed data / `Err(-3)` for end of data.
+pub fn w32a86_read_vint(
+    pos: i64,
+    read: &mut dyn FnMut(i64, &mut u8) -> i32,
+) -> Result<(u64, i32), i32> {
+    if pos < 0 {
+        return Err(-2);
+    }
+    let mut b = 0u8;
+    let r = read(pos, &mut b);
+    if r < 0 {
+        return Err(-2);
+    }
+    if r > 0 {
+        return Err(-3);
+    }
+    if b == 0 {
+        return Err(-2);
+    }
+    let first = b as u64;
+    for i in 0..4 {
+        let len = i + 1;
+        if (first & (0x80u64 >> i)) != 0 {
+            let mut value = first;
+            for j in 1..len {
+                let r = read(pos + j as i64, &mut b);
+                if r < 0 {
+                    return Err(-2);
+                }
+                if r > 0 {
+                    return Err(-3);
+                }
+                value = (value << 8) | b as u64;
+            }
+            return Ok((value, len));
+        }
+    }
+    Err(-2)
+}
+
+#[cfg(test)]
+mod tests_wave32_agent86 {
+    use super::*;
+
+    fn run(data: &[u8], pos: i64) -> Result<(u64, i32), i32> {
+        w32a86_read_vint(pos, &mut |p, b| {
+            if p as usize >= data.len() {
+                return 1;
+            }
+            *b = data[p as usize];
+            0
+        })
+    }
+
+    #[test]
+    fn vint() {
+        assert_eq!(run(&[0x81], 0), Ok((0x81, 1)));
+        assert_eq!(run(&[0x40, 0x02], 0), Ok((0x4002, 2)));
+        assert_eq!(run(&[0x10, 1, 2, 3], 0), Ok((0x10010203, 4)));
+        assert_eq!(run(&[0x08], 0), Err(-2));
+        assert_eq!(run(&[0x00], 0), Err(-2));
+        assert_eq!(run(&[0x40], 0), Err(-3));
+        assert_eq!(run(&[0x40], -1), Err(-2));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent87.rs
+// ===========================================================================
+// Wave 32 agent 87: linked-list lookups by name (bounded compare).
+
+/// `0x00a7b5c0`: walks a singly linked list (head from `this+0x38`, next at
+/// `+0x20`) and returns the first node whose name equals `wanted`, or whose
+/// bounded compare (`max = 0x7fffffff`) returns 0.  `None` is the null node.
+pub fn w32a87_find_node_by_name<N: Copy, K: Copy + PartialEq>(
+    head: Option<N>,
+    next: impl Fn(N) -> Option<N>,
+    name_of: impl Fn(N) -> K,
+    compare: impl Fn(K, K, i32) -> i32,
+    wanted: K,
+) -> Option<N> {
+    let mut cur = head;
+    while let Some(node) = cur {
+        let name = name_of(node);
+        if name == wanted || compare(name, wanted, 0x7fff_ffff) == 0 {
+            return Some(node);
+        }
+        cur = next(node);
+    }
+    None
+}
+
+/// `0x00a7b610`: walks a list (head from `this+0x1c`, next at `+0x28`); each
+/// entry yields an object via its first vtable slot.  An absent object is
+/// skipped; with `wanted == 0` the first object is returned; otherwise the
+/// object's name (0 when its slot `+0x18` reports non-zero, else the
+/// default name) is matched by equality or a bounded compare returning 0.
+pub fn w32a87_find_object_by_name<E: Copy, O: Copy>(
+    head: Option<E>,
+    next: impl Fn(E) -> Option<E>,
+    object_of: impl Fn(E) -> Option<O>,
+    has_override: impl Fn(O) -> bool,
+    default_name: impl Fn() -> i32,
+    compare: impl Fn(i32, i32, i32) -> i32,
+    wanted: i32,
+) -> Option<O> {
+    let mut cur = head;
+    while let Some(entry) = cur {
+        if let Some(obj) = object_of(entry) {
+            if wanted == 0 {
+                return Some(obj);
+            }
+            let name = if has_override(obj) { 0 } else { default_name() };
+            if name == wanted || compare(name, wanted, 0x7fff_ffff) == 0 {
+                return Some(obj);
+            }
+        }
+        cur = next(entry);
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests_wave32_agent87 {
+    #[test]
+    fn find_node() {
+        let next = |n: usize| if n < 3 { Some(n + 1) } else { None };
+        let name = |n: usize| n as i32 * 10;
+        let cmp = |a: i32, b: i32, _m: i32| (a - b).abs();
+        assert_eq!(
+            super::w32a87_find_node_by_name(Some(1), next, name, cmp, 20),
+            Some(2)
+        );
+        assert_eq!(
+            super::w32a87_find_node_by_name(Some(1), next, name, cmp, 99),
+            None
+        );
+        assert_eq!(
+            super::w32a87_find_node_by_name(None, next, name, cmp, 10),
+            None
+        );
+    }
+
+    #[test]
+    fn find_object() {
+        let next = |n: usize| if n < 3 { Some(n + 1) } else { None };
+        let obj = |n: usize| if n == 1 { None } else { Some(n) };
+        let f = |wanted| {
+            super::w32a87_find_object_by_name(
+                Some(1),
+                next,
+                obj,
+                |o| o == 3,
+                || 7,
+                |a, b, _| a - b,
+                wanted,
+            )
+        };
+        assert_eq!(f(0), Some(2));
+        assert_eq!(f(7), Some(2));
+        assert_eq!(f(5), None);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent88.rs
+// ===========================================================================
+// Wave 32 translation batch 88: RTTI type-name matching helpers.
+//
+// Virtual calls and the fallback name builder are caller-supplied closures.
+
+fn w32a88_names_match(a: &[u8], b: &[u8]) -> bool {
+    let n = a.len().max(b.len()) + 1;
+    for i in 0..n {
+        let x = a.get(i).copied().unwrap_or(0);
+        let y = b.get(i).copied().unwrap_or(0);
+        if x != y {
+            return false;
+        }
+        if x == 0 {
+            return true;
+        }
+    }
+    true
+}
+
+/// `0x00a7be10`: walks a linked list (next at +0x28); for each node whose
+/// getter yields an object, returns it when `wanted` is `None` or when the
+/// object's type name equals / compares equal (strncmp) to `wanted`.
+pub fn w32a88_find_matching<T, N: Copy>(
+    head: Option<N>,
+    wanted: Option<&[u8]>,
+    next: impl Fn(N) -> Option<N>,
+    get: impl Fn(N) -> Option<T>,
+    type_name: impl Fn(&T) -> Vec<u8>,
+) -> Option<T> {
+    let mut cur = head;
+    while let Some(n) = cur {
+        if let Some(obj) = get(n) {
+            match wanted {
+                None => return Some(obj),
+                Some(w) => {
+                    if w32a88_names_match(&type_name(&obj), w) {
+                        return Some(obj);
+                    }
+                }
+            }
+        }
+        cur = next(n);
+    }
+    None
+}
+
+/// `0x00a7d720`: fetches the other object's (vtable slot 0x10) type; returns
+/// true when it is absent-false, else when its name matches `own_name`.
+pub fn w32a88_type_matches_slot10<T>(
+    other: Option<&T>,
+    own_name: &[u8],
+    type_name: impl Fn(&T) -> Vec<u8>,
+) -> bool {
+    match other {
+        None => false,
+        Some(o) => w32a88_names_match(&type_name(o), own_name),
+    }
+}
+
+/// `0x00a7d790`: same as the slot 0x10 variant but for vtable slot 0x20.
+pub fn w32a88_type_matches_slot20<T>(
+    other: Option<&T>,
+    own_name: &[u8],
+    type_name: impl Fn(&T) -> Vec<u8>,
+) -> bool {
+    match other {
+        None => false,
+        Some(o) => w32a88_names_match(&type_name(o), own_name),
+    }
+}
+
+#[cfg(test)]
+mod tests_wave32_agent88 {
+    use super::*;
+
+    #[test]
+    fn find() {
+        let names = [b"A".to_vec(), b"B".to_vec()];
+        let r = w32a88_find_matching(
+            Some(0usize),
+            Some(b"B"),
+            |n| if n + 1 < 2 { Some(n + 1) } else { None },
+            Some,
+            |i| names[*i].clone(),
+        );
+        assert_eq!(r, Some(1));
+        let r = w32a88_find_matching(Some(0usize), None, |_| None, Some, |i| names[*i].clone());
+        assert_eq!(r, Some(0));
+        let r = w32a88_find_matching(
+            Some(0usize),
+            Some(b"Z"),
+            |_| None,
+            Some,
+            |i| names[*i].clone(),
+        );
+        assert_eq!(r, None);
+    }
+
+    #[test]
+    fn slots() {
+        assert!(!w32a88_type_matches_slot10::<u8>(None, b"A", |_| vec![]));
+        assert!(w32a88_type_matches_slot10(Some(&1u8), b"A", |_| b"A".to_vec()));
+        assert!(!w32a88_type_matches_slot20(Some(&1u8), b"A", |_| b"B".to_vec()));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent89.rs
+// ===========================================================================
+// Wave 32 translation batch 89: RTTI-style type-name compatibility checks.
+
+/// Type-name comparison shared by the three routines: when the two names are
+/// the same pointer or the bounded compare (`FUN_00ca0b90`, limit
+/// INT_MAX) is zero, they match.
+pub fn w32a89_names_match(a: &str, b: &str) -> bool {
+    a == b
+}
+
+/// Resolves a type name: the virtual slot `+0x18` result when present,
+/// otherwise the fallback name (`FUN_00a7b8c0`).
+pub fn w32a89_resolve_name<'a>(slot_name: Option<&'a str>, fallback: &'a str) -> &'a str {
+    slot_name.unwrap_or(fallback)
+}
+
+/// `0x00a7d800`: the other object (virtual slot 0 of `param_1`) must exist,
+/// its type name must match ours, and the parallel chains of base names
+/// (`+0x38`, next `+0x20`) must match over their common length.
+pub fn w32a89_chain_compatible(
+    other_present: bool,
+    own_name: &str,
+    other_name: &str,
+    own_chain: &[&str],
+    other_chain: &[&str],
+) -> bool {
+    if !other_present || !w32a89_names_match(own_name, other_name) {
+        return false;
+    }
+    own_chain
+        .iter()
+        .zip(other_chain.iter())
+        .all(|(a, b)| w32a89_names_match(a, b))
+}
+
+/// `0x00a7d8d0`: object from virtual slot `+8` must exist and share our type
+/// name.
+pub fn w32a89_slot8_compatible(other: Option<&str>, own_name: &str) -> bool {
+    other.is_some_and(|o| w32a89_names_match(o, own_name))
+}
+
+/// `0x00a7d940`: object from virtual slot `+0x28` must exist and share our
+/// type name.
+pub fn w32a89_slot28_compatible(other: Option<&str>, own_name: &str) -> bool {
+    other.is_some_and(|o| w32a89_names_match(o, own_name))
+}
+
+#[cfg(test)]
+mod tests_wave32_agent89 {
+    use super::*;
+
+    #[test]
+    fn chain() {
+        assert!(w32a89_chain_compatible(true, "A", "A", &["x", "y"], &["x"]));
+        assert!(!w32a89_chain_compatible(true, "A", "A", &["x"], &["z"]));
+        assert!(!w32a89_chain_compatible(false, "A", "A", &[], &[]));
+        assert!(!w32a89_chain_compatible(true, "A", "B", &[], &[]));
+    }
+
+    #[test]
+    fn slots() {
+        assert!(w32a89_slot8_compatible(Some("A"), "A"));
+        assert!(!w32a89_slot8_compatible(None, "A"));
+        assert!(!w32a89_slot28_compatible(Some("B"), "A"));
+        assert_eq!(w32a89_resolve_name(None, "f"), "f");
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent90.rs
+// ===========================================================================
+// Wave 32 translation batch 90.
+
+/// `0x00a7d9b0`: advances from `start` while bytes are whitespace per
+/// `is_space`, counting `\n` into `lines` when supplied; stops at the first
+/// byte with bit 7 set or the first non-space.  Returns the stop index.
+pub fn w32a90_skip_space(
+    s: &[u8],
+    start: usize,
+    mut lines: Option<&mut i32>,
+    is_space: impl Fn(u8) -> bool,
+) -> usize {
+    let mut i = start;
+    loop {
+        let c = s.get(i).copied().unwrap_or(0);
+        if c & 0x80 != 0 || !is_space(c) {
+            return i;
+        }
+        if c == b'\n' {
+            if let Some(l) = lines.as_deref_mut() {
+                *l += 1;
+            }
+        }
+        i += 1;
+    }
+}
+
+/// `0x00a7d9f0`: true when both are the same object or the bounded string
+/// compare (`strncmp` result) is zero.
+pub fn w32a90_str_equal(same_ptr: bool, a: &[u8], b: &[u8], n: usize) -> bool {
+    if same_ptr {
+        return true;
+    }
+    for i in 0..n {
+        let x = a.get(i).copied().unwrap_or(0);
+        let y = b.get(i).copied().unwrap_or(0);
+        if x != y {
+            return false;
+        }
+        if x == 0 {
+            break;
+        }
+    }
+    true
+}
+
+/// `0x00a7dc40`: calls virtual slot `+0x18`; when nonzero the text writer
+/// gets `None`, otherwise the buffered text from `buffered()`.  The writer is
+/// called with the cdata flag (`param_1[0xd]` low byte).  Always returns 1.
+pub fn w32a90_flush_text<T>(
+    cdata_flag: u8,
+    vslot: impl FnOnce() -> i32,
+    buffered: impl FnOnce() -> T,
+    write: impl FnOnce(Option<T>, u8),
+) -> u32 {
+    if vslot() != 0 {
+        write(None, cdata_flag);
+    } else {
+        let v = buffered();
+        write(Some(v), cdata_flag);
+    }
+    1
+}
+
+#[cfg(test)]
+mod tests_wave32_agent90 {
+    use super::*;
+
+    #[test]
+    fn skip() {
+        let mut n = 0;
+        let i = w32a90_skip_space(b" \n \nx", 0, Some(&mut n), |c| c == b' ' || c == b'\n');
+        assert_eq!((i, n), (4, 2));
+        assert_eq!(w32a90_skip_space(&[b' ', 0x80], 0, None, |c| c == b' '), 1);
+    }
+
+    #[test]
+    fn eq() {
+        assert!(w32a90_str_equal(true, b"a", b"b", 1));
+        assert!(w32a90_str_equal(false, b"ab", b"ac", 1));
+        assert!(!w32a90_str_equal(false, b"ab", b"ac", 2));
+    }
+
+    #[test]
+    fn flush() {
+        let mut got = None;
+        assert_eq!(
+            w32a90_flush_text(1, || 0, || 5, |v, f| got = Some((v, f))),
+            1
+        );
+        assert_eq!(got, Some((Some(5), 1)));
+        assert_eq!(
+            w32a90_flush_text(0, || 1, || 5, |v, f| got = Some((v, f))),
+            1
+        );
+        assert_eq!(got, Some((None, 0)));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent91.rs
+// ===========================================================================
+// Wave 32 agent 91 translations.
+
+/// `0x00a8dc70`: reads the (width, height) pair at offsets 8 and 12 of the
+/// record returned by the lookup `FUN_00a98320(1, param_2)`.
+pub fn w32a91_record_size(record: &[u32; 4]) -> (u32, u32) {
+    (record[2], record[3])
+}
+
+/// `0x00a93870`: true when either of two lookups (tables `DAT_0135e308`,
+/// then `DAT_0135e30c`) reports a non-zero result for `key`.
+pub fn w32a91_either_contains(
+    key: u32,
+    first: impl Fn(u32) -> u32,
+    second: impl Fn(u32) -> u32,
+) -> bool {
+    first(key) != 0 || second(key) != 0
+}
+
+#[cfg(test)]
+mod tests_wave32_agent91 {
+    use super::*;
+
+    #[test]
+    fn size_pair() {
+        assert_eq!(w32a91_record_size(&[0, 0, 640, 480]), (640, 480));
+    }
+
+    #[test]
+    fn either() {
+        assert!(w32a91_either_contains(1, |_| 0, |k| k));
+        assert!(!w32a91_either_contains(1, |_| 0, |_| 0));
+        assert!(w32a91_either_contains(1, |_| 5, |_| 0));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent92.rs
+// ===========================================================================
+// Wave 32 agent 92 translations.
+
+/// `0x00a99310`: sums a size from flag bits: bits 0..=3 add 8 bytes each,
+/// bit 4 adds 4 bytes, bit 5 adds 8 bytes.
+pub fn w32a92_flags_size(flags: u32) -> i32 {
+    let mut n = ((flags & 1) * 8) as i32;
+    if flags & 2 != 0 {
+        n += 8;
+    }
+    if flags & 4 != 0 {
+        n += 8;
+    }
+    if flags & 8 != 0 {
+        n += 8;
+    }
+    if flags & 0x10 != 0 {
+        n += 4;
+    }
+    if flags & 0x20 != 0 {
+        n += 8;
+    }
+    n
+}
+
+#[cfg(test)]
+mod tests_wave32_agent92 {
+    use super::*;
+
+    #[test]
+    fn sizes() {
+        assert_eq!(w32a92_flags_size(0), 0);
+        assert_eq!(w32a92_flags_size(1), 8);
+        assert_eq!(w32a92_flags_size(0x10), 4);
+        assert_eq!(w32a92_flags_size(0x3f), 8 * 3 + 8 + 4 + 8);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent93.rs
+// ===========================================================================
+// Wave 32 agent 93: hex-encoded length-prefixed string and a once-flag helper.
+
+/// `0x00ac05d0`: hex-encodes a length-prefixed (first byte = count) byte
+/// string into `out` as lowercase hex and appends a NUL terminator.
+/// Returns the number of hex digits written (the callee's return value).
+pub fn w32a93_pascal_to_hex(src: &[u8], out: &mut Vec<u8>) -> usize {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let n = src.first().copied().unwrap_or(0) as usize;
+    let body = src.get(1..).unwrap_or(&[]);
+    let body = &body[..n.min(body.len())];
+    let start = out.len();
+    for &b in body {
+        out.push(HEX[(b >> 4) as usize]);
+        out.push(HEX[(b & 15) as usize]);
+    }
+    let written = out.len() - start;
+    out.push(0);
+    written
+}
+
+/// State block used by `0x00ac2c20` (offsets 0 value, 8 done, 9 skip, 10 lock).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct W32a93Once {
+    pub value: u32,
+    pub done: bool,
+    pub skip: bool,
+    pub lock: bool,
+}
+
+/// `0x00ac2c20`: if not skipped and not yet done, zeroes the value and marks
+/// done under the spin flag; returns true when the exit-handler registration
+/// (the non-modelled callee) must be performed by the caller.
+pub fn w32a93_once_init(s: &mut W32a93Once) -> bool {
+    if s.skip {
+        return false;
+    }
+    s.lock = true;
+    let fire = !s.done;
+    if fire {
+        s.value = 0;
+        s.done = true;
+    }
+    s.lock = false;
+    fire
+}
+
+#[cfg(test)]
+mod tests_wave32_agent93 {
+    use super::*;
+
+    #[test]
+    fn hex() {
+        let mut o = Vec::new();
+        assert_eq!(w32a93_pascal_to_hex(&[2, 0xab, 0x01], &mut o), 4);
+        assert_eq!(o, b"ab01\0");
+    }
+
+    #[test]
+    fn once() {
+        let mut s = W32a93Once {
+            value: 5,
+            ..Default::default()
+        };
+        assert!(w32a93_once_init(&mut s));
+        assert_eq!(s.value, 0);
+        assert!(!w32a93_once_init(&mut s));
+        s.skip = true;
+        s.done = false;
+        assert!(!w32a93_once_init(&mut s));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent95.rs
+// ===========================================================================
+// Wave 32 agent 95 translations.
+
+/// `0x00ac8850`: file-stream seek wrapper.  Returns `(low, high)` of the
+/// resulting position: `(tell, 0)` on success, `(0xffffffff, 0xffffffff)`
+/// on failure.  `is_open` models the virtual call at vtable +0x10 (-1 means
+/// failure) and `has_handle` the handle field at +0x1c being non-null.
+/// `origin` must be 0, 1 or 2; `seek` returns 0 on success.
+pub fn w32a95_seek(
+    has_handle: bool,
+    stream_state: i32,
+    offset: u32,
+    origin: i32,
+    seek: impl FnOnce(u32, u32) -> i32,
+    tell: impl FnOnce() -> u32,
+) -> (u32, u32) {
+    const FAIL: (u32, u32) = (0xffff_ffff, 0xffff_ffff);
+    if !has_handle || stream_state == -1 {
+        return FAIL;
+    }
+    if !(0..=2).contains(&origin) {
+        return FAIL;
+    }
+    if seek(offset, origin as u32) == 0 {
+        (tell(), 0)
+    } else {
+        FAIL
+    }
+}
+
+#[cfg(test)]
+mod tests_wave32_agent95 {
+    use super::*;
+
+    #[test]
+    fn seek_ok_and_fail() {
+        assert_eq!(w32a95_seek(true, 0, 5, 1, |_, _| 0, || 9), (9, 0));
+        assert_eq!(w32a95_seek(true, 0, 5, 3, |_, _| 0, || 9).0, u32::MAX);
+        assert_eq!(w32a95_seek(true, -1, 5, 0, |_, _| 0, || 9).1, u32::MAX);
+        assert_eq!(w32a95_seek(false, 0, 5, 0, |_, _| 0, || 9).0, u32::MAX);
+        assert_eq!(w32a95_seek(true, 0, 5, 2, |_, _| 1, || 9).0, u32::MAX);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent97.rs
+// ===========================================================================
+// Wave 32 agent 97: config `key = value` line scanner.
+
+fn w32a97_is_ws(c: u8) -> bool {
+    matches!(c, b' ' | b'\t' | 0x0b | b'\r' | 0x0c | b'\n')
+}
+
+fn w32a97_is_key(c: u8) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, b'.' | b'-' | b'_')
+}
+
+/// `0x00ae46a0`: scans `buf` line by line for `name = value`.  Blank and
+/// `#` lines are skipped.  Returns `(1, Some(value_offset), value_len)` when
+/// the key equals `name` (NUL-terminated), `(0, None, None)` when no line
+/// matches, and `(-1, None, None)` on a malformed line (empty key or no
+/// `=`).  The value length is measured to the trimmed line end.
+pub fn w32a97_find_key(buf: &[u8], name: Option<&[u8]>) -> (i32, Option<usize>, Option<isize>) {
+    let name = name.map(|n| {
+        let l = n.iter().position(|&c| c == 0).unwrap_or(n.len());
+        &n[..l]
+    });
+    let end = buf.len();
+    let mut cur = Some(0usize);
+    loop {
+        let start = match cur {
+            Some(c) if c < end => c,
+            _ => return (0, None, None),
+        };
+        let (mut e, next) = match buf[start..].iter().position(|&c| c == b'\n') {
+            Some(i) => (start + i, Some(start + i + 1)),
+            None => (end, None),
+        };
+        cur = next;
+        while start < e && w32a97_is_ws(buf[e - 1]) {
+            e -= 1;
+        }
+        let mut s = start;
+        while s < e && w32a97_is_ws(buf[s]) {
+            s += 1;
+        }
+        if s == e || buf[s] == b'#' {
+            continue;
+        }
+        let mut p = s;
+        while p < end && w32a97_is_key(buf[p]) {
+            p += 1;
+        }
+        let klen = p - s;
+        if klen == 0 {
+            return (-1, None, None);
+        }
+        while p < end && w32a97_is_ws(buf[p]) {
+            p += 1;
+        }
+        if p == end || buf[p] != b'=' {
+            return (-1, None, None);
+        }
+        loop {
+            p += 1;
+            if p >= end || !w32a97_is_ws(buf[p]) {
+                break;
+            }
+        }
+        if let Some(n) = name {
+            if n.len() == klen && &buf[s..s + klen] == n {
+                return (1, Some(p), Some(e as isize - p as isize));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests_wave32_agent97 {
+    use super::*;
+
+    #[test]
+    fn finds_value() {
+        let b = b"# c\n\n  a = 1 \nfoo=  bar baz\r\n";
+        let r = w32a97_find_key(b, Some(b"foo\0"));
+        assert_eq!(r.0, 1);
+        let o = r.1.unwrap();
+        assert_eq!(&b[o..o + r.2.unwrap() as usize], b"bar baz");
+        assert_eq!(w32a97_find_key(b, Some(b"zzz")).0, 0);
+    }
+
+    #[test]
+    fn malformed() {
+        assert_eq!(w32a97_find_key(b"abc\n", Some(b"abc")).0, -1);
+        assert_eq!(w32a97_find_key(b"=x\n", Some(b"abc")).0, -1);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent98.rs
+// ===========================================================================
+// Wave 32 agent 98: lazy one-time initialisation guards.
+
+/// `0x00ae8eb0`: lazy init of a list-head object (flag bytes at +0x10
+/// "initialised", +0x11 "poisoned", +0x12 spin lock).  On first use sets
+/// the head's self links (`links[0]`, `links[1]`) and size to the head
+/// index/zero, marks it initialised, releases the lock and calls
+/// `register_exit` (atexit registration).  Returns `true` when the
+/// object pointer is returned (not poisoned), `false` for the null result.
+/// The lock exchange is modelled as single-threaded.
+pub fn w32a98_lazy_init_list_head(
+    obj: &mut [u8; 0x13],
+    this_addr: u32,
+    register_exit: &mut dyn FnMut(),
+) -> (bool, u32) {
+    if obj[0x11] == 0 {
+        obj[0x12] = 1; // lock taken
+        if obj[0x10] == 0 {
+            obj[0..4].copy_from_slice(&this_addr.to_le_bytes());
+            obj[4..8].copy_from_slice(&this_addr.to_le_bytes());
+            obj[8..12].copy_from_slice(&0u32.to_le_bytes());
+            obj[0x10] = 1;
+            obj[0x12] = 0;
+            register_exit();
+            return if obj[0x11] != 0 {
+                (false, 0)
+            } else {
+                (true, this_addr)
+            };
+        }
+        obj[0x12] = 0;
+    }
+    if obj[0x11] != 0 {
+        (false, 0)
+    } else {
+        (true, this_addr)
+    }
+}
+
+/// `0x00ae8f10`: lazy init of an object with flags at +8 "initialised",
+/// +9 "poisoned", +10 spin lock.  First use runs `construct` (the callee
+/// called with no arguments), marks initialised, releases the lock and
+/// calls `register_exit`.  Returns `(not_poisoned, this_addr or 0)`.
+pub fn w32a98_lazy_init_object(
+    obj: &mut [u8; 0xb],
+    this_addr: u32,
+    construct: &mut dyn FnMut(),
+    register_exit: &mut dyn FnMut(),
+) -> (bool, u32) {
+    if obj[9] == 0 {
+        obj[10] = 1;
+        if obj[8] == 0 {
+            construct();
+            obj[8] = 1;
+            obj[10] = 0;
+            register_exit();
+            return if obj[9] != 0 {
+                (false, 0)
+            } else {
+                (true, this_addr)
+            };
+        }
+        obj[10] = 0;
+    }
+    if obj[9] != 0 {
+        (false, 0)
+    } else {
+        (true, this_addr)
+    }
+}
+
+#[cfg(test)]
+mod tests_wave32_agent98 {
+    use super::*;
+
+    #[test]
+    fn list_head_inits_once() {
+        let mut o = [0u8; 0x13];
+        let mut n = 0;
+        let r = w32a98_lazy_init_list_head(&mut o, 0x1000, &mut || n += 1);
+        assert_eq!(r, (true, 0x1000));
+        assert_eq!(&o[0..4], &0x1000u32.to_le_bytes());
+        assert_eq!(o[0x10], 1);
+        let r = w32a98_lazy_init_list_head(&mut o, 0x1000, &mut || n += 1);
+        assert_eq!(r, (true, 0x1000));
+        assert_eq!(n, 1);
+        o[0x11] = 1;
+        assert_eq!(
+            w32a98_lazy_init_list_head(&mut o, 5, &mut || n += 1),
+            (false, 0)
+        );
+    }
+
+    #[test]
+    fn object_inits_once() {
+        let mut o = [0u8; 0xb];
+        let (mut c, mut e) = (0, 0);
+        let mut ctor = || c += 1;
+        let mut reg = || e += 1;
+        assert_eq!(
+            w32a98_lazy_init_object(&mut o, 7, &mut ctor, &mut reg),
+            (true, 7)
+        );
+        assert_eq!(
+            w32a98_lazy_init_object(&mut o, 7, &mut ctor, &mut reg),
+            (true, 7)
+        );
+        o[9] = 1;
+        assert_eq!(
+            w32a98_lazy_init_object(&mut o, 7, &mut ctor, &mut reg),
+            (false, 0)
+        );
+        assert_eq!((c, e), (1, 1));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent99.rs
+// ===========================================================================
+// Wave 32 agent 99: lazy-init guards and a checked field read.
+
+/// `0x00ae8f70`: one-shot lazy initialisation of a circular list head.
+/// `obj` layout: +0 next, +4 prev (self links), +8 count, +0x10 inited,
+/// +0x11 skip flag, +0x12 spin lock.  Returns true when the registration
+/// callback (`FUN_00b8fa60` with the exit routine) must run.
+pub fn w32a99_lazy_list_init(obj: &mut [u8; 0x14], self_addr: u32) -> bool {
+    if obj[0x11] != 0 {
+        return false;
+    }
+    // Spin lock acquire (exchange with 1 until the old value was 0 is
+    // modelled as a single-threaded acquire).
+    obj[0x12] = 1;
+    if obj[0x10] == 0 {
+        obj[0..4].copy_from_slice(&self_addr.to_le_bytes());
+        obj[4..8].copy_from_slice(&self_addr.to_le_bytes());
+        obj[8..12].copy_from_slice(&0u32.to_le_bytes());
+        obj[0x10] = 1;
+        obj[0x12] = 0;
+        return true;
+    }
+    obj[0x12] = 0;
+    false
+}
+
+/// `0x00ae8fc0`: one-shot lazy initialisation guard.  `obj` layout: +8
+/// inited, +9 skip flag, +10 spin lock.  Runs `ctor` (`FUN_00c627c0`)
+/// once and returns true when the exit registration must follow.
+pub fn w32a99_lazy_init(obj: &mut [u8; 0xb], ctor: impl FnOnce()) -> bool {
+    if obj[9] != 0 {
+        return false;
+    }
+    obj[10] = 1;
+    if obj[8] == 0 {
+        ctor();
+        obj[8] = 1;
+        obj[10] = 0;
+        return true;
+    }
+    obj[10] = 0;
+    false
+}
+
+/// `0x00ae9f10`: when the pointer at +0x34 is non-null and the state at
+/// +0x30 equals 1 and `check` (`FUN_00b0ab10`) is true, returns the dword
+/// at offset 4 of the pointed record (`read_u32_at`), else 0.
+pub fn w32a99_checked_field(
+    state: u32,
+    ptr: u32,
+    check: impl FnOnce() -> bool,
+    read_u32_at: impl FnOnce(u32) -> u32,
+) -> u32 {
+    if ptr != 0 && state == 1 && check() {
+        return read_u32_at(ptr.wrapping_add(4));
+    }
+    0
+}
+
+#[cfg(test)]
+mod tests_wave32_agent99 {
+    use super::*;
+
+    #[test]
+    fn list_init_once() {
+        let mut o = [0u8; 0x14];
+        assert!(w32a99_lazy_list_init(&mut o, 0x1000));
+        assert_eq!(&o[0..4], &0x1000u32.to_le_bytes());
+        assert!(!w32a99_lazy_list_init(&mut o, 0x1000));
+        o[0x10] = 0;
+        o[0x11] = 1;
+        assert!(!w32a99_lazy_list_init(&mut o, 5));
+    }
+
+    #[test]
+    fn lazy_init_once() {
+        let mut o = [0u8; 0xb];
+        let mut n = 0;
+        assert!(w32a99_lazy_init(&mut o, || n += 1));
+        assert!(!w32a99_lazy_init(&mut o, || n += 1));
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn checked() {
+        assert_eq!(w32a99_checked_field(1, 8, || true, |a| a), 12);
+        assert_eq!(w32a99_checked_field(2, 8, || true, |a| a), 0);
+        assert_eq!(w32a99_checked_field(1, 0, || true, |a| a), 0);
+        assert_eq!(w32a99_checked_field(1, 8, || false, |a| a), 0);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent100.rs
+// ===========================================================================
+// Wave 32 agent 100 translations.
+
+/// Fields read from the object passed in ECX by the two dispatchers below.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct W32a100Obj {
+    /// Offset 0x30.
+    pub mode: i32,
+    /// Offset 0x34.
+    pub handle: i32,
+    /// Offset 0x58.
+    pub size_a: i32,
+    /// Offset 0x5c.
+    pub size_b: i32,
+    /// Offset 0x61.
+    pub flag: bool,
+}
+
+/// `0x00ae9f40`: returns 2 unless the handle is set, mode is 1 and the
+/// predicate holds; otherwise forwards to the delegate.
+pub fn w32a100_dispatch(
+    obj: &W32a100Obj,
+    pred: impl FnOnce() -> bool,
+    delegate: impl FnOnce() -> u32,
+) -> u32 {
+    if obj.handle != 0 && obj.mode == 1 && pred() {
+        return delegate();
+    }
+    2
+}
+
+/// `0x00aeaa50`: delegated query, else matches (0, 0, size_a, size_b).
+pub fn w32a100_query(
+    obj: &W32a100Obj,
+    p: [i32; 4],
+    pred: impl FnOnce() -> bool,
+    delegate: impl FnOnce() -> u32,
+) -> u32 {
+    if obj.handle != 0 {
+        if obj.mode == 1 && pred() {
+            return delegate();
+        }
+        if obj.flag && p[0] == 0 && p[1] == 0 && p[2] == obj.size_a && p[3] == obj.size_b {
+            return 1;
+        }
+    }
+    0
+}
+
+#[cfg(test)]
+mod tests_wave32_agent100 {
+    use super::*;
+
+    #[test]
+    fn dispatch() {
+        let mut o = W32a100Obj {
+            handle: 1,
+            mode: 1,
+            ..Default::default()
+        };
+        assert_eq!(w32a100_dispatch(&o, || true, || 7), 7);
+        assert_eq!(w32a100_dispatch(&o, || false, || 7), 2);
+        o.mode = 0;
+        assert_eq!(w32a100_dispatch(&o, || true, || 7), 2);
+    }
+
+    #[test]
+    fn query() {
+        let o = W32a100Obj {
+            handle: 1,
+            mode: 0,
+            size_a: 3,
+            size_b: 4,
+            flag: true,
+        };
+        assert_eq!(w32a100_query(&o, [0, 0, 3, 4], || true, || 9), 1);
+        assert_eq!(w32a100_query(&o, [0, 1, 3, 4], || true, || 9), 0);
+        let o = W32a100Obj { mode: 1, ..o };
+        assert_eq!(w32a100_query(&o, [0, 1, 3, 4], || true, || 9), 9);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent101.rs
+// ===========================================================================
+/// Result of the virtual query slot at vtable offset 0x34 used by `0x00af1c50`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct W32a101QueryInfo {
+    /// First byte of the 0x44-byte local record (bit 1 = size valid).
+    pub flags: u8,
+    /// Two dwords at record offsets 0x10 and 0x14.
+    pub size: [u32; 2],
+}
+
+/// `0x00af1c50`: refreshes state (`pre`), queries the object through its
+/// virtual slot (`query`, returns status plus record) and, when the status is
+/// zero and flag bit 1 is set, returns the two-dword value; flag clear yields
+/// status 2.  Non-zero query status is propagated.
+pub fn w32a101_query_size(
+    pre: impl FnOnce(),
+    query: impl FnOnce() -> (i32, W32a101QueryInfo),
+) -> Result<[u32; 2], i32> {
+    pre();
+    let (status, info) = query();
+    if status != 0 {
+        return Err(status);
+    }
+    if info.flags & 2 == 0 {
+        return Err(2);
+    }
+    Ok(info.size)
+}
+
+/// `0x00b1ccf0`: initialises a record: dwords 0 and 1 cleared, then the
+/// sub-object starting at dword 2 is initialised by `init_tail`.
+pub fn w32a101_init_pair(dw: &mut [u32], init_tail: impl FnOnce(&mut [u32])) {
+    dw[0] = 0;
+    dw[1] = 0;
+    init_tail(&mut dw[2..]);
+}
+
+#[cfg(test)]
+mod tests_wave32_agent101 {
+    use super::*;
+
+    #[test]
+    fn query_size() {
+        let ok = W32a101QueryInfo {
+            flags: 2,
+            size: [7, 9],
+        };
+        assert_eq!(w32a101_query_size(|| {}, || (0, ok)), Ok([7, 9]));
+        let no = W32a101QueryInfo {
+            flags: 1,
+            size: [7, 9],
+        };
+        assert_eq!(w32a101_query_size(|| {}, || (0, no)), Err(2));
+        assert_eq!(w32a101_query_size(|| {}, || (5, ok)), Err(5));
+    }
+
+    #[test]
+    fn init_pair() {
+        let mut v = [1u32, 2, 3, 4];
+        w32a101_init_pair(&mut v, |t| t[0] = 99);
+        assert_eq!(v, [0, 0, 99, 4]);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent103.rs
+// ===========================================================================
+// Wave 32 agent 103 translations.
+
+/// `0x00b364f0`: file tell.  `handle` is the field at offset 0x28; when it is
+/// not -1 the seek callee (called with offset 0, origin 1) is queried and its
+/// result returned unless it is -1; otherwise 0.
+pub fn w32a103_tell(handle: i32, mut seek: impl FnMut(i32, i32, i32, i32) -> i32) -> i64 {
+    if handle != -1 {
+        let r = seek(handle, 0, 0, 1);
+        if r != -1 {
+            return r as i64;
+        }
+    }
+    0
+}
+
+/// `0x00b40d90`: runs the cleanup callee, then clears the dword at offset 4.
+pub fn w32a103_reset(field4: &mut u32, mut cleanup: impl FnMut()) {
+    cleanup();
+    *field4 = 0;
+}
+
+/// `0x00b4efb0`: forwards four params plus the constant `0xc0000000` to the
+/// first callee, then runs the second callee.
+pub fn w32a103_open_generic_write(
+    params: [u32; 4],
+    mut first: impl FnMut(u32, u32, u32, u32, u32),
+    mut second: impl FnMut(),
+) {
+    first(params[0], params[1], params[2], params[3], 0xc000_0000);
+    second();
+}
+
+#[cfg(test)]
+mod tests_wave32_agent103 {
+    use super::*;
+
+    #[test]
+    fn tell() {
+        assert_eq!(w32a103_tell(-1, |_, _, _, _| 5), 0);
+        assert_eq!(w32a103_tell(3, |h, a, b, c| h + a + b + c), 4);
+        assert_eq!(w32a103_tell(3, |_, _, _, _| -1), 0);
+    }
+
+    #[test]
+    fn reset() {
+        let (mut f, mut n) = (9u32, 0);
+        w32a103_reset(&mut f, || n += 1);
+        assert_eq!((f, n), (0, 1));
+    }
+
+    #[test]
+    fn open() {
+        let mut got = None;
+        let mut done = false;
+        w32a103_open_generic_write(
+            [1, 2, 3, 4],
+            |a, b, c, d, e| got = Some((a, b, c, d, e)),
+            || done = true,
+        );
+        assert_eq!(got, Some((1, 2, 3, 4, 0xc000_0000)));
+        assert!(done);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent104.rs
+// ===========================================================================
+// Wave 32 agent 104 translations.
+
+/// `0x00b4efe0`: forwards its four arguments to the five-argument worker with
+/// a trailing flag of `1`.
+pub fn w32a104_forward_with_flag<F>(a: u32, b: u32, c: u32, d: u32, mut worker: F)
+where
+    F: FnMut(u32, u32, u32, u32, u32),
+{
+    worker(a, b, c, d, 1);
+}
+
+/// `0x00b53430`: state selector.  Returns 3 only when the object's field at
+/// index 3 is zero, the check on `param` succeeds and the object's first
+/// virtual method reports true; otherwise 4.
+pub fn w32a104_select_state<C, V>(field3: u32, check: C, vcall: V) -> u32
+where
+    C: FnOnce() -> bool,
+    V: FnOnce() -> bool,
+{
+    if field3 == 0 && check() && vcall() {
+        3
+    } else {
+        4
+    }
+}
+
+#[cfg(test)]
+mod tests_wave32_agent104 {
+    use super::*;
+
+    #[test]
+    fn forward_adds_flag() {
+        let mut got = None;
+        w32a104_forward_with_flag(1, 2, 3, 4, |a, b, c, d, e| got = Some((a, b, c, d, e)));
+        assert_eq!(got, Some((1, 2, 3, 4, 1)));
+    }
+
+    #[test]
+    fn select_state_cases() {
+        assert_eq!(w32a104_select_state(0, || true, || true), 3);
+        assert_eq!(w32a104_select_state(1, || true, || true), 4);
+        assert_eq!(w32a104_select_state(0, || false, || true), 4);
+        assert_eq!(w32a104_select_state(0, || true, || false), 4);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent105.rs
+// ===========================================================================
+// Wave 32 agent 105.
+
+/// `0x00b53470`: maps the result of the predicate callee to a mode byte:
+/// 2 when the predicate returned nonzero, 4 when it returned zero.
+pub fn w32a105_mode_from_flag(flag: u8) -> u8 {
+    if flag == 0 { 4 } else { 2 }
+}
+
+#[cfg(test)]
+mod tests_wave32_agent105 {
+    use super::*;
+
+    #[test]
+    fn mode() {
+        assert_eq!(w32a105_mode_from_flag(0), 4);
+        assert_eq!(w32a105_mode_from_flag(1), 2);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent106.rs
+// ===========================================================================
+// Wave 32 translation batch 106.
+
+/// `0x00b7e010`: formats a nanosecond duration into a wide buffer using the
+/// largest non-zero unit cascade (d/h/m, h/m/s, m.s, s.ms, ms.us, us.ns, ns).
+/// `fmt` models the callee FUN_00937d00 (buffer, capacity, format, args) and
+/// returns the number of converted fields.  The ns-only format string lives in
+/// an unread data item; `%uns` is assumed.  A zero duration writes a single
+/// `'0'` and returns true when `cap > 1`.
+pub fn w32a106_format_duration(
+    buf: &mut [u16],
+    cap: u32,
+    ns: u64,
+    mut fmt: impl FnMut(&mut [u16], u32, &str, &[u32]) -> i32,
+) -> bool {
+    let us = ns / 1000;
+    let ms = us / 1000;
+    let s = ms / 1000;
+    let min = s / 60;
+    let hr = min / 60;
+    let day = hr / 24;
+    let h = (hr - day * 24) as u32;
+    let m = (min - hr * 60) as u32;
+    let sec = (s - min * 60) as u32;
+    let msr = (ms - s * 1000) as u32;
+    let usr = (us - ms * 1000) as u32;
+    let nsr = (ns - us * 1000) as u32;
+    if day != 0 {
+        return fmt(buf, cap, "%ud%uh%um", &[day as u32, h, m]) == 3;
+    }
+    if hr != 0 {
+        return fmt(buf, cap, "%uh%um%us", &[h, m, sec]) == 3;
+    }
+    if min != 0 {
+        return fmt(buf, cap, "%um%u.%03us", &[m, sec, msr]) == 3;
+    }
+    if s != 0 {
+        return fmt(buf, cap, "%u.%03us", &[sec, msr]) == 2;
+    }
+    if ms != 0 {
+        return fmt(buf, cap, "%u.%03ums", &[msr, usr]) == 2;
+    }
+    if us != 0 {
+        return fmt(buf, cap, "%u.%03uus", &[usr, nsr]) == 2;
+    }
+    if ns != 0 {
+        return fmt(buf, cap, "%uns", &[nsr]) == 1;
+    }
+    if cap > 1 {
+        buf[0] = 0x30;
+        return true;
+    }
+    false
+}
+
+/// `0x00b79cd0`: constructor of a growable buffer header: `[1]=param_5`,
+/// `[0]=0`, `[2]=inline storage index (6)`, `[3]=0x1000` capacity,
+/// `[4]=0`, `[5]=param_1`; then the callee copies params 2..4.
+pub fn w32a106_init_buffer_header(hdr: &mut [u32; 6], param_1: u32, param_5: u32) {
+    hdr[1] = param_5;
+    hdr[0] = 0;
+    hdr[2] = 6;
+    hdr[3] = 0x1000;
+    hdr[4] = 0;
+    hdr[5] = param_1;
+}
+
+#[cfg(test)]
+mod tests_wave32_agent106 {
+    use super::*;
+
+    fn run(ns: u64) -> (String, bool) {
+        let mut out = String::new();
+        let mut b = [0u16; 4];
+        let r = w32a106_format_duration(&mut b, 32, ns, |_, _, f, a| {
+            let mut s = String::new();
+            let mut it = a.iter();
+            let mut rest = f;
+            while let Some(k) = rest.find('%') {
+                s.push_str(&rest[..k]);
+                if rest[k..].starts_with("%03u") {
+                    s.push_str(&format!("{:03}", it.next().unwrap()));
+                    rest = &rest[k + 4..];
+                } else {
+                    s.push_str(&it.next().unwrap().to_string());
+                    rest = &rest[k + 2..];
+                }
+            }
+            s.push_str(rest);
+            out = s;
+            a.len() as i32
+        });
+        (out, r)
+    }
+
+    #[test]
+    fn durations() {
+        assert_eq!(run(1500), ("1.500us".into(), true));
+        assert_eq!(run(2_000_000_005).0, "2.000s");
+        assert_eq!(run(90_000_000_000).0, "1m30.000s");
+        assert_eq!(run(3_661_000_000_000).0, "1h1m1s");
+        assert_eq!(run(90_061_000_000_000).0, "1d1h1m");
+        assert_eq!(run(7).0, "7ns");
+        let mut b = [1u16; 2];
+        assert!(w32a106_format_duration(&mut b, 2, 0, |_, _, _, _| 0));
+        assert_eq!(b[0], 0x30);
+        assert!(!w32a106_format_duration(&mut b, 1, 0, |_, _, _, _| 0));
+    }
+
+    #[test]
+    fn header() {
+        let mut h = [9u32; 6];
+        w32a106_init_buffer_header(&mut h, 5, 7);
+        assert_eq!(h, [0, 7, 6, 0x1000, 0, 5]);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent108.rs
+// ===========================================================================
+// Wave 32 agent 108 translations.
+
+fn w32a108_is_space(c: u8) -> bool {
+    matches!(c, b' ' | b'\t' | 0x0b | b'\r' | 0x0c | b'\n')
+}
+
+/// `0x00b8ccc0`: scans `buf` for `key` followed by optional whitespace and a
+/// `:`; the `nth` (zero based) such key wins.  Returns the index of the first
+/// non-whitespace byte after the colon (or the window end).  After a failed
+/// match the scan resumes after the next NUL byte (memchr helper
+/// `0xc8_a380`); when none is left the scan ends with `None`.
+pub fn w32a108_find_key_value(buf: &[u8], key: &[u8], nth: i32) -> Option<usize> {
+    let klen = key.len();
+    if klen == 0 {
+        return None;
+    }
+    let end = buf.len();
+    let mut pos = 0usize;
+    let mut count = 0i32;
+    while pos < end {
+        if klen <= end - pos && &buf[pos..pos + klen] == key {
+            pos += klen;
+            while pos < end {
+                let c = buf[pos];
+                if c == 0 || !w32a108_is_space(c) {
+                    break;
+                }
+                pos += 1;
+            }
+            if pos >= end {
+                return None;
+            }
+            if buf[pos] == 0 {
+                pos -= 1;
+            } else if buf[pos] == b':' {
+                if count == nth {
+                    loop {
+                        pos += 1;
+                        if pos >= end {
+                            return Some(pos);
+                        }
+                        let c = buf[pos];
+                        if c == 0 || !w32a108_is_space(c) {
+                            return Some(pos);
+                        }
+                    }
+                }
+                count += 1;
+            }
+        }
+        pos += buf[pos..end].iter().position(|&b| b == 0)? + 1;
+    }
+    None
+}
+
+/// `0x00b8f2e0`: writes the lowercase hex of `src` into `out` (two chars per
+/// byte) and returns the number of chars written.
+pub fn w32a108_hex_encode(src: &[u8], out: &mut [u8]) -> usize {
+    const D: &[u8; 16] = b"0123456789abcdef";
+    let mut n = 0;
+    for &b in src {
+        out[n] = D[(b >> 4) as usize];
+        out[n + 1] = D[(b & 15) as usize];
+        n += 2;
+    }
+    n
+}
+
+#[cfg(test)]
+mod tests_wave32_agent108 {
+    use super::*;
+
+    #[test]
+    fn hex() {
+        let mut o = [0u8; 6];
+        assert_eq!(w32a108_hex_encode(&[0xab, 0x01, 0xff], &mut o), 6);
+        assert_eq!(&o, b"ab01ff");
+    }
+
+    #[test]
+    fn key_value() {
+        let b = b"name : foo\0name:  bar\0";
+        assert_eq!(w32a108_find_key_value(b, b"name", 0), Some(7));
+        assert_eq!(w32a108_find_key_value(b, b"name", 1), Some(18));
+        assert_eq!(w32a108_find_key_value(b, b"zzz", 0), None);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent109.rs
+// ===========================================================================
+// Wave 32 agent 109: bounded C-string append and MD5 update.
+
+/// `0x00b8f790`: appends up to `max` bytes of NUL-terminated `src` to a
+/// fixed-capacity buffer (`buf[..cap]`, current length `*len`).  Bytes that do
+/// not fit are dropped but still consumed; the length is stored back.
+pub fn w32a109_bounded_append(buf: &mut [u8], cap: usize, len: &mut usize, src: &[u8], max: usize) {
+    let mut pos = *len;
+    let cap = cap.min(buf.len());
+    let mut i = 0usize;
+    while i < max && i < src.len() && src[i] != 0 {
+        if pos < cap {
+            buf[pos] = src[i];
+            pos += 1;
+        }
+        i += 1;
+    }
+    *len = pos;
+}
+
+/// `0x00b90460`: MD5 update.  `count` is the 64-bit bit counter (low, high),
+/// `buffer` the 64-byte block buffer; `transform` is the block function.
+pub fn w32a109_md5_update(
+    count: &mut [u32; 2],
+    buffer: &mut [u8; 64],
+    data: &[u8],
+    mut transform: impl FnMut(&[u8]),
+) {
+    let n = data.len() as u32;
+    let bits = (n as u64) << 3;
+    let mut idx = ((count[0] >> 3) & 0x3f) as usize;
+    let (lo, carry) = count[0].overflowing_add(bits as u32);
+    count[0] = lo;
+    count[1] = count[1]
+        .wrapping_add((bits >> 32) as u32)
+        .wrapping_add(carry as u32);
+    let mut off = 0usize;
+    let mut rem = data.len();
+    if idx != 0 {
+        if rem + idx < 0x40 {
+            buffer[idx..idx + rem].copy_from_slice(data);
+            return;
+        }
+        let fill = 0x40 - idx;
+        buffer[idx..].copy_from_slice(&data[..fill]);
+        transform(&buffer[..]);
+        off += fill;
+        rem -= fill;
+        idx = 0;
+    }
+    while rem >= 0x40 {
+        transform(&data[off..off + 0x40]);
+        off += 0x40;
+        rem -= 0x40;
+    }
+    buffer[idx..idx + rem].copy_from_slice(&data[off..off + rem]);
+}
+
+#[cfg(test)]
+mod tests_wave32_agent109 {
+    use super::*;
+
+    #[test]
+    fn append_truncates() {
+        let mut b = [0u8; 8];
+        let mut len = 2;
+        w32a109_bounded_append(&mut b, 5, &mut len, b"abcdef\0x", 8);
+        assert_eq!(len, 5);
+        assert_eq!(&b[2..5], b"abc");
+        let mut len = 0;
+        w32a109_bounded_append(&mut b, 8, &mut len, b"xyz", 2);
+        assert_eq!(len, 2);
+    }
+
+    #[test]
+    fn md5_update_blocks() {
+        let mut c = [0u32; 2];
+        let mut buf = [0u8; 64];
+        let mut blocks = 0;
+        w32a109_md5_update(&mut c, &mut buf, &[1u8; 30], |_| blocks += 1);
+        assert_eq!((c[0], blocks), (240, 0));
+        w32a109_md5_update(&mut c, &mut buf, &[2u8; 100], |_| blocks += 1);
+        assert_eq!(blocks, 2);
+        assert_eq!(c[0], 1040);
+        assert_eq!(buf[..2], [2, 2]);
+        let mut c = [u32::MAX - 7, 0];
+        w32a109_md5_update(&mut c, &mut buf, &[0u8; 2], |_| {});
+        assert_eq!(c, [8, 1]);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent110.rs
+// ===========================================================================
+// Wave 32 agent 110: GPU vendor id formatting.
+
+/// Vendor name for a PCI vendor id (callee of the formatter; not cited).
+pub fn w32a110_vendor_name(id: u16) -> Option<&'static str> {
+    match id {
+        0x1414 => Some("Microsoft"),
+        0x1002 => Some("AMD"),
+        0x106b => Some("Apple"),
+        0x10de => Some("NVidia"),
+        0x4351 => Some("Qualcomm"),
+        0x8086 => Some("Intel"),
+        _ => None,
+    }
+}
+
+/// `0x00c12a60`: formats a vendor id as its known name, or as `0x%04x` of
+/// the low 16 bits when the vendor is unknown.
+pub fn w32a110_format_vendor(id: u32) -> String {
+    match w32a110_vendor_name(id as u16) {
+        Some(n) => n.to_string(),
+        None => format!("0x{:04x}", id & 0xffff),
+    }
+}
+
+#[cfg(test)]
+mod tests_wave32_agent110 {
+    use super::*;
+
+    #[test]
+    fn known_and_unknown() {
+        assert_eq!(w32a110_format_vendor(0x10de), "NVidia");
+        assert_eq!(w32a110_format_vendor(0x8086), "Intel");
+        assert_eq!(w32a110_format_vendor(0x1_abcd), "0xabcd");
+        assert_eq!(w32a110_format_vendor(0x12), "0x0012");
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent111.rs
+// ===========================================================================
+/// `0x00c12d10`: size class for opcode `op` (default 1).
+pub fn w32a111_size_a(op: u8) -> u32 {
+    match op {
+        0x39..=0x52 | 0x5f | 0x60 | 0x6d..=0x74 => 4,
+        0x53 | 0x54 | 0x56 | 0x59 | 0x61 | 0x62 | 0x64 | 0x67 => 5,
+        0x55 | 0x57 | 0x5a | 0x63 | 0x65 | 0x68 => 6,
+        0x58 | 0x5b | 0x66 | 0x69 => 8,
+        0x5c | 0x5d | 0x6a | 0x6b => 10,
+        0x5e | 0x6c => 12,
+        _ => 1,
+    }
+}
+
+/// `0x00c12dc0`: size class for opcode `op` (default 1).
+pub fn w32a111_size_b(op: u8) -> u32 {
+    match op {
+        0x39..=0x51 | 0x5f | 0x6f | 0x70 | 0x73 | 0x74 => 4,
+        0x52 | 0x53 | 0x60 | 0x61 => 5,
+        0x54 | 0x55 | 0x62 | 0x63 => 6,
+        0x56 | 0x57 | 0x58 | 0x64 | 0x65 | 0x66 | 0x6d | 0x6e | 0x71 | 0x72 => 8,
+        0x59 | 0x5a | 0x5b | 0x5c | 0x67 | 0x68 | 0x69 | 0x6a => 10,
+        0x5d | 0x5e | 0x6b | 0x6c => 12,
+        _ => 1,
+    }
+}
+
+#[cfg(test)]
+mod tests_wave32_agent111 {
+    use super::*;
+
+    #[test]
+    fn sizes() {
+        assert_eq!(w32a111_size_a(0x38), 1);
+        assert_eq!(w32a111_size_a(0x39), 4);
+        assert_eq!(w32a111_size_a(0x52), 4);
+        assert_eq!(w32a111_size_a(0x5e), 12);
+        assert_eq!(w32a111_size_a(0x74), 4);
+        assert_eq!(w32a111_size_a(0x75), 1);
+        assert_eq!(w32a111_size_b(0x52), 5);
+        assert_eq!(w32a111_size_b(0x72), 8);
+        assert_eq!(w32a111_size_b(0x6c), 12);
+        assert_eq!(w32a111_size_b(0x38), 1);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent112.rs
+// ===========================================================================
+// Wave 32 batch 112.
+
+/// `0x00c12eb0`: looks up a 32-bit entry in the dword table at
+/// `DAT_00f493e8`, indexed by a byte.  The table is caller-supplied.
+pub fn w32a112_table_lookup(table: &[u32], index: u8) -> Option<u32> {
+    table.get(index as usize).copied()
+}
+
+/// `0x00c222c0`: forwards to the helper with `(base + 0xc, base + 2)`
+/// (pointer-sized offsets in the original; computed here as address
+/// arithmetic).  Returns the two argument values passed on.
+pub fn w32a112_forward_args(base: u32) -> (u32, u32) {
+    (base.wrapping_add(0xc), base.wrapping_add(2))
+}
+
+#[cfg(test)]
+mod tests_wave32_agent112 {
+    use super::*;
+
+    #[test]
+    fn lookup() {
+        let t = [10u32, 20, 30];
+        assert_eq!(w32a112_table_lookup(&t, 1), Some(20));
+        assert_eq!(w32a112_table_lookup(&t, 9), None);
+    }
+
+    #[test]
+    fn forward() {
+        assert_eq!(w32a112_forward_args(0x100), (0x10c, 0x102));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent116.rs
+// ===========================================================================
+// Wave 32 agent 116: GLES command-list render-state diffing.
+
+/// GL call emitted by the state-diff helpers (function pointers in the
+/// retail GL dispatch table, modelled as data).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum W32a116Gl {
+    /// Disable call with a capability argument (dispatch slot `3680`).
+    Disable(u32),
+    /// Enable call (dispatch slot `3690`).
+    Enable,
+    /// Two-argument call (dispatch slot `360c`).
+    Pair(u32, u32),
+    /// Four-argument call (dispatch slot `3614`).
+    Quad(u32, u32, u32, u32),
+    /// Four-flag call (dispatch slot `3634`).
+    Flags(u32, u32, u32, u32),
+}
+
+/// `0x00c5ccf0`: diffs the packed render-state word `new` against the first
+/// of eight cached words (offset `0x148`), updates all eight and returns the
+/// GL calls.  `table_a` is the 8-entry table at `0xe3_ef54`, `table_b` the
+/// 32-entry table at `0xe3_ef10`, `table_c` the 32-entry table at `0xe3_ef68`.
+pub fn w32a116_apply_state(
+    cache: &mut [u32; 8],
+    new: u32,
+    table_a: &[u32; 8],
+    table_b: &[u32; 32],
+    table_c: &[u32; 32],
+) -> Vec<W32a116Gl> {
+    let mut out = Vec::new();
+    let diff = cache[0] ^ new;
+    if diff == 0 {
+        return out;
+    }
+    if diff & 1 != 0 {
+        out.push(if new & 1 == 0 {
+            W32a116Gl::Disable(0xbe2)
+        } else {
+            W32a116Gl::Enable
+        });
+    }
+    if new & 1 == 0 {
+        let hi = new & 0x7800_0000;
+        for c in cache.iter_mut() {
+            *c = (*c & 0x87ff_fffe) | hi;
+        }
+    } else {
+        *cache = [new; 8];
+        if ((diff >> 3) | diff) & 0xe != 0 {
+            out.push(W32a116Gl::Pair(
+                table_a[(new >> 1 & 7) as usize],
+                table_a[(new >> 4 & 7) as usize],
+            ));
+        }
+        if ((((diff >> 5) | diff) >> 5 | diff) >> 5 | diff) & 0xf80 > 0x7f {
+            out.push(W32a116Gl::Quad(
+                table_b[(new >> 7 & 0x1f) as usize],
+                table_b[(new >> 12 & 0x1f) as usize],
+                table_c[(new >> 17 & 0x1f) as usize],
+                table_c[(new >> 22 & 0x1f) as usize],
+            ));
+        }
+    }
+    if diff & 0x7800_0000 != 0 {
+        let b = (new >> 24) as u8 as u32;
+        out.push(W32a116Gl::Flags(
+            b >> 3 & 1,
+            b >> 4 & 1,
+            b >> 5 & 1,
+            b >> 6 & 1,
+        ));
+    }
+    out
+}
+
+/// `0x00c5d0c0`: stores the new enable-bit mask and, for each changed bit
+/// (lowest first), emits disable(`caps[bit]`) when cleared or enable when
+/// set.  `caps` is the table at `0xe3_f018`.
+pub fn w32a116_apply_enable_bits(cache: &mut u32, new: u32, caps: &[u32; 32]) -> Vec<W32a116Gl> {
+    let mut diff = *cache ^ new;
+    *cache = new;
+    let mut out = Vec::new();
+    while diff != 0 {
+        let bit = diff.trailing_zeros();
+        diff &= !(1u32 << bit);
+        out.push(if new >> bit & 1 == 0 {
+            W32a116Gl::Disable(caps[bit as usize])
+        } else {
+            W32a116Gl::Enable
+        });
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests_wave32_agent116 {
+    use super::*;
+
+    #[test]
+    fn enable_bits() {
+        let mut caps = [0u32; 32];
+        caps[2] = 77;
+        let mut c = 0b100;
+        let o = w32a116_apply_enable_bits(&mut c, 0b001, &caps);
+        assert_eq!(o, vec![W32a116Gl::Enable, W32a116Gl::Disable(77)]);
+        assert_eq!(c, 1);
+    }
+
+    #[test]
+    fn state() {
+        let mut cache = [0u32; 8];
+        let o = w32a116_apply_state(&mut cache, 1, &[5; 8], &[6; 32], &[7; 32]);
+        assert_eq!(o[0], W32a116Gl::Enable);
+        assert_eq!(cache, [1; 8]);
+        let o = w32a116_apply_state(&mut cache, 0x0800_0000, &[5; 8], &[6; 32], &[7; 32]);
+        assert_eq!(o[0], W32a116Gl::Disable(0xbe2));
+        assert_eq!(cache[3], 0x0800_0000);
+        assert!(matches!(o[1], W32a116Gl::Flags(1, 0, 0, 0)));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent117.rs
+// ===========================================================================
+// Wave 32 agent 117: GL render-state cache helpers (state diffing).
+
+/// One GL call emitted by the state-cache helpers.
+#[derive(Debug, Clone, PartialEq)]
+pub enum W32a117Call {
+    /// Indexed call made when a bit turns off (`DAT_013d3684`).
+    Disable(u32),
+    /// No-argument call made when a bit turns on (`DAT_013d3694`).
+    Enable,
+    /// `DAT_013d3654(table value)`.
+    Face(u32),
+    /// `DAT_013d36a8(arg)`.
+    Mode(u32),
+    /// `DAT_013d3754(param_3, param_2)`.
+    Pair(f32, f32),
+    /// `DAT_013d377c(value)`.
+    Byte(u32),
+    /// `DAT_013d3778(target, a, b, c)`.
+    Func(u32, u32, u32, u32),
+    /// `DAT_013d3788(target, a, b, c)`.
+    Op(u32, u32, u32, u32),
+}
+
+/// Cached fields at the object offsets used by the three routines.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct W32a117State {
+    pub flags_168: u32,
+    pub f_16c: f32,
+    pub f_170: f32,
+    pub w_178: u32,
+    pub w_17c: u32,
+    pub w_180: u32,
+    pub mask_184: u32,
+}
+
+/// `0x00c5d120`: diffs the enable mask at +0x184 against `param_1`; for
+/// each changed bit (lowest first) emits Enable when set, Disable(bit) when clear.
+pub fn w32a117_update_mask(st: &mut W32a117State, param_1: u32, out: &mut Vec<W32a117Call>) {
+    let mut diff = st.mask_184 ^ param_1;
+    if diff == 0 {
+        return;
+    }
+    st.mask_184 = param_1;
+    while diff != 0 {
+        let bit = diff.trailing_zeros();
+        let m = 1u32 << bit;
+        diff &= !m;
+        if param_1 & m == 0 {
+            out.push(W32a117Call::Disable(bit));
+        } else {
+            out.push(W32a117Call::Enable);
+        }
+    }
+}
+
+/// `0x00c5d170`: caches the low 3 flag bits at +0x168 and two floats at
+/// +0x16c/+0x170; `face_table` is the dword table at 0x00e3_efac.
+pub fn w32a117_update_flags(
+    st: &mut W32a117State,
+    param_1: u32,
+    p2: f32,
+    p3: f32,
+    face_table: &[u32],
+    out: &mut Vec<W32a117Call>,
+) {
+    let low = param_1 & 3;
+    if st.flags_168 & 3 != low {
+        st.flags_168 = (st.flags_168 & !3) | low;
+        if low != 0 {
+            out.push(W32a117Call::Face(face_table[low as usize]));
+        }
+    }
+    if (st.flags_168 ^ param_1) & 4 != 0 {
+        st.flags_168 = (st.flags_168 & !4) | (param_1 & 4);
+        out.push(W32a117Call::Mode(((param_1 & 4) | 0x2400) >> 2));
+    }
+    if st.f_16c != p2 || st.f_170 != p3 {
+        st.f_16c = p2;
+        st.f_170 = p3;
+        out.push(W32a117Call::Pair(p3, p2));
+    }
+}
+
+/// `0x00c5d230`: caches the packed stencil words at +0x178/+0x17c and emits
+/// the func/op calls; `func_table` is at 0x00e3_eef0, `op_table` at 0x00e3_efd0.
+pub fn w32a117_update_stencil(
+    st: &mut W32a117State,
+    p1: u32,
+    p2: u32,
+    func_table: &[u32],
+    op_table: &[u32],
+    out: &mut Vec<W32a117Call>,
+) {
+    if st.w_178 == p1 && st.w_17c == p2 {
+        return;
+    }
+    st.w_17c = p2;
+    st.w_178 = p1;
+    let r = st.w_180;
+    out.push(W32a117Call::Byte((p1 >> 8) & 0xff));
+    out.push(W32a117Call::Func(
+        0x404,
+        func_table[((p1 >> 16) & 0xf) as usize],
+        r,
+        p1 & 0xff,
+    ));
+    out.push(W32a117Call::Func(
+        0x405,
+        func_table[(p2 & 0xf) as usize],
+        r,
+        p1 & 0xff,
+    ));
+    let o = |v: u32| op_table[(v & 7) as usize];
+    out.push(W32a117Call::Op(
+        0x404,
+        o(p1 >> 20),
+        o(p1 >> 23),
+        o(p1 >> 26),
+    ));
+    out.push(W32a117Call::Op(0x405, o(p2 >> 4), o(p2 >> 7), o(p2 >> 10)));
+}
+
+#[cfg(test)]
+mod tests_wave32_agent117 {
+    use super::*;
+
+    #[test]
+    fn mask_diff() {
+        let mut s = W32a117State {
+            mask_184: 0b01,
+            ..Default::default()
+        };
+        let mut out = vec![];
+        w32a117_update_mask(&mut s, 0b10, &mut out);
+        assert_eq!(out, vec![W32a117Call::Disable(0), W32a117Call::Enable]);
+        out.clear();
+        w32a117_update_mask(&mut s, 0b10, &mut out);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn flags() {
+        let mut s = W32a117State::default();
+        let mut out = vec![];
+        w32a117_update_flags(&mut s, 5, 1.0, 2.0, &[0, 10, 20, 30], &mut out);
+        assert_eq!(
+            out,
+            vec![
+                W32a117Call::Face(10),
+                W32a117Call::Mode(0x901),
+                W32a117Call::Pair(2.0, 1.0)
+            ]
+        );
+    }
+
+    #[test]
+    fn stencil() {
+        let mut s = W32a117State::default();
+        let mut out = vec![];
+        let t: Vec<u32> = (0..16).collect();
+        w32a117_update_stencil(&mut s, 0x0012_3456, 0x21, &t, &t, &mut out);
+        assert_eq!(out.len(), 5);
+        assert_eq!(out[0], W32a117Call::Byte(0x34));
+        w32a117_update_stencil(&mut s, 0x0012_3456, 0x21, &t, &t, &mut out);
+        assert_eq!(out.len(), 5);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent118.rs
+// ===========================================================================
+// Wave 32 agent 118.
+
+/// `0x00c5d590`: stores `new_mask` into the cached mask (`+0x188`) and, for
+/// every bit that differs from the old value (lowest bit first), invokes
+/// `notify(bit_index, new_state)`.  Returns the changed-bit set.
+pub fn w32a118_apply_mask_diff(
+    cached: &mut u32,
+    new_mask: u32,
+    mut notify: impl FnMut(u32, bool),
+) -> u32 {
+    let diff = *cached ^ new_mask;
+    if diff == 0 {
+        return 0;
+    }
+    *cached = new_mask;
+    let mut rest = diff;
+    while rest != 0 {
+        let i = rest.trailing_zeros();
+        let bit = 1u32 << i;
+        rest &= !bit;
+        notify(i, new_mask & bit != 0);
+    }
+    diff
+}
+
+#[cfg(test)]
+mod tests_wave32_agent118 {
+    use super::*;
+
+    #[test]
+    fn diff_notifies_low_to_high() {
+        let mut c = 0b0110;
+        let mut seen = Vec::new();
+        let d = w32a118_apply_mask_diff(&mut c, 0b1010, |i, s| seen.push((i, s)));
+        assert_eq!(d, 0b1100);
+        assert_eq!(c, 0b1010);
+        assert_eq!(seen, vec![(2, false), (3, true)]);
+        assert_eq!(w32a118_apply_mask_diff(&mut c, 0b1010, |_, _| panic!()), 0);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent119.rs
+// ===========================================================================
+// Wave 32 translation batch 119.
+//
+// Skipped: FUN_00c66b20 (calls the unmodelled integer formatter FUN_00c6b9f0).
+
+fn w32a119_strlen(b: &[u8]) -> usize {
+    b.iter().position(|&c| c == 0).unwrap_or(b.len())
+}
+
+fn w32a119_at(b: &[u8], i: usize) -> u8 {
+    b.get(i).copied().unwrap_or(0)
+}
+
+fn w32a119_strlcpy(dst: &mut [u8], src: &[u8]) {
+    if dst.is_empty() {
+        return;
+    }
+    let n = (dst.len() - 1).min(w32a119_strlen(src));
+    dst[..n].copy_from_slice(&src[..n]);
+    dst[n] = 0;
+}
+
+fn w32a119_strlcat(dst: &mut [u8], src: &[u8]) {
+    let d = w32a119_strlen(dst);
+    if d < dst.len() {
+        let room = dst.len() - d;
+        let n = (room - 1).min(w32a119_strlen(src));
+        dst[d..d + n].copy_from_slice(&src[..n]);
+        dst[d + n] = 0;
+    }
+}
+
+/// `0x00c673c0`: normalises a path into `dst` (capacity `dst.len()`): collapses
+/// `.` and empty segments, resolves `..` against previously emitted segments,
+/// keeps a leading `/`, and lower-cases a `X:/` drive letter.  `src` is the
+/// NUL-terminated input (a copy of `dst` when the original runs in place).
+pub fn w32a119_normalize_path(dst: &mut [u8], src: &[u8]) {
+    if dst.is_empty() {
+        return;
+    }
+    let limit = dst.len() - 1;
+    let (mut o, mut s, mut p) = (0usize, 0usize, 0usize);
+    let (mut local_c, mut local_10) = (0i32, 0i32);
+    loop {
+        let e = p;
+        let c = w32a119_at(src, e);
+        if c != b'/' && c != b'\\' && c != 0 {
+            p += 1;
+            continue;
+        }
+        p = e + 1;
+        let mut is_dd = false;
+        let mut len = e - s;
+        // true: goto LAB_00c67473 (emit); false: goto LAB_00c67456 / skip check
+        let mut emit = false;
+        let mut check_skip = false;
+        if len == 1 {
+            if w32a119_at(src, s) != b'.' {
+                emit = true;
+            } else {
+                len = 0;
+                check_skip = true;
+            }
+        } else {
+            if len == 2 {
+                if w32a119_at(src, s) != b'.' || w32a119_at(src, s + 1) != b'.' {
+                    emit = true;
+                } else {
+                    if local_c != 0 {
+                        len = 0;
+                        while o > 0 {
+                            o -= 1;
+                            if dst[o] == b'/' {
+                                break;
+                            }
+                        }
+                        local_c -= 1;
+                    }
+                    is_dd = true;
+                }
+            }
+            if !emit {
+                if len == 0 {
+                    check_skip = true;
+                } else {
+                    emit = true;
+                }
+            }
+        }
+        if check_skip && !(o == 0 || (o == 1 && dst[0] == b'/') || c == 0) {
+            emit = false;
+        } else if check_skip {
+            emit = true;
+        }
+        if emit {
+            if s == 0 && e == 0 && c != 0 {
+                if o < limit {
+                    dst[o] = b'/';
+                    o += 1;
+                }
+            } else if s == 1 && e == 1 && o == 1 && dst[0] == b'/' && c != 0 {
+                if o < limit {
+                    dst[o] = b'/';
+                    o += 1;
+                }
+            } else {
+                if (local_c != 0 || local_10 != 0) && o < limit {
+                    dst[o] = b'/';
+                    o += 1;
+                }
+                for k in 0..len {
+                    if o < limit {
+                        dst[o] = w32a119_at(src, s + k);
+                        o += 1;
+                    }
+                }
+                if len != 0 {
+                    if is_dd {
+                        local_10 += 1;
+                    } else {
+                        local_c += 1;
+                    }
+                }
+            }
+        }
+        s = p;
+        if c == 0 {
+            dst[o] = 0;
+            let d0 = dst[0];
+            if d0 != 0 && w32a119_at(dst, 1) == b':' && w32a119_at(dst, 2) == b'/' {
+                dst[0] = d0.to_ascii_lowercase();
+            }
+            return;
+        }
+    }
+}
+
+/// `0x00c672e0`: joins `base` and `rel` into `dst`: copies `base`, forces a
+/// trailing `/` (backslash converted), restarts at `dst` if `rel` is absolute
+/// (`/`, `\` or `X:/`), appends `rel`, then normalises in place with
+/// `0x00c673c0`.  The separator literal is taken to be `"/"`.
+pub fn w32a119_join_path(dst: &mut [u8], base: Option<&[u8]>, rel: Option<&[u8]>) {
+    if let Some(b) = base {
+        w32a119_strlcpy(dst, b);
+    }
+    let end = w32a119_strlen(dst);
+    if end > 0 {
+        let mut c = dst[end - 1];
+        if c == b'\\' {
+            dst[end - 1] = b'/';
+            c = b'/';
+        }
+        if c != b'/' {
+            w32a119_strlcat(dst, b"/\0");
+        }
+    }
+    if let Some(r) = rel {
+        let c = w32a119_at(r, 0);
+        if c != 0 {
+            let drive = w32a119_at(r, 1) == b':' && matches!(w32a119_at(r, 2), b'/' | b'\\');
+            if c == b'/' || c == b'\\' || drive {
+                dst[0] = 0;
+            }
+            w32a119_strlcat(dst, r);
+        }
+    }
+    let copy = dst.to_vec();
+    w32a119_normalize_path(dst, &copy);
+}
+
+#[cfg(test)]
+mod tests_wave32_agent119 {
+    use super::*;
+
+    fn norm(s: &str) -> String {
+        let mut src = s.as_bytes().to_vec();
+        src.push(0);
+        let mut dst = vec![0u8; 64];
+        w32a119_normalize_path(&mut dst, &src);
+        String::from_utf8(dst[..w32a119_strlen(&dst)].to_vec()).unwrap()
+    }
+
+    #[test]
+    fn normalizes() {
+        assert_eq!(norm("a/./b//c"), "a/b/c");
+        assert_eq!(norm("a/b/../c"), "a/c");
+        assert_eq!(norm("/a/b"), "/a/b");
+        assert_eq!(norm("C:/x/../y"), "c:/y");
+        assert_eq!(norm("a\\b"), "a/b");
+    }
+
+    #[test]
+    fn joins() {
+        let mut d = vec![0u8; 64];
+        w32a119_join_path(&mut d, Some(b"root\\dir\0"), Some(b"sub/../f.txt\0"));
+        assert_eq!(&d[..w32a119_strlen(&d)], b"root/dir/f.txt");
+        w32a119_join_path(&mut d, Some(b"root\0"), Some(b"/abs\0"));
+        assert_eq!(&d[..w32a119_strlen(&d)], b"/abs");
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent120.rs
+// ===========================================================================
+// Wave 32 translation batch 120.
+
+/// `0x00c68be0`: maps a selector 0..=3 to a code: 0 -> 0, 1 -> 0x7a,
+/// 2 -> 0x57, anything else -> 1.
+pub fn w32a120_selector_code(sel: i32) -> u32 {
+    match sel {
+        0 => 0,
+        1 => 0x7a,
+        2 => 0x57,
+        _ => 1,
+    }
+}
+
+/// `0x00c68620`: if `value` equals the code of selectors 0..=3 it runs
+/// `on_match` (callee FUN_00c683a0); otherwise it runs `fallback`
+/// (callee FUN_00c68c10) with the original arguments.
+pub fn w32a120_dispatch<R>(
+    value: i32,
+    on_match: impl FnOnce() -> R,
+    fallback: impl FnOnce() -> R,
+) -> R {
+    for sel in 0..4 {
+        if value as u32 == w32a120_selector_code(sel) {
+            return on_match();
+        }
+    }
+    fallback()
+}
+
+#[cfg(test)]
+mod tests_wave32_agent120 {
+    use super::*;
+
+    #[test]
+    fn codes() {
+        assert_eq!(w32a120_selector_code(0), 0);
+        assert_eq!(w32a120_selector_code(1), 0x7a);
+        assert_eq!(w32a120_selector_code(2), 0x57);
+        assert_eq!(w32a120_selector_code(3), 1);
+        assert_eq!(w32a120_selector_code(9), 1);
+    }
+
+    #[test]
+    fn dispatch() {
+        for v in [0, 1, 0x57, 0x7a] {
+            assert_eq!(w32a120_dispatch(v, || 1, || 2), 1);
+        }
+        assert_eq!(w32a120_dispatch(5, || 1, || 2), 2);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent121.rs
+// ===========================================================================
+// Wave 32 agent 121: two member-forwarding helpers.
+
+/// `0x00c6d090`: member forwarder.  Reads the dword at `this + 0xc` and
+/// calls the callee (unresolved, supplied by the caller) with that value
+/// and the two stack arguments.
+pub fn w32a121_forward_field_0c<R>(
+    this: &[u8],
+    a: u32,
+    b: u32,
+    callee: impl FnOnce(u32, u32, u32) -> R,
+) -> Option<R> {
+    let f = u32::from_le_bytes(this.get(0xc..0x10)?.try_into().ok()?);
+    Some(callee(f, a, b))
+}
+
+/// `0x00c6d100`: member forwarder.  Reads the dword at `this + 8` and
+/// calls the callee (unresolved, supplied by the caller) with that value
+/// and the two stack arguments.
+pub fn w32a121_forward_field_08<R>(
+    this: &[u8],
+    a: u32,
+    b: u32,
+    callee: impl FnOnce(u32, u32, u32) -> R,
+) -> Option<R> {
+    let f = u32::from_le_bytes(this.get(8..12)?.try_into().ok()?);
+    Some(callee(f, a, b))
+}
+
+#[cfg(test)]
+mod tests_wave32_agent121 {
+    use super::*;
+
+    #[test]
+    fn forwarders_read_expected_field() {
+        let mut obj = [0u8; 16];
+        obj[8..12].copy_from_slice(&0x1111u32.to_le_bytes());
+        obj[12..16].copy_from_slice(&0x2222u32.to_le_bytes());
+        assert_eq!(
+            w32a121_forward_field_0c(&obj, 1, 2, |f, a, b| (f, a, b)),
+            Some((0x2222, 1, 2))
+        );
+        assert_eq!(
+            w32a121_forward_field_08(&obj, 3, 4, |f, a, b| (f, a, b)),
+            Some((0x1111, 3, 4))
+        );
+        assert_eq!(
+            w32a121_forward_field_0c(&obj[..15], 0, 0, |f, _, _| f),
+            None
+        );
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent122.rs
+// ===========================================================================
+// Wave 32 agent 122: zlib deflate bit-buffer flush helpers.
+
+/// Minimal model of the deflate state fields touched by the bit-buffer
+/// helpers: output buffer (`+8`), output position (`+0x14`), `bi_buf`
+/// (`+0x16b8`, 16 bits) and `bi_valid` (`+0x16bc`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct W32a122BitState {
+    pub pending_buf: Vec<u8>,
+    pub pending: usize,
+    pub bi_buf: u16,
+    pub bi_valid: i32,
+}
+
+fn put(s: &mut W32a122BitState, b: u8) {
+    if s.pending < s.pending_buf.len() {
+        s.pending_buf[s.pending] = b;
+    }
+    s.pending += 1;
+}
+
+/// `0x00c76ed0`: zlib `bi_flush`.  With 16 valid bits writes both bytes and
+/// clears the buffer; with 8 or more writes the low byte and shifts.
+pub fn w32a122_bi_flush(s: &mut W32a122BitState) {
+    if s.bi_valid == 16 {
+        put(s, s.bi_buf as u8);
+        put(s, (s.bi_buf >> 8) as u8);
+        s.bi_buf = 0;
+        s.bi_valid = 0;
+        return;
+    }
+    if s.bi_valid > 7 {
+        put(s, s.bi_buf as u8);
+        s.bi_valid -= 8;
+        s.bi_buf >>= 8;
+    }
+}
+
+/// `0x00c76f50`: zlib `bi_windup`.  Writes remaining bits (one or two
+/// bytes) and clears the bit buffer.
+pub fn w32a122_bi_windup(s: &mut W32a122BitState) {
+    if s.bi_valid > 8 {
+        put(s, s.bi_buf as u8);
+        put(s, (s.bi_buf >> 8) as u8);
+    } else if s.bi_valid > 0 {
+        put(s, s.bi_buf as u8);
+    }
+    s.bi_buf = 0;
+    s.bi_valid = 0;
+}
+
+#[cfg(test)]
+mod tests_wave32_agent122 {
+    use super::*;
+
+    fn st(buf: u16, valid: i32) -> W32a122BitState {
+        W32a122BitState {
+            pending_buf: vec![0; 8],
+            pending: 0,
+            bi_buf: buf,
+            bi_valid: valid,
+        }
+    }
+
+    #[test]
+    fn flush_full() {
+        let mut s = st(0x1234, 16);
+        w32a122_bi_flush(&mut s);
+        assert_eq!(&s.pending_buf[..2], &[0x34, 0x12]);
+        assert_eq!((s.pending, s.bi_buf, s.bi_valid), (2, 0, 0));
+    }
+
+    #[test]
+    fn flush_partial() {
+        let mut s = st(0x1234, 10);
+        w32a122_bi_flush(&mut s);
+        assert_eq!((s.pending, s.bi_buf, s.bi_valid), (1, 0x12, 2));
+        let mut s = st(0x1234, 5);
+        w32a122_bi_flush(&mut s);
+        assert_eq!(s.pending, 0);
+    }
+
+    #[test]
+    fn windup() {
+        let mut s = st(0x1234, 9);
+        w32a122_bi_windup(&mut s);
+        assert_eq!(s.pending, 2);
+        let mut s = st(0x1234, 3);
+        w32a122_bi_windup(&mut s);
+        assert_eq!((s.pending, s.bi_buf, s.bi_valid), (1, 0, 0));
+        let mut s = st(0x1234, 0);
+        w32a122_bi_windup(&mut s);
+        assert_eq!(s.pending, 0);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent123.rs
+// ===========================================================================
+// Wave 32 agent 123: lazily-resolved, hook-instrumented API trampolines.
+
+/// Shared state of the trampoline family: the in-flight call counter and the
+/// optional resolver / pre-hook / post-hook callbacks.
+pub struct W32a123Hooks<'a> {
+    /// In-flight call counter.
+    pub counter: i32,
+    /// Gate check (`FUN_00c810c0(0,0)`); non-zero aborts the call.
+    pub gate: &'a mut dyn FnMut() -> i32,
+    /// Resolver by hash id; may be absent.
+    pub resolve: Option<&'a mut dyn FnMut(u32) -> Option<usize>>,
+    /// Pre-call hook, fills the 64-bit timestamp/cookie.
+    #[allow(clippy::type_complexity)]
+    pub pre: Option<&'a mut dyn FnMut(u32, &mut u64)>,
+    /// Post-call hook, receives the cookie halves and the result.
+    pub post: Option<&'a mut dyn FnMut(u32, u32, u32, i32)>,
+}
+
+/// Common body of the two trampolines below.  `cached` is the cached target
+/// slot; `call` invokes a resolved target with the three arguments.
+pub fn w32a123_trampoline(
+    h: &mut W32a123Hooks,
+    cached: &mut Option<usize>,
+    id: u32,
+    args: (u32, u32, u32),
+    call: &mut dyn FnMut(usize, u32, u32, u32) -> i32,
+) -> i32 {
+    h.counter += 1;
+    let gate = (h.gate)();
+    if gate != 0 {
+        h.counter -= 1;
+        return gate;
+    }
+    if cached.is_none() {
+        if let Some(r) = h.resolve.as_mut() {
+            *cached = r(id);
+        }
+        if cached.is_none() {
+            h.counter -= 1;
+            return -3;
+        }
+    }
+    let target = cached.unwrap();
+    let mut cookie: u64 = 0;
+    if let Some(p) = h.pre.as_mut() {
+        p(id, &mut cookie);
+    }
+    let rc = call(target, args.0, args.1, args.2);
+    if let Some(p) = h.post.as_mut() {
+        p(id, cookie as u32, (cookie >> 32) as u32, rc);
+    }
+    h.counter -= 1;
+    rc
+}
+
+/// `0x00c81120`: trampoline for API id `0x5f68da40` (cache slot `0x0140e798`).
+pub fn w32a123_call_5f68da40(
+    h: &mut W32a123Hooks,
+    cached: &mut Option<usize>,
+    args: (u32, u32, u32),
+    call: &mut dyn FnMut(usize, u32, u32, u32) -> i32,
+) -> i32 {
+    w32a123_trampoline(h, cached, 0x5f68da40, args, call)
+}
+
+/// `0x00c81460`: trampoline for API id `0x3dfacec8` (cache slot `0x0140e8ac`).
+pub fn w32a123_call_3dfacec8(
+    h: &mut W32a123Hooks,
+    cached: &mut Option<usize>,
+    args: (u32, u32, u32),
+    call: &mut dyn FnMut(usize, u32, u32, u32) -> i32,
+) -> i32 {
+    w32a123_trampoline(h, cached, 0x3dfacec8, args, call)
+}
+
+#[cfg(test)]
+mod tests_wave32_agent123 {
+    use super::*;
+
+    #[test]
+    fn resolves_and_calls() {
+        let mut gate = || 0;
+        let mut res = |id: u32| if id == 0x5f68da40 { Some(7) } else { None };
+        let mut seen = Vec::new();
+        let mut post = |id: u32, _a: u32, _b: u32, rc: i32| seen.push((id, rc));
+        let mut h = W32a123Hooks {
+            counter: 0,
+            gate: &mut gate,
+            resolve: Some(&mut res),
+            pre: None,
+            post: Some(&mut post),
+        };
+        let mut cached = None;
+        let mut call = |t: usize, a: u32, b: u32, c: u32| (t as u32 + a + b + c) as i32;
+        assert_eq!(
+            w32a123_call_5f68da40(&mut h, &mut cached, (1, 2, 3), &mut call),
+            13
+        );
+        assert_eq!(h.counter, 0);
+        assert_eq!(cached, Some(7));
+        assert_eq!(
+            w32a123_call_3dfacec8(&mut h, &mut None, (1, 2, 3), &mut call),
+            -3
+        );
+        assert_eq!(h.counter, 0);
+    }
+
+    #[test]
+    fn gate_fails() {
+        let mut gate = || 5;
+        let mut h = W32a123Hooks {
+            counter: 0,
+            gate: &mut gate,
+            resolve: None,
+            pre: None,
+            post: None,
+        };
+        let mut call = |_: usize, _: u32, _: u32, _: u32| 0;
+        assert_eq!(
+            w32a123_call_3dfacec8(&mut h, &mut Some(1), (0, 0, 0), &mut call),
+            5
+        );
+        assert_eq!(h.counter, 0);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent124.rs
+// ===========================================================================
+// Wave 32 translation batch 124.
+//
+// Skipped: FUN_00c815e0 and FUN_00c81730 (lazy resolver dispatch through
+// unmodelled global function pointers).
+
+fn w32a124_lower(c: u16) -> u16 {
+    if (0x41..0x5b).contains(&c) {
+        c + 0x20
+    } else {
+        c
+    }
+}
+
+fn w32a124_at(s: &[u16], i: usize) -> u16 {
+    s.get(i).copied().unwrap_or(0)
+}
+
+fn w32a124_len(s: &[u16]) -> usize {
+    s.iter().position(|&c| c == 0).unwrap_or(s.len())
+}
+
+/// Index of the extension dot (or end of string): scans back from the end
+/// to a `\` or `.` and returns the dot if found, else the string end.
+fn w32a124_ext_pos(s: &[u16]) -> usize {
+    let end = w32a124_len(s);
+    let mut p = end;
+    while p > 0 && w32a124_at(s, p) != 0x5c && w32a124_at(s, p) != 0x2e {
+        p -= 1;
+    }
+    if w32a124_at(s, p) == 0x2e { p } else { end }
+}
+
+fn w32a124_cmp_ci(a: &[u16], b: &[u16], limit: usize) -> i32 {
+    for i in 0..limit {
+        let x = w32a124_lower(w32a124_at(a, i));
+        let y = w32a124_lower(w32a124_at(b, i));
+        if x != y || x == 0 {
+            return x as i32 - y as i32;
+        }
+    }
+    0
+}
+
+/// `0x00c82850`: true when `name` (path stripped to its last component)
+/// matches `module` case-insensitively, either exactly or by stem when each
+/// extension is empty or `.dll`.
+pub fn w32a124_module_name_matches(name: &[u16], module: &[u16]) -> bool {
+    let start = (0..w32a124_len(name))
+        .rev()
+        .find(|&i| name[i] == 0x5c)
+        .map_or(0, |i| i + 1);
+    let name = &name[start..];
+    if w32a124_cmp_ci(name, module, usize::MAX) == 0 {
+        return true;
+    }
+    let ea = w32a124_ext_pos(name);
+    let eb = w32a124_ext_pos(module);
+    if ea != eb {
+        return false;
+    }
+    let dll: Vec<u16> = ".dll".encode_utf16().collect();
+    for (s, e) in [(module, eb), (name, ea)] {
+        let ext = &s[e.min(s.len())..];
+        if w32a124_at(ext, 0) != 0 && w32a124_cmp_ci(ext, &dll, usize::MAX) != 0 {
+            return false;
+        }
+    }
+    w32a124_cmp_ci(name, module, ea) == 0
+}
+
+#[cfg(test)]
+mod tests_wave32_agent124 {
+    use super::*;
+    fn w(s: &str) -> Vec<u16> {
+        s.encode_utf16().collect()
+    }
+    #[test]
+    fn matches() {
+        assert!(w32a124_module_name_matches(
+            &w("C:\\x\\Foo.dll"),
+            &w("foo.dll")
+        ));
+        assert!(w32a124_module_name_matches(&w("C:\\x\\Foo.dll"), &w("foo")));
+        assert!(!w32a124_module_name_matches(&w("foo.exe"), &w("foo.dll")));
+        assert!(!w32a124_module_name_matches(&w("foo.dll"), &w("bar.dll")));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent125.rs
+// ===========================================================================
+// Wave 32 agent 125: CRT lock-table slot registration.
+// Cites 0x00c84b64 below.
+
+/// `0x00c84b64`: registers `obj` in an 8-entry slot table (slot 0 unused).
+/// Scans from slot 1 for an empty slot or one already holding `obj`; if none
+/// matches the scan ends with index 8 (original quirk: the table has 8
+/// entries, so the caller must size `slots` and `counts` to at least 9).
+/// Increments the per-slot use counter, stores `obj`, and returns the index,
+/// which the original also writes to `*(obj + 8)`.  The lock/unlock pair
+/// (callees 2 / unlock) is supplied by the caller around this call.
+pub fn w32a125_register_slot(slots: &mut [u32], counts: &mut [u8], obj: u32) -> u32 {
+    let mut idx: u32 = 1;
+    loop {
+        let cur = slots[idx as usize];
+        if cur == 0 || cur == obj {
+            break;
+        }
+        idx += 1;
+        if idx >= 8 {
+            break;
+        }
+    }
+    counts[idx as usize] = counts[idx as usize].wrapping_add(1);
+    slots[idx as usize] = obj;
+    idx
+}
+
+#[cfg(test)]
+mod tests_wave32_agent125 {
+    use super::*;
+
+    #[test]
+    fn registers_first_empty_and_reuses() {
+        let mut s = [0u32; 9];
+        let mut c = [0u8; 9];
+        assert_eq!(w32a125_register_slot(&mut s, &mut c, 10), 1);
+        assert_eq!(w32a125_register_slot(&mut s, &mut c, 20), 2);
+        assert_eq!(w32a125_register_slot(&mut s, &mut c, 10), 1);
+        assert_eq!(c[1], 2);
+        assert_eq!(s[2], 20);
+    }
+
+    #[test]
+    fn full_table_ends_at_eight() {
+        let mut s = [0u32; 9];
+        let mut c = [0u8; 9];
+        for i in 1..8 {
+            s[i] = 100 + i as u32;
+        }
+        assert_eq!(w32a125_register_slot(&mut s, &mut c, 5), 8);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent126.rs
+// ===========================================================================
+// Wave 32 agent 126: unsigned 64-bit division helper.
+
+/// `0x00c878b0`: CRT unsigned 64-bit divide (`__aulldiv`).  Arguments are
+/// the dividend low/high words then the divisor low/high words; returns the
+/// 64-bit quotient.  The 32-bit-divisor path and the normalise-and-correct
+/// path of the retail routine both yield the exact quotient.
+pub fn w32a126_aulldiv(n_lo: u32, n_hi: u32, d_lo: u32, d_hi: u32) -> u64 {
+    let n = ((n_hi as u64) << 32) | n_lo as u64;
+    let d = ((d_hi as u64) << 32) | d_lo as u64;
+    n / d
+}
+
+#[cfg(test)]
+mod tests_wave32_agent126 {
+    use super::*;
+
+    #[test]
+    fn small_divisor() {
+        assert_eq!(w32a126_aulldiv(100, 0, 7, 0), 14);
+        assert_eq!(w32a126_aulldiv(0, 5, 2, 0), 5u64 << 31);
+    }
+
+    #[test]
+    fn wide_divisor() {
+        assert_eq!(w32a126_aulldiv(0, 8, 0, 2), 4);
+        assert_eq!(
+            w32a126_aulldiv(u32::MAX, u32::MAX, 1, 1),
+            0xFFFF_FFFF_FFFF_FFFF / 0x1_0000_0001
+        );
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent127.rs
+// ===========================================================================
+// Wave 32 translation batch 127.
+//
+// Skipped: FUN_00c8c5bf (ends in a non-returning call).
+
+/// `0x00c8cddb`: compatibility check between three flag records.  `a_flags`,
+/// `b_flags`, `c_flags` are the leading bytes of params 1..3; `a_name` and
+/// `b_name` are the wide strings at `+8` of each record's pointee (`None` =
+/// null pointer at `+4`).  `same_obj` is true when both `+4` pointers are equal.
+pub fn w32a127_flags_compatible(
+    a_flags: u8,
+    a_name: Option<&[u16]>,
+    b_flags: u8,
+    b_name: Option<&[u16]>,
+    same_obj: bool,
+    c_flags: u8,
+) -> bool {
+    let an = match a_name {
+        Some(n) if n.first().copied().unwrap_or(0) != 0 => n,
+        _ => return true,
+    };
+    if a_flags & 0x80 != 0 && b_flags & 0x10 != 0 {
+        return true;
+    }
+    if !same_obj {
+        let bn = b_name.unwrap_or(&[]);
+        let mut i = 0;
+        loop {
+            let x = an.get(i).copied().unwrap_or(0);
+            let y = bn.get(i).copied().unwrap_or(0);
+            if x != y {
+                return false;
+            }
+            if x == 0 {
+                break;
+            }
+            i += 1;
+        }
+    }
+    (b_flags & 2 == 0 || a_flags & 8 != 0)
+        && (c_flags & 1 == 0 || a_flags & 1 != 0)
+        && (c_flags & 2 == 0 || a_flags & 2 != 0)
+}
+
+/// `0x00c93722`: chooses between two handlers; returns `true` when the
+/// second (`FUN_00cad39f`) is selected, i.e. the pointer is non-null and the
+/// pointee's field at `+4` is at least 2.
+pub fn w32a127_use_second_handler(present: bool, field4: i32) -> bool {
+    present && field4 >= 2
+}
+
+#[cfg(test)]
+mod tests_wave32_agent127 {
+    use super::*;
+    #[test]
+    fn compat() {
+        let n: Vec<u16> = vec![65, 0];
+        assert!(w32a127_flags_compatible(0, None, 0, None, false, 0));
+        assert!(w32a127_flags_compatible(
+            0x80,
+            Some(&n),
+            0x10,
+            None,
+            false,
+            3
+        ));
+        assert!(!w32a127_flags_compatible(
+            0,
+            Some(&n),
+            0,
+            Some(&[66, 0]),
+            false,
+            0
+        ));
+        assert!(w32a127_flags_compatible(0, Some(&n), 0, None, true, 0));
+        assert!(!w32a127_flags_compatible(0, Some(&n), 2, None, true, 0));
+        assert!(!w32a127_flags_compatible(0, Some(&n), 0, None, true, 1));
+    }
+    #[test]
+    fn handler() {
+        assert!(!w32a127_use_second_handler(false, 5));
+        assert!(!w32a127_use_second_handler(true, 1));
+        assert!(w32a127_use_second_handler(true, 2));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent128.rs
+// ===========================================================================
+// Wave 32 translation batch 128: CRT OS-error mapping helpers.
+// Skipped: FUN_00c93b3e (opaque callees, out-parameter glue).
+
+/// `0x00c9479c`: maps an OS error code to an errno value.  `table` holds the
+/// 0x2d `(os_error, errno)` pairs; first match wins.  Otherwise codes
+/// 0x13..0x24 give 0xd, and the rest give 0x16 for 0xbc..=0xca, else 8.
+pub fn w32a128_oserr_to_errno(code: u32, table: &[(u32, i32)]) -> i32 {
+    for &(os, errno) in table.iter().take(0x2d) {
+        if os == code {
+            return errno;
+        }
+    }
+    if code.wrapping_sub(0x13) < 0x12 {
+        return 0xd;
+    }
+    if code.wrapping_sub(0xbc) > 0xe {
+        16 + 6
+    } else {
+        8
+    }
+}
+
+/// `0x00c94802`: returns offset of the per-thread field (`base + 0x14`) when a
+/// thread-data base exists, else the static default address.
+pub fn w32a128_thread_field_or_default(base: Option<usize>, default: usize) -> usize {
+    match base {
+        Some(b) => b + 0x14,
+        None => default,
+    }
+}
+
+#[cfg(test)]
+mod tests_wave32_agent128 {
+    use super::*;
+
+    #[test]
+    fn errno_map() {
+        let t = [(2u32, 2i32), (5, 13)];
+        assert_eq!(w32a128_oserr_to_errno(5, &t), 13);
+        assert_eq!(w32a128_oserr_to_errno(0x13, &t), 0xd);
+        assert_eq!(w32a128_oserr_to_errno(0x24, &t), 0xd);
+        assert_eq!(w32a128_oserr_to_errno(0xbc, &t), 8);
+        assert_eq!(w32a128_oserr_to_errno(0xca, &t), 8);
+        assert_eq!(w32a128_oserr_to_errno(0xcb, &t), 22);
+        assert_eq!(w32a128_oserr_to_errno(1, &t), 22);
+    }
+
+    #[test]
+    fn field() {
+        assert_eq!(w32a128_thread_field_or_default(Some(0x100), 7), 0x114);
+        assert_eq!(w32a128_thread_field_or_default(None, 7), 7);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent129.rs
+// ===========================================================================
+// Wave 32 agent 129: CRT float-scan helpers for "INF"/"INFINITY" and "NAN(...)".
+// Callees FUN_00c97faf (unget) and FUN_00c95719 (rewind) are modelled on the
+// cursor.  FUN_00c94e65 is skipped: it depends on opaque locale/state structs.
+
+/// Character cursor over a byte stream (models the `char *` cell plus current char).
+#[derive(Debug, Clone)]
+pub struct W32a129Cursor<'a> {
+    pub buf: &'a [u8],
+    pub pos: usize,
+    pub cur: u8,
+}
+
+impl<'a> W32a129Cursor<'a> {
+    fn advance(&mut self) {
+        let c = self.buf.get(self.pos).copied().unwrap_or(0);
+        self.pos += 1;
+        self.cur = c;
+    }
+    /// FUN_00c97faf equivalent: step the read pointer back by one.
+    fn unget(&mut self) {
+        self.pos = self.pos.saturating_sub(1);
+    }
+}
+
+fn w32a129_match_ci(c: &mut W32a129Cursor, upper: &[u8], lower: &[u8]) -> bool {
+    let mut i = 0;
+    while i < upper.len() && (c.cur == upper[i] || c.cur == lower[i]) {
+        c.advance();
+        i += 1;
+        if i == upper.len() {
+            return true;
+        }
+    }
+    false
+}
+
+/// `0x00c9525c`: scans "INF" then optionally "INITY" (case-insensitive via
+/// the two 3-byte tables).  Returns 3 on INF/INFINITY, 7 on mismatch
+/// (cursor rewound to `start`, current char cleared).
+pub fn w32a129_scan_inf(
+    c: &mut W32a129Cursor,
+    upper3: &[u8; 3],
+    lower3: &[u8; 3],
+    start: usize,
+) -> u32 {
+    if !w32a129_match_ci(c, upper3, lower3) {
+        c.unget();
+        c.cur = 0;
+        c.pos = start;
+        return 7;
+    }
+    c.unget();
+    let saved = c.pos;
+    c.advance();
+    if w32a129_match_ci(c, b"INITY", b"inity") {
+        c.unget();
+        return 3;
+    }
+    c.unget();
+    c.cur = 0;
+    c.pos = saved;
+    3
+}
+
+/// `0x00c95300`: scans "NAN" then optional "(...)".  Returns 7 on a bad
+/// prefix, 5 / 6 for the two special payload spellings, 4 for plain NAN
+/// (also the result of a malformed payload, after rewinding to `start`).
+pub fn w32a129_scan_nan(
+    c: &mut W32a129Cursor,
+    upper3: &[u8; 3],
+    lower3: &[u8; 3],
+    payload5: (&[u8; 5], &[u8; 5]),
+    payload4: (&[u8; 4], &[u8; 4]),
+    start: usize,
+) -> u32 {
+    let rewind = |c: &mut W32a129Cursor| {
+        c.unget();
+        c.cur = 0;
+        c.pos = start;
+    };
+    if !w32a129_match_ci(c, upper3, lower3) {
+        rewind(c);
+        return 7;
+    }
+    c.unget();
+    c.advance();
+    if c.cur != b'(' {
+        rewind(c);
+        return 4;
+    }
+    c.advance();
+    if w32a129_match_ci(c, payload5.0, payload5.1) {
+        c.unget();
+        return 5;
+    }
+    if w32a129_match_ci(c, payload4.0, payload4.1) {
+        c.unget();
+        return 6;
+    }
+    while c.cur != b')' {
+        let ok = c.cur != 0 && (c.cur.is_ascii_alphanumeric() || c.cur == b'_');
+        if !ok {
+            rewind(c);
+            return 4;
+        }
+        c.advance();
+    }
+    4
+}
+
+#[cfg(test)]
+mod tests_wave32_agent129 {
+    use super::*;
+
+    #[test]
+    fn inf_variants() {
+        let mut c = W32a129Cursor {
+            buf: b"nfinity!",
+            pos: 0,
+            cur: b'i',
+        };
+        assert_eq!(w32a129_scan_inf(&mut c, b"INF", b"inf", 0), 3);
+        let mut c = W32a129Cursor {
+            buf: b"xyz",
+            pos: 1,
+            cur: b'q',
+        };
+        assert_eq!(w32a129_scan_inf(&mut c, b"INF", b"inf", 0), 7);
+        assert_eq!((c.cur, c.pos), (0, 0));
+    }
+
+    #[test]
+    fn nan_variants() {
+        let p5 = (b"SNAN)", b"snan)");
+        let p4 = (b"IND)", b"ind)");
+        let mut c = W32a129Cursor {
+            buf: b"AN(ab_1)",
+            pos: 0,
+            cur: b'N',
+        };
+        assert_eq!(w32a129_scan_nan(&mut c, b"NAN", b"nan", p5, p4, 0), 4);
+        let mut c = W32a129Cursor {
+            buf: b"AN(ind)",
+            pos: 0,
+            cur: b'n',
+        };
+        assert_eq!(w32a129_scan_nan(&mut c, b"NAN", b"nan", p5, p4, 0), 6);
+        let mut c = W32a129Cursor {
+            buf: b"xx",
+            pos: 0,
+            cur: b'x',
+        };
+        assert_eq!(w32a129_scan_nan(&mut c, b"NAN", b"nan", p5, p4, 0), 7);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent131.rs
+// ===========================================================================
+// Wave 32 translation batch 131: CRT printf integer formatting helpers.
+
+/// Formatter state touched by the integer-to-text helpers (offsets 0x28, 0x34, 0x38).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct W32a131State {
+    /// Remaining minimum digit count (+0x28).
+    pub precision: i32,
+    /// Index of the first digit written (+0x34).
+    pub start: i32,
+    /// Number of digits produced (+0x38).
+    pub len: i32,
+}
+
+/// `0x00c983de`: dispatches on a global flag; when set calls the wide path
+/// with 0, otherwise the narrow path with 1.  Returns which branch ran
+/// (`wide_flag`) after invoking the supplied callbacks.
+pub fn w32a131_dispatch(
+    wide_flag: bool,
+    param: u32,
+    wide: &mut dyn FnMut(u32, u32),
+    narrow: &mut dyn FnMut(u32, u32),
+) {
+    if wide_flag {
+        wide(param, 0);
+    } else {
+        narrow(param, 1);
+    }
+}
+
+fn w32a131_digit_char(rem: u32, lower_flag: u8) -> u8 {
+    let mut c = (rem as u8).wrapping_add(b'0');
+    if c > b'9' {
+        c = c
+            .wrapping_add((lower_flag ^ 1).wrapping_mul(b' '))
+            .wrapping_add(7);
+    }
+    c
+}
+
+/// `0x00c98e52`: writes `value` in `radix` right-to-left into `buf` starting
+/// at `end_index` (the narrow buffer end minus one, already computed from the
+/// helper), padding with '0' while precision remains.  Updates state.
+pub fn w32a131_utoa_narrow(
+    st: &mut W32a131State,
+    buf: &mut [u8],
+    end_index: i32,
+    mut value: u32,
+    radix: u32,
+    lower_flag: u8,
+) {
+    st.start = end_index;
+    let mut cur = end_index;
+    while st.precision > 0 || value != 0 {
+        st.precision -= 1;
+        let c = w32a131_digit_char(value % radix, lower_flag);
+        if cur >= 0 && (cur as usize) < buf.len() {
+            buf[cur as usize] = c;
+        }
+        st.start -= 1;
+        cur = st.start;
+        value /= radix;
+    }
+    st.len = end_index - cur;
+    st.start += 1;
+}
+
+/// `0x00c98ec5`: wide-character variant; indices are in 16-bit units.
+pub fn w32a131_utoa_wide(
+    st: &mut W32a131State,
+    buf: &mut [u16],
+    end_index: i32,
+    mut value: u32,
+    radix: u32,
+    lower_flag: u8,
+) {
+    st.start = end_index;
+    let mut cur = end_index;
+    while st.precision > 0 || value != 0 {
+        st.precision -= 1;
+        let c = w32a131_digit_char(value % radix, lower_flag) as u16;
+        if cur >= 0 && (cur as usize) < buf.len() {
+            buf[cur as usize] = c;
+        }
+        st.start -= 1;
+        cur = st.start;
+        value /= radix;
+    }
+    st.len = end_index - cur;
+    st.start += 1;
+}
+
+#[cfg(test)]
+mod tests_wave32_agent131 {
+    use super::*;
+
+    #[test]
+    fn narrow_hex() {
+        let mut st = W32a131State::default();
+        let mut b = [b'?'; 8];
+        w32a131_utoa_narrow(&mut st, &mut b, 7, 0xbeef, 16, 1);
+        assert_eq!(st.len, 4);
+        assert_eq!(&b[st.start as usize..], b"BEEF");
+        let mut st = W32a131State {
+            precision: 6,
+            ..Default::default()
+        };
+        w32a131_utoa_narrow(&mut st, &mut b, 7, 0xbeef, 16, 0);
+        assert_eq!(&b[st.start as usize..], b"00beef");
+    }
+
+    #[test]
+    fn wide_dec_and_dispatch() {
+        let mut st = W32a131State::default();
+        let mut b = [0u16; 6];
+        w32a131_utoa_wide(&mut st, &mut b, 5, 1234, 10, 0);
+        assert_eq!(st.len, 4);
+        assert_eq!(b[2..], [49, 50, 51, 52]);
+        let r = std::cell::Cell::new(99);
+        w32a131_dispatch(true, 5, &mut |_, f| r.set(f), &mut |_, f| r.set(10 + f));
+        assert_eq!(r.get(), 0);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent132.rs
+// ===========================================================================
+// Wave 32 agent 132: digit formatters of a runtime number-to-text buffer.
+
+/// Result of a backwards digit fill.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub struct W32a132Fill {
+    /// Index of the first written digit.
+    pub start: usize,
+    /// Number of digits written (stored at +0x38).
+    pub len: usize,
+    /// Remaining minimum-digit counter (+0x28 after the loop).
+    pub min_digits: i32,
+}
+
+fn w32a132_digit(rem: u32, upper: u8) -> u8 {
+    let c = (rem as u8).wrapping_add(b'0');
+    if c > b'9' {
+        c.wrapping_add((upper ^ 1).wrapping_mul(32)).wrapping_add(7)
+    } else {
+        c
+    }
+}
+
+/// `0x00c98f4c`: writes the digits of `value` in `base` backwards into a
+/// byte buffer, ending at `end` (the callee-computed last slot).  Loops while
+/// the minimum-digit counter is positive or the value is non-zero; digits
+/// above 9 become `A..` when `upper == 1`, else `a..`.
+pub fn w32a132_fill_digits_narrow(
+    buf: &mut [u8],
+    end: usize,
+    mut value: u64,
+    base: u32,
+    upper: u8,
+    mut min_digits: i32,
+) -> W32a132Fill {
+    let mut pos = end as isize;
+    while min_digits > 0 || value != 0 {
+        min_digits -= 1;
+        let rem = (value % base as u64) as u32;
+        value /= base as u64;
+        buf[pos as usize] = w32a132_digit(rem, upper);
+        pos -= 1;
+    }
+    W32a132Fill {
+        start: (pos + 1) as usize,
+        len: (end as isize - pos) as usize,
+        min_digits,
+    }
+}
+
+/// `0x00c98fdc`: same as the narrow variant but writes 16-bit characters
+/// (stride 2 bytes, the length is the byte distance shifted right by one).
+pub fn w32a132_fill_digits_wide(
+    buf: &mut [u16],
+    end: usize,
+    mut value: u64,
+    base: u32,
+    upper: u8,
+    mut min_digits: i32,
+) -> W32a132Fill {
+    let mut pos = end as isize;
+    while min_digits > 0 || value != 0 {
+        min_digits -= 1;
+        let rem = (value % base as u64) as u32;
+        value /= base as u64;
+        buf[pos as usize] = w32a132_digit(rem, upper) as u16;
+        pos -= 1;
+    }
+    W32a132Fill {
+        start: (pos + 1) as usize,
+        len: (end as isize - pos) as usize,
+        min_digits,
+    }
+}
+
+/// `0x00c99223`: releases the buffer handle at +0x404 through `free` and
+/// clears the field.
+pub fn w32a132_release_handle(handle: &mut u32, free: impl FnOnce(u32)) {
+    free(*handle);
+    *handle = 0;
+}
+
+#[cfg(test)]
+mod tests_wave32_agent132 {
+    use super::*;
+
+    #[test]
+    fn narrow_hex() {
+        let mut b = [0u8; 8];
+        let r = w32a132_fill_digits_narrow(&mut b, 7, 0xBEEF, 16, 1, 0);
+        assert_eq!(&b[r.start..8], b"BEEF");
+        assert_eq!(r.len, 4);
+        let r = w32a132_fill_digits_narrow(&mut b, 7, 0xBEEF, 16, 0, 0);
+        assert_eq!(&b[r.start..8], b"beef");
+    }
+
+    #[test]
+    fn narrow_padding_and_zero() {
+        let mut b = [0u8; 4];
+        let r = w32a132_fill_digits_narrow(&mut b, 3, 0, 10, 0, 2);
+        assert_eq!(&b[r.start..4], b"00");
+        assert_eq!(r.min_digits, 0);
+    }
+
+    #[test]
+    fn wide_dec() {
+        let mut b = [0u16; 6];
+        let r = w32a132_fill_digits_wide(&mut b, 5, 1234, 10, 0, 0);
+        assert_eq!(r.len, 4);
+        assert_eq!(b[r.start], b'1' as u16);
+    }
+
+    #[test]
+    fn release() {
+        let mut h = 5;
+        let mut got = 0;
+        w32a132_release_handle(&mut h, |x| got = x);
+        assert_eq!((h, got), (0, 5));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent133.rs
+// ===========================================================================
+// Wave 32 translation batch 133: CRT printf conversion dispatch/prefix.
+
+/// Conversion kind selected by the printf-style formatter dispatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum W32a133Conv {
+    /// Integer via the radix helper: (radix, uppercase/hex-flag arg).
+    Int {
+        radix: u32,
+        arg: u32,
+        set_signed: bool,
+    },
+    Float,
+    Char,
+    WideChar,
+    Str,
+    Pointer,
+    CountN,
+    OctalO,
+}
+
+/// Shared body of `0x00c9a1ec` and `0x00c9a420`: maps the conversion
+/// character (offset `0x31` of the state) to the helper it dispatches to.
+/// `None` means the routine returns 0 (unsupported conversion).  `d`/`i`
+/// also set flag bit `0x10` (signed) before calling the integer helper.
+pub fn w32a133_dispatch(c: u8) -> Option<W32a133Conv> {
+    let int = |radix, arg, set_signed| {
+        Some(W32a133Conv::Int {
+            radix,
+            arg,
+            set_signed,
+        })
+    };
+    match c {
+        b'd' | b'i' => int(10, 0, true),
+        b'u' => int(10, 0, false),
+        b'X' => int(0x10, 1, false),
+        b'x' => int(0x10, 0, false),
+        b'A' | b'E' | b'F' | b'G' | b'a' | b'e' | b'f' | b'g' => Some(W32a133Conv::Float),
+        b'C' | b'c' => Some(W32a133Conv::Char),
+        b'S' | b's' => Some(W32a133Conv::Str),
+        b'Z' => Some(W32a133Conv::WideChar),
+        b'p' => Some(W32a133Conv::Pointer),
+        b'n' => Some(W32a133Conv::CountN),
+        b'o' => Some(W32a133Conv::OctalO),
+        _ => None,
+    }
+}
+
+/// `0x00c9a1ec`: builds the sign / `0x` prefix after dispatch.  Returns
+/// the prefix bytes and length, plus the padding count
+/// `width - prefix_arg - len` (`width` at +0x24, `prefix_arg` at +0x38).
+/// Flag bits: 0 plus, 1 space, 4 signed, 5 alt-form, 6 negative.
+/// `0x00c9a420` is the byte-identical twin (wide-char build).
+pub fn w32a133_prefix(flags: u32, conv: u8, width: i32, prefix_arg: i32) -> ([u8; 4], usize, i32) {
+    let mut buf = [0u8; 4];
+    let mut n = 0usize;
+    if flags >> 4 & 1 != 0 {
+        if flags >> 6 & 1 != 0 {
+            buf[0] = b'-';
+            n = 1;
+        } else if flags & 1 != 0 {
+            buf[0] = b'+';
+            n = 1;
+        } else if flags >> 1 & 1 != 0 {
+            buf[0] = b' ';
+            n = 1;
+        }
+    }
+    let hex = matches!(conv, b'x' | b'X') && flags >> 5 & 1 != 0;
+    if hex || matches!(conv, b'a' | b'A') {
+        buf[n] = b'0';
+        buf[n + 1] = if matches!(conv, b'X' | b'A') {
+            b'X'
+        } else {
+            b'x'
+        };
+        n += 2;
+    }
+    (buf, n, width - prefix_arg - n as i32)
+}
+
+/// `0x00c9923d`: move-assign of a handle slot.  The old value in `dst` is
+/// released through `free`, then `dst` takes `*src` and `src` is zeroed.
+pub fn w32a133_move_assign(dst: &mut u32, src: &mut u32, mut free: impl FnMut(u32)) {
+    free(*dst);
+    *dst = 0;
+    *dst = *src;
+    *src = 0;
+}
+
+/// `0x00c9a420` wrapper sharing the dispatch/prefix logic above.
+pub fn w32a133_prefix_wide(
+    flags: u32,
+    conv: u8,
+    width: i32,
+    prefix_arg: i32,
+) -> ([u8; 4], usize, i32) {
+    w32a133_prefix(flags, conv, width, prefix_arg)
+}
+
+#[cfg(test)]
+mod tests_wave32_agent133 {
+    use super::*;
+
+    #[test]
+    fn dispatch() {
+        assert_eq!(
+            w32a133_dispatch(b'x'),
+            Some(W32a133Conv::Int {
+                radix: 16,
+                arg: 0,
+                set_signed: false
+            })
+        );
+        assert_eq!(w32a133_dispatch(b'Y'), None);
+        assert_eq!(w32a133_dispatch(b'h'), None);
+        assert_eq!(w32a133_dispatch(b'p'), Some(W32a133Conv::Pointer));
+    }
+
+    #[test]
+    fn prefix() {
+        let (b, n, pad) = w32a133_prefix(0x10 | 0x40, b'd', 10, 0);
+        assert_eq!((&b[..n], pad), (&b"-"[..], 9));
+        let (b, n, _) = w32a133_prefix(0x20, b'X', 0, 0);
+        assert_eq!(&b[..n], b"0X");
+        let (b, n, _) = w32a133_prefix(0x12, b'd', 0, 0);
+        assert_eq!(&b[..n], b" ");
+    }
+
+    #[test]
+    fn move_assign() {
+        let (mut a, mut b, mut freed) = (5, 9, 0);
+        w32a133_move_assign(&mut a, &mut b, |v| freed = v);
+        assert_eq!((a, b, freed), (9, 0, 5));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent134.rs
+// ===========================================================================
+// Wave 32 agent 134 translations.
+
+/// `0x00c9a912`: maps a type-code (0..=0xb) to a byte size: 1 -> 1, 2 -> 2,
+/// {0,3,6,7,9,10} -> 4, {4,5,0xb} -> 8, anything else -> 0.
+pub fn w32a134_type_code_size(code: u32) -> u32 {
+    match code {
+        0 | 3 | 6 | 7 | 9 | 10 => 4,
+        1 => 1,
+        2 => 2,
+        4 | 5 | 0xb => 8,
+        _ => 0,
+    }
+}
+
+#[cfg(test)]
+mod tests_wave32_agent134 {
+    use super::*;
+
+    #[test]
+    fn sizes() {
+        assert_eq!(w32a134_type_code_size(0), 4);
+        assert_eq!(w32a134_type_code_size(1), 1);
+        assert_eq!(w32a134_type_code_size(2), 2);
+        assert_eq!(w32a134_type_code_size(0xb), 8);
+        assert_eq!(w32a134_type_code_size(12), 0);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent135.rs
+// ===========================================================================
+// Wave 32 translation batch 135: printf-state integer-prepare wrappers.
+
+/// Format state fields touched by the wrappers (`this+0x20`, `+0x28`, `+0x2c`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct W32a135State {
+    pub flags: u32,
+    pub field28: u32,
+    pub field2c: u32,
+}
+
+/// `0x00c9b12c`: if flag bit 5 is set, sets bit 7 (`0x80`); then the caller
+/// invokes the narrow prepare helper with `(8, 0)`, returned here.
+pub fn w32a135_narrow_prepare_args(s: &mut W32a135State) -> (u32, u32) {
+    if (s.flags >> 5) & 1 != 0 {
+        s.flags |= 0x80;
+    }
+    (8, 0)
+}
+
+/// `0x00c9b14b`: same as the narrow variant but for the wide prepare helper
+/// (args `(8, 0)`).
+pub fn w32a135_wide_prepare_args(s: &mut W32a135State) -> (u32, u32) {
+    if (s.flags >> 5) & 1 != 0 {
+        s.flags |= 0x80;
+    }
+    (8, 0)
+}
+
+/// `0x00c9b16a`: stores `+0x28 = 8`, `+0x2c = 10`; narrow prepare args `(0x10, 1)`.
+pub fn w32a135_pointer_prepare_args(s: &mut W32a135State) -> (u32, u32) {
+    s.field28 = 8;
+    s.field2c = 10;
+    (0x10, 1)
+}
+
+#[cfg(test)]
+mod tests_wave32_agent135 {
+    use super::*;
+
+    #[test]
+    fn wrappers() {
+        let mut s = W32a135State {
+            flags: 0x20,
+            ..Default::default()
+        };
+        assert_eq!(w32a135_narrow_prepare_args(&mut s), (8, 0));
+        assert_eq!(s.flags, 0xa0);
+        let mut t = W32a135State::default();
+        assert_eq!(w32a135_wide_prepare_args(&mut t), (8, 0));
+        assert_eq!(t.flags, 0);
+        assert_eq!(w32a135_pointer_prepare_args(&mut t), (0x10, 1));
+        assert_eq!((t.field28, t.field2c), (8, 10));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent136.rs
+// ===========================================================================
+// Wave 32 translation batch 136: printf-engine helpers (callees injected).
+
+/// `0x00c9b182`: stores the pair (8, 10) at object offsets 0x28/0x2c, then
+/// calls the wide-argument prepare helper with (0x10, 1).  Returns the pair.
+pub fn w32a136_set_radix_fields(call_prepare: &mut dyn FnMut(u32, u32)) -> (u32, u32) {
+    call_prepare(0x10, 1);
+    (8, 10)
+}
+
+/// `0x00c9b416`: true when the stream flags (bit 12 of word at +0xc) are clear
+/// or the field at +4 is nonzero and the char lookup returns anything but -1;
+/// otherwise (bit set and +4 zero) returns true directly.
+pub fn w32a136_char_ok(
+    flags: u32,
+    field4: i32,
+    ch: i8,
+    lookup: &mut dyn FnMut(i32) -> i32,
+) -> bool {
+    if (flags >> 12) & 1 == 0 || field4 != 0 {
+        lookup(ch as i32) != -1
+    } else {
+        true
+    }
+}
+
+/// `0x00c9b59e`: when the flag byte is zero and count > 0, decodes `count`
+/// items from `pos` using `decode` (returns (value, consumed)); a consumed
+/// value below 1 sets `*state = -1` and stops; else `push(value)`.  Otherwise
+/// calls `bulk(pos, count)`.  Always returns 1.
+pub fn w32a136_decode_run(
+    flag: u8,
+    count: i32,
+    pos: i32,
+    state: &mut i32,
+    decode: &mut dyn FnMut(i32) -> (u16, i32),
+    push: &mut dyn FnMut(u16),
+    bulk: &mut dyn FnMut(i32, i32),
+) -> u32 {
+    if flag == 0 && count > 0 {
+        let mut p = pos;
+        for _ in 0..count {
+            let (v, n) = decode(p);
+            if n < 1 {
+                *state = -1;
+                return 1;
+            }
+            push(v);
+            p += n;
+        }
+    } else {
+        bulk(pos, count);
+    }
+    1
+}
+
+#[cfg(test)]
+mod tests_wave32_agent136 {
+    use super::*;
+
+    #[test]
+    fn radix() {
+        let mut c = vec![];
+        assert_eq!(
+            w32a136_set_radix_fields(&mut |a, b| c.push((a, b))),
+            (8, 10)
+        );
+        assert_eq!(c, vec![(0x10, 1)]);
+    }
+
+    #[test]
+    fn char_ok() {
+        assert!(w32a136_char_ok(0x1000, 0, 1, &mut |_| -1));
+        assert!(!w32a136_char_ok(0, 0, 1, &mut |_| -1));
+        assert!(w32a136_char_ok(0, 0, 1, &mut |_| 3));
+    }
+
+    #[test]
+    fn run() {
+        let mut st = 0;
+        let mut out = vec![];
+        let r = w32a136_decode_run(
+            0,
+            2,
+            0,
+            &mut st,
+            &mut |p| (p as u16 + 1, 1),
+            &mut |v| out.push(v),
+            &mut |_, _| {},
+        );
+        assert_eq!((r, out), (1, vec![1, 2]));
+        w32a136_decode_run(
+            0,
+            2,
+            0,
+            &mut st,
+            &mut |_| (0, 0),
+            &mut |_| {},
+            &mut |_, _| {},
+        );
+        assert_eq!(st, -1);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent138.rs
+// ===========================================================================
+// Wave 32 agent 138.
+
+/// `0x00c9d774`: overflow-check predicate on a flag byte.  Bit 2 forces
+/// true; without bit 0 it is false; otherwise compares `value` against
+/// `0x8000_0000` (bit 1 set makes the comparison strict).
+pub fn w32a138_flag_range_check(flags: u8, value: u32) -> bool {
+    if flags & 4 != 0 {
+        return true;
+    }
+    if flags & 1 == 0 {
+        return false;
+    }
+    if flags & 2 == 0 {
+        value >= 0x8000_0000
+    } else {
+        value > 0x8000_0000
+    }
+}
+
+#[cfg(test)]
+mod tests_wave32_agent138 {
+    use super::*;
+
+    #[test]
+    fn flag_range_check() {
+        assert!(w32a138_flag_range_check(4, 0));
+        assert!(!w32a138_flag_range_check(0, u32::MAX));
+        assert!(w32a138_flag_range_check(1, 0x8000_0000));
+        assert!(!w32a138_flag_range_check(1, 0x7fff_ffff));
+        assert!(!w32a138_flag_range_check(3, 0x8000_0000));
+        assert!(w32a138_flag_range_check(3, 0x8000_0001));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent139.rs
+// ===========================================================================
+// Wave 32 agent 139: small CRT-style helpers.
+// Ports `0x00c9e4f0`, `0x00c9e549`, `0x00c9e568`.
+
+/// `0x00c9e4f0`: if the "owned" flag (byte at +0x14) is set, calls `release`
+/// with the handle (dword at +8) and clears the flag.
+pub fn w32a139_release_if_owned(handle: u32, owned: &mut bool, release: &mut dyn FnMut(u32)) {
+    if *owned {
+        release(handle);
+        *owned = false;
+    }
+}
+
+/// `0x00c9e549`: stores the allocation result in `out` and returns 0 on
+/// success or 12 (ENOMEM) when the result is null.
+pub fn w32a139_alloc_store(out: &mut u32, alloc: &mut dyn FnMut() -> u32) -> i32 {
+    let v = alloc();
+    *out = v;
+    if v != 0 { 0 } else { 12 }
+}
+
+/// `0x00c9e568`: with a null argument returns `finish(0)`; otherwise runs
+/// `parse` on a zeroed 6-field state, returning `u32::MAX` when it fails
+/// (non-zero) or `finish(state[2])` on success; the state's owned buffer
+/// (field 2) is released via `release` when its flag is set.
+pub fn w32a139_parse_finish(
+    arg: u32,
+    parse: &mut dyn FnMut(u32, &mut [u32; 5], &mut bool) -> i32,
+    finish: &mut dyn FnMut(u32) -> u32,
+    release: &mut dyn FnMut(u32),
+) -> u32 {
+    if arg == 0 {
+        return finish(0);
+    }
+    let mut st = [0u32; 5];
+    let mut flag = false;
+    let r = if parse(arg, &mut st, &mut flag) == 0 {
+        finish(st[2])
+    } else {
+        u32::MAX
+    };
+    if flag {
+        release(st[2]);
+    }
+    r
+}
+
+#[cfg(test)]
+mod tests_wave32_agent139 {
+    use super::*;
+
+    #[test]
+    fn release() {
+        let mut n = vec![];
+        let mut o = true;
+        w32a139_release_if_owned(7, &mut o, &mut |h| n.push(h));
+        w32a139_release_if_owned(7, &mut o, &mut |h| n.push(h));
+        assert_eq!(n, vec![7]);
+        assert!(!o);
+    }
+
+    #[test]
+    fn alloc() {
+        let mut o = 1;
+        assert_eq!(w32a139_alloc_store(&mut o, &mut || 0), 12);
+        assert_eq!(o, 0);
+        assert_eq!(w32a139_alloc_store(&mut o, &mut || 5), 0);
+        assert_eq!(o, 5);
+    }
+
+    #[test]
+    fn parse() {
+        let mut rel = vec![];
+        let r = w32a139_parse_finish(
+            1,
+            &mut |_, s, f| {
+                s[2] = 9;
+                *f = true;
+                0
+            },
+            &mut |x| x + 1,
+            &mut |x| rel.push(x),
+        );
+        assert_eq!(r, 10);
+        assert_eq!(rel, vec![9]);
+        assert_eq!(
+            w32a139_parse_finish(0, &mut |_, _, _| 1, &mut |x| x + 3, &mut |_| {}),
+            3
+        );
+        assert_eq!(
+            w32a139_parse_finish(1, &mut |_, _, _| 1, &mut |x| x, &mut |_| {}),
+            u32::MAX
+        );
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent141.rs
+// ===========================================================================
+// Wave 32 agent 141 translations.
+
+/// `0x00c9fb11`: classifies a decoder state record.  `mode` is the field at
+/// +0x28, `arg` the field at +0x20, `flag` the byte at +0x24.  Modes 7 and
+/// 9 (and 2..=6) defer to the caller-supplied helpers; modes 0, 1 and 8
+/// return `flag != 0` plus one; negative or unknown modes return 0.
+pub fn w32a141_state_kind(
+    mode: i32,
+    arg: u32,
+    flag: u8,
+    mut helper_a: impl FnMut(u32) -> i32,
+    mut helper_b: impl FnMut(u32) -> i32,
+) -> i32 {
+    if mode < 0 {
+        return 0;
+    }
+    if mode > 1 {
+        if mode > 6 {
+            if mode == 7 {
+                return helper_a(arg);
+            }
+            if mode == 8 {
+                return (flag != 0) as i32 + 1;
+            }
+            if mode != 9 {
+                return 0;
+            }
+        }
+        return helper_b(arg);
+    }
+    (flag != 0) as i32 + 1
+}
+
+#[cfg(test)]
+mod tests_wave32_agent141 {
+    use super::*;
+
+    #[test]
+    fn state_kind() {
+        let a = |x: u32| x as i32 + 100;
+        let b = |x: u32| x as i32 + 200;
+        assert_eq!(w32a141_state_kind(-1, 5, 1, a, b), 0);
+        assert_eq!(w32a141_state_kind(0, 5, 0, a, b), 1);
+        assert_eq!(w32a141_state_kind(1, 5, 1, a, b), 2);
+        assert_eq!(w32a141_state_kind(2, 5, 1, a, b), 205);
+        assert_eq!(w32a141_state_kind(6, 5, 1, a, b), 205);
+        assert_eq!(w32a141_state_kind(7, 5, 1, a, b), 105);
+        assert_eq!(w32a141_state_kind(8, 5, 1, a, b), 2);
+        assert_eq!(w32a141_state_kind(9, 5, 1, a, b), 205);
+        assert_eq!(w32a141_state_kind(10, 5, 1, a, b), 0);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent142.rs
+// ===========================================================================
+// Wave 32 translation batch 142: tiny wrappers over caller-supplied callees.
+
+/// `0x00ca0b5d`: forwards to the strtol-style parser with endptr = null,
+/// base 10 and flag byte 1.  The parser is supplied by the caller as
+/// `parse(locale, text, endptr, base, flags)`.
+pub fn w32a142_parse_base10<R>(
+    text: &str,
+    parse: impl FnOnce(u32, &str, Option<usize>, u32, u8) -> R,
+) -> R {
+    parse(0, text, None, 10, 1)
+}
+
+/// `0x00ca13a4`: forwards directly to its single callee with no arguments.
+pub fn w32a142_forward<R>(callee: impl FnOnce() -> R) -> R {
+    callee()
+}
+
+/// Handle record of `0x00ca2946`: two optional resource handles at +8 and +0xc.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct W32a142Record {
+    pub res_a: u32,
+    pub res_b: u32,
+}
+
+/// `0x00ca2946`: releases the record held in `slot` (if any): frees `res_a`
+/// when non-zero, then `res_b` when non-zero, then the record itself, and
+/// finally clears the slot.
+pub fn w32a142_release(
+    slot: &mut Option<W32a142Record>,
+    mut free_a: impl FnMut(u32),
+    mut free_b: impl FnMut(u32),
+) {
+    if let Some(rec) = slot.take() {
+        if rec.res_a != 0 {
+            free_a(rec.res_a);
+        }
+        if rec.res_b != 0 {
+            free_b(rec.res_b);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests_wave32_agent142 {
+    use super::*;
+
+    #[test]
+    fn parse_args() {
+        let r = w32a142_parse_base10("42", |l, t, e, b, f| (l, t.len(), e, b, f));
+        assert_eq!(r, (0, 2, None, 10, 1));
+    }
+
+    #[test]
+    fn forward_calls() {
+        assert_eq!(w32a142_forward(|| 7), 7);
+    }
+
+    #[test]
+    fn release_order() {
+        let mut slot = Some(W32a142Record { res_a: 1, res_b: 0 });
+        let (mut a, mut b) = (vec![], vec![]);
+        w32a142_release(&mut slot, |x| a.push(x), |x| b.push(x));
+        assert!(slot.is_none());
+        assert_eq!(a, vec![1]);
+        assert!(b.is_empty());
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent143.rs
+// ===========================================================================
+/// Buffer descriptor used by the two reset helpers (stride 0x18 bytes of u32 words).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct W32a143Buf {
+    pub init_ptr: u32,
+    pub init_len: u32,
+    pub cur_ptr: u32,
+    pub cur_len: u32,
+    pub used: u32,
+    pub is_static: u8,
+}
+
+fn w32a143_reset(
+    b: &mut W32a143Buf,
+    scale: u32,
+    mut alloc: impl FnMut(u32) -> u32,
+    mut copy: impl FnMut(u32, u32, u32, u32),
+) -> u32 {
+    let mut ret = b.cur_ptr;
+    if ret == 0 || b.used == 0 {
+        return 0;
+    }
+    if b.is_static == 0 {
+        ret = alloc(b.used.wrapping_mul(scale));
+        copy(ret, b.used, b.cur_ptr, b.cur_len);
+    }
+    b.used = 0;
+    b.cur_ptr = b.init_ptr;
+    b.cur_len = b.init_len;
+    ret
+}
+
+/// `0x00ca3657`: resets the buffer to its initial pointer/length, optionally
+/// copying the used bytes into a fresh allocation first; returns 0 if empty.
+pub fn w32a143_buf_reset(
+    b: &mut W32a143Buf,
+    alloc: impl FnMut(u32) -> u32,
+    copy: impl FnMut(u32, u32, u32, u32),
+) -> u32 {
+    w32a143_reset(b, 1, alloc, copy)
+}
+
+/// `0x00ca36a7`: wide-char variant of the reset helper (allocation size doubled).
+pub fn w32a143_buf_reset_wide(
+    b: &mut W32a143Buf,
+    alloc: impl FnMut(u32) -> u32,
+    copy: impl FnMut(u32, u32, u32, u32),
+) -> u32 {
+    w32a143_reset(b, 2, alloc, copy)
+}
+
+#[cfg(test)]
+mod tests_wave32_agent143 {
+    use super::*;
+
+    fn sample(st: u8) -> W32a143Buf {
+        W32a143Buf {
+            init_ptr: 10,
+            init_len: 20,
+            cur_ptr: 30,
+            cur_len: 40,
+            used: 5,
+            is_static: st,
+        }
+    }
+
+    #[test]
+    fn reset_narrow_and_wide() {
+        let mut b = sample(0);
+        let mut sz = 0;
+        let r = w32a143_buf_reset(
+            &mut b,
+            |n| {
+                sz = n;
+                99
+            },
+            |d, _, _, _| assert_eq!(d, 99),
+        );
+        assert_eq!((r, sz, b.cur_ptr, b.cur_len, b.used), (99, 5, 10, 20, 0));
+        let mut b = sample(0);
+        w32a143_buf_reset_wide(
+            &mut b,
+            |n| {
+                sz = n;
+                99
+            },
+            |_, _, _, _| {},
+        );
+        assert_eq!(sz, 10);
+        let mut b = sample(1);
+        assert_eq!(
+            w32a143_buf_reset(&mut b, |_| panic!(), |_, _, _, _| panic!()),
+            30
+        );
+        let mut b = sample(0);
+        b.used = 0;
+        assert_eq!(w32a143_buf_reset(&mut b, |_| 1, |_, _, _, _| {}), 0);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent144.rs
+// ===========================================================================
+// Wave 32 translation batch 144: CRT integer-conversion forwarding wrappers.
+
+/// `0x00ca3717`: forwards `(a, b, c)` to the worker with the fixed flags
+/// `(1, 0, 0)`.
+pub fn w32a144_forward_flags_1_0_0<R>(
+    a: u32,
+    b: u32,
+    c: u32,
+    worker: impl FnOnce(u32, u32, u32, u32, u32, u32) -> R,
+) -> R {
+    worker(a, b, c, 1, 0, 0)
+}
+
+/// `0x00ca3935`: computes the "signed negative" flag (1 only when the radix
+/// is 10 and the value is negative) and forwards to the converter.
+pub fn w32a144_radix_sign_flag<R>(
+    value: i32,
+    b: u32,
+    c: u32,
+    radix: i32,
+    worker: impl FnOnce(i32, u32, u32, i32, u32) -> R,
+) -> R {
+    let flag = if radix == 10 && value < 0 { 1 } else { 0 };
+    worker(value, b, c, radix, flag)
+}
+
+/// `0x00ca485f`: argument-less forwarder to its worker.
+pub fn w32a144_forward_void<R>(worker: impl FnOnce() -> R) -> R {
+    worker()
+}
+
+#[cfg(test)]
+mod tests_wave32_agent144 {
+    use super::*;
+
+    #[test]
+    fn forwards() {
+        assert_eq!(
+            w32a144_forward_flags_1_0_0(1, 2, 3, |a, b, c, d, e, f| [a, b, c, d, e, f]),
+            [1, 2, 3, 1, 0, 0]
+        );
+        assert_eq!(w32a144_radix_sign_flag(-5, 0, 0, 10, |_, _, _, _, f| f), 1);
+        assert_eq!(w32a144_radix_sign_flag(-5, 0, 0, 16, |_, _, _, _, f| f), 0);
+        assert_eq!(w32a144_radix_sign_flag(5, 0, 0, 10, |_, _, _, _, f| f), 0);
+        assert_eq!(w32a144_forward_void(|| 7), 7);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent145.rs
+// ===========================================================================
+// Wave 32 agent 145: CRT stream flush.
+
+/// CRT `FILE` model: `ptr`, `base`, `cnt`, `flag` (words 0, 1, 2, 3).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct W32a145File {
+    pub ptr: i32,
+    pub base: i32,
+    pub cnt: i32,
+    pub flag: u32,
+}
+
+/// `0x00ca4e05`: CRT `_flush`.  When the stream is write-mode (flag & 3 == 2)
+/// and buffered (flag & 0xc0 != 0), rewinds the pointer to the base, clears the
+/// count and writes the pending bytes through `write`; a short write sets the
+/// error bit 0x10 and returns -1, a full write clears the 0x02 bit when bit 0x04
+/// is set.  Returns 0 otherwise.
+pub fn w32a145_flush(f: &mut W32a145File, write: &mut dyn FnMut(i32, i32) -> i32) -> i32 {
+    if (f.flag & 3) == 2 && (f.flag & 0xc0) != 0 {
+        let base = f.base;
+        let pending = f.ptr.wrapping_sub(base);
+        f.ptr = base;
+        f.cnt = 0;
+        if pending > 0 {
+            if write(base, pending) != pending {
+                f.flag |= 0x10;
+                return -1;
+            }
+            if (f.flag >> 2) & 1 != 0 {
+                f.flag &= 0xffff_fffd;
+            }
+        }
+    }
+    0
+}
+
+#[cfg(test)]
+mod tests_wave32_agent145 {
+    use super::*;
+
+    #[test]
+    fn flush_ok_and_short() {
+        let mut f = W32a145File {
+            ptr: 110,
+            base: 100,
+            cnt: 5,
+            flag: 0x4e,
+        };
+        assert_eq!(w32a145_flush(&mut f, &mut |_, n| n), 0);
+        assert_eq!((f.ptr, f.cnt, f.flag), (100, 0, 0x4c));
+        let mut g = W32a145File {
+            ptr: 110,
+            base: 100,
+            cnt: 5,
+            flag: 0x42,
+        };
+        assert_eq!(w32a145_flush(&mut g, &mut |_, _| 3), -1);
+        assert_eq!(g.flag & 0x10, 0x10);
+        let mut h = W32a145File {
+            ptr: 1,
+            base: 0,
+            cnt: 1,
+            flag: 1,
+        };
+        assert_eq!(w32a145_flush(&mut h, &mut |_, _| 0), 0);
+        assert_eq!(h.cnt, 1);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent146.rs
+// ===========================================================================
+// Wave 32 translation batch 146: CRT stat-mode helpers.
+
+/// `0x00ca4e6a`: CRT stream status check.  `None` models a null stream and
+/// returns `closure_null()`; otherwise returns -1 when `has_error(stream)` is
+/// nonzero, or when the stream's flag bit 11 is set and `handle_error` of the
+/// stream's handle is nonzero; else 0.
+pub fn w32a146_stream_error<S: Copy>(
+    stream: Option<S>,
+    flags: impl Fn(S) -> u32,
+    closure_null: impl Fn() -> i32,
+    has_error: impl Fn(S) -> bool,
+    handle: impl Fn(S) -> u32,
+    handle_error: impl Fn(u32) -> bool,
+) -> i32 {
+    let Some(s) = stream else {
+        return closure_null();
+    };
+    if has_error(s) {
+        return -1;
+    }
+    if (flags(s) >> 11) & 1 != 0 && handle_error(handle(s)) {
+        return -1;
+    }
+    0
+}
+
+/// `0x00ca56a4`: builds a POSIX-style st_mode from DOS attributes.  `attr`
+/// bit 4 is the directory flag; `is_dir_hint` stands in for the path probe.
+/// The extension (text after the last `.`, ASCII case-insensitive) being
+/// exe/cmd/bat/com adds the execute bit; the user bits are then replicated
+/// into group and other.
+pub fn w32a146_attr_to_mode(attr: u32, path: Option<&str>, is_dir_hint: bool) -> u32 {
+    let mut m: u32 = if (attr >> 4) & 1 == 0 && !is_dir_hint {
+        0x8100
+    } else {
+        0x4140
+    };
+    m |= !(attr << 7) & 0x80;
+    if let Some(p) = path {
+        if let Some(i) = p.rfind('.') {
+            let ext = &p[i..];
+            if [".exe", ".cmd", ".bat", ".com"]
+                .iter()
+                .any(|e| ext.eq_ignore_ascii_case(e))
+            {
+                m |= 0x40;
+            }
+        }
+    }
+    ((m & 0x1c0) >> 6) | m | ((m >> 3) & 0x38)
+}
+
+#[cfg(test)]
+mod tests_wave32_agent146 {
+    use super::*;
+
+    #[test]
+    fn mode_basic() {
+        assert_eq!(w32a146_attr_to_mode(0, None, false), 0x81b6);
+        let m = w32a146_attr_to_mode(1, Some("a.EXE"), false);
+        assert_eq!(m & 0x40, 0x40);
+        let d = w32a146_attr_to_mode(0x10, Some("a.txt"), false);
+        assert_eq!(d & 0x4000, 0x4000);
+    }
+
+    #[test]
+    fn stream() {
+        assert_eq!(
+            w32a146_stream_error(None::<u32>, |_| 0, || 7, |_| false, |s| s, |_| false),
+            7
+        );
+        assert_eq!(
+            w32a146_stream_error(Some(1u32), |_| 0x800, || 7, |_| false, |s| s, |_| true),
+            -1
+        );
+        assert_eq!(
+            w32a146_stream_error(Some(1u32), |_| 0, || 7, |_| false, |s| s, |_| true),
+            0
+        );
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave32/agent150.rs
+// ===========================================================================
+// Wave 32 agent 150: CRT helpers (runtime.rs).
+
+/// `0x00caa21a`: looks up an optional callback; when present, calls it and
+/// returns 1 if it reported nonzero, else 0.
+pub fn w32a150_call_optional(callback: Option<&mut dyn FnMut() -> i32>) -> u32 {
+    match callback {
+        Some(cb) => u32::from(cb() != 0),
+        None => 0,
+    }
+}
+
+/// `0x00caa914`: overflow-checked allocation of `count * 4 + a * b` bytes.
+/// Returns 0 when the arguments overflow; otherwise the allocator result.
+/// `alloc(size)` models the allocator, `release()` the trailing cleanup call.
+pub fn w32a150_checked_alloc(
+    count: u32,
+    a: u32,
+    b: u32,
+    alloc: &mut dyn FnMut(u32) -> u32,
+    release: &mut dyn FnMut(),
+) -> u32 {
+    if count < 0x3fff_ffff && b != 0 && (a as u64) < 0xffff_ffffu64 / b as u64 {
+        let prod = a.wrapping_mul(b);
+        if prod < !count.wrapping_mul(4) {
+            let r = alloc(count.wrapping_mul(4).wrapping_add(prod));
+            release();
+            return r;
+        }
+    }
+    0
+}
+
+/// `0x00caa99a`: one-time initialisation of the global handle.  Returns 0 if
+/// already set, `0xffffffff` on failure, 0 on success (both slots set).
+pub fn w32a150_init_once(
+    slot_a: &mut u32,
+    slot_b: &mut u32,
+    pre: &mut dyn FnMut(),
+    acquire: &mut dyn FnMut() -> u32,
+    build: &mut dyn FnMut(u32) -> u32,
+    release: &mut dyn FnMut(u32),
+) -> u32 {
+    if *slot_a != 0 {
+        return 0;
+    }
+    pre();
+    let h = acquire();
+    let ret = if h == 0 {
+        0xffff_ffff
+    } else {
+        let v = build(h);
+        let r = if v == 0 {
+            0xffff_ffff
+        } else {
+            *slot_a = v;
+            *slot_b = v;
+            0
+        };
+        release(0);
+        r
+    };
+    release(h);
+    ret
+}
+
+#[cfg(test)]
+mod tests_wave32_agent150 {
+    use super::*;
+
+    #[test]
+    fn optional() {
+        assert_eq!(w32a150_call_optional(None), 0);
+        assert_eq!(w32a150_call_optional(Some(&mut || 5)), 1);
+        assert_eq!(w32a150_call_optional(Some(&mut || 0)), 0);
+    }
+
+    #[test]
+    fn alloc() {
+        let mut n = 0;
+        assert_eq!(
+            w32a150_checked_alloc(2, 3, 4, &mut |s| s, &mut || n += 1),
+            20
+        );
+        assert_eq!(n, 1);
+        assert_eq!(
+            w32a150_checked_alloc(0x3fff_ffff, 1, 1, &mut |s| s, &mut || {}),
+            0
+        );
+        assert_eq!(
+            w32a150_checked_alloc(1, 0xffff_fff0, 16, &mut |s| s, &mut || {}),
+            0
+        );
+        assert_eq!(w32a150_checked_alloc(1, 1, 0, &mut |s| s, &mut || {}), 0);
+    }
+
+    #[test]
+    fn init() {
+        let (mut a, mut b) = (0, 0);
+        assert_eq!(
+            w32a150_init_once(
+                &mut a,
+                &mut b,
+                &mut || {},
+                &mut || 7,
+                &mut |h| h + 1,
+                &mut |_| {}
+            ),
+            0
+        );
+        assert_eq!((a, b), (8, 8));
+        assert_eq!(
+            w32a150_init_once(
+                &mut a,
+                &mut b,
+                &mut || {},
+                &mut || 0,
+                &mut |h| h,
+                &mut |_| {}
+            ),
+            0
+        );
+        let (mut c, mut d) = (0, 0);
+        assert_eq!(
+            w32a150_init_once(
+                &mut c,
+                &mut d,
+                &mut || {},
+                &mut || 0,
+                &mut |h| h,
+                &mut |_| {}
+            ),
+            0xffff_ffff
+        );
+        assert_eq!(
+            w32a150_init_once(
+                &mut c,
+                &mut d,
+                &mut || {},
+                &mut || 3,
+                &mut |_| 0,
+                &mut |_| {}
+            ),
+            0xffff_ffff
+        );
+    }
+}
