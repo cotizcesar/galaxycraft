@@ -365,3 +365,26 @@ fn infantry_boards_a_bunker_when_their_boxes_touch() {
         assert!(ok, "the Marine from ({x},{y}) got in");
     }
 }
+
+#[test]
+fn the_hull_stays_still_while_its_turret_fires() {
+    use galaxycraft::sim::Order;
+    for attacker in [uid::GOLIATH, uid::SIEGE_TANK] {
+        let mut w = world();
+        let a = w.spawn_px(0, attacker, 400, 400).unwrap();
+        let egg = w.spawn_px(1, uid::EGG, 400, 260).unwrap();
+        let (aid, eid) = (w.units[a].id, w.units[egg].id);
+        w.issue(aid, Order::AttackUnit { target: eid }).unwrap();
+        let hp = w.units[egg].hp;
+        let start = (w.units[a].x, w.units[a].y);
+        for _ in 0..90 {
+            w.step();
+            assert_eq!(
+                (w.units[a].x, w.units[a].y),
+                start,
+                "unit {attacker} holds still"
+            );
+        }
+        assert!(w.units[egg].hp < hp, "unit {attacker} fired");
+    }
+}

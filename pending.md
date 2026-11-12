@@ -46,9 +46,8 @@ Rules read from the OpenBW source; these parts are simplified or not checked
 on screen.
 
 - **Turrets are folded into the base unit.**  The base fires the turret's
-  weapon; the turret's heading turns at its own rate and gates the shot,
-  and its attack animation, sound and muzzle overlays play.  Not modelled:
-  the hull is not held still while it fires.
+  weapon; the turret turns at its own rate, gates the shot and plays its
+  firing animation, and the hull holds still while it fires (tested).
 - **Spider Mine.**  The hover list is a hardcoded type list rather than the
   `units.dat` movement flags; the burrow / unburrow frames and sounds are
   not drawn; a mine is nudged by collision while it waits.
