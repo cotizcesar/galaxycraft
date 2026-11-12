@@ -12,7 +12,10 @@ impl World {
         weapon_id: u8,
         weapon: &WeaponType,
     ) {
-        if self.projectiles.len() >= MAX_PROJECTILES {
+        if self.projectiles.len() >= MAX_PROJECTILES
+            || (weapon_id == crate::ids::weapon::HALO_ROCKETS
+                && self.projectiles.len() >= MAX_PROJECTILES_FOR_HALO)
+        {
             return;
         }
         let a = &self.units[attacker];
@@ -181,12 +184,12 @@ impl World {
         self.next_projectile_id = self.next_projectile_id.wrapping_add(1).max(1);
     }
 
-    pub(super) fn projectile_near_offset(&mut self, _attacker: usize) -> (i32, i32) {
+    pub(super) fn projectile_near_offset(&mut self, attacker: usize) -> (i32, i32) {
         // OpenBW `hit_near_target_positions`: bullets of type "attack
         // target position" (Halo Rockets, Corrosive Acid) aim at the target
-        // plus the next of these 14 offsets, so a volley spreads around it.
-        // (Retail keeps the index per shooter; the bullet counter cycles
-        // through the same table.)
+        // plus the shooter's next of these 14 offsets
+        // (`next_hit_near_target_position_index`), so a volley spreads
+        // around it.
         const NEAR: [(i32, i32); 14] = [
             (-1, -1),
             (-51, -31),
@@ -203,7 +206,9 @@ impl World {
             (19, -50),
             (17, -8),
         ];
-        let (x, y) = NEAR[(self.next_projectile_id % 14) as usize];
+        let index = &mut self.units[attacker].near_target_index;
+        let (x, y) = NEAR[*index as usize % 14];
+        *index = if *index >= 13 { 0 } else { *index + 1 };
         (x * fp(1), y * fp(1))
     }
 

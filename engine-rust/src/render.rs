@@ -451,8 +451,12 @@ impl Palette {
         {
             // Palette entries 8..=15 are the player-colour ramp, brightest
             // first.  Retail fills them from `game\tunit.pcx` (8 shades per
-            // player); these are the median brightness steps of its first
-            // eight players, applied to the player's colour.
+            // player): used for the slot colours once loaded.
+            if let Some(c) = crate::team_colors::shade(team, index - 8) {
+                return c;
+            }
+            // Otherwise (a lobby colour, no install): the median brightness
+            // steps of its first eight players, applied to the colour.
             const SHADE: [u32; 8] = [256, 216, 198, 162, 126, 110, 74, 42];
             let k = SHADE[(index - 8) as usize];
             let c = team.0;
@@ -1963,7 +1967,11 @@ pub fn sd_frame_index(
     tick: u64,
 ) -> usize {
     if frames < 17 {
-        return 0;
+        // Non-directional: the iscript frame as is.
+        return pose
+            .map(|p| p as usize)
+            .filter(|&p| p < frames)
+            .unwrap_or(0);
     }
     let dir = sd_direction(facing).0;
     if let Some(raw) = pose
@@ -2134,30 +2142,6 @@ pub enum GrpInk {
 
 /// Draw GRP frame `index` centred on `screen`, optionally mirrored (the
 /// western directions of a directional GRP).
-/// Draw every opaque pixel of GRP frame `index` in one colour, centred on
-/// `screen` (`images.dat` draw function 13: selection circles and the
-/// right-click marker, recoloured by the engine).
-pub fn draw_grp_flat(
-    fb: &mut Framebuffer,
-    grp: &Grp,
-    index: usize,
-    screen: (i32, i32),
-    color: Rgb,
-) {
-    let Some(frame) = grp.frame(index) else {
-        return;
-    };
-    let ox = screen.0 - grp.width / 2 + frame.x;
-    let oy = screen.1 - grp.height / 2 + frame.y;
-    for y in 0..frame.h {
-        for x in 0..frame.w {
-            if frame.indices[(y * frame.w + x) as usize] != 0 {
-                fb.put(ox + x, oy + y, color);
-            }
-        }
-    }
-}
-
 pub fn draw_grp_posed(
     fb: &mut Framebuffer,
     grp: &Grp,
@@ -2593,8 +2577,10 @@ mod minimap_blip_tests {
     }
 }
 
+mod grp_flat;
 #[cfg(test)]
 mod view_scale_tests;
+pub use grp_flat::draw_grp_flat;
 
 #[cfg(test)]
 mod hd_terrain_tests {
@@ -2772,6 +2758,9 @@ mod sd_pose_tests {
             "out of range pose ignored"
         );
         assert_eq!(sd_frame_index(4, 0, Some(34), true, 3), 0, "static GRP");
+        // A non-directional GRP shows an in-range iscript frame as is (the
+        // Spider Mine digging in).
+        assert_eq!(sd_frame_index(12, 0, Some(9), false, 0), 9);
     }
 
     #[test]

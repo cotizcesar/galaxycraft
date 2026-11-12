@@ -3,6 +3,13 @@
 
 use super::*;
 
+/// The operating-system pointer is visible only when there is no virtual
+/// pointer to draw.  With the mouse inside the game, the retail/fallback
+/// cursor is drawn instead, so the player never sees two pointers.
+pub(super) fn system_cursor_visible_for(pointer_present: bool) -> bool {
+    !pointer_present
+}
+
 /// Index of the cursor frame for `elapsed`, in GRP order (0..4).
 pub(super) fn cursor_frame_index(elapsed: Duration, frames: usize) -> usize {
     if frames <= 1 {

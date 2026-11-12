@@ -45,11 +45,14 @@ pub const ANIM_IS_WORKING: usize = 19;
 pub const ANIM_WORKING_TO_IDLE: usize = 20;
 pub const ANIM_WARP_IN: usize = 21;
 pub const ANIM_UNUSED_3: usize = 22;
-pub const ANIM_BURROW: usize = 23;
-pub const ANIM_UNBURROW: usize = 24;
-pub const ANIM_SHIELD_OVER: usize = 25;
-pub const ANIM_SHIELD_ON: usize = 26;
-pub const ANIM_SHIELD_OFF: usize = 27;
+pub const ANIM_STAR_EDIT_INIT: usize = 23;
+pub const ANIM_DISABLE: usize = 24;
+/// Entry 25 / 26 of the header (the Spider Mine's iscript 87 digs in there:
+/// frames 8-11 and sound 354).  They were 23 / 24 here, which are the
+/// StarEdit-init and Disable entries.
+pub const ANIM_BURROW: usize = 25;
+pub const ANIM_UNBURROW: usize = 26;
+pub const ANIM_ENABLE: usize = 27;
 
 /// Number of animation slots in the shipped header.  The table itself is
 /// variable length; this is the count the engine recognises.

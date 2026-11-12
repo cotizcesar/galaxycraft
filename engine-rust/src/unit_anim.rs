@@ -139,6 +139,10 @@ pub mod anim {
     /// The Medic loops this while it heals (iscript 360: frames 68 / 85 and
     /// the heal sound, `playsnd 1018`).
     pub const SPECIAL_STATE_1: usize = 13;
+    /// Played once when the unit burrows / unburrows (Spider Mine: frames
+    /// 8-11 with the dirt overlay 423 and sound 354).
+    pub const BURROW: usize = crate::iscript::ANIM_BURROW;
+    pub const UNBURROW: usize = crate::iscript::ANIM_UNBURROW;
 }
 
 /// Spell overlay images (`images.dat`), small / medium / large by the
@@ -260,6 +264,8 @@ struct UnitSeen {
     facing: u8,
     image: u16,
     building: bool,
+    /// Burrowed on the last step: a change plays Burrow / UnBurrow.
+    burrowed: bool,
 }
 
 /// A free-standing image: a death animation, an explosion or an impact.
@@ -821,8 +827,16 @@ impl Animator {
                 facing: u.facing,
                 image,
                 building,
+                burrowed: u.status.burrowed,
             });
             let moving = !u.path.is_empty();
+            let burrow_change =
+                (u.status.burrowed != seen.burrowed).then_some(if u.status.burrowed {
+                    anim::BURROW
+                } else {
+                    anim::UNBURROW
+                });
+            seen.burrowed = u.status.burrowed;
             // Mining a field, welding a structure or repairing: the worker
             // loops AlmostBuilt.  Inside a gas building it is hidden.
             let hidden = world.inside_gas_building(idx);
@@ -872,7 +886,13 @@ impl Animator {
                     current,
                     Some(anim::ALMOST_BUILT | anim::SPECIAL_STATE_1 | anim::CAST_SPELL)
                 );
-                let want = if let Some(a) = special {
+                let in_burrow = matches!(current, Some(anim::BURROW | anim::UNBURROW)) && !ended;
+                let want = if let Some(a) = burrow_change {
+                    Some(a)
+                } else if in_burrow || (u.status.burrowed && current == Some(anim::BURROW)) {
+                    // Let the dig finish, then hold its last frame.
+                    None
+                } else if let Some(a) = special {
                     (current != Some(a)).then_some(a)
                 } else if in_special {
                     Some(if moving {

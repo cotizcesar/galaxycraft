@@ -954,12 +954,12 @@ impl App {
                 .image(self.data.hd_anim_id(id), |path| install?.read(path))
         };
         let (mut img, mut frame) = (img, frame);
-        if directional
-            && !ty.is_building()
+        if !ty.is_building()
             && let Some(raw) = self.animator.unit_frame(u.id)
         {
-            // The walking / attacking pose from the unit's iscript.
-            let posed = raw as usize + frame;
+            // The iscript pose (a non-directional image shows it as is:
+            // the Spider Mine digging in).
+            let posed = raw as usize + if directional { frame } else { 0 };
             if posed < img.header.frames.len() {
                 frame = posed;
             }

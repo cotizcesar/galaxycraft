@@ -94,6 +94,8 @@ pub struct UnitType {
     /// placement box top-left, in pixels from its parent's placement box
     /// top-left (OpenBW `find_connecting_addon`).
     pub addon_position: Point16,
+    /// `units.dat` movement flags (OpenBW `unknown1`); 0xC1 = hovering.
+    pub movement_flags: u8,
 }
 
 impl UnitType {
@@ -900,6 +902,7 @@ fn parse_units(d: &[u8]) -> Result<Vec<UnitType>, DataError> {
             portrait: u16_at(d, unit_off::PORTRAIT, i),
             rank: u8_at(d, unit_off::SUBLABEL, i),
             construction_image: u32_at(d, unit_off::CONSTRUCTION, i) as u16,
+            movement_flags: u8_at(d, unit_off::MOVEMENT_FLAGS, i),
             addon_position: if (106..=201).contains(&i) {
                 Point16 {
                     x: i16_at(d, unit_off::ADDON, (i - 106) * 2),

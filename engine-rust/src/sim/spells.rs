@@ -223,6 +223,18 @@ impl World {
         Ok(())
     }
 
+    /// Energy (fixed point) the Yamato charge takes; none with the
+    /// infinite-energy cheat.
+    pub(super) fn yamato_charge_cost(&self, i: usize) -> i32 {
+        if self.players[self.units[i].owner as usize]
+            .cheats
+            .infinite_energy
+        {
+            return 0;
+        }
+        spell_energy_cost(&self.data, Spell::YamatoGun) * ENERGY_SCALE
+    }
+
     pub(super) fn cast_unrecorded(
         &mut self,
         caster_id: u32,
@@ -399,6 +411,13 @@ impl World {
                 })
                 .unwrap_or(0);
             if charge > 0 {
+                // OpenBW `order_CastSpell`: the energy is spent when the
+                // cast animation (the charge) starts, not when it fires.
+                let cost = self.yamato_charge_cost(i);
+                if !self.units[i].spend_energy_fixed(cost) {
+                    self.order_done(i);
+                    return;
+                }
                 self.units[i].path.clear();
                 self.units[i].path_goal = None;
                 self.units[i].order_wait = charge.min(255) as u8;

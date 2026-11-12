@@ -95,9 +95,10 @@ pub const HARVEST_CONTACT_PX: i32 = 4;
 /// units keep walking).
 pub const ARRIVAL_CROWD_PX: i32 = 96;
 pub const MAX_PRODUCTION_QUEUE: usize = 5;
-/// The retail engine caps active Halo Rockets at 80; use the same hard cap for
-/// every projectile so a pathological custom map cannot grow without bound.
-pub const MAX_PROJECTILES: usize = 80;
+/// Retail holds at most 100 bullets (OpenBW `bullets_container`), and
+/// creates no Halo Rockets once 80 are active (`create_bullet`).
+pub const MAX_PROJECTILES: usize = 100;
+pub const MAX_PROJECTILES_FOR_HALO: usize = 80;
 /// Spider Mine (OpenBW `order_SpiderMine`): frames it waits before it
 /// burrows, frames of its Burrow / UnBurrow animation (iscript 87), and so
 /// the frames from laying to armed.
@@ -912,6 +913,9 @@ pub struct SimUnit {
     /// 1 px per tick and takes no orders until the phase ends (OpenBW
     /// `order_LiftingOff`, `order_BuildingLand`).
     pub lift_phase: Option<(bool, u16)>,
+    /// Next of the 14 "hit near target" offsets this unit's bullets use
+    /// (OpenBW `next_hit_near_target_position_index`).
+    pub near_target_index: u8,
     /// Add-on attachment state.  Lifted parents leave their add-on grounded
     /// and inactive; landing on it re-attaches it.
     pub addon_attached: bool,
@@ -1964,16 +1968,6 @@ fn direction_vector(direction: i32) -> (i32, i32) {
     (
         (angle.sin() * 256.0).round() as i32,
         (-angle.cos() * 256.0).round() as i32,
-    )
-}
-
-/// Hovering units (`units.dat` movement flags 0xC1): they do not set off
-/// Spider Mines.  Vulture, SCV, Spider Mine, Raynor's Vulture (19), Drone,
-/// Dark Archon (63), Probe, Archon, Tassadar/Zeratul (76).
-pub fn is_hover_type(type_id: u16) -> bool {
-    matches!(
-        type_id,
-        uid::VULTURE | uid::SCV | uid::SPIDER_MINE | 19 | uid::DRONE | 63 | uid::PROBE | 68 | 76
     )
 }
 
