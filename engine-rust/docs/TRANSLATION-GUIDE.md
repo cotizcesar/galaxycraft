@@ -108,8 +108,7 @@ Write only engine-rust/src/waveW/agentNN.rs.  Verify with
 Return the 4-part report (translated / skipped / tests / notes), max 40 lines.
 ```
 
-The opencode subagent `.opencode/agents/translator.md` already contains
-this; `/wave W` in opencode drives the whole cycle.
+Pass this prompt (with W and NN filled in) to each agent.
 
 ## 4. Reading Ghidra pseudocode fast
 
