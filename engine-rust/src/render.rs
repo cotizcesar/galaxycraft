@@ -2075,6 +2075,11 @@ pub struct SpriteBank {
     palette: Palette,
 }
 impl SpriteBank {
+    /// Whether the bank has a sprite sheet for this unit type.
+    pub fn has_unit(&self, type_id: u16) -> bool {
+        self.grps.contains_key(&type_id)
+    }
+
     pub fn load(asset_root: &Path) -> Self {
         let pal = fs::read(asset_root.join("unit.pal"))
             .or_else(|_| fs::read(asset_root.join("units.pal")))

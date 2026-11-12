@@ -28,17 +28,18 @@ energy, Medic heal rules and search square, Ghost paint range, the nuke's
 90 / 45 frame timers and 320 px drop, splash rings measured to unit boxes,
 `attkshiftproj`, Lockdown 131, blind / restore.  What is still open:
 
-- **Nuclear missile.**  It now leaves the silo as a unit, climbs for the 90
-  frames, takes 8 supply while stored and falls on the target, but the fall
-  is still the nuclear bullet rather than the same unit reappearing 320 px
-  above the target, and the launch was not checked on screen (a scripted
-  session cannot arm a silo).  Computer players still get their missile on
-  demand when their script orders a strike.
-- **Cloak look.**  Retail distorts cloaked units through the palette; the
-  client fades them (`render::CLOAK_KEEP`).  Glow images (draw function 9)
-  are tinted in SD instead of using the `ofire` / `gfire` / `bfire` tables.
-  Both are appearance only.
-- **Restoration** is applied on the cast frame; its bullet script would add
-  a couple of frames.
+- **Nuclear missile.**  The sequence now follows the missile's script: 90
+  frames of climb, 250 off the map (WarpIn), then the same unit falls on
+  the target and explodes; a stored missile takes 8 supply.  Two
+  approximations remain: the fall is a constant 4.6 px per frame (about 70
+  frames) instead of the unit accelerating from rest, and the climb uses
+  the engine's unit movement rather than the same acceleration.  Computer
+  players still get their missile on demand when their script orders a
+  strike.
+- **SD appearance.**  Retail distorts cloaked units through the palette; the
+  client fades them (`render::CLOAK_KEEP`).  Glow images (draw function 9:
+  heal, lockdown, fire, the nuke's ground flash) are tinted light in SD
+  instead of going through the `ofire` / `gfire` / `bfire` tables, so strong
+  ones saturate.  HD uses the shipped art and is not affected.
 - **Voice lines** for selection and orders are picked at random from memory
   of the retail behaviour; OpenBW has no voice logic to check it against.

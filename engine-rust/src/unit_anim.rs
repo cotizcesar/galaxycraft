@@ -790,14 +790,24 @@ impl Animator {
             .copied()
             .filter(|id| !alive_ids.contains(id))
             .collect();
-        // (A nuclear missile that climbed off the map just disappears; it
-        // explodes where it lands, as the nuclear bullet.)
+        // A nuclear missile that climbs off the map (heading up) just
+        // disappears; one that was falling (heading down, 128) has landed
+        // and runs its SpecialState1: the explosion (`imgol 428`,
+        // `sprol 267`).
         let missile_image = unit_image(data, crate::ids::unit::NUCLEAR_MISSILE);
         for id in gone {
-            if let Some(s) = self.units.remove(&id)
-                && Some(s.image) != missile_image
-                && let Some(track) = Track::start(data, s.image, anim::DEATH, s.facing)
-            {
+            let Some(s) = self.units.remove(&id) else {
+                continue;
+            };
+            let last = if Some(s.image) == missile_image {
+                if s.facing != 128 {
+                    continue;
+                }
+                anim::SPECIAL_STATE_1
+            } else {
+                anim::DEATH
+            };
+            if let Some(track) = Track::start(data, s.image, last, s.facing) {
                 spawned.push(Effect {
                     image: s.image,
                     x: s.x / 256,

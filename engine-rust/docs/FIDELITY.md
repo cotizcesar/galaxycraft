@@ -131,7 +131,8 @@ glow, Ghost cloak fade.
 | all | voices | "what" and "yes" lines picked at random, annoyed lines in order | **fixed** (was cycling) |
 
 | Medic | Optical Flare delivery | a bullet that follows its target (weapons.dat row 107) | **fixed** (was instant) |
-| Ghost | nuclear missile | a unit that leaves the silo and climbs for 90 frames; 8 supply while stored | **fixed** (was only a countdown) |
+| Ghost | nuclear missile | a unit that leaves the silo, climbs for 90 frames, is off the map for 250 (WarpIn), falls on the target and explodes (`imgol 428`, `sprol 267`); 8 supply while stored | **fixed** (was a 90-frame countdown and a fast bullet: the bomb landed about 10 s early, with no missile and no explosion) |
+| Medic | Restoration delivery | lands with its bullet, 7 frames after the cast | **fixed** (was instant) |
 | other | Psionic Storm | 48 px from the victim's box | **fixed** (was centre distance) |
 
 The rules marked OpenBW were read from its source (`bwgame.h`,

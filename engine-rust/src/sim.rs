@@ -826,6 +826,14 @@ pub struct SpellCue {
     pub unit: u32,
 }
 
+/// Frames the nuclear missile spends off the map between its climb and its
+/// fall: its WarpIn animation (iscript 131: two `wait 125`).
+pub const NUKE_WARP_FRAMES: i32 = 250;
+/// Speed of the falling nuclear bullet (1/256 px per frame): 320 px in
+/// about 70 frames, the time the missile unit needs from rest with its
+/// flingy acceleration of 33.
+pub const NUKE_FALL_SPEED: i32 = 1170;
+
 /// Spell cues kept for the renderer.
 pub const SPELL_CUE_KEEP: usize = 64;
 
@@ -6462,17 +6470,7 @@ impl World {
             }
             hit::RESTORATION => {
                 if let Some(t) = target_idx {
-                    let s = &mut self.units[t].status;
-                    // `0x005d2620`/`0x005dc300`/`0x005d2540`/`0x005d2660`
-                    // clear the removable status timers.
-                    s.clear_lockdown();
-                    s.clear_plague();
-                    s.clear_irradiate();
-                    s.clear_maelstrom();
-                    s.clear_ensnare();
-                    s.optical_flare_ticks = 0;
-                    s.parasite = false;
-                    s.clear_acid_spores();
+                    self.restore_unit(t);
                 }
             }
             hit::DISRUPTION_WEB => {
@@ -6895,8 +6893,9 @@ impl World {
         for i in cleared_orders {
             self.order_done(i);
         }
+        // Once the bomb is falling nothing calls it off.
         self.nuke_strikes
-            .retain(|s| s.ghost != dead_id && s.silo != dead_id);
+            .retain(|s| s.timer <= -NUKE_WARP_FRAMES || (s.ghost != dead_id && s.silo != dead_id));
     }
 
     /// `0x005b083a`: retail unit-death cleanup.  The Rust path marks the
@@ -9062,27 +9061,17 @@ impl World {
                 }
             }
             Spell::Restoration => {
-                // OpenBW `restore_unit`: a hallucination simply dies.
-                if let Some(t) = target_idx
-                    && self.units[t].status.hallucination
-                {
-                    self.kill_unit(t);
-                    return;
-                }
+                // Restoration lands when its bullet (weapons.dat row 102,
+                // "appear on target") reaches `domissiledmg`.
                 if let Some(t) = target_idx {
-                    let s = &mut self.units[t].status;
-                    // `0x005d2620`/`0x005dc300`/`0x005d2540`/`0x005d2660`
-                    // clear the removable status timers.
-                    s.clear_lockdown();
-                    s.clear_plague();
-                    s.clear_irradiate();
-                    s.clear_maelstrom();
-                    s.clear_ensnare();
-                    s.optical_flare_ticks = 0;
-                    s.parasite = false;
-                    s.clear_acid_spores();
-                    let id = self.units[t].id;
-                    self.push_spell_cue(SpellCueKind::Restoration, id);
+                    let tid = self.units[t].id;
+                    let pos = (self.units[t].x, self.units[t].y);
+                    match self.data.weapon(wid::RESTORATION).cloned() {
+                        Some(w) if w.explosion == hit::RESTORATION => {
+                            self.instant_hit(c_owner, Some(tid), caster, wid::RESTORATION, &w, pos);
+                        }
+                        _ => self.restore_unit(t),
+                    }
                 }
             }
             Spell::DisruptionWeb => {
@@ -9693,21 +9682,64 @@ impl World {
                 self.nuke_warnings
                     .push((strike.target.0 / fp(1), strike.target.1 / fp(1)));
             }
-            if strike.timer <= 0 {
+            // The missile is out of sight for its WarpIn animation
+            // (iscript 131: `wait 125, wait 125, sigorder 2`) before it
+            // reappears above the target.
+            if strike.timer == -NUKE_WARP_FRAMES {
                 launched.push((strike.owner, strike.ghost, strike.target));
             }
         }
         for (owner, ghost, target) in launched {
             self.spawn_nuke_missile(owner, ghost, target);
         }
-        self.nuke_strikes.retain(|s| s.timer > 0);
-        // A climbing missile whose strike is over (it now falls on the
-        // target as the nuclear bullet) or was called off leaves the map.
+        // The strike stays on the books until the bomb has landed.
+        let falling = |w: &World, ghost: u32| {
+            w.projectiles
+                .iter()
+                .find(|p| p.weapon == wid::NUCLEAR_STRIKE && p.source == ghost)
+                .map(|p| (p.x, p.y))
+        };
+        let live: Vec<bool> = self
+            .nuke_strikes
+            .iter()
+            .map(|s| s.timer > -NUKE_WARP_FRAMES || falling(self, s.ghost).is_some())
+            .collect();
+        let mut keep = live.iter();
+        self.nuke_strikes.retain(|_| *keep.next().unwrap_or(&false));
+        // The missile unit: climbing during the countdown, hidden while it
+        // is off the map, then the same unit 320 px above the target,
+        // heading down (OpenBW `order_NukeLaunch` states 2 to 5), carried
+        // by the nuclear bullet that deals the damage.
+        for k in 0..self.nuke_strikes.len() {
+            let (timer, ghost, missile) = {
+                let s = &self.nuke_strikes[k];
+                (s.timer, s.ghost, s.missile)
+            };
+            let Some(m) = self.index_of(missile) else {
+                continue;
+            };
+            if timer > 0 {
+                continue;
+            }
+            match falling(self, ghost) {
+                Some((x, y)) => {
+                    self.units[m].alive = true;
+                    self.units[m].x = x;
+                    self.units[m].y = y;
+                    self.units[m].facing = 128;
+                    self.units[m].order = Order::Idle;
+                    self.units[m].path.clear();
+                    self.units[m].path_goal = None;
+                }
+                None => self.units[m].alive = false,
+            }
+        }
+        // A missile whose strike landed or was called off leaves the map.
         for i in 0..self.units.len() {
             let u = &self.units[i];
             if u.alive
                 && u.type_id == uid::NUCLEAR_MISSILE
-                && u.connected_unit.is_some()
+                && u.invincible
                 && !self.nuke_strikes.iter().any(|s| s.missile == u.id)
             {
                 self.units[i].alive = false;
@@ -9739,7 +9771,9 @@ impl World {
             y: target.1 - 320 * fp(1),
             target: target_unit,
             target_pos: target,
-            speed: 10 * 256,
+            // The missile accelerates from rest at its flingy's 33/256 px
+            // per frame per frame, so the 320 px take about 70 frames.
+            speed: NUKE_FALL_SPEED,
             remaining_time: 300,
             bounces_left: 0,
             hit_flags: 0,
@@ -9765,7 +9799,7 @@ impl World {
 
     fn cancel_nuke_for(&mut self, unit_id: u32) {
         self.nuke_strikes
-            .retain(|s| s.ghost != unit_id && s.silo != unit_id);
+            .retain(|s| s.timer <= -NUKE_WARP_FRAMES || (s.ghost != unit_id && s.silo != unit_id));
     }
 
     /// Apply a simple AI order: move/attack-move.
@@ -10187,6 +10221,28 @@ impl World {
         let (dx, dy) = (self.units[ti].x - bx, self.units[ti].y - by);
         self.units[o].facing = direction_byte(dx, dy);
         self.fire(o, ti, wid, &w);
+    }
+
+    /// OpenBW `restore_unit`: a hallucination dies; anything else loses
+    /// parasite, blindness, ensnare, plague, irradiate, lockdown, maelstrom
+    /// and acid spores (`0x005d2620` / `0x005dc300` / `0x005d2540` /
+    /// `0x005d2660` clear the timers).
+    fn restore_unit(&mut self, t: usize) {
+        if self.units[t].status.hallucination {
+            self.kill_unit(t);
+            return;
+        }
+        let s = &mut self.units[t].status;
+        s.clear_lockdown();
+        s.clear_plague();
+        s.clear_irradiate();
+        s.clear_maelstrom();
+        s.clear_ensnare();
+        s.optical_flare_ticks = 0;
+        s.parasite = false;
+        s.clear_acid_spores();
+        let id = self.units[t].id;
+        self.push_spell_cue(SpellCueKind::Restoration, id);
     }
 
     /// OpenBW `blind_unit`: Optical Flare lands.  A hallucination dies;
@@ -11671,6 +11727,11 @@ mod tests {
         w.units[bc].status.parasite = true;
         assert_eq!(w.units[bc].status.acid_spores, 2);
         w.apply_spell(medic, Spell::Restoration, SpellTarget::Unit(w.units[bc].id));
+        // Its bullet (iscript 292) lands seven frames after the cast.
+        assert_eq!(w.units[bc].status.acid_spores, 2);
+        for _ in 0..8 {
+            w.step();
+        }
         assert_eq!(w.units[bc].status.acid_spores, 0);
         assert_eq!(w.units[bc].status.acid_spore_ticks, [0; 9]);
         assert!(!w.units[bc].status.parasite);
@@ -12540,7 +12601,9 @@ mod tests {
         w.arm_nuke(w.units[silo].id).unwrap();
         let start = w.units[target].hp;
         w.launch_nuke(w.units[ghost].id, (700, 320)).unwrap();
-        for _ in 0..400 {
+        // Walk into range, 90 frames of countdown, 250 off the map, the
+        // fall.
+        for _ in 0..700 {
             w.step();
             if w.units[target].hp < start {
                 break;
@@ -12580,8 +12643,17 @@ mod tests {
         for _ in 0..45 {
             w.step();
         }
-        assert!(w.nuke_strikes.is_empty());
-        assert_eq!(w.projectiles.len(), 1, "missile exists after 90 ticks");
+        assert!(
+            w.nuke_strikes.iter().all(|s| s.timer <= 0),
+            "countdown over; the strike stays until the bomb lands"
+        );
+        // The missile is off the map for its WarpIn animation (250
+        // frames) before the bomb appears above the target.
+        assert!(w.projectiles.is_empty(), "nothing falls yet");
+        for _ in 0..NUKE_WARP_FRAMES {
+            w.step();
+        }
+        assert_eq!(w.projectiles.len(), 1, "the bomb is falling");
         assert_eq!(w.units[target].hp, hp, "impact is still travelling");
     }
 

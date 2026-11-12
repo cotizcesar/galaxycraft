@@ -6294,7 +6294,7 @@ fn random_take(prev: usize) -> usize {
 /// a window.  Steps (comma separated; points are window pixels):
 /// `move:x:y`, `click:x:y`, `shift-click:x:y`, `rclick:x:y`,
 /// `drag:x0:y0:x1:y1`, `drag-hold:x0:y0:x1:y1`, `hold:<arrow>:N`,
-/// `spawn:OWNER:TYPE_ID:x:y`, `key:K`, `ctrl-key:K`, `ticks:N` (simulation ticks),
+/// `spawn:OWNER:TYPE_ID:x:y`, `arm-silos`, `key:K`, `ctrl-key:K`, `ticks:N` (simulation ticks),
 /// `click-unit:NAME` / `rclick-unit:NAME` (the nearest on-screen unit whose
 /// name contains NAME), `click-cmd:N` (command-card slot N, 1..9),
 /// `click-world:x:y` / `rclick-world:x:y` (world game px), `click-view:px:py` / `rclick-view`
@@ -6377,6 +6377,18 @@ fn run_game_script(app: &mut App, fb: &mut Framebuffer, script: &str) {
                     num(3),
                     num(4),
                 );
+                frame(app, fb, base(mouse));
+            }
+            "arm-silos" => {
+                // Test fixture: every Nuclear Silo is attached and holds a
+                // missile (a scripted `spawn` cannot build one).
+                for u in app.world.units.iter_mut() {
+                    if u.type_id == galaxycraft::ids::unit::NUCLEAR_SILO {
+                        u.completed = true;
+                        u.addon_attached = true;
+                        u.nuke_ready = true;
+                    }
+                }
                 frame(app, fb, base(mouse));
             }
             "cheat" => {
@@ -18592,6 +18604,27 @@ impl App {
                     && grp.frame(frame).is_some()
                 {
                     building_stage.insert(i, (grp, frame));
+                } else if pick.is_none()
+                    && !self.sprites.has_unit(type_id)
+                    && let Some(image) = galaxycraft::unit_anim::unit_image(&self.data, type_id)
+                    && let Some(grp) = self.sd_image_grp(image)
+                {
+                    // A unit the bundled SD sheets do not cover (the
+                    // nuclear missile): its GRP straight from the install.
+                    let (id, facing) = {
+                        let u = &self.world.units[i];
+                        (u.id, u.facing)
+                    };
+                    let frame = galaxycraft::render::sd_frame_index(
+                        grp.frames.len(),
+                        facing,
+                        self.animator.unit_frame(id),
+                        false,
+                        0,
+                    );
+                    if grp.frame(frame).is_some() {
+                        building_stage.insert(i, (grp, frame));
+                    }
                 }
             }
         }
@@ -18625,12 +18658,17 @@ impl App {
                 .cloaked
                 .then(|| fb.save_rect(sx - 48, sy - 48, 96, 96));
             if let Some((grp, frame)) = building_stage.get(&i) {
-                galaxycraft::render::draw_grp_centered(
+                galaxycraft::render::draw_grp_posed(
                     fb,
                     grp,
                     *frame,
                     self.sprites.palette(),
                     (sx, sy),
+                    false,
+                    galaxycraft::render::GrpInk::Solid(Some(galaxycraft::render::player_rgb(
+                        &self.world,
+                        u.owner,
+                    ))),
                 );
             } else if !self
                 .sprites

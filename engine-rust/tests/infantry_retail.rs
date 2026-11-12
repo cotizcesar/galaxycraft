@@ -485,10 +485,14 @@ fn a_silo_builds_its_missile_before_a_ghost_can_call_the_strike() {
     }
     assert!(hit_at.is_some(), "the nuke landed");
     assert!(climbed, "the missile left its silo upwards");
+    // Visible for the 90 frames of the climb and about 70 of the fall;
+    // hidden for the 250 frames in between (iscript 131 WarpIn).
     assert!(
-        (85..=95).contains(&missile_seen),
-        "90 frames: {missile_seen}"
+        (150..=170).contains(&missile_seen),
+        "90 + ~70 frames: {missile_seen}"
     );
+    let total = hit_at.unwrap();
+    assert!(total > 90 + 250 + 60, "the whole strike: {total} frames");
     assert!(
         !w.units
             .iter()

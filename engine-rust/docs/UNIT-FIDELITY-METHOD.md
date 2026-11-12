@@ -141,6 +141,7 @@ GC_WALK_DIR=/tmp/walk ./target/release/sc_view --install "$SC_INSTALL" \
   `src/bin/sc_view.rs`): `look:x:y`, `spawn:OWNER:TYPE:x:y`, `ticks:N`,
   `click-unit:NAME`, `rclick-unit:NAME`, `click-world:x:y`,
   `rclick-world:x:y`, `drag:x0:y0:x1:y1`, `key:K`, `cheat:TEXT`,
+  `arm-silos` (every Nuclear Silo attached and loaded),
   `dump-units:NAME`, `shot:NAME`.
 - `dump-units:NAME` writes `NAME.tsv` (id, owner, type, position, hp, order,
   path, animation); `game.tsv` has one line per step with the camera,
