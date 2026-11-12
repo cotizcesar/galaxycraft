@@ -130,6 +130,10 @@ glow, Ghost cloak fade.
 | Ghost | acquisition | a cloaked Ghost does not auto-attack unless on hold position | **fixed** |
 | all | voices | "what" and "yes" lines picked at random, annoyed lines in order | **fixed** (was cycling) |
 
+| Medic | Optical Flare delivery | a bullet that follows its target (weapons.dat row 107) | **fixed** (was instant) |
+| Ghost | nuclear missile | a unit that leaves the silo and climbs for 90 frames; 8 supply while stored | **fixed** (was only a countdown) |
+| other | Psionic Storm | 48 px from the victim's box | **fixed** (was centre distance) |
+
 The rules marked OpenBW were read from its source (`bwgame.h`,
 `actions.h`) on 2026-11-12, not recalled.
 

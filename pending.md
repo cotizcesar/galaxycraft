@@ -28,22 +28,17 @@ energy, Medic heal rules and search square, Ghost paint range, the nuke's
 90 / 45 frame timers and 320 px drop, splash rings measured to unit boxes,
 `attkshiftproj`, Lockdown 131, blind / restore.  What is still open:
 
-- **Nuclear missile as a unit.**  In retail the missile is a real unit that
-  leaves the silo, climbs off the top of the map during the 90 frames, and
-  falls on the target; here it is a countdown plus a projectile, so the
-  silo launch is not drawn and the missile cannot be seen or shot on its way
-  up.  It should also use 8 supply while it sits in the silo.  Computer
-  players still get their missile on demand when their script orders a
-  strike.
-- **Psionic Storm radius** is still measured to unit centres (an older test
-  pins 48 px inside / 49 px outside); OpenBW measures to the victim's box
-  like every other splash.
+- **Nuclear missile.**  It now leaves the silo as a unit, climbs for the 90
+  frames, takes 8 supply while stored and falls on the target, but the fall
+  is still the nuclear bullet rather than the same unit reappearing 320 px
+  above the target, and the launch was not checked on screen (a scripted
+  session cannot arm a silo).  Computer players still get their missile on
+  demand when their script orders a strike.
 - **Cloak look.**  Retail distorts cloaked units through the palette; the
   client fades them (`render::CLOAK_KEEP`).  Glow images (draw function 9)
   are tinted in SD instead of using the `ofire` / `gfire` / `bfire` tables.
-- **Travelling spell images.**  The Lockdown missile flies in the
-  simulation but Optical Flare and Restoration are applied at once; in
-  retail Optical Flare is also a bullet.
-- **Stim Pack damage** is taken straight from hit points; retail routes it
-  through `unit_deal_damage` (it should not matter for these units, which
-  have no shields).
+  Both are appearance only.
+- **Restoration** is applied on the cast frame; its bullet script would add
+  a couple of frames.
+- **Voice lines** for selection and orders are picked at random from memory
+  of the retail behaviour; OpenBW has no voice logic to check it against.

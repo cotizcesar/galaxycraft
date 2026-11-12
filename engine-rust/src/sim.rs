@@ -787,6 +787,8 @@ pub struct NukeStrike {
     pub dot: bool,
     /// Warning cue already emitted.
     pub warned: bool,
+    /// The missile unit climbing out of the silo (0 before it launches).
+    pub missile: u32,
 }
 
 /// One instant-weapon hit that lands when its bullet's script says so.
@@ -3376,6 +3378,10 @@ impl World {
                 && let Order::Train { unit_type } = u.order
             {
                 used += self.data.unit(unit_type).supply_required as i32;
+            }
+            // A missile waiting in its silo is a unit too (8 supply).
+            if u.alive && u.owner == owner && u.type_id == uid::NUCLEAR_SILO && u.nuke_ready {
+                used += self.data.unit(uid::NUCLEAR_MISSILE).supply_required as i32;
             }
         }
         used
@@ -6515,7 +6521,7 @@ impl World {
             }
             hit::OPTICAL_FLARE => {
                 if let Some(t) = target_idx {
-                    self.units[t].status.optical_flare_ticks = 600;
+                    self.blind_unit(t);
                 }
             }
             hit::MAELSTROM => {
@@ -6584,12 +6590,7 @@ impl World {
                 .dimensions
                 .rect_at((self.units[j].x / fp(1), self.units[j].y / fp(1)));
             let (ix, iy) = (impact.0 / fp(1), impact.1 / fp(1));
-            let d = if weapon_id == wid::PSIONIC_STORM {
-                // The storm keeps its recovered centre-distance rule.
-                let dx = (self.units[j].x - impact.0) as i64;
-                let dy = (self.units[j].y - impact.1) as i64;
-                isqrt(dx * dx + dy * dy)
-            } else {
+            let d = {
                 let dx = (rect.0 - ix).max(ix - rect.2).max(0) as i64 * fp(1) as i64;
                 let dy = (rect.1 - iy).max(iy - rect.3).max(0) as i64 * fp(1) as i64;
                 isqrt(dx * dx + dy * dy)
@@ -9094,21 +9095,19 @@ impl World {
                     self.spawn_temporary(c_owner, uid::DISRUPTION_WEB, (tx, ty), 360);
                 }
             }
-            Spell::OpticalFlare
-                if target_idx.is_some_and(|t| self.units[t].status.hallucination) =>
-            {
-                // OpenBW `blind_unit`: a hallucination simply dies.
-                if let Some(t) = target_idx {
-                    self.kill_unit(t);
-                }
-            }
             Spell::OpticalFlare => {
+                // The Medic throws the flare (weapons.dat row 107, a bullet
+                // that follows its target); the unit is blinded when it
+                // lands.
                 if let Some(t) = target_idx {
-                    // Permanent until Restoration (any non-zero value).
-                    self.units[t].status.optical_flare_ticks = 600;
-                    let (cid, tid) = (self.units[caster].id, self.units[t].id);
+                    let cid = self.units[caster].id;
                     self.push_spell_cue(SpellCueKind::OpticalFlareCast, cid);
-                    self.push_spell_cue(SpellCueKind::OpticalFlareHit, tid);
+                    match self.data.weapon(wid::OPTICAL_FLARE).cloned() {
+                        Some(w) if Projectile::weapon_is_travelling(&w) => {
+                            self.spawn_projectile(caster, t, wid::OPTICAL_FLARE, &w);
+                        }
+                        _ => self.blind_unit(t),
+                    }
                 }
             }
             Spell::Healing => {
@@ -9637,6 +9636,7 @@ impl World {
             timer: 90,
             dot: true,
             warned: false,
+            missile: 0,
         });
         self.units[i].cooldown = 5;
         Ok(())
@@ -9662,6 +9662,26 @@ impl World {
                 self.units[g].path_goal = None;
             }
         }
+        // The countdown has started: the missile leaves its silo and climbs
+        // off the top of the map (OpenBW `order_NukeLaunch`: 90 frames,
+        // warning at 45).  It is invincible and only seen, never fought.
+        for k in 0..self.nuke_strikes.len() {
+            let st = &self.nuke_strikes[k];
+            if st.missile != 0 || waiting.contains(&st.ghost) {
+                continue;
+            }
+            let (owner, silo, ghost) = (st.owner, st.silo, st.ghost);
+            let Some(si) = self.index_of(silo) else {
+                continue;
+            };
+            let (sx, sy) = (self.units[si].x / fp(1), self.units[si].y / fp(1));
+            if let Ok(m) = self.spawn_px(owner as usize, uid::NUCLEAR_MISSILE, sx, sy) {
+                self.units[m].invincible = true;
+                self.units[m].connected_unit = Some(ghost);
+                self.units[m].order = Order::Move { pos: (sx, 8) };
+                self.nuke_strikes[k].missile = self.units[m].id;
+            }
+        }
         let mut launched = Vec::new();
         for strike in &mut self.nuke_strikes {
             if waiting.contains(&strike.ghost) {
@@ -9681,6 +9701,19 @@ impl World {
             self.spawn_nuke_missile(owner, ghost, target);
         }
         self.nuke_strikes.retain(|s| s.timer > 0);
+        // A climbing missile whose strike is over (it now falls on the
+        // target as the nuclear bullet) or was called off leaves the map.
+        for i in 0..self.units.len() {
+            let u = &self.units[i];
+            if u.alive
+                && u.type_id == uid::NUCLEAR_MISSILE
+                && u.connected_unit.is_some()
+                && !self.nuke_strikes.iter().any(|s| s.missile == u.id)
+            {
+                self.units[i].alive = false;
+                self.units[i].order = Order::Die;
+            }
+        }
     }
 
     fn spawn_nuke_missile(&mut self, owner: u8, ghost: u32, target: (i32, i32)) {
@@ -10154,6 +10187,19 @@ impl World {
         let (dx, dy) = (self.units[ti].x - bx, self.units[ti].y - by);
         self.units[o].facing = direction_byte(dx, dy);
         self.fire(o, ti, wid, &w);
+    }
+
+    /// OpenBW `blind_unit`: Optical Flare lands.  A hallucination dies;
+    /// anything else is blinded until Restoration (any non-zero value of
+    /// the timer means blind; it does not count down).
+    fn blind_unit(&mut self, t: usize) {
+        if self.units[t].status.hallucination {
+            self.kill_unit(t);
+            return;
+        }
+        self.units[t].status.optical_flare_ticks = 600;
+        let id = self.units[t].id;
+        self.push_spell_cue(SpellCueKind::OpticalFlareHit, id);
     }
 
     fn push_spell_cue(&mut self, kind: SpellCueKind, unit: u32) {
@@ -12292,7 +12338,10 @@ mod tests {
         w.units[templar].energy = 200;
         let a = w.spawn(1, uid::DROPSHIP, 480, 320).unwrap();
         let b = w.spawn(1, uid::DROPSHIP, 528, 320).unwrap();
-        let c = w.spawn(1, uid::DROPSHIP, 480, 369).unwrap();
+        // Psionic Storm reaches 48 px from the victim's box (OpenBW
+        // `bullet_deal_splash_damage`: `unit_distance_to`).  Dropship box:
+        // 24 px up from its centre, so 73 px below the storm is just out.
+        let c = w.spawn(1, uid::DROPSHIP, 480, 320 + 48 + 25).unwrap();
         for i in [a, b, c] {
             w.units[i].hp = fp(500);
         }
@@ -12312,7 +12361,7 @@ mod tests {
         }
         assert_eq!(w.units[a].hp, ha - fp(14) * 8);
         assert_eq!(w.units[b].hp, hb - fp(14) * 8, "48 px is inside");
-        assert_eq!(w.units[c].hp, hc, "49 px is outside");
+        assert_eq!(w.units[c].hp, hc, "49 px from its box is outside");
         assert!(w.projectiles.is_empty());
     }
 
@@ -14120,6 +14169,7 @@ mod tests {
             timer: 100,
             dot: true,
             warned: false,
+            missile: 0,
         });
         assert!(!w.has_no_linked_missile(silo_id));
         let other = w.spawn(0, uid::NUCLEAR_SILO, 420, 320).unwrap();
@@ -17944,6 +17994,7 @@ mod tests_agent14 {
             timer: 90,
             dot: true,
             warned: false,
+            missile: 0,
         });
 
         assert_eq!(w.a14_linked_missile(silo), None);
@@ -19819,6 +19870,7 @@ mod tests_agent30 {
             timer: 5,
             dot: true,
             warned: false,
+            missile: 0,
         });
 
         assert_eq!(w.a30_purge_unit_references(victim_id), 2);
@@ -19859,6 +19911,7 @@ mod tests_agent30 {
             timer: 5,
             dot: true,
             warned: false,
+            missile: 0,
         });
 
         // Only owner 0's list: the strike belongs to owner 1 and survives.
@@ -29606,6 +29659,7 @@ mod tests_agent32 {
             timer: 5,
             dot: true,
             warned: false,
+            missile: 0,
         });
         assert!(!w.a32_silo_missile_owner_ok(silo, missile));
     }

@@ -339,6 +339,8 @@ fn optical_flare_blinds_for_good_until_restoration() {
     assert_eq!(w.unit_sight_range(vessel), 10);
     w.cast(mid, Spell::OpticalFlare, SpellTarget::Unit(vid))
         .unwrap();
+    // The flare is a bullet: nothing happens until it reaches the unit.
+    assert_eq!(w.unit_sight_range(vessel), 10);
     for _ in 0..1500 {
         w.step();
     }
@@ -448,9 +450,12 @@ fn a_silo_builds_its_missile_before_a_ghost_can_call_the_strike() {
         "the missile stays in the silo"
     );
 
+    // A missile waiting in the silo takes 8 supply (16 half-points).
+    let supply_with = w.supply_used(0);
     // The Ghost walks until the point is within its sight, then paints.
     w.launch_nuke(gid, (1500, 900)).unwrap();
     assert!(!w.units[silo].nuke_ready);
+    assert_eq!(supply_with - w.supply_used(0), 16);
     let start = w.units[ghost].x;
     let mut hit_at = None;
     let victim = w.spawn_px(1, uid::SUPPLY_DEPOT, 1500, 900).unwrap();
@@ -458,14 +463,38 @@ fn a_silo_builds_its_missile_before_a_ghost_can_call_the_strike() {
         .spawn_px(1, uid::SUPPLY_DEPOT, 1500 + 48 + 230, 900)
         .unwrap();
     let (hp_v, hp_f) = (w.units[victim].hp, w.units[far].hp);
+    let silo_y = w.units[silo].y;
+    let (mut climbed, mut missile_seen) = (false, 0);
     for t in 0..1500 {
         w.step();
+        // While the Ghost paints, the missile is a unit climbing out of
+        // the silo; nobody can target it.
+        if let Some(m) = w
+            .units
+            .iter()
+            .find(|u| u.alive && u.type_id == uid::NUCLEAR_MISSILE)
+        {
+            missile_seen += 1;
+            climbed |= m.y < silo_y - 256 * 40;
+            assert!(m.invincible);
+        }
         if w.units[victim].hp < hp_v || !w.units[victim].alive {
             hit_at = Some(t);
             break;
         }
     }
     assert!(hit_at.is_some(), "the nuke landed");
+    assert!(climbed, "the missile left its silo upwards");
+    assert!(
+        (85..=95).contains(&missile_seen),
+        "90 frames: {missile_seen}"
+    );
+    assert!(
+        !w.units
+            .iter()
+            .any(|u| u.alive && u.type_id == uid::NUCLEAR_MISSILE),
+        "and is gone once the strike lands"
+    );
     assert!(
         w.units[ghost].x > start + 256 * 500,
         "the Ghost walked into range"
@@ -616,9 +645,12 @@ fn the_renderer_shows_the_medic_heal_and_the_spell_effects() {
         .unwrap();
     w.cast(mid, Spell::Restoration, SpellTarget::Unit(marine_id))
         .unwrap_or(());
-    w.step();
-    anim.advance(&w);
-    let images: Vec<u16> = anim.effects().map(|e| e.image).collect();
+    let mut images: Vec<u16> = Vec::new();
+    for _ in 0..40 {
+        w.step();
+        anim.advance(&w);
+        images.extend(anim.effects().map(|e| e.image));
+    }
     assert!(
         images.contains(&(OPTICAL_FLARE_HIT_IMAGE + 2)),
         "flare hit on a large unit: {images:?}"
