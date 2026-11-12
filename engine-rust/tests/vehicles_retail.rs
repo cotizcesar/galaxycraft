@@ -102,8 +102,14 @@ fn siege_mode_takes_its_animation_time_both_ways() {
     let id = w.units[tank].id;
     let hp = w.units[egg].hp;
     w.issue(id, Order::Siege).unwrap();
-    w.step();
-    assert_eq!(w.units[tank].type_id, uid::SIEGE_MODE, "it deploys at once");
+    // It turns to its siege heading (96) first, then deploys.
+    let mut turned = 0;
+    while w.units[tank].type_id != uid::SIEGE_MODE {
+        w.step();
+        turned += 1;
+        assert!(turned < 30, "it deploys");
+    }
+    assert_eq!(w.units[tank].facing, 96);
     // Busy for the 64 frames of the deploy animation: no orders, no fire.
     assert!(w.issue(id, Order::Stop).is_err());
     for _ in 0..SIEGE_FRAMES - 2 {
@@ -121,14 +127,19 @@ fn siege_mode_takes_its_animation_time_both_ways() {
     assert!(fired_at.is_some(), "the sieged tank shells the Egg");
     // Arclite Shock Cannon: 70 explosive, 75 % against a medium unit.
     // Back to tank mode: sieged for the 63 frames of the pack-up animation.
+    // The cannon first swings back to its rest heading (224), then the
+    // tank packs up.
     w.issue(id, Order::Unsiege).unwrap();
     for _ in 0..UNSIEGE_FRAMES {
         w.step();
         assert_eq!(w.units[tank].type_id, uid::SIEGE_MODE);
     }
-    w.step();
-    w.step();
-    assert_eq!(w.units[tank].type_id, uid::SIEGE_TANK);
+    let mut extra = 0;
+    while w.units[tank].type_id == uid::SIEGE_MODE {
+        w.step();
+        extra += 1;
+        assert!(extra < 20, "packed up after the turret turned");
+    }
     assert_eq!(w.units[tank].order, Order::Idle);
 }
 

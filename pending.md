@@ -49,9 +49,9 @@ on screen.
   weapon; the turret's heading turns at its own rate and gates the shot,
   and its attack animation, sound and muzzle overlays play.  Not modelled:
   the hull is not held still while it fires.
-- **Siege Mode.**  The tank does not turn to its default direction before
-  deploying, is not destroyed when a building occupies its spot, and the
-  sieged turret's unfolding frames are not drawn (only the base's).
+- **Siege Mode.**  A tank is not destroyed when a building occupies its
+  spot, and the sieged turret's unfolding frames are not drawn (only the
+  base's).
 - **Spider Mine.**  The hover list is a hardcoded type list rather than the
   `units.dat` movement flags; the burrow / unburrow frames and sounds are
   not drawn; a mine is nudged by collision while it waits.
@@ -65,8 +65,10 @@ on screen.
   rule (OpenBW: only the transport, or only the unit itself).
 - **Air repulse.**  The map-edge turn and the "cannot be interrupted"
   exemptions are simplified.
-- **Not drawn.**  The hover bob of idle flyers (`setvertpos`), and the SD
-  tank hull shows a dotted blue outline (its shadow image).
+- **Not drawn.**  The hover bob of idle flyers (`setvertpos`).  SD units
+  now use the map's tileset palette (the generic one drew a blue dotted
+  outline on the Siege Tank); the team colour is still a flat colour
+  instead of the retail shaded ramp.
 - **Checked on screen only in outline** (scripted HD and SD sessions, small
   crops): the siege deploy, a mine chasing and exploding, the Yamato charge
   and blast, and the Matrix / Irradiate / EMP casts being accepted; the Matrix

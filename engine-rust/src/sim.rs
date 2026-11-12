@@ -859,6 +859,11 @@ pub const NUKE_TOP_SPEED: i32 = 8533;
 /// Frames a tank is busy deploying into Siege Mode and packing up again
 /// (iscript 92: Init and SpecialState2 up to their `sigorder 1`).
 pub const SIEGE_FRAMES: u8 = 64;
+/// `units.dat` default directions x 8: the tank (and its turret) before
+/// sieging, and the sieged cannon at rest (iscript 93 ends its unfolding
+/// with `setfldirect 28`).
+pub const SIEGE_HEADING: i32 = 96;
+pub const SIEGED_TURRET_HEADING: i32 = 224;
 pub const UNSIEGE_FRAMES: u8 = 63;
 
 /// Frames between two units leaving a transport (OpenBW `unit_unload`:
@@ -7725,11 +7730,20 @@ impl World {
                 .flingy(turret.flingy)
                 .map_or(255, |f| f.turn_rate as i32)
                 .max(1);
+            // At rest: along the hull, or the sieged cannon's own rest
+            // heading once it has unfolded.
+            let rest = if u.type_id == uid::SIEGE_MODE
+                && !(matches!(u.order, Order::Siege) && u.order_wait > 0)
+            {
+                SIEGED_TURRET_HEADING
+            } else {
+                u.facing as i32
+            };
             let want = u
                 .target
                 .and_then(|t| self.index_of(t))
                 .filter(|&t| self.units[t].alive)
-                .map_or(u.facing as i32, |t| {
+                .map_or(rest, |t| {
                     direction_byte(self.units[t].x - u.x, self.units[t].y - u.y) as i32
                 });
             let cur = u.turret_facing as i32;
@@ -9150,6 +9164,24 @@ impl World {
                 self.units[i].path.clear();
                 self.units[i].path_goal = None;
                 self.units[i].target = None;
+                // OpenBW `order_Sieging`: hull and turret first turn to the
+                // type's default direction (`units.dat` 12, heading 96).
+                let rate = self
+                    .data
+                    .flingy(self.data.unit(ty).flingy)
+                    .map_or(255, |f| f.turn_rate as i32)
+                    .max(1);
+                let cur = self.units[i].facing as i32;
+                let mut diff = (SIEGE_HEADING - cur).rem_euclid(256);
+                if diff > 128 {
+                    diff -= 256;
+                }
+                self.units[i].facing = (cur + diff.clamp(-rate, rate)).rem_euclid(256) as u8;
+                if self.units[i].facing as i32 != SIEGE_HEADING
+                    || self.units[i].turret_facing as i32 != SIEGE_HEADING
+                {
+                    return;
+                }
                 self.units[i].status.sieged = true;
                 self.units[i].type_id = uid::SIEGE_MODE;
                 self.units[i].order_wait = SIEGE_FRAMES + 1;
@@ -9162,6 +9194,10 @@ impl World {
         } else if ty == uid::SIEGE_MODE {
             if wait == 0 {
                 self.units[i].target = None;
+                // The cannon swings back to its rest heading first.
+                if self.units[i].turret_facing as i32 != SIEGED_TURRET_HEADING {
+                    return;
+                }
                 self.units[i].order_wait = UNSIEGE_FRAMES + 1;
                 return;
             }
@@ -12207,6 +12243,11 @@ mod tests {
         let tank = w.spawn(0, uid::SIEGE_TANK, 8, 8).unwrap();
         w.players[0].techs[tech_id::TANK_SIEGE_MODE as usize] = true;
         w.issue(w.units[tank].id, Order::Siege).unwrap();
+        // It first turns to heading 96 (13 per frame from 0: 8 frames).
+        for _ in 0..8 {
+            w.step();
+            assert_eq!(w.units[tank].type_id, uid::SIEGE_TANK);
+        }
         w.step();
         assert_eq!(w.units[tank].type_id, uid::SIEGE_MODE);
         // Busy for the deploy animation, then idle again.

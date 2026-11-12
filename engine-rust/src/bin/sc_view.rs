@@ -10533,6 +10533,7 @@ impl App {
         }
         self.scenario = scenario;
         self.tileset = tileset;
+        self.sprites.set_palette(self.tileset.palette.clone());
         self.chk_raw = raw;
         self.last_races = races.clone();
         world.recorder = Some(Recorder::new());
@@ -10793,6 +10794,7 @@ impl App {
         }
         self.scenario = scenario;
         self.tileset = tileset;
+        self.sprites.set_palette(self.tileset.palette.clone());
         if let Some(index) = self.saved_map_index(save) {
             self.map_index = index;
             self.menu_tab = usize::from(index >= self.campaign_len);

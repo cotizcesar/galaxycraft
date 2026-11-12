@@ -2331,6 +2331,14 @@ impl SpriteBank {
         &self.palette
     }
 
+    /// Draw with the map's terrain palette.  Retail draws SD units with the
+    /// tileset palette (`tileset\<era>.wpe`); the generic `unit.pal` has
+    /// placeholder blue in the tileset-dependent entries (203..=245 and
+    /// friends), which showed as a dotted blue outline on the Siege Tank.
+    pub fn set_palette(&mut self, palette: Palette) {
+        self.palette = palette;
+    }
+
     /// Draw a unit sprite.  Returns false when the unit has no bundled GRP.
     pub fn draw_unit(
         &self,
