@@ -583,10 +583,17 @@ impl App {
             "noglues" => cheat::NOGLUES,
             _ => return false,
         };
-        self.queue_act(RecAct::Cheat {
-            player: self.local_player as u8,
-            code: id,
-        });
+        // The map's start-up triggers (melee: "set ore to 50") run at the
+        // end of the first tick; a cheat typed before then waits for them,
+        // or its minerals would be overwritten.
+        if self.world.tick == 0 {
+            self.deferred_cheats.push(id);
+        } else {
+            self.queue_act(RecAct::Cheat {
+                player: self.local_player as u8,
+                code: id,
+            });
+        }
         self.push_chat_line("Cheat enabled.".to_string());
         self.status("Cheat enabled".to_string());
         self.play("ui_click");

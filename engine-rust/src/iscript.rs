@@ -88,6 +88,9 @@ pub enum AnimEvent {
     Turn(i32),
     /// `sigorder <flag>`.
     Signal(u8),
+    /// `tmprmgraphicstart` (false) / `tmprmgraphicend` (true): hide or show
+    /// the image for a while (the blinking lights of working buildings).
+    Visible(bool),
     /// `orderdone <flag>`.
     OrderDone(u8),
     /// `imgol`, `imgul`, `sprol`, `sprul`, `grdsprol`, ...  Kept as a typed
@@ -680,9 +683,11 @@ impl Iscript {
                 }
                 0x32 => {
                     // tmprmgraphicstart: hide the image.
+                    out.push(AnimEvent::Visible(false));
                 }
                 0x33 => {
                     // tmprmgraphicend: show the image.
+                    out.push(AnimEvent::Visible(true));
                 }
                 0x34 => {
                     // setfldirect <direction>

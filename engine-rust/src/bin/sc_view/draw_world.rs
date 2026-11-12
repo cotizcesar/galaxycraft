@@ -161,7 +161,8 @@ impl App {
                 // Resources are stored under player 0: neutral first.
                 let neutral = u.is_resource()
                     || u.type_id == galaxycraft::ids::unit::VESPENE_GEYSER
-                    || u.owner >= 11;
+                    || u.owner >= 11
+                    || u.is_detached_addon();
                 if neutral {
                     CursorTarget::Neutral
                 } else if u.owner as usize == self.local_player {
@@ -443,7 +444,17 @@ impl App {
                             )
                         })
                     }
-                    None => None,
+                    // Lift-off, flight and landing frames of the
+                    // building's own image (iscript LiftOff / Landing).
+                    None => galaxycraft::unit_anim::building_lift_frame(
+                        &self.data,
+                        &self.world.units[i],
+                    )
+                    .or_else(|| self.animator.work_frame(self.world.units[i].id))
+                    .and_then(|frame| {
+                        galaxycraft::unit_anim::unit_image(&self.data, type_id)
+                            .map(|img| (img, frame as usize))
+                    }),
                 };
                 if let Some((image, frame)) = pick
                     && let Some(grp) = self.sd_image_grp(image)
@@ -528,8 +539,8 @@ impl App {
                     .and_then(|f| self.data.sprite(f.sprite))
                     .map(|sp| (sp.selection_circle as u16, sp.selection_circle_vpos as i32));
                 let colour = circle_colour_for(
-                    u.owner as usize == self.local_player,
-                    u.is_resource() || u.owner >= 11,
+                    u.owner as usize == self.local_player && !u.is_detached_addon(),
+                    u.is_resource() || u.owner >= 11 || u.is_detached_addon(),
                     self.world.is_enemy(self.local_player as u8, u.owner),
                 );
                 if let Some((size, vpos)) = sprite
@@ -1102,6 +1113,13 @@ impl App {
             }
         }
         let mut layer_list = self.hd_unit_layers(u.type_id, u.is_completed_building(&self.data));
+        // Lift-off, flight and landing frames (iscript LiftOff / Landing).
+        if let Some(f) = galaxycraft::unit_anim::building_lift_frame(&self.data, u)
+            .or_else(|| self.animator.work_frame(u.id))
+            && (f as usize) < img.header.frames.len()
+        {
+            frame = f as usize;
+        }
         if let Some(stage) = terran_construction_stage(u, ty) {
             match stage {
                 ConstructionStage::Scaffold(n) if ty.construction_image == 0 => {
@@ -1147,11 +1165,14 @@ impl App {
                 layer_list = self.hd_unit_layers(src, true);
             }
         }
+        // A lifted building's shadow stays on the ground below it.
+        let lift = galaxycraft::unit_anim::lift_offset(u);
         let layers = layer_list
             .into_iter()
             .filter_map(|(id, ox, oy, below)| {
                 let li = fetch(id)?;
                 let lf = frame.min(li.header.frames.len().saturating_sub(1));
+                let oy = oy as i32 + if below { lift } else { 0 };
                 Some(HdPart {
                     image_id: id,
                     img: li,
@@ -1272,6 +1293,7 @@ impl App {
                 self.animator
                     .status_overlays(&self.world)
                     .into_iter()
+                    .chain(self.animator.work_overlays(&self.world))
                     .map(|b| (b.image, b.x, b.y, b.facing, b.frame)),
             )
             .chain(
@@ -1487,6 +1509,7 @@ impl App {
                 self.animator
                     .status_overlays(&self.world)
                     .into_iter()
+                    .chain(self.animator.work_overlays(&self.world))
                     .map(|b| (b.image, b.x, b.y, b.facing, b.frame)),
             )
             .chain(
@@ -1681,8 +1704,8 @@ impl App {
             .is_some_and(|(id, t)| id == u.id && order_flash_on(t.elapsed().as_secs_f32()));
         let selected = self.selected.contains(&u.id) || flashing;
         let circle_colour = circle_colour_for(
-            u.owner as usize == self.local_player,
-            u.is_resource() || u.owner >= 11,
+            u.owner as usize == self.local_player && !u.is_detached_addon(),
+            u.is_resource() || u.owner >= 11 || u.is_detached_addon(),
             self.world.is_enemy(self.local_player as u8, u.owner),
         );
         let sprite = self

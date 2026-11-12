@@ -292,6 +292,12 @@ impl App {
                 ai.update(&mut self.world, enemy_base);
             }
             self.world.step();
+            for code in std::mem::take(&mut self.deferred_cheats) {
+                self.queue_act(galaxycraft::replay::RecAct::Cheat {
+                    player: self.local_player as u8,
+                    code,
+                });
+            }
         }
     }
 

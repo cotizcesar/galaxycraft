@@ -2800,6 +2800,8 @@ struct App {
     /// Edge-scroll direction while the pointer rests on a screen edge of
     /// the focused window (0 = up, clockwise), set by the window loop.
     edge_scroll: Option<u8>,
+    /// Cheats typed before the first tick (`apply_cheat_code`).
+    deferred_cheats: Vec<u8>,
     remap_tables:
         std::collections::HashMap<(u16, u8), Option<std::rc::Rc<galaxycraft::render::RemapTable>>>,
     /// Mixer gains last sent to the audio thread.
@@ -8107,6 +8109,7 @@ fn main() {
         sd_image_grps: std::collections::HashMap::new(),
         seen_buildings: std::collections::HashSet::new(),
         edge_scroll: None,
+        deferred_cheats: Vec::new(),
         remap_tables: std::collections::HashMap::new(),
         volumes_sent: None,
         content_x0: 0,

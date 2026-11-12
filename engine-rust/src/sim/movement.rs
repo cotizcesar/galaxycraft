@@ -617,10 +617,11 @@ impl World {
             }
         };
         speed = Self::modified_speed_for_mods(u.type_id, speed, self.movement_mods(i));
-        // Lifted Terran buildings use their flingy speed when present;
-        // otherwise they drift at the standard building air speed.
-        if u.lifted && speed <= 0 {
-            speed = 1280;
+        // A lifted Terran building flies at 1 px per tick: OpenBW
+        // `order_LiftingOff` sets `flingy_top_speed` to 1 and only restores
+        // it for non-buildings.
+        if u.lifted {
+            speed = 256;
         }
         speed
     }
