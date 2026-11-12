@@ -225,3 +225,6 @@ working animations, cursors, cloak, fog memory.
 | modularization | equivalence | same state logs; screenshots identical outside the wall-clock portrait (0 differing pixels) | checked across the file-move commits |
 | cursor | scale and rate | `FUN_0069df10`: scale `height / 1920`, at least 0.25; every cursor built with the same frame time (10) | **fixed** floor (was 0.02); rate matches |
 | lifting buildings | dust mirror | offsets 16-24 drawn mirrored | **fixed** |
+| fog | memory | a scouted building stays as last seen; one destroyed out of sight stays as a ghost until its spot is seen | **fixed** (live state drawn; destroyed ones vanished) |
+| add-ons | abandoned | neutral: not auto-attacked | **fixed** (enemies attacked it) |
+| cursor | scroll arrows | eight edge cursors with edge hotspots | checked on screen in HD and SD (`edge:x:y` script step) |

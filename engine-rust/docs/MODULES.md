@@ -37,7 +37,7 @@ Sizes are lines.  Find a function with `rg -n 'fn name' engine-rust/src`.
 | `bin/sc_view/commands.rs` | 1106 | `impl App`: commands (moved out of `sc_view.rs` by scripts/split_impl.py). |
 | `bin/sc_view/cursor.rs` | 690 | The in-game pointer: retail cursor shapes and art (HD and SD), edge |
 | `bin/sc_view/draw_world.rs` | 1753 | `impl App`: draw world (moved out of `sc_view.rs` by scripts/split_impl.py). |
-| `bin/sc_view/fog_memory.rs` | 51 | Fog of war memory: enemy buildings the local player has scouted stay |
+| `bin/sc_view/fog_memory.rs` | 121 | Fog of war memory: enemy buildings the local player has scouted stay |
 | `bin/sc_view/game_dialog.rs` | 1091 | `impl App`: game dialog (moved out of `sc_view.rs` by scripts/split_impl.py). |
 | `bin/sc_view/game_input.rs` | 1159 | `impl App`: game input (moved out of `sc_view.rs` by scripts/split_impl.py). |
 | `bin/sc_view/game_loop.rs` | 439 | `impl App`: game loop (moved out of `sc_view.rs` by scripts/split_impl.py). |
@@ -156,7 +156,7 @@ Sizes are lines.  Find a function with `rg -n 'fn name' engine-rust/src`.
 | `scene.rs` | 165 | Reference scenes: the unit layout the retail screenshots show. |
 | `sfx.rs` | 281 | `arr\sfxdata.tbl` — the shipped sound-file name table. |
 | `sim/animation.rs` | 241 | `impl World`: animation (moved out of `mod.rs` by scripts/split_impl.py). |
-| `sim/combat.rs` | 741 | `impl World`: combat (moved out of `mod.rs` by scripts/split_impl.py). |
+| `sim/combat.rs` | 742 | `impl World`: combat (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/creep_power.rs` | 224 | `impl World`: creep power (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/damage.rs` | 752 | `impl World`: damage (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/lift.rs` | 223 | `impl World`: lifting and landing Terran buildings, and their add-ons |

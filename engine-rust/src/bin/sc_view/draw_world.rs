@@ -214,6 +214,7 @@ impl App {
             );
         }
 
+        self.fog_swap_in();
         let mut order: Vec<usize> = (0..self.world.units.len())
             .filter(|&i| self.world.units[i].alive && !self.world.inside_gas_building(i))
             .collect(); // Elevation first, then y (retail sprite order); an SCV welding a
@@ -345,7 +346,6 @@ impl App {
                 }
             }
         }
-        self.remember_seen_buildings();
         let mut hd_units = Vec::new();
         for i in order {
             let u = &self.world.units[i];
@@ -360,7 +360,7 @@ impl App {
                 if self.fog_on()
                     && !u.status.cloaked
                     && !u.status.burrowed
-                    && self.seen_buildings.contains(&u.id)
+                    && self.fog_mem.seen.contains_key(&u.id)
                 {
                     remembered = true;
                 } else {
@@ -426,8 +426,7 @@ impl App {
                 .status
                 .cloaked
                 .then(|| fb.save_rect(sx - 48, sy - 48, 96, 96));
-            // The SD fog is drawn under the units: darken a remembered
-            // building by hand.
+            // SD fog is under the units: darken a remembered building by hand.
             let fogged = remembered.then(|| fb.save_rect(sx - 96, sy - 96, 192, 192));
             if let Some((grp, frame)) = building_stage.get(&i) {
                 galaxycraft::render::draw_grp_posed(
@@ -584,6 +583,7 @@ impl App {
             );
         }
         // The view is `vw` game px wide; retail scales it to fill the box.
+        self.fog_swap_out();
         let content = Self::content_rect(fb_full);
         let drawn = (vw as f32 * scale).round() as i32;
         marks.push(("fog", Instant::now()));

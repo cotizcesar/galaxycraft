@@ -161,7 +161,8 @@ impl World {
         let max_fp = acq_range * fp(1);
         let mut best: Option<(i32, u32)> = None;
         for (other_idx, other) in self.units.iter().enumerate() {
-            if !other.alive || !self.hostile(u.owner, other.owner) {
+            // An abandoned add-on is neutral in retail: nobody picks it.
+            if !other.alive || !self.hostile(u.owner, other.owner) || other.is_detached_addon() {
                 continue;
             }
             if u.in_transport == Some(other.id) {
