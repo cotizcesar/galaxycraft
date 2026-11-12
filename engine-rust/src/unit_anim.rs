@@ -838,7 +838,16 @@ impl Animator {
             seen.image = image;
             seen.building = building;
         }
-        // Units that went away play their Death animation where they were.
+        // Units that went away play their Death animation where they were;
+        // one that boarded a transport or entered a Bunker (kept with
+        // `alive == false`) just disappears.
+        let loaded: Vec<u32> = world
+            .units
+            .iter()
+            .filter(|u| u.in_transport.is_some())
+            .map(|u| u.id)
+            .collect();
+        self.units.retain(|id, _| !loaded.contains(id));
         let gone: Vec<u32> = self
             .units
             .keys()

@@ -283,6 +283,7 @@ impl Order {
             Order::Upgrade { .. } => 75,
             Order::Cast { .. } => 80,
             Order::EnterTransport { .. } => 90,
+            Order::PickupTransport { .. } => 94,
             Order::Unload => 110,
             Order::MoveUnload { .. } => 111,
             Order::Burrow => 115,
@@ -501,6 +502,11 @@ pub enum Order {
     },
     EnterTransport {
         transport: u32,
+    },
+    /// A transport flying over to pick up a unit that asked to board
+    /// (orders.dat row 94, OpenBW `order_PickupTransport`).
+    PickupTransport {
+        unit: u32,
     },
     Unload,
     /// Fly to a point and unload there (orders.dat row 111, OpenBW
@@ -5541,6 +5547,7 @@ impl World {
                 }
             }
             Order::EnterTransport { transport } => self.order_enter_transport(i, transport),
+            Order::PickupTransport { unit } => self.order_pickup_transport(i, unit),
             Order::Unload => self.order_unload(i),
             // OpenBW `order_MoveUnload`: within 16 px of the point the
             // transport starts unloading.
@@ -8789,6 +8796,32 @@ impl World {
         dx.max(dy)
     }
 
+    /// OpenBW `order_PickupTransport`: fly to a unit that wants to board
+    /// until the boxes touch; done when it is aboard or gave up.
+    fn order_pickup_transport(&mut self, i: usize, unit: u32) {
+        let waiting = self.index_of(unit).filter(|&p| {
+            self.units[p].alive
+                && self.units[p].in_transport.is_none()
+                && self.units[p].order
+                    == Order::EnterTransport {
+                        transport: self.units[i].id,
+                    }
+        });
+        let Some(p) = waiting else {
+            self.units[i].path.clear();
+            self.units[i].path_goal = None;
+            self.order_done(i);
+            return;
+        };
+        if self.box_gap_px(i, p) > 1 {
+            let (px, py) = (self.units[p].x / fp(1), self.units[p].y / fp(1));
+            self.move_towards(i, (px, py), fp(1));
+        } else {
+            self.units[i].path.clear();
+            self.units[i].path_goal = None;
+        }
+    }
+
     fn order_enter_transport(&mut self, i: usize, transport: u32) {
         let Some(tidx) = self.index_of(transport) else {
             self.order_done(i);
@@ -8803,12 +8836,24 @@ impl World {
             self.order_done(i);
             return;
         }
-        // Close enough when the two units.dat boxes are within 8 px of each
-        // other (a centre distance of 48 px left a Marine stuck on the
-        // corner of a Bunker it approached diagonally).
-        if self.box_gap_px(i, tidx) > 8 {
+        // A transport that can move comes to fetch its passenger (OpenBW
+        // `order_EnterTransport` queues `PickupTransport` on it) and the
+        // two board when their boxes touch (1 px).  A Bunker stays put and
+        // takes units within 8 px of its box (a centre distance of 48 px
+        // left a Marine stuck on the corner of a Bunker it approached
+        // diagonally).
+        let mobile = !self.data.unit(self.units[tidx].type_id).is_building();
+        if mobile && matches!(self.units[tidx].order, Order::Idle) {
+            self.units[tidx].order = Order::PickupTransport {
+                unit: self.units[i].id,
+            };
+            self.units[tidx].order_row = 94;
+        }
+        let reach = if mobile { 1 } else { 8 };
+        if self.box_gap_px(i, tidx) > reach {
             let (tx, ty) = (self.units[tidx].x, self.units[tidx].y);
-            self.move_towards(i, (tx / fp(1), ty / fp(1)), fp(24));
+            let stop = if mobile { fp(1) } else { fp(24) };
+            self.move_towards(i, (tx / fp(1), ty / fp(1)), stop);
             return;
         }
         let target_type = self.units[tidx].type_id;

@@ -302,3 +302,59 @@ fn matrix_and_irradiate_show_their_overlays_on_the_target() {
     assert!(seen.contains(&MATRIX_FRONT_IMAGE), "{seen:?}");
     assert!(seen.contains(&(IRRADIATE_IMAGE + 2)), "{seen:?}");
 }
+
+#[test]
+fn an_idle_dropship_flies_over_to_pick_up_a_unit_that_asks_to_board() {
+    let mut w = world();
+    let ship = w.spawn_px(0, uid::DROPSHIP, 400, 400).unwrap();
+    // Far apart: the Marine walks, the Dropship comes to meet it (OpenBW
+    // `order_PickupTransport`), and it boards when their boxes touch.
+    let marine = w.spawn_px(0, uid::MARINE, 900, 400).unwrap();
+    let (sid, mid) = (w.units[ship].id, w.units[marine].id);
+    let ship_x = w.units[ship].x;
+    w.issue(mid, Order::EnterTransport { transport: sid })
+        .unwrap();
+    let mut aboard_at = None;
+    for t in 0..300 {
+        w.step();
+        if w.units[marine].in_transport.is_some() {
+            aboard_at = Some(t);
+            break;
+        }
+    }
+    assert!(aboard_at.is_some(), "boarded");
+    assert!(
+        w.units[ship].x > ship_x + 256 * 60,
+        "the Dropship came to meet it"
+    );
+    assert_eq!(w.units[ship].cargo.len(), 1);
+    // Its pickup is over: it goes back to idle.
+    for _ in 0..3 {
+        w.step();
+    }
+    assert_eq!(w.units[ship].order, Order::Idle);
+}
+
+#[test]
+fn boarding_a_transport_does_not_play_a_death_animation() {
+    use galaxycraft::unit_anim::Animator;
+    let mut w = world();
+    let ship = w.spawn_px(0, uid::DROPSHIP, 400, 400).unwrap();
+    let marine = w.spawn_px(0, uid::MARINE, 420, 430).unwrap();
+    let (sid, mid) = (w.units[ship].id, w.units[marine].id);
+    let marine_image = galaxycraft::unit_anim::unit_image(&w.data, uid::MARINE).unwrap();
+    let mut anim = Animator::default();
+    w.step();
+    anim.advance(&w);
+    w.issue(mid, Order::EnterTransport { transport: sid })
+        .unwrap();
+    for _ in 0..60 {
+        w.step();
+        anim.advance(&w);
+        assert!(
+            !anim.effects().any(|e| e.image == marine_image),
+            "no Marine death on boarding"
+        );
+    }
+    assert!(w.units[marine].in_transport.is_some());
+}

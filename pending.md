@@ -47,18 +47,18 @@ on screen.
 
 - **Turrets are folded into the base unit.**  The base fires the turret's
   weapon; there is no separate turret unit, so the turret has no turn rate
-  of its own (it is drawn pointing at the target at once), its attack
-  animation and muzzle overlays (iscript 93 and friends) are not played,
-  and the hull is not held still while it fires.
+  of its own (it is drawn pointing at the target at once) and the hull is
+  not held still while it fires.  The turret's attack animation, sound and
+  muzzle overlays do play.
 - **Siege Mode.**  The tank does not turn to its default direction before
   deploying, is not destroyed when a building occupies its spot, and the
   sieged turret's unfolding frames are not drawn (only the base's).
 - **Spider Mine.**  The hover list is a hardcoded type list rather than the
   `units.dat` movement flags; the burrow / unburrow frames and sounds are
   not drawn; a mine is nudged by collision while it waits.
-- **Dropship.**  Units board from 8 px instead of 1 and the transport does
-  not come to fetch them, and unloaded units all appear at the exit
-  position (collision spreads them).
+- **Dropship.**  Unloaded units all appear at the exit position (collision
+  spreads them) instead of `find_unit_placement`'s spot.  Boarding a Bunker
+  still uses 8 px (1 px for transports, which now fly over to fetch).
 - **Valkyrie.**  The near-target offset index is global, not per Valkyrie,
   and the 80-bullet cap on Halo Rockets is not enforced.
 - **Yamato Gun.**  Energy is spent when the blast leaves, not when the
