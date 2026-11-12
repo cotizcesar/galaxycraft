@@ -429,11 +429,21 @@ impl World {
         if target.status.revealed_ticks > 0 {
             return true;
         }
-        // Acid Spores reveal a cloaked unit while the stacks last; fog still
-        // hides it from players with no vision of the location.
-        if target.status.cloaked
-            && target.status.acid_spores > 0
-            && !target.status.burrowed
+        // OpenBW `unit_calculate_detected_flags`: a unit under Defensive
+        // Matrix, Lockdown, Maelstrom, Irradiate, Ensnare, Stasis, Plague
+        // or Acid Spores is detected by everyone (the effect gives it
+        // away); fog still hides it from players with no vision there.
+        let s = &target.status;
+        let afflicted = s.matrix_ticks > 0
+            || s.lockdown_ticks > 0
+            || s.maelstrom_ticks > 0
+            || s.irradiate_ticks > 0
+            || s.ensnare_ticks > 0
+            || s.stasis_ticks > 0
+            || s.plague_ticks > 0
+            || s.acid_spores > 0;
+        if (target.status.cloaked || target.status.burrowed)
+            && afflicted
             && (!self.fog_of_war
                 || self.is_visible_to(observer_owner, target.x / 256, target.y / 256))
         {
@@ -446,7 +456,7 @@ impl World {
         // A detector sees cloaked and burrowed units inside its detection
         // radius.  Buildings use the hardened 7-tile radius recovered from
         // the retail detector path; mobile detectors use their sight range.
-        for detector in &self.units {
+        for (didx, detector) in self.units.iter().enumerate() {
             if !detector.alive
                 || !self.shares_vision(observer_owner, detector.owner)
                 || detector.in_transport.is_some()
@@ -454,23 +464,27 @@ impl World {
                 continue;
             }
             let dty = self.data.unit(detector.type_id);
-            // A blinded unit (Optical Flare) no longer detects.
+            // OpenBW `unit_can_detect`: a detector must be complete, not
+            // disabled (Lockdown, Stasis, Maelstrom) and not blinded.
             if !dty.is_detector()
+                || !detector.completed
                 || detector.status.hallucination
                 || detector.status.optical_flare_ticks > 0
+                || detector.status.lockdown_ticks > 0
+                || detector.status.stasis_ticks > 0
+                || detector.status.maelstrom_ticks > 0
             {
                 continue;
             }
-            // `detector.x`/`target.x` are 1/256-pixel values, so scale the
-            // pixel radius into the same fixed-point space before squaring.
+            // Buildings detect 7 tiles away, mobile detectors as far as
+            // they see; measured between the two units' boxes
+            // (`unit_target_in_range`).
             let range = if dty.is_building() {
-                7 * 32 * 256
+                7 * 32
             } else {
-                self.sight_range(detector.owner, detector.type_id) * 32 * 256
+                self.sight_range(detector.owner, detector.type_id) * 32
             };
-            let dx = (detector.x - target.x) as i64;
-            let dy = (detector.y - target.y) as i64;
-            if dx * dx + dy * dy <= (range as i64) * (range as i64)
+            if self.units_distance_px(didx, target_idx) <= range
                 && (!self.fog_of_war
                     || self.is_visible_to(observer_owner, target.x / 256, target.y / 256))
             {

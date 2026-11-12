@@ -955,6 +955,12 @@ pub struct SimUnit {
     pub expires_at: i64,
     /// Tick at which a Spider Mine finishes arming.
     pub mine_armed_at: i64,
+    /// Air-unit repulse state (OpenBW `repulse_direction` / `repulse_flags`):
+    /// the direction a flyer drifts when it shares a 48 px cell with other
+    /// flyers, a 3-bit countdown before it picks a new one (low bits) and
+    /// its row of the adjust table (high nibble, 0 = not initialised).
+    pub repulse_dir: u8,
+    pub repulse_flags: u8,
     /// Fractional mineral debt for SCV repair, in 1/256 minerals.
     pub repair_debt: i32,
     /// Interceptors (Carrier) or scarabs (Reaver) currently in the hangar.
@@ -2872,6 +2878,8 @@ impl World {
             nydus_exit: None,
             expires_at: 0,
             mine_armed_at: 0,
+            repulse_dir: 0,
+            repulse_flags: 0,
             repair_debt: 0,
             hangar: default_hangar(type_id),
             hangar_capacity: default_hangar_capacity(type_id),
@@ -3001,6 +3009,8 @@ impl World {
             nydus_exit: None,
             expires_at: 0,
             mine_armed_at: 0,
+            repulse_dir: 0,
+            repulse_flags: 0,
             repair_debt: 0,
             hangar: default_hangar(type_id),
             hangar_capacity: default_hangar_capacity(type_id),
@@ -4941,6 +4951,7 @@ impl World {
             }
         }
         self.resolve_collisions();
+        self.apply_air_repulse();
         if self.tick.is_multiple_of(CREEP_GROW_INTERVAL as u64) {
             self.grow_creep();
         }
@@ -7471,6 +7482,118 @@ impl World {
         let hw = ty.dimensions.right.max(ty.dimensions.left.max(0)) as i32;
         let hh = ty.dimensions.bottom.max(ty.dimensions.top.max(0)) as i32;
         Some(((hw.max(5)) * fp(1), (hh.max(5)) * fp(1)))
+    }
+
+    /// Air units do not collide, but they do not stack either (OpenBW
+    /// `apply_repulse_field`).  The map is cut into 48 px cells; a flyer
+    /// that shares its cell with another drifts half a pixel per frame
+    /// along its repulse direction, faster the more crowded the cell when
+    /// it is standing still, with a small per-unit bias (the adjust table)
+    /// so a stack fans out instead of sliding as one.  Buildings,
+    /// Interceptors and units that cannot be interrupted are left alone.
+    fn apply_air_repulse(&mut self) {
+        const ADJUST: [i32; 32] = [
+            -5, -5, -5, 5, 5, -5, 5, 5, 5, -5, 5, 5, -5, -5, -5, 5, -5, 5, 5, -5, -5, -5, 5, 5, -5,
+            5, 5, -5, 5, 5, -5, -5,
+        ];
+        let movers: Vec<usize> = (0..self.units.len())
+            .filter(|&i| {
+                let u = &self.units[i];
+                u.alive
+                    && u.in_transport.is_none()
+                    && u.type_id != uid::INTERCEPTOR
+                    && u.type_id != uid::NUCLEAR_MISSILE
+                    && !self.data.unit(u.type_id).is_building()
+                    && self.is_air_unit(i)
+            })
+            .collect();
+        if movers.len() < 2 {
+            return;
+        }
+        let cell = |u: &SimUnit| (u.x / fp(48), u.y / fp(48));
+        let mut field: HashMap<(i32, i32), i32> = HashMap::new();
+        for &i in &movers {
+            *field.entry(cell(&self.units[i])).or_default() += 1;
+        }
+        let (map_w, map_h) = (
+            self.terrain.width as i32 * 32,
+            self.terrain.height as i32 * 32,
+        );
+        for i in movers {
+            let strength = field[&cell(&self.units[i])].min(255);
+            if self.units[i].repulse_flags & 0xf0 == 0 {
+                let v = self.world_rand();
+                self.units[i].repulse_dir = (v & 0xff) as u8;
+                let row = ((v >> 8) & 0xf0) as u8;
+                self.units[i].repulse_flags = if row == 0 { 0xf0 } else { row };
+            }
+            if strength <= 1 {
+                self.units[i].repulse_flags &= !7;
+                continue;
+            }
+            if self.is_transforming(i)
+                || self.units[i].status.lockdown_ticks > 0
+                || self.units[i].status.stasis_ticks > 0
+                || self.units[i].status.maelstrom_ticks > 0
+            {
+                continue;
+            }
+            let still = self.units[i].path.is_empty();
+            if self.units[i].repulse_flags & 7 != 0 {
+                self.units[i].repulse_flags -= 1;
+            } else {
+                self.units[i].repulse_flags |= 7;
+                // `update_repulse_direction`: while moving, keep the drift
+                // to the side of the travel direction; near a map edge,
+                // turn it back inwards.
+                let mut dir = self.units[i].repulse_dir;
+                if let Some(&(wx, wy)) = self.units[i].path.front() {
+                    let target = direction_byte(wx - self.units[i].x, wy - self.units[i].y) as i32;
+                    let index = (dir as i32 - target).rem_euclid(256);
+                    let side = index % 32 + if index < 128 { 32 } else { -64 };
+                    dir = (target + side).rem_euclid(256) as u8;
+                }
+                let (x, y) = (self.units[i].x / fp(1), self.units[i].y / fp(1));
+                // Directions 1..=127 point east, 129..=255 west; 65..=191
+                // south, the rest north.
+                let east = (1..128).contains(&dir);
+                let south = (65..192).contains(&dir);
+                if (x < 48 && !east && dir != 0 && dir != 128) || (x > map_w - 48 && east) {
+                    dir = 0u8.wrapping_sub(dir);
+                }
+                if (y < 48 && !south) || (y > map_h - 48 && south) {
+                    dir = 128u8.wrapping_sub(dir);
+                }
+                self.units[i].repulse_dir = dir;
+            }
+            let (vx, vy) = direction_vector(self.units[i].repulse_dir as i32);
+            let (mut rx, mut ry) = (vx / 2, vy / 2);
+            if still {
+                rx = rx * (strength / 4 + 1) / 2;
+                ry = ry * (strength / 4 + 1) / 2;
+            }
+            let row = (self.units[i].repulse_flags >> 4) as usize;
+            let (ax, ay) = (ADJUST[row * 2], ADJUST[row * 2 + 1]);
+            let bias = |v: i32, a: i32| {
+                if v > a * 4 {
+                    v - a
+                } else if v > 0 {
+                    v + a
+                } else if v < -a * 4 {
+                    v + a
+                } else if v < 0 {
+                    v - a
+                } else {
+                    v
+                }
+            };
+            rx = bias(rx, ax);
+            ry = bias(ry, ay);
+            let nx = (self.units[i].x + rx).clamp(fp(8), fp(map_w - 8));
+            let ny = (self.units[i].y + ry).clamp(fp(8), fp(map_h - 8));
+            self.units[i].x = nx;
+            self.units[i].y = ny;
+        }
     }
 
     fn try_shift(&mut self, i: usize, dx: i32, dy: i32) -> bool {
@@ -11380,7 +11503,6 @@ fn spell_range(spell: Spell) -> i32 {
         Spell::PsionicStorm
         | Spell::EmpShockwave
         | Spell::Irradiate
-        | Spell::DefensiveMatrix
         | Spell::StasisField
         | Spell::Maelstrom
         | Spell::Plague
@@ -11398,6 +11520,9 @@ fn spell_range(spell: Spell) -> i32 {
         | Spell::YamatoGun
         | Spell::Lockdown
         | Spell::Hallucination => 9,
+        // OpenBW `order_CastDefensiveMatrix`: the Science Vessel casts it
+        // from its sight range (10 tiles).
+        Spell::DefensiveMatrix => 10,
         Spell::ScannerSweep | Spell::DarkSwarm => 12,
         _ => 1,
     };

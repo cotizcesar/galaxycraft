@@ -213,3 +213,32 @@ fn hero_cloaks_drain_energy_like_their_units() {
         );
     }
 }
+
+#[test]
+fn stacked_air_units_drift_apart_and_a_lone_one_stays_put() {
+    let mut w = world();
+    let lone = w.spawn_px(0, uid::WRAITH, 1500, 1500).unwrap();
+    let at = (w.units[lone].x, w.units[lone].y);
+    // Four Wraiths on the same spot (the same 48 px repulse cell).
+    let stack: Vec<usize> = (0..4)
+        .map(|_| w.spawn_px(0, uid::WRAITH, 600, 600).unwrap())
+        .collect();
+    for _ in 0..200 {
+        w.step();
+    }
+    assert_eq!((w.units[lone].x, w.units[lone].y), at, "alone: no drift");
+    let mut cells = std::collections::HashSet::new();
+    for &u in &stack {
+        cells.insert((w.units[u].x / 256 / 48, w.units[u].y / 256 / 48));
+    }
+    assert!(cells.len() >= 3, "the stack spread over cells: {cells:?}");
+    // Ground units are not part of it.
+    let a = w.spawn_px(0, uid::DROPSHIP, 1000, 1000).unwrap();
+    let marine = w.spawn_px(0, uid::MARINE, 1000, 1000).unwrap();
+    let _ = marine;
+    let at = (w.units[a].x, w.units[a].y);
+    for _ in 0..50 {
+        w.step();
+    }
+    assert_eq!((w.units[a].x, w.units[a].y), at);
+}
