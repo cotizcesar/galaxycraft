@@ -203,7 +203,7 @@ python3 scripts/merge_wave.py --wave 33 --map auto
 | `engine-rust/tools/` | Fixture, oracle and table-inspection helpers |
 | `engine-rust/docs/decomp-ledger.tsv`, `triage.tsv` | Per-function translation status and priority queue (addresses only) |
 | `scripts/` | Decompilation/wave pipeline, packaging, two-machine LAN and retail-recording timeline tools |
-| `AGENTS.md`, `.opencode/` | Instructions, subagent and `/wave` command for coding agents |
+| `AGENTS.md` | Instructions for coding agents |
 
 ## Data and copyright
 

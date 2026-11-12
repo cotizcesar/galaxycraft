@@ -66,7 +66,7 @@ Follow [AGENTS.md](AGENTS.md) and
 ```bash
 python3 scripts/triage_corpus.py
 python3 scripts/prepare_wave.py --wave 33 --queue engine-rust/docs/triage.tsv
-# launch translators (opencode: /wave 33)
+# launch translators (Agent batches or Workflow shards)
 python3 scripts/validate_wave.py --wave 33
 python3 scripts/merge_wave.py --wave 33 --map auto
 cd engine-rust && cargo fmt && cargo test --lib && cargo clippy --all-targets -- -D warnings

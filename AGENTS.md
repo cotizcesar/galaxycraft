@@ -87,8 +87,8 @@ python3 scripts/query_decomp.py --pattern REGEX --limit 10
 rg -n 'w14a03_' engine-rust/src                        # find a merged helper
 ```
 
-In opencode: `/wave W` runs the whole cycle with the `translator` subagent
-(`.opencode/commands/wave.md`, `.opencode/agents/translator.md`).
+Waves are driven by hand: prepare, launch one agent per assignment (Agent
+batches of 20 or Workflow shards of 30), reconcile, merge (see the guide).
 
 Yield note: wave 32 +228 (150 agents, 5 Workflow shards of 30, tier 3), wave 31 +596 (148 agents, 5 workflows; tier 2 emptied), wave 15 gave +72 (36%), wave 16 +84 (42%), wave 17 +93 (47%), wave 18 +80 (40%), wave 19 +86 (43%), wave 20 +92 (46%), wave 21 +124 (31%, 20 agents), wave 30 +51 (20 agents; the queue had reached the TACT/CDN downloader, so triage now propagates `bnet` through the call graph), wave 29 +81 (20 agents; D3D/TACT/CDN code is mostly bnet or glue), wave 28 +159 (20 agents; libvpx SAD/variance/loop-filter/intra-predictor kernels), wave 27 +115 (20 agents; rapidjson, FMOD DSP, vector-growth helpers), wave 26 +95 (20 agents; ~5 each; MD5/SHA-1/RC4/bignum with test vectors), wave 25 +223 (59 agents launched of 100 prepared; ~4 per agent, 19% yield), wave 24 +251 (25%, 50 agents; ~5 per agent), wave 23 +141 (35%, 20 agents), wave 22 +140 (23%, 30 agents; the harness caps concurrent subagents at 20). Yield is falling as tier 1 empties: most remaining rows are STL/SEH glue ending in non-returning calls, so more waves buy little engine value per token.  Most
 skips end in non-returning calls or depend on unmodelled callees; that is
