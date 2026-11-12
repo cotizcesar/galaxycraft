@@ -1896,10 +1896,12 @@ fn sprite_path(type_id: u16) -> Option<&'static str> {
         uid::BUNKER => "terran/pillbox.grp",
         uid::COMSAT_STATION => "terran/comsat.grp",
         uid::NUCLEAR_SILO => "terran/nukesilo.grp",
-        uid::CONTROL_TOWER => "terran/control.grp",
+        // images.tbl: the Control Tower is `DryDocks.grp`, `control.grp`
+        // is the Command Center.
+        uid::CONTROL_TOWER => "terran/drydocks.grp",
         uid::PHYSICS_LAB => "terran/physics.grp",
         uid::MACHINE_SHOP => "terran/machines.grp",
-        uid::COMMAND_CENTER => "neutral/starbase.grp",
+        uid::COMMAND_CENTER => "terran/control.grp",
         uid::NEXUS => "protoss/nexus.grp",
         uid::GATEWAY => "protoss/gateway.grp",
         uid::ROBOTICS_FACILITY => "protoss/robotic.grp",

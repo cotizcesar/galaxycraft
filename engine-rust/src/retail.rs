@@ -1308,6 +1308,7 @@ pub const SPRITE_PATHS: &[&str] = &[
     "terran/comsat.grp",
     "terran/nukesilo.grp",
     "terran/control.grp",
+    "terran/drydocks.grp",
     "terran/physics.grp",
     "terran/machines.grp",
     "neutral/starbase.grp",
