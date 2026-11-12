@@ -51,9 +51,9 @@ on screen.
 
 ## Terran buildings and client, 2026-11-12
 
-- **Lift-off / landing dust** (OpenBW `create_dust_sprite`, sprites from
-  the image's LO offsets) is not drawn, and the lift / land sounds (471 /
-  472) are not played.
+- **Lift-off / landing dust** is drawn at the LO offsets with the nine
+  dust images, but the second set (offsets 16-24) is not mirrored as
+  OpenBW does.
 - **Abandoned add-ons** keep their owner in the engine (no neutral player
   slot); they are treated as neutral (no buttons, no research, yellow
   circle and cursor) and change owner when a building takes them.  Score

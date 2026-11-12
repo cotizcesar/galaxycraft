@@ -234,3 +234,107 @@ fn tanks_and_starport_ships_need_the_addon_on_their_own_producer() {
     w.build_addon(f3, uid::MACHINE_SHOP).unwrap();
     assert!(w.train(f3, uid::VULTURE).is_err());
 }
+
+#[test]
+fn every_terran_building_with_is_working_animates_while_it_works() {
+    // iscript IsWorking: frames for the Barracks (7 / 8), Physics Lab
+    // (1-4) and Machine Shop (0-3); an overlay (imgol) for the others.
+    // WorkingToIdle ends both.
+    let frames = [uid::BARRACKS, uid::PHYSICS_LAB, uid::MACHINE_SHOP];
+    let overlays = [
+        uid::COMMAND_CENTER,
+        uid::NUCLEAR_SILO,
+        uid::ACADEMY,
+        uid::FACTORY,
+        uid::STARPORT,
+        uid::CONTROL_TOWER,
+        uid::SCIENCE_FACILITY,
+        uid::COVERT_OPS,
+        uid::ARMORY,
+    ];
+    for ty in frames.iter().chain(overlays.iter()).copied() {
+        let mut w = world();
+        let i = w.spawn_px(0, ty, 576, 560).unwrap();
+        let id = w.units[i].id;
+        // Researching (the simplest kind of work for every producer).
+        w.units[i].order = Order::Research { tech_id: 0 };
+        w.units[i].build_remaining = 10_000;
+        w.units[i].build_total = 10_000;
+        let mut anim = galaxycraft::unit_anim::Animator::default();
+        let (mut frame_seen, mut overlay_seen) = (false, false);
+        for _ in 0..30 {
+            w.step();
+            w.units[i].order = Order::Research { tech_id: 0 };
+            anim.advance(&w);
+            frame_seen |= anim.work_frame(id).is_some();
+            overlay_seen |= !anim.work_overlays(&w).is_empty();
+        }
+        if frames.contains(&ty) {
+            assert!(frame_seen, "{ty}: IsWorking frames");
+        } else {
+            assert!(overlay_seen, "{ty}: IsWorking overlay");
+        }
+        // Done: back to idle, overlays gone.
+        w.units[i].order = Order::Idle;
+        w.step();
+        anim.advance(&w);
+        assert_eq!(anim.work_frame(id), None, "{ty}");
+        assert!(anim.work_overlays(&w).is_empty(), "{ty}");
+    }
+}
+
+#[test]
+fn lift_off_and_landing_play_their_iscript_sounds() {
+    // Barracks LiftOff `playsnd 471`, Landing `playsnd 472`.
+    let mut w = world();
+    let rax = building(&mut w, uid::BARRACKS, (576, 560));
+    let mut anim = galaxycraft::unit_anim::Animator::default();
+    let mut sounds = Vec::new();
+    w.issue(rax, Order::Lift).unwrap();
+    for _ in 0..60 {
+        w.step();
+        anim.advance(&w);
+        sounds.extend(anim.take_sounds().into_iter().map(|s| s.0));
+    }
+    assert_eq!(
+        sounds.iter().filter(|&&s| s == 471).count(),
+        1,
+        "{sounds:?}"
+    );
+    w.issue(rax, Order::Land { pos: (576, 560) }).unwrap();
+    for _ in 0..120 {
+        w.step();
+        anim.advance(&w);
+        sounds.extend(anim.take_sounds().into_iter().map(|s| s.0));
+    }
+    assert!(!unit(&w, rax).lifted);
+    assert_eq!(
+        sounds.iter().filter(|&&s| s == 472).count(),
+        1,
+        "{sounds:?}"
+    );
+}
+
+#[test]
+fn lift_off_raises_dust_at_the_lo_offsets() {
+    let mut w = world();
+    let f = building(&mut w, uid::FACTORY, (576, 560));
+    let mut anim = galaxycraft::unit_anim::Animator::default();
+    let img = galaxycraft::unit_anim::unit_image(&w.data, uid::FACTORY).unwrap();
+    anim.set_dust_offsets(img, vec![(1, 2, 46)], vec![(5, -22, 37), (22, -43, 26)]);
+    w.issue(f, Order::Lift).unwrap();
+    let mut seen = Vec::new();
+    for _ in 0..6 {
+        w.step();
+        anim.advance(&w);
+        seen.extend(anim.effects().map(|e| e.image));
+    }
+    assert!(
+        seen.contains(&(galaxycraft::unit_anim::DUST_IMAGE + 5)),
+        "{seen:?}"
+    );
+    assert!(
+        seen.contains(&(galaxycraft::unit_anim::DUST_IMAGE + 6)),
+        "{seen:?}"
+    );
+}

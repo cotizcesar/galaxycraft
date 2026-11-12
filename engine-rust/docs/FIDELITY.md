@@ -219,3 +219,7 @@ working animations, cursors, cloak, fog memory.
 | bullets | caps | 100 bullets; no Halo Rockets once 80 are active | **fixed** (80 for everything) |
 | Irradiate | burrowed / loaded | burrowed: only itself; loaded: only its transport | **fixed** |
 | SD | team colour | `tunit.pcx` shades per slot colour | **fixed** for slot colours |
+| lifting buildings | sounds and dust | iscript `playsnd` 471 / 472; dust at the lift-off / landing LO offsets (`create_dust_sprite`) | **fixed** (none); the mirrored half is not flipped |
+| all Terran buildings | construction | scaffold stages 1-3, AlmostBuilt, finished | checked on screen for all 18 in HD and SD (`site:` script step) |
+| all Terran buildings | IsWorking | frames (Barracks, Physics Lab, Machine Shop) or overlays (the other nine with one) while working, cleared by WorkingToIdle | tested for all 12 (`every_terran_building_with_is_working_animates_while_it_works`) |
+| modularization | equivalence | same state logs; screenshots identical outside the wall-clock portrait (0 differing pixels) | checked across the file-move commits |

@@ -2,7 +2,7 @@
 # Only shrink this list (scripts/check_file_sizes.py --update).
 engine-rust/src/aiscript.rs 2877
 engine-rust/src/audio.rs 3042
-engine-rust/src/bin/sc_view.rs 10723
+engine-rust/src/bin/sc_view.rs 10677
 engine-rust/src/bin/sc_view/draw_world.rs 1762
 engine-rust/src/bin/sc_view/hud.rs 1814
 engine-rust/src/bin/sc_view/menu_draw.rs 2129
