@@ -165,10 +165,10 @@ results are wired into the engine.
 | | |
 |---|---|
 | functions in the retail image | 56,128 |
-| translated and cited (waves 1–32) | 5,512 (9.8%) |
-| worth translating next (clean tier 3) | 217 |
-| clean tier 4 (engine/library glue, only on demand) | 13,019 |
-| assigned to a wave and skipped (non-returning calls, unmodelled callees) | 7,022 |
+| translated and cited (waves 1–33) | 5,631 (10.0%) |
+| worth translating next (clean tier 3) | 80 |
+| clean tier 4 (engine/library glue, only on demand) | 12,939 |
+| assigned to a wave and skipped (non-returning calls, unmodelled callees) | 7,120 |
 | not worth translating (unwind funclets, fragments, libraries, anti-tamper, thunks, hubs) | ~28,800 |
 | Battle.net / online services (marked, deliberately not implemented) | 704 |
 | not decompilable with the current toolchain | 622 |
@@ -184,10 +184,10 @@ queue (`scripts/triage_corpus.py`).  Start with [AGENTS.md](AGENTS.md), then
 
 ```bash
 python3 scripts/triage_corpus.py
-python3 scripts/prepare_wave.py --wave 33 --queue engine-rust/docs/triage.tsv
+python3 scripts/prepare_wave.py --wave 34 --queue engine-rust/docs/triage.tsv
 # translators (Agent batches or Workflow shards), then:
-python3 scripts/validate_wave.py --wave 33
-python3 scripts/merge_wave.py --wave 33 --map auto
+python3 scripts/validate_wave.py --wave 34
+python3 scripts/merge_wave.py --wave 34 --map auto
 ```
 
 ## Repository layout

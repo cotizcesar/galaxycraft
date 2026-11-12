@@ -73701,3 +73701,926 @@ mod tests_wave32_agent36 {
         assert_eq!(m, [0, 0]);
     }
 }
+
+// ===========================================================================
+// Merged from src/wave33/agent01.rs
+// ===========================================================================
+// Wave 33 translation batch 01.
+
+/// `0x007a5320`: decodes one code point from `buf[*pos..*pos + *remaining]`
+/// using the step callback `step(byte, &mut out, &mut state)` (the routine at
+/// FUN_00c67c80).  Step result 0 consumes one byte and returns `out`; 1
+/// consumes one byte and marks the sequence as extended; 3 ends the
+/// sequence, rewinding to the start byte if it was extended; any other
+/// value retries the same byte.  Running out of input or result 3 yields
+/// `0xfffd`.  `pos` and `remaining` are updated.
+pub fn w33a01_decode_step(
+    buf: &[u8],
+    pos: &mut usize,
+    remaining: &mut usize,
+    step: &mut dyn FnMut(u8, &mut u32, &mut u32) -> i32,
+) -> u32 {
+    let start = *pos;
+    let end = start + *remaining;
+    let mut p = start;
+    let mut simple = true;
+    let mut out: u32 = 0;
+    let mut state: u32 = 0;
+    let mut cur;
+    loop {
+        if p == end {
+            out = 0xfffd;
+            break;
+        }
+        cur = p;
+        let b = buf.get(p).copied().unwrap_or(0);
+        match step(b, &mut out, &mut state) {
+            0 => {
+                p += 1;
+                *remaining = (*remaining as isize + (start as isize - p as isize)) as usize;
+                *pos = p;
+                return out;
+            }
+            1 => {
+                p += 1;
+                simple = false;
+            }
+            3 => {
+                p += 1;
+                if !simple {
+                    p = cur;
+                }
+                out = 0xfffd;
+                break;
+            }
+            _ => {}
+        }
+    }
+    *remaining = (*remaining as isize + (start as isize - p as isize)) as usize;
+    *pos = p;
+    out
+}
+
+/// `0x007a72a0`: validates a NUL-terminated byte string; returns 1 when the
+/// count of counted bytes differs from the count of 0x92 markers or the
+/// markers differ from those followed by an ASCII-positive byte, 0 otherwise
+/// or on an invalid double-byte pair.  `marker_ok(rest)` models FUN_007a76b0
+/// and `pair_ok(code)` models FUN_00937520 (must return 1).
+pub fn w33a01_validate_text(
+    s: &[u8],
+    marker_ok: &dyn Fn(&[u8]) -> bool,
+    pair_ok: &dyn Fn(u16) -> i32,
+) -> u32 {
+    let at = |i: usize| s.get(i).copied().unwrap_or(0);
+    let mut p = 0usize;
+    let (mut markers, mut positive, mut counted) = (0i32, 0i32, 0i32);
+    let mut c = at(0);
+    if c == 0 {
+        return 0;
+    }
+    loop {
+        let skip = matches!(c, 1..=8 | 0x0e..=0x11 | 0x15..=0x19 | 0x1b..=0x1f)
+            || matches!(c, 0 | 9 | 10 | 12 | 13 | 0x12 | 0x13);
+        if !skip {
+            counted += 1;
+            if c == 0x92 {
+                markers += 1;
+                let rest = s.get(p + 1..).unwrap_or(&[]);
+                if marker_ok(rest) && (at(p + 1) as i8) >= 0 {
+                    positive += 1;
+                }
+            } else if (0x81..=0xfe).contains(&c) {
+                p += 1;
+                let t = at(p);
+                if !(0x41..=0xfe).contains(&t) {
+                    return 0;
+                }
+                if pair_ok(((c as u16) << 8) | t as u16) != 1 {
+                    return 0;
+                }
+            }
+        }
+        c = at(p + 1);
+        p += 1;
+        if c == 0 {
+            break;
+        }
+    }
+    u32::from(counted != markers || markers != positive)
+}
+
+#[cfg(test)]
+mod tests_wave33_agent01 {
+    use super::*;
+
+    #[test]
+    fn decode_single() {
+        let buf = [0x41u8, 0x42];
+        let (mut p, mut r) = (0, 2);
+        let v = w33a01_decode_step(&buf, &mut p, &mut r, &mut |b, o, _| {
+            *o = b as u32;
+            0
+        });
+        assert_eq!((v, p, r), (0x41, 1, 1));
+    }
+
+    #[test]
+    fn decode_empty_and_reject() {
+        let buf = [1u8];
+        let (mut p, mut r) = (0, 0);
+        assert_eq!(
+            w33a01_decode_step(&buf, &mut p, &mut r, &mut |_, _, _| 0),
+            0xfffd
+        );
+        let (mut p, mut r) = (0, 1);
+        assert_eq!(
+            w33a01_decode_step(&buf, &mut p, &mut r, &mut |_, _, _| 3),
+            0xfffd
+        );
+        assert_eq!((p, r), (1, 0));
+    }
+
+    #[test]
+    fn validate_ascii() {
+        let ok = |_: &[u8]| true;
+        let pair = |_: u16| 1;
+        assert_eq!(w33a01_validate_text(b"\0", &ok, &pair), 0);
+        assert_eq!(w33a01_validate_text(b"abc\0", &ok, &pair), 1);
+        assert_eq!(w33a01_validate_text(b"\x01\x02\0", &ok, &pair), 0);
+        assert_eq!(w33a01_validate_text(b"\x81\x20\0", &ok, &pair), 0);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave33/agent02.rs
+// ===========================================================================
+// Wave 33 translation batch 02.
+
+/// `0x00805e30`: copies the 8-byte pair `src` into the object's fields at
+/// offsets `0x98` and `0x9c` and returns `true`.
+pub fn w33a02_store_pair(obj: &mut [u8], src: [u32; 2]) -> bool {
+    if obj.len() < 0xa0 {
+        return false;
+    }
+    obj[0x98..0x9c].copy_from_slice(&src[0].to_le_bytes());
+    obj[0x9c..0xa0].copy_from_slice(&src[1].to_le_bytes());
+    true
+}
+
+/// `0x0087b3f0`: when the record's field `0x48` is nonzero, fetches a point
+/// from `get_point` (callee FUN_0087bc70) and calls `apply` (callee
+/// FUN_0087c580) with that point offset by the record's `(0x40, 0x44)`.
+pub fn w33a02_apply_offset_point(
+    rec: &[u8],
+    get_point: impl FnOnce() -> (i32, i32),
+    mut apply: impl FnMut(i32, i32),
+) -> bool {
+    let rd = |o: usize| i32::from_le_bytes([rec[o], rec[o + 1], rec[o + 2], rec[o + 3]]);
+    if rec.len() < 0x4c || rd(0x48) == 0 {
+        return false;
+    }
+    let (x, y) = get_point();
+    apply(x.wrapping_add(rd(0x40)), y.wrapping_add(rd(0x44)));
+    true
+}
+
+#[cfg(test)]
+mod tests_wave33_agent02 {
+    use super::*;
+
+    #[test]
+    fn store_pair() {
+        let mut o = vec![0u8; 0xa0];
+        assert!(w33a02_store_pair(&mut o, [1, 0x0102_0304]));
+        assert_eq!(&o[0x98..0xa0], &[1, 0, 0, 0, 4, 3, 2, 1]);
+        assert!(!w33a02_store_pair(&mut [0u8; 4], [0, 0]));
+    }
+
+    #[test]
+    fn offset_point() {
+        let mut r = vec![0u8; 0x4c];
+        r[0x40] = 5;
+        r[0x44] = 0xfe;
+        r[0x45..0x48].fill(0xff);
+        let mut got = None;
+        assert!(!w33a02_apply_offset_point(
+            &r,
+            || (1, 1),
+            |x, y| got = Some((x, y))
+        ));
+        assert!(got.is_none());
+        r[0x48] = 1;
+        assert!(w33a02_apply_offset_point(
+            &r,
+            || (10, 20),
+            |x, y| got = Some((x, y))
+        ));
+        assert_eq!(got, Some((15, 18)));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave33/agent03.rs
+// ===========================================================================
+// Wave 33 translation batch 03.
+//
+// Skipped: FUN_0090c780 (ends in a non-returning call), FUN_00919f40
+// (virtual dispatch through an unmodelled callee).
+
+/// `0x009185c0`: clears the flag byte at offset `0x1f6` of the object and
+/// returns 0.
+pub fn w33a03_clear_flag_1f6(obj: &mut [u8]) -> u8 {
+    obj[0x1f6] = 0;
+    0
+}
+
+#[cfg(test)]
+mod tests_wave33_agent03 {
+    use super::*;
+
+    #[test]
+    fn clears_flag() {
+        let mut o = vec![0xffu8; 0x200];
+        assert_eq!(w33a03_clear_flag_1f6(&mut o), 0);
+        assert_eq!(o[0x1f6], 0);
+        assert_eq!(o[0x1f5], 0xff);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave33/agent04.rs
+// ===========================================================================
+// Wave 33 translation batch 04.
+
+/// `0x0093ecd0`: scans a NUL-terminated path and returns the offset of the
+/// last `.` that follows the last `/` or `\`, or the end offset (terminator)
+/// when there is none.  `param_2` is the extra offset added to the dot
+/// position (the original returns `ptr + param_2`).
+pub fn w33a04_find_extension(path: &[u8], extra: usize) -> usize {
+    let mut found: Option<usize> = None;
+    let mut i = 0usize;
+    loop {
+        match path.get(i).copied().unwrap_or(0) {
+            0 => return found.unwrap_or(i),
+            b'.' => {
+                found = Some(i + extra);
+                i += 1;
+            }
+            b'/' | b'\\' => {
+                found = None;
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+}
+
+/// `0x0095d1e0`: looks up entry `index` of a big-endian offset table.
+/// `table` is the bytes at `+0x10 + +4`; `count` is the field at `+0xc`;
+/// `mode` the field at `+0x2c` (0 = 16-bit entries scaled by 2, 1 = 24-bit
+/// entries followed by a byte, scaled 0x100); `base` is the field at
+/// `+0x18`.  Returns `base + offset`, or -1 when out of range, when mode
+/// is >= 2, or when the entry equals the next one (empty).
+pub fn w33a04_table_entry(table: &[u8], count: i32, mode: i32, base: i32, index: i32) -> i32 {
+    if !(index < count && mode < 2) || index < 0 {
+        return -1;
+    }
+    let i = index as usize;
+    let b = |o: usize| table.get(o).copied().unwrap_or(0) as i32;
+    if mode == 0 {
+        let a = base.wrapping_add(((b(i * 2) << 8) | b(i * 2 + 1)).wrapping_mul(2));
+        let n = base.wrapping_add(((b(i * 2 + 2) << 8) | b(i * 2 + 3)).wrapping_mul(2));
+        return if a == n { -1 } else { a };
+    }
+    let ent = |o: usize| {
+        let hi = (b(o) << 16) | (b(o + 1) << 8) | b(o + 2);
+        b(o + 3)
+            .wrapping_add(hi.wrapping_mul(0x100))
+            .wrapping_add(base)
+    };
+    let a = ent(i * 4);
+    if a == ent(i * 4 + 4) { -1 } else { a }
+}
+
+#[cfg(test)]
+mod tests_wave33_agent04 {
+    use super::*;
+
+    #[test]
+    fn ext() {
+        assert_eq!(w33a04_find_extension(b"a/b.c/d\0", 0), 7);
+        assert_eq!(w33a04_find_extension(b"a/b.c\0", 0), 3);
+        assert_eq!(w33a04_find_extension(b"a.b.c\0", 10), 13);
+    }
+
+    #[test]
+    fn entry() {
+        let t = [0u8, 1, 0, 3, 0, 3];
+        assert_eq!(w33a04_table_entry(&t, 3, 0, 100, 0), 102);
+        assert_eq!(w33a04_table_entry(&t, 3, 0, 100, 1), -1);
+        assert_eq!(w33a04_table_entry(&t, 3, 0, 100, 3), -1);
+        assert_eq!(w33a04_table_entry(&t, 3, 2, 100, 0), -1);
+        let t4 = [0u8, 0, 1, 5, 0, 0, 2, 0, 0, 0, 2, 0];
+        assert_eq!(w33a04_table_entry(&t4, 3, 1, 0, 0), 0x105);
+        assert_eq!(w33a04_table_entry(&t4, 3, 1, 0, 1), -1);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave33/agent05.rs
+// ===========================================================================
+// Wave 33 translation batch 05: TrueType cmap lookup and two small
+// error-code guards.
+
+fn w33a05_u8(d: &[u8], i: usize) -> u32 {
+    d.get(i).copied().unwrap_or(0) as u32
+}
+
+fn w33a05_u16(d: &[u8], i: usize) -> u32 {
+    (w33a05_u8(d, i) << 8) | w33a05_u8(d, i + 1)
+}
+
+fn w33a05_u32(d: &[u8], i: usize) -> u32 {
+    (w33a05_u16(d, i) << 16) | w33a05_u16(d, i + 2)
+}
+
+/// `0x00960490`: TrueType cmap subtable lookup (glyph index for a code
+/// point).  `data` is the font file, `index_map` the offset of the chosen
+/// cmap subtable.  Formats 0, 4, 6, 12 and 13 are handled; format 2 and
+/// unknown formats return 0.  Out-of-range reads yield 0.
+pub fn w33a05_find_glyph_index(data: &[u8], index_map: usize, cp: u32) -> u32 {
+    let m = index_map;
+    let format = w33a05_u16(data, m);
+    match format {
+        0 => {
+            let len = w33a05_u16(data, m + 2) as i32 - 6;
+            if (cp as i32) < len {
+                return w33a05_u8(data, m + 6 + cp as usize);
+            }
+            0
+        }
+        6 => {
+            let first = w33a05_u16(data, m + 6);
+            let count = w33a05_u16(data, m + 8);
+            if first <= cp && cp < count + first {
+                return w33a05_u16(data, m + 10 + (cp - first) as usize * 2);
+            }
+            0
+        }
+        4 => {
+            let segcount = (w33a05_u16(data, m + 6) >> 1) as usize;
+            let mut search_range = (w33a05_u16(data, m + 8) >> 1) as u16;
+            let mut selector = w33a05_u16(data, m + 10) as u16;
+            let end_count = m + 14;
+            if cp >= 0x10000 {
+                return 0;
+            }
+            let range_shift = (w33a05_u16(data, m + 12) >> 1) as usize;
+            let mut search = end_count;
+            if w33a05_u16(data, end_count + range_shift * 2) <= cp {
+                search = end_count + range_shift * 2;
+            }
+            let mut search = search as isize - 2;
+            while selector != 0 {
+                search_range >>= 1;
+                let probe = (search + search_range as isize * 2) as usize;
+                if w33a05_u16(data, probe) < cp {
+                    search = probe as isize;
+                }
+                selector -= 1;
+            }
+            let item = (((search + 2) as usize - end_count) >> 1) & 0xffff;
+            let start = w33a05_u16(data, m + 16 + (segcount + item) * 2);
+            if start > cp {
+                return 0;
+            }
+            let offset = w33a05_u16(data, m + 16 + (segcount * 3 + item) * 2);
+            if offset == 0 {
+                let delta = w33a05_u16(data, m + 16 + (segcount * 2 + item) * 2 - 0);
+                return (delta + cp) & 0xffff;
+            }
+            let idx = (segcount * 3 + item) as u32 + cp - start;
+            let addr = m + 16 + offset as usize + idx as usize * 2;
+            w33a05_u16(data, addr)
+        }
+        12 | 13 => {
+            let mut high = w33a05_u32(data, m + 12) as i32;
+            let mut low = 0i32;
+            while low < high {
+                let mid = ((high - low) >> 1) + low;
+                let g = m + mid as usize * 12;
+                let start = w33a05_u32(data, g + 16);
+                if start <= cp {
+                    if cp <= w33a05_u32(data, g + 20) {
+                        let glyph = w33a05_u32(data, g + 24);
+                        return if format == 12 {
+                            glyph.wrapping_sub(start).wrapping_add(cp)
+                        } else {
+                            glyph
+                        };
+                    }
+                    low = mid + 1;
+                } else {
+                    high = mid;
+                }
+            }
+            0
+        }
+        _ => 0,
+    }
+}
+
+/// `0x00984ab0`: returns error 0x25 when `handle` is zero, otherwise the
+/// result of the delegate (`FUN_00984a50`).
+pub fn w33a05_handle_guard(handle: u32, delegate: impl FnOnce() -> u32) -> u32 {
+    if handle == 0 { 0x25 } else { delegate() }
+}
+
+/// `0x0098b260`: returns 0x25 when `handle` is zero, 0x21 when the object's
+/// field at +0x7a4 is zero, otherwise the delegate (`FUN_0099dd10`) called
+/// with `(handle, 0, 0, arg)`.
+pub fn w33a05_guarded_dispatch(
+    handle: u32,
+    field_7a4: u32,
+    arg: u32,
+    delegate: impl FnOnce(u32, u32, u32, u32) -> u32,
+) -> u32 {
+    if handle == 0 {
+        0x25
+    } else if field_7a4 != 0 {
+        delegate(handle, 0, 0, arg)
+    } else {
+        0x21
+    }
+}
+
+#[cfg(test)]
+mod tests_wave33_agent05 {
+    use super::*;
+
+    #[test]
+    fn format0_and_6() {
+        let mut d = vec![0u8; 16];
+        d[3] = 10;
+        d[6] = 7;
+        d[7] = 9;
+        assert_eq!(w33a05_find_glyph_index(&d, 0, 1), 9);
+        assert_eq!(w33a05_find_glyph_index(&d, 0, 4), 0);
+        let d6 = [0, 6, 0, 0, 0, 0, 0, 65, 0, 2, 0, 5, 0, 6];
+        assert_eq!(w33a05_find_glyph_index(&d6, 0, 66), 6);
+        assert_eq!(w33a05_find_glyph_index(&d6, 0, 67), 0);
+        assert_eq!(w33a05_find_glyph_index(&d6, 0, 64), 0);
+    }
+
+    #[test]
+    fn format12_and_13() {
+        let mk = |f: u8| {
+            let mut d = vec![0, f, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+            d.extend_from_slice(&[0, 0, 0, 0x41, 0, 0, 0, 0x45, 0, 0, 0, 10]);
+            d
+        };
+        assert_eq!(w33a05_find_glyph_index(&mk(12), 0, 0x43), 12);
+        assert_eq!(w33a05_find_glyph_index(&mk(13), 0, 0x43), 10);
+        assert_eq!(w33a05_find_glyph_index(&mk(12), 0, 0x46), 0);
+        assert_eq!(w33a05_find_glyph_index(&mk(12), 0, 0x40), 0);
+    }
+
+    #[test]
+    fn format4_delta() {
+        // one segment A..C (0x41..0x43) delta 5, plus 0xffff terminator
+        let mut d = vec![0, 4, 0, 0, 0, 0];
+        d.extend_from_slice(&[0, 4, 0, 4, 0, 0, 0, 0]); // segx2=4 (2 segs), range, sel, shift
+        d.extend_from_slice(&[0, 0x43, 0xff, 0xff]); // endCount
+        d.extend_from_slice(&[0, 0]); // pad
+        d.extend_from_slice(&[0, 0x41, 0xff, 0xff]); // startCount
+        d.extend_from_slice(&[0, 5, 0, 1]); // delta
+        d.extend_from_slice(&[0, 0, 0, 0]); // rangeOffset
+        assert_eq!(w33a05_find_glyph_index(&d, 0, 0x42), 0x47);
+        assert_eq!(w33a05_find_glyph_index(&d, 0, 0x10), 0);
+        assert_eq!(w33a05_find_glyph_index(&d, 0, 0x10000), 0);
+    }
+
+    #[test]
+    fn guards() {
+        assert_eq!(w33a05_handle_guard(0, || 1), 0x25);
+        assert_eq!(w33a05_handle_guard(3, || 1), 1);
+        assert_eq!(w33a05_guarded_dispatch(0, 1, 2, |_, _, _, _| 9), 0x25);
+        assert_eq!(w33a05_guarded_dispatch(1, 0, 2, |_, _, _, _| 9), 0x21);
+        assert_eq!(
+            w33a05_guarded_dispatch(1, 5, 2, |h, a, b, c| h + a + b + c),
+            3
+        );
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave33/agent06.rs
+// ===========================================================================
+// Wave 33 translation batch 06.
+//
+// Skipped: FUN_0098b9f0 (both branches tail into an unmodelled callee),
+// FUN_0098fa20 (pure thunk into an unmodelled callee).
+
+/// `0x00990310`: reads two optional out-values from a object: `*out_a` gets
+/// the field at `+0x584` (`a`), `*out_b` gets `b / a` where `b` is the field
+/// at `+0x588`.  Returns 0 on success.  `None` models the original divide
+/// fault when `a == 0` and the quotient is requested.
+pub fn w33a06_get_count_and_ratio(
+    a: u32,
+    b: u32,
+    out_a: Option<&mut u32>,
+    out_b: Option<&mut u32>,
+) -> Option<u32> {
+    if let Some(o) = out_a {
+        *o = a;
+    }
+    if let Some(o) = out_b {
+        *o = b.checked_div(a)?;
+    }
+    Some(0)
+}
+
+#[cfg(test)]
+mod tests_wave33_agent06 {
+    use super::*;
+
+    #[test]
+    fn ratio() {
+        let (mut x, mut y) = (0, 0);
+        assert_eq!(
+            w33a06_get_count_and_ratio(4, 20, Some(&mut x), Some(&mut y)),
+            Some(0)
+        );
+        assert_eq!((x, y), (4, 5));
+        assert_eq!(w33a06_get_count_and_ratio(0, 20, None, None), Some(0));
+        assert_eq!(w33a06_get_count_and_ratio(0, 20, None, Some(&mut y)), None);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave33/agent07.rs
+// ===========================================================================
+// Wave 33 translation batch 07: small setter helpers of a library context.
+
+/// `0x00992070`: stores `value` into the shared global slot (+0xc) and into
+/// the context field at +0x5758, returning 0.
+pub fn w33a07_set_shared_value(global_slot: &mut u32, ctx_field: &mut u32, value: u32) -> u32 {
+    *global_slot = value;
+    *ctx_field = value;
+    0
+}
+
+/// `0x00992090`: validates and stores a size pair.  Returns 0x20 when the
+/// context is already initialised (`init` flag at +0x15 non-zero), 0x25 when
+/// `unit == 0` or `count <= 1`, otherwise writes `unit` (+0x584) and
+/// `unit * count` (+0x588, wrapping) and returns 0.
+pub fn w33a07_set_size_pair(
+    init: u8,
+    f584: &mut i32,
+    f588: &mut i32,
+    unit: i32,
+    count: i32,
+) -> u32 {
+    if init != 0 {
+        return 0x20;
+    }
+    if unit != 0 && 1 < count {
+        *f584 = unit;
+        *f588 = unit.wrapping_mul(count);
+        return 0;
+    }
+    0x25
+}
+
+#[cfg(test)]
+mod tests_wave33_agent07 {
+    use super::*;
+
+    #[test]
+    fn shared_value() {
+        let (mut g, mut c) = (0, 0);
+        assert_eq!(w33a07_set_shared_value(&mut g, &mut c, 7), 0);
+        assert_eq!((g, c), (7, 7));
+    }
+
+    #[test]
+    fn size_pair() {
+        let (mut a, mut b) = (0, 0);
+        assert_eq!(w33a07_set_size_pair(1, &mut a, &mut b, 4, 4), 0x20);
+        assert_eq!(w33a07_set_size_pair(0, &mut a, &mut b, 0, 4), 0x25);
+        assert_eq!(w33a07_set_size_pair(0, &mut a, &mut b, 4, 1), 0x25);
+        assert_eq!(w33a07_set_size_pair(0, &mut a, &mut b, 4, 3), 0);
+        assert_eq!((a, b), (4, 12));
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave33/agent08.rs
+// ===========================================================================
+// Wave 33 agent 08.
+
+/// Stream state touched by the seek routine (dword indices of the retail object).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct W33a08Stream {
+    /// dword 5: size limit, `-1` (0xffffffff) means unbounded.
+    pub limit: u32,
+    /// byte at dword 0xb.
+    pub flag_b: u8,
+    /// dword 0x5e: base offset.
+    pub base: u32,
+    /// dword 0x5b: current position.
+    pub pos: u32,
+    /// dword 0x59.
+    pub w59: u32,
+    /// dword 0x57.
+    pub w57: u32,
+    /// dword 0x5c.
+    pub w5c: u32,
+    /// dword 99 (bit 0 tested).
+    pub flags: u32,
+    /// dword 0x54 (divisor for `w55`).
+    pub w54: u32,
+    /// dword 0x55.
+    pub w55: u32,
+    /// dword 0x56.
+    pub w56: u32,
+}
+
+/// `0x009a16c0`: seek.  `whence` 0 = from base, 1 = from current, 2 = from
+/// base + limit.  Returns 0x25 for a bad whence, 0x14 for out of range,
+/// otherwise 0 or the result of `backend_seek(new_pos)` when `w57 == 0`.
+pub fn w33a08_seek(
+    s: &mut W33a08Stream,
+    offset: i32,
+    whence: i32,
+    mut backend_seek: impl FnMut(u32) -> u32,
+) -> u32 {
+    if !(0..=2).contains(&whence) {
+        return 0x25;
+    }
+    s.flag_b = 0;
+    let start = match whence {
+        0 => s.base,
+        1 => s.pos,
+        _ => s.base.wrapping_add(s.limit),
+    };
+    let mut p = start.wrapping_add(offset as u32);
+    if s.limit != u32::MAX {
+        let top = s.base.wrapping_add(s.limit);
+        if top < p {
+            p = 0;
+            if offset >= 0 {
+                p = top;
+            }
+        }
+    }
+    if s.w5c == 0 && s.flags & 1 == 0 && s.w59 <= p {
+        return 0x14;
+    }
+    if s.w59 == s.w57 && s.flags & 1 == 0 {
+        let (a, b) = (s.w59, s.w5c);
+        if a <= b {
+            if b != 0 && p < b - a {
+                return 0x14;
+            }
+            if a.wrapping_add(b) <= p {
+                return 0x14;
+            }
+        }
+    }
+    s.pos = p;
+    if s.w54 != 0 {
+        s.w55 = p % s.w54;
+    }
+    if s.w57 == 0 {
+        return backend_seek(p);
+    }
+    s.w56 = p % s.w57;
+    0
+}
+
+/// `0x00a5ffd0`: forwards its four arguments to the worker with a leading 0.
+pub fn w33a08_forward4<R>(
+    a: u32,
+    b: u32,
+    c: u32,
+    d: u32,
+    mut worker: impl FnMut(u32, u32, u32, u32, u32) -> R,
+) -> R {
+    worker(0, a, b, c, d)
+}
+
+#[cfg(test)]
+mod tests_wave33_agent08 {
+    use super::*;
+    #[test]
+    fn seek_basic() {
+        let mut s = W33a08Stream {
+            limit: u32::MAX,
+            base: 10,
+            w59: 100,
+            w57: 0,
+            ..Default::default()
+        };
+        assert_eq!(w33a08_seek(&mut s, 0, 3, |_| 0), 0x25);
+        assert_eq!(w33a08_seek(&mut s, 5, 0, |p| p + 1), 16);
+        assert_eq!(s.pos, 15);
+        assert_eq!(w33a08_seek(&mut s, 500, 1, |_| 0), 0x14);
+    }
+    #[test]
+    fn seek_mod_and_clamp() {
+        let mut s = W33a08Stream {
+            limit: 20,
+            base: 0,
+            w59: 100,
+            w57: 7,
+            w5c: 1,
+            w54: 4,
+            ..Default::default()
+        };
+        assert_eq!(w33a08_seek(&mut s, 50, 0, |_| 9), 0);
+        assert_eq!(s.pos, 20);
+        assert_eq!(s.w56, 6);
+        assert_eq!(s.w55, 0);
+    }
+    #[test]
+    fn fwd() {
+        assert_eq!(
+            w33a08_forward4(1, 2, 3, 4, |z, a, b, c, d| z + a + b + c + d),
+            10
+        );
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave33/agent09.rs
+// ===========================================================================
+// Wave 33 translation batch 09.
+
+/// `0x00b8eda0`: reverses the bytes of `buf` in place (std::reverse over
+/// a byte range, swapping from both ends until the cursors meet).
+pub fn w33a09_reverse_bytes(buf: &mut [u8]) {
+    buf.reverse();
+}
+
+/// `0x00cae75b`: classifies a double from its low (`lo`) and high (`hi`)
+/// words: 1 = +inf, 2 = -inf, 3 = NaN, 4 = signalling NaN, 0 = finite.
+pub fn w33a09_classify_double(lo: u32, hi: u32) -> u32 {
+    if hi == 0x7ff0_0000 {
+        if lo == 0 {
+            return 1;
+        }
+    } else if hi == 0xfff0_0000 && lo == 0 {
+        return 2;
+    }
+    let top = (hi >> 16) & 0x7ff8;
+    if top == 0x7ff8 {
+        3
+    } else if top != 0x7ff0 || ((hi & 0x7_ffff) == 0 && lo == 0) {
+        0
+    } else {
+        4
+    }
+}
+
+#[cfg(test)]
+mod tests_wave33_agent09 {
+    use super::*;
+
+    #[test]
+    fn reverse() {
+        let mut v = [1u8, 2, 3, 4, 5];
+        w33a09_reverse_bytes(&mut v);
+        assert_eq!(v, [5, 4, 3, 2, 1]);
+    }
+
+    #[test]
+    fn classify() {
+        assert_eq!(w33a09_classify_double(0, 0x7ff0_0000), 1);
+        assert_eq!(w33a09_classify_double(0, 0xfff0_0000), 2);
+        assert_eq!(w33a09_classify_double(0, 0x7ff8_0000), 3);
+        assert_eq!(w33a09_classify_double(1, 0x7ff0_0000), 4);
+        assert_eq!(w33a09_classify_double(0, 0x3ff0_0000), 0);
+    }
+}
+
+// ===========================================================================
+// Merged from src/wave33/agent10.rs
+// ===========================================================================
+// Wave 33 translation batch 10.
+//
+// Skipped: FUN_00cbb420 (system-info dump through virtual log calls on an
+// implicit `this` register and unmodelled callees).
+
+/// `0x00cb7b60`: x87 `frndint` wrapper, rounds to nearest with ties to even
+/// (default FPU rounding mode).
+pub fn w33a10_round(x: f64) -> f64 {
+    x.round_ties_even()
+}
+
+/// `0x00cbcc80`: C `strtoll`-style parser.  Returns `(value, end_index,
+/// overflow_flag)`.  Reads past the slice yield NUL.  `base == 0` autodetects
+/// (`0x` hex, leading `0` octal, else decimal).  Overflow is detected only
+/// when the wrapping `acc*base+digit` is signed-smaller than the previous
+/// accumulator (retail behaviour) and is sticky; on overflow the result clamps
+/// to `i64::MIN` / `i64::MAX` by sign.
+pub fn w33a10_strtoll(s: &[u8], base: u32) -> (i64, usize, u8) {
+    let at = |i: usize| -> u8 { s.get(i).copied().unwrap_or(0) };
+    let mut i = 0usize;
+    let first;
+    loop {
+        let b = at(i);
+        i += 1;
+        if b == 0x20 || (9..=13).contains(&b) {
+            continue;
+        }
+        first = b;
+        break;
+    }
+    // `p` is the index of the byte after `cur`.
+    let mut cur = first;
+    let mut p = i;
+    if first == b'-' || first == b'+' {
+        cur = at(p);
+        p += 1;
+    }
+    let mut base = base;
+    let hex_prefix = |p: usize| at(p) == b'x' || at(p) == b'X';
+    if base == 0 {
+        if cur != b'0' {
+            base = 10;
+        } else if !hex_prefix(p) {
+            base = 8;
+        } else {
+            base = 16;
+            cur = at(p + 1);
+            p += 2;
+        }
+    } else if base == 16 && cur == b'0' && hex_prefix(p) {
+        cur = at(p + 1);
+        p += 2;
+    }
+    let mut acc: i64 = 0;
+    let mut overflow = false;
+    loop {
+        let d: u32 = match cur {
+            b'0'..=b'9' => (cur - b'0') as u32,
+            b'a'..=b'z' => (cur - b'a') as u32 + 10,
+            b'A'..=b'Z' => (cur - b'A') as u32 + 10,
+            _ => u32::MAX,
+        };
+        if base <= d {
+            break;
+        }
+        let next = acc.wrapping_mul(base as i64).wrapping_add(d as i64);
+        if next < acc {
+            overflow = true;
+        }
+        acc = next;
+        cur = at(p);
+        p += 1;
+    }
+    let end = p - 1;
+    let neg = first == b'-';
+    let mut res = acc;
+    if overflow {
+        let clamp = if neg { i64::MIN } else { i64::MAX };
+        res = clamp;
+        if acc == clamp {
+            overflow = false;
+        }
+    }
+    if neg && !overflow {
+        res = res.wrapping_neg();
+    }
+    (res, end, overflow as u8)
+}
+
+#[cfg(test)]
+mod tests_wave33_agent10 {
+    use super::*;
+
+    #[test]
+    fn round_ties_even() {
+        assert_eq!(w33a10_round(2.5), 2.0);
+        assert_eq!(w33a10_round(3.5), 4.0);
+        assert_eq!(w33a10_round(-1.4), -1.0);
+    }
+
+    #[test]
+    fn parse_basic() {
+        assert_eq!(w33a10_strtoll(b"  123abc", 0), (123, 5, 0));
+        assert_eq!(w33a10_strtoll(b"-0x1F", 0), (-31, 5, 0));
+        assert_eq!(w33a10_strtoll(b"017", 0), (15, 3, 0));
+        assert_eq!(w33a10_strtoll(b"ff", 16), (255, 2, 0));
+        assert_eq!(w33a10_strtoll(b"0xff", 16).0, 255);
+    }
+
+    #[test]
+    fn parse_overflow() {
+        let (v, _, f) = w33a10_strtoll(b"99999999999999999999", 10);
+        assert_eq!((v, f), (i64::MAX, 1));
+        let (v, _, f) = w33a10_strtoll(b"-99999999999999999999", 10);
+        assert_eq!((v, f), (i64::MIN, 1));
+    }
+}

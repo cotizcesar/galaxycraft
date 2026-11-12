@@ -23,24 +23,24 @@ wire it into the engine**.  Read this file first, then
    (`cargo test -q --test waveW_agentNN`); the full suite runs once, after
    the merge.
 
-## Current state (2026-11-11, after wave 32)
+## Current state (2026-11-11, after wave 33)
 
 | item | value |
 |---|---|
-| ledger `translated` | 5512 of 56128 functions |
-| `decompiled_uncited` | 49724 (only ~0.2k worth translating, see below) |
+| ledger `translated` | 5631 of 56128 functions |
+| `decompiled_uncited` | 49605 (only ~0.1k worth translating, see below) |
 | `decompile_failed` | 622 — known ceiling, do not retry |
-| tests | `cargo test --lib` 4607 pass; `cargo test` 4884 pass |
-| next wave | 33 (tier 3 down to 217 rows; see yield note) |
+| tests | `cargo test --lib` 4730 pass; `cargo test` 5007 pass |
+| next wave | 34 (tier 3 down to 80 rows, then only tier 4; see yield note) |
 
-Triage of the 49724 uncited rows (`scripts/triage_corpus.py`):
+Triage of the 49605 uncited rows (`scripts/triage_corpus.py`):
 
 | category | rows | action |
 |---|---|---|
 | `clean` tier 1 (next to gameplay code) | 0 | **translate first** |
 | `clean` tier 2 (two hops from gameplay) | 0 | translate next |
-| `clean` tier 3 (next to client/render/audio) | 217 | translate next |
-| `clean` tier 4 (unrelated engine/library glue) | 13019 | only on demand |
+| `clean` tier 3 (next to client/render/audio) | 80 | translate next |
+| `clean` tier 4 (unrelated engine/library glue) | 12939 | only on demand |
 | `unwind` (compiler exception funclets) | 15305 | never |
 | `fragment` (`unaff_*`/`in_*` mid-function blocks) | 6187 | never |
 | `library` (OpenGL loader, FMOD, OpenSSL, png, zlib) | 3039 | never |
@@ -48,7 +48,7 @@ Triage of the 49724 uncited rows (`scripts/triage_corpus.py`):
 | `trivial` (thunks, ≤ 8 bytes) | 2057 | never |
 | `hub` (CRT/allocator helpers with > 150 callers) | 38 | never |
 | `bnet` (Battle.net / online services: login, friends, presence, matchmaking, telemetry, web, TACT/CASC downloader; propagated through the call graph) | 704 | **never implement, only marked** |
-| `skipped` (assigned to a wave, not translatable yet) | 7022 | never (`skiplist.tsv`) |
+| `skipped` (assigned to a wave, not translatable yet) | 7120 | never (`skiplist.tsv`) |
 
 ## Local data (not in git, must exist)
 
@@ -90,7 +90,7 @@ rg -n 'w14a03_' engine-rust/src                        # find a merged helper
 Waves are driven by hand: prepare, launch one agent per assignment (Agent
 batches of 20 or Workflow shards of 30), reconcile, merge (see the guide).
 
-Yield note: wave 32 +228 (150 agents, 5 Workflow shards of 30, tier 3), wave 31 +596 (148 agents, 5 workflows; tier 2 emptied), wave 15 gave +72 (36%), wave 16 +84 (42%), wave 17 +93 (47%), wave 18 +80 (40%), wave 19 +86 (43%), wave 20 +92 (46%), wave 21 +124 (31%, 20 agents), wave 30 +51 (20 agents; the queue had reached the TACT/CDN downloader, so triage now propagates `bnet` through the call graph), wave 29 +81 (20 agents; D3D/TACT/CDN code is mostly bnet or glue), wave 28 +159 (20 agents; libvpx SAD/variance/loop-filter/intra-predictor kernels), wave 27 +115 (20 agents; rapidjson, FMOD DSP, vector-growth helpers), wave 26 +95 (20 agents; ~5 each; MD5/SHA-1/RC4/bignum with test vectors), wave 25 +223 (59 agents launched of 100 prepared; ~4 per agent, 19% yield), wave 24 +251 (25%, 50 agents; ~5 per agent), wave 23 +141 (35%, 20 agents), wave 22 +140 (23%, 30 agents; the harness caps concurrent subagents at 20). Yield is falling as tier 1 empties: most remaining rows are STL/SEH glue ending in non-returning calls, so more waves buy little engine value per token.  Most
+Yield note: wave 33 +119 (73 agents, tier 3), wave 32 +228 (150 agents, 5 Workflow shards of 30, tier 3), wave 31 +596 (148 agents, 5 workflows; tier 2 emptied), wave 15 gave +72 (36%), wave 16 +84 (42%), wave 17 +93 (47%), wave 18 +80 (40%), wave 19 +86 (43%), wave 20 +92 (46%), wave 21 +124 (31%, 20 agents), wave 30 +51 (20 agents; the queue had reached the TACT/CDN downloader, so triage now propagates `bnet` through the call graph), wave 29 +81 (20 agents; D3D/TACT/CDN code is mostly bnet or glue), wave 28 +159 (20 agents; libvpx SAD/variance/loop-filter/intra-predictor kernels), wave 27 +115 (20 agents; rapidjson, FMOD DSP, vector-growth helpers), wave 26 +95 (20 agents; ~5 each; MD5/SHA-1/RC4/bignum with test vectors), wave 25 +223 (59 agents launched of 100 prepared; ~4 per agent, 19% yield), wave 24 +251 (25%, 50 agents; ~5 per agent), wave 23 +141 (35%, 20 agents), wave 22 +140 (23%, 30 agents; the harness caps concurrent subagents at 20). Yield is falling as tier 1 empties: most remaining rows are STL/SEH glue ending in non-returning calls, so more waves buy little engine value per token.  Most
 skips end in non-returning calls or depend on unmodelled callees; that is
 expected.  Do not retry skiplist rows until a callee they need is translated.
 

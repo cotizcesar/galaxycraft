@@ -10,12 +10,12 @@ committed.
 
 | item | value |
 |---|---|
-| last merged wave | wave 32 (release 0.1.19) |
-| ledger translated | **5512** functions |
-| ledger uncited | 49724 functions |
+| last merged wave | wave 33 (release 0.1.20) |
+| ledger translated | **5631** functions |
+| ledger uncited | 49605 functions |
 | ledger decompile-failed | 622 functions |
-| lib tests | **4607 passed** (full suite 4884) |
-| next wave number | 33 (queue mode, tier 3 only: 217 rows) |
+| lib tests | **4730 passed** (full suite 5007) |
+| next wave number | 34 (queue mode, tier 3: 80 rows, then tier 4) |
 
 Wave 13 added 174 exact ledger functions; wave 14 added 181.  The wave-13
 and wave-14 staging files and harnesses were deleted after merging.  The
@@ -167,9 +167,9 @@ not spend a wave on them again.
 At the time of writing:
 
 ```text
-cargo test --lib:                    4607 passed
+cargo test --lib:                    4730 passed
 cargo clippy --all-targets -- -D warnings: clean
 cargo fmt --check:                    clean
-ledger translated:                   5512
-next wave:                           33 (queue mode)
+ledger translated:                   5631
+next wave:                           34 (queue mode)
 ```

@@ -235,3 +235,7 @@ call graph so those rows are no longer queued.  Waves are paused.
 
 +228 exact ledger functions (ledger 4688+596 -> 5512) in `client.rs` and `runtime.rs`: UI/tree/time helpers, STL and string plans, hook-table records.  No rules-core counterpart; the helpers stay auditable reference code.  35 agents returned only skips.
 
+## Wave 33 (2026-11-11, triage queue, tier 3, 73 agents)
+
++119 exact ledger functions (ledger 5512 -> 5631) in `client.rs` and `runtime.rs`.  No rules-core counterpart; the helpers stay auditable reference code.  Tier 3 is nearly empty (80 rows); the rest of the queue is tier 4 glue.
+
