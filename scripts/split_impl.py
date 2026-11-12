@@ -135,42 +135,51 @@ def main() -> None:
     ap.add_argument("type_name")
     ap.add_argument("--plan", type=Path, required=True)
     ap.add_argument("--tests", action="store_true")
+    ap.add_argument("--out-dir", type=Path, help="child files here, declared with #[path]")
     a = ap.parse_args()
     plan = json.loads(a.plan.read_text())
     text = a.file.read_text()
-    m = re.search(rf"^impl {re.escape(a.type_name)} \{{", text, re.M)
-    if not m:
+    blocks = list(re.finditer(rf"^impl {re.escape(a.type_name)} \{{", text, re.M))
+    if not blocks:
         raise SystemExit("impl block not found")
-    open_idx = m.end() - 1
-    close_idx = matching_brace(text, open_idx)
-    body = text[open_idx + 1 : close_idx]
-    items, tail = methods(body)
-    keep, groups = [], {g: [] for g in plan}
-    for name, chunk in items:
-        target = None
-        if name:
-            for g, pats in plan.items():
-                if any(re.fullmatch(p, name) for p in pats):
-                    target = g
-                    break
-        (groups[target] if target else keep).append((name, chunk))
-    new_body = "".join(c for _, c in keep) + tail
-    text = text[: open_idx + 1] + new_body + text[close_idx:]
-    out_dir = a.file.parent
+    keep_count = 0
+    groups = {g: [] for g in plan}
+    # Last block first, so earlier offsets stay valid.
+    for m in reversed(blocks):
+        open_idx = m.end() - 1
+        close_idx = matching_brace(text, open_idx)
+        body = text[open_idx + 1 : close_idx]
+        items, tail = methods(body)
+        keep, moved = [], {g: [] for g in plan}
+        for name, chunk in items:
+            target = None
+            if name:
+                for g, pats in plan.items():
+                    if any(re.fullmatch(p, name) for p in pats):
+                        target = g
+                        break
+            (moved[target] if target else keep).append((name, chunk))
+        for g in plan:
+            groups[g] = moved[g] + groups[g]
+        keep_count += sum(1 for n, _ in keep if n)
+        new_body = "".join(c for _, c in keep) + tail
+        text = text[: open_idx + 1] + new_body + text[close_idx:]
+    out_dir = a.out_dir or a.file.parent
+    out_dir.mkdir(parents=True, exist_ok=True)
     mods = []
     for g, lst in groups.items():
         if not lst:
             continue
         chunks = "".join(make_visible(c) for _, c in lst).strip("\n")
         (out_dir / f"{g}.rs").write_text(
-            f"//! `impl {a.type_name}`: {plan[g] and g.replace('_', ' ')} "
-            "(moved out of `mod.rs` by scripts/split_impl.py).\n\n"
+            f"//! `impl {a.type_name}`: {g.replace('_', ' ')} "
+            f"(moved out of `{a.file.name}` by scripts/split_impl.py).\n\n"
             "use super::*;\n\n"
             f"impl {a.type_name} {{\n{chunks}\n}}\n"
         )
         mods.append(g)
         print(f"{g}.rs: {len(lst)} methods")
-    print(f"kept in {a.file.name}: {sum(1 for n, _ in keep if n)} methods")
+    print(f"kept in {a.file.name}: {keep_count} methods")
     if a.tests:
         tm = re.search(r"^#\[cfg\(test\)\]\nmod tests \{", text, re.M)
         if tm:
@@ -181,9 +190,14 @@ def main() -> None:
                 line[4:] if line.startswith("    ") else line for line in inner.strip("\n").split("\n")
             )
             (out_dir / "tests.rs").write_text(inner + "\n")
-            text = text[: tm.start()] + "#[cfg(test)]\nmod tests;" + text[c + 1 :]
+            decl_t = f'#[path = "{a.out_dir.relative_to(a.file.parent)}/tests.rs"]\n' if a.out_dir else ""
+            text = text[: tm.start()] + f"#[cfg(test)]\n{decl_t}mod tests;" + text[c + 1 :]
             print("tests -> tests.rs")
-    decl = "".join(f"mod {g};\n" for g in mods)
+    if a.out_dir:
+        rel = a.out_dir.relative_to(a.file.parent)
+        decl = "".join(f'#[path = "{rel}/{g}.rs"]\nmod {g};\n' for g in mods)
+    else:
+        decl = "".join(f"mod {g};\n" for g in mods)
     text = text.rstrip("\n") + "\n\n// `impl World` split by subsystem (scripts/split_impl.py).\n" + decl
     a.file.write_text(text)
 
