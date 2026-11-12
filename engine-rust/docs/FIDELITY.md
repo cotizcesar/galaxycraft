@@ -205,3 +205,17 @@ working animations, cursors, cloak, fog memory.
 | fog | memory | scouted enemy buildings stay drawn, darkened, and on the minimap | **fixed** (they vanished) |
 | cloak | look | the background shows through, displaced | **changed** from a fade; the shift and tint are tuned by eye |
 | cheats | first tick | resources survive the melee start-up trigger | **fixed** |
+
+### Follow-up (2026-11-12)
+
+| subject | aspect | retail / OpenBW | engine |
+|---|---|---|---|
+| SD | Command Center, Control Tower art | `images.tbl`: `terran\control.grp` is the Command Center, `terran\DryDocks.grp` the Control Tower | **fixed** (CC drawn with `neutral\starbase.grp`, Control Tower with the CC's art) |
+| iscript | Burrow / UnBurrow entries | header entries 25 / 26 (23 / 24 are StarEditInit / Disable) | **fixed** constants; the client plays them (Spider Mine dig-in frames 8-11, dirt, sound 354) |
+| client | non-directional images | show the iscript frame as is | **fixed** (always frame 0) |
+| Spider Mine | hovering units | `units.dat` movement flags 0xC1 | now read from the data (the old list matched) |
+| Yamato Gun | energy | spent when the charge starts (`order_CastSpell`); row 113 charges too | **fixed** |
+| Valkyrie | rocket spread | per-shooter near-target index | **fixed** (global counter) |
+| bullets | caps | 100 bullets; no Halo Rockets once 80 are active | **fixed** (80 for everything) |
+| Irradiate | burrowed / loaded | burrowed: only itself; loaded: only its transport | **fixed** |
+| SD | team colour | `tunit.pcx` shades per slot colour | **fixed** for slot colours |

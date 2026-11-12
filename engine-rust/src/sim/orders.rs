@@ -212,6 +212,12 @@ impl World {
             if spell.takes_unit_target() && !matches!(target, SpellTarget::Unit(_)) {
                 return Err(SimError::Unsupported);
             }
+            // The Yamato Gun charges first (OpenBW `order_CastSpell` runs
+            // the cast animation before the shot), whatever path the order
+            // took.
+            if spell == Spell::YamatoGun {
+                return self.issue(unit_id, Order::Cast { spell, target });
+            }
             return self.cast(unit_id, spell, target);
         }
         match order_id {
@@ -465,8 +471,17 @@ impl World {
                 if spell == Spell::YamatoGun && self.units[i].order_wait > 0 {
                     self.units[i].order_wait -= 1;
                     if self.units[i].order_wait == 0 {
+                        // The energy went when the charge started: hand it
+                        // back for the release, which spends it again (and
+                        // keep it spent if the target is gone).
+                        let cost = self.yamato_charge_cost(i);
+                        let e = self.units[i].energy_fixed();
+                        self.units[i].set_energy_fixed(e + cost);
                         let id = self.units[i].id;
-                        let _ = self.cast_unrecorded(id, spell, target);
+                        if self.cast_unrecorded(id, spell, target).is_err() {
+                            let e = self.units[i].energy_fixed();
+                            self.units[i].set_energy_fixed(e - cost);
+                        }
                         self.order_done(i);
                     }
                     return;

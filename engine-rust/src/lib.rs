@@ -67,6 +67,7 @@ pub mod scene;
 pub mod sfx;
 pub mod sim;
 pub mod tables;
+pub mod team_colors;
 pub mod tech;
 pub mod text;
 pub mod transmission;

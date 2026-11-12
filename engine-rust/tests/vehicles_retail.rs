@@ -388,3 +388,38 @@ fn the_hull_stays_still_while_its_turret_fires() {
         assert!(w.units[egg].hp < hp, "unit {attacker} fired");
     }
 }
+
+#[test]
+fn hovering_units_come_from_the_units_dat_movement_flags() {
+    // OpenBW `order_SpiderMine` skips `unknown1 == 0xc1`.
+    let d = GameData::bundled().expect("data");
+    let hover: Vec<u16> = (0..228u16)
+        .filter(|&u| d.unit(u).movement_flags == 0xc1)
+        .collect();
+    assert_eq!(hover, vec![2, 7, 13, 19, 41, 63, 64, 68, 76]);
+}
+
+#[test]
+fn a_spider_mine_plays_its_burrow_frames_as_it_digs_in() {
+    // iscript 87 Burrow: frames 8, 9, 10, 11 one tick apart, after the
+    // 60-frame wait (OpenBW `order_SpiderMine`).
+    let mut w = World::new(
+        Arc::new(GameData::bundled().unwrap()),
+        Terrain::open(64, 64),
+        2,
+    );
+    let m = w.spawn_px(0, uid::SPIDER_MINE, 400, 400).unwrap();
+    let id = w.units[m].id;
+    let mut anim = galaxycraft::unit_anim::Animator::default();
+    let mut frames = Vec::new();
+    for _ in 0..80 {
+        w.step();
+        anim.advance(&w);
+        frames.extend(anim.unit_frame(id));
+    }
+    assert!(w.units[m].status.burrowed);
+    for f in [8, 9, 10, 11] {
+        assert!(frames.contains(&f), "frame {f} in {frames:?}");
+    }
+    assert_eq!(frames.last(), Some(&11), "it stays dug in");
+}

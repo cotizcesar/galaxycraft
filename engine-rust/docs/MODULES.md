@@ -35,7 +35,7 @@ Sizes are lines.  Find a function with `rg -n 'fn name' engine-rust/src`.
 | `bin/sc_view/briefing.rs` | 958 | `impl App`: briefing (moved out of `sc_view.rs` by scripts/split_impl.py). |
 | `bin/sc_view/collections.rs` | 667 | `impl App`: collections (moved out of `sc_view.rs` by scripts/split_impl.py). |
 | `bin/sc_view/commands.rs` | 1106 | `impl App`: commands (moved out of `sc_view.rs` by scripts/split_impl.py). |
-| `bin/sc_view/cursor.rs` | 616 | The in-game pointer: retail cursor shapes and art (HD and SD), edge |
+| `bin/sc_view/cursor.rs` | 623 | The in-game pointer: retail cursor shapes and art (HD and SD), edge |
 | `bin/sc_view/draw_world.rs` | 1762 | `impl App`: draw world (moved out of `sc_view.rs` by scripts/split_impl.py). |
 | `bin/sc_view/fog_memory.rs` | 51 | Fog of war memory: enemy buildings the local player has scouted stay |
 | `bin/sc_view/game_dialog.rs` | 1091 | `impl App`: game dialog (moved out of `sc_view.rs` by scripts/split_impl.py). |
@@ -58,7 +58,7 @@ Sizes are lines.  Find a function with `rg -n 'fn name' engine-rust/src`.
 | `bin/sc_view/session.rs` | 876 | `impl App`: session (moved out of `sc_view.rs` by scripts/split_impl.py). |
 | `bin/sc_view/sounds.rs` | 346 | `impl App`: sounds (moved out of `sc_view.rs` by scripts/split_impl.py). |
 | `bin/sc_view/turrets.rs` | 68 | Turret images of the Siege Tank and Goliath and the sieged tank's |
-| `bin/sc_view.rs` | 10729 | Playable graphical client for the reconstructed StarCraft rules engine. |
+| `bin/sc_view.rs` | 10723 | Playable graphical client for the reconstructed StarCraft rules engine. |
 | `button_sets.rs` | 258 | Retail command-card button sets. |
 | `buttons.rs` | 605 | Command card of a unit: the retail button set ([`crate::button_sets`]) |
 | `calibration.rs` | 173 | Deterministic capture correction layers. |
@@ -102,7 +102,7 @@ Sizes are lines.  Find a function with `rg -n 'fn name' engine-rust/src`.
 | `combat.rs` | 1066 | Combat rules reconstructed from StarCraft 1.23. |
 | `contour.rs` | 1196 | Terrain contours for the client's short-range path search. |
 | `credits.rs` | 419 | The Remastered Credits screen: layout and scrolling of the CEF panel. |
-| `data.rs` | 1222 | Data tables recovered from StarCraft 1.23.10.13515. |
+| `data.rs` | 1225 | Data tables recovered from StarCraft 1.23.10.13515. |
 | `dds.rs` | 646 | DirectDraw Surface decoding for the Remastered glue/console art. |
 | `economy.rs` | 318 | Economy and production rules. |
 | `handlers.rs` | 4849 | Behavioural reconstruction of the 137 fixed order-handler targets. |
@@ -111,8 +111,8 @@ Sizes are lines.  Find a function with `rg -n 'fn name' engine-rust/src`.
 | `hd_sprites.rs` | 1022 | Remastered 4x HD sprites (`anim/main_NNN.anim`, NNN = `images.dat` id) |
 | `hotkey_data.rs` | 804 | Complete Hotkeys browser data (all races, units and buildings). |
 | `ids.rs` | 378 | Symbolic ids for the stock StarCraft tables. |
-| `iscript.rs` | 1228 | `scripts\iscript.bin` reader and animation virtual machine. |
-| `lib.rs` | 93 | GalaxyCraft — a Rust reconstruction of StarCraft 1.23 gameplay. |
+| `iscript.rs` | 1231 | `scripts\iscript.bin` reader and animation virtual machine. |
+| `lib.rs` | 94 | GalaxyCraft — a Rust reconstruction of StarCraft 1.23 gameplay. |
 | `map.rs` | 1972 | `.scm`/`.scx` scenario (CHK) parsing and terrain walkability. |
 | `menu.rs` | 2776 | Retail menu flow: main menu, registry, episode/mission select, lobby, |
 | `menu_masks.rs` | 137 | Coverage masks measured from the four retail captures (alpha only). |
@@ -124,8 +124,9 @@ Sizes are lines.  Find a function with `rg -n 'fn name' engine-rust/src`.
 | `profile.rs` | 1089 | Player profiles: the Registry IDs, the global settings, per-profile |
 | `projectile.rs` | 165 | Travelling bullets and missiles. |
 | `ready_room.rs` | 274 | The mission briefing "ready room" script (`MBRF` section of a campaign |
+| `render/grp_flat.rs` | 25 |  |
 | `render/view_scale_tests.rs` | 74 |  |
-| `render.rs` | 5518 | Software renderer for the reconstructed rules engine. |
+| `render.rs` | 5509 | Software renderer for the reconstructed rules engine. |
 | `replay.rs` | 1593 | Deterministic command log: save games, replays and LAN sync share it. |
 | `retail.rs` | 2632 | Read-only access to the retail StarCraft installation. |
 | `retail_replay.rs` | 662 | Reader for the retail StarCraft Remastered `.rep` container. |
@@ -158,28 +159,29 @@ Sizes are lines.  Find a function with `rg -n 'fn name' engine-rust/src`.
 | `sim/creep_power.rs` | 224 | `impl World`: creep power (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/damage.rs` | 752 | `impl World`: damage (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/lift.rs` | 223 | `impl World`: lifting and landing Terran buildings, and their add-ons |
-| `sim/mod.rs` | 2579 | Deterministic StarCraft rules simulation. |
+| `sim/mod.rs` | 2573 | Deterministic StarCraft rules simulation. |
 | `sim/movement.rs` | 673 | `impl World`: movement (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/nuke.rs` | 291 | `impl World`: nuke (moved out of `mod.rs` by scripts/split_impl.py). |
-| `sim/orders.rs` | 645 | `impl World`: orders (moved out of `mod.rs` by scripts/split_impl.py). |
+| `sim/orders.rs` | 660 | `impl World`: orders (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/production.rs` | 1343 | `impl World`: production (moved out of `mod.rs` by scripts/split_impl.py). |
-| `sim/projectiles.rs` | 358 | `impl World`: projectiles (moved out of `mod.rs` by scripts/split_impl.py). |
-| `sim/spawn.rs` | 874 | `impl World`: spawn (moved out of `mod.rs` by scripts/split_impl.py). |
-| `sim/spells.rs` | 1033 | `impl World`: spells (moved out of `mod.rs` by scripts/split_impl.py). |
-| `sim/step.rs` | 811 | `impl World`: step (moved out of `mod.rs` by scripts/split_impl.py). |
+| `sim/projectiles.rs` | 363 | `impl World`: projectiles (moved out of `mod.rs` by scripts/split_impl.py). |
+| `sim/spawn.rs` | 876 | `impl World`: spawn (moved out of `mod.rs` by scripts/split_impl.py). |
+| `sim/spells.rs` | 1052 | `impl World`: spells (moved out of `mod.rs` by scripts/split_impl.py). |
+| `sim/step.rs` | 827 | `impl World`: step (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/tests.rs` | 3739 |  |
 | `sim/translated/mod.rs` | 18 |  |
 | `sim/transport.rs` | 211 | `impl World`: transport (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/unit_queries.rs` | 589 | `impl World`: unit queries (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/workers.rs` | 549 | `impl World`: workers (moved out of `mod.rs` by scripts/split_impl.py). |
 | `tables.rs` | 600 | Additional column-major tables recovered from the shipped CASC data. |
+| `team_colors.rs` | 87 | Retail team colours: the eight shades of each slot colour, read from |
 | `tech.rs` | 301 | The hard-coded build/research tree. |
 | `text.rs` | 1231 | Remastered front-end text: the shipped TrueType faces. |
 | `transmission.rs` | 256 | Trigger text and map audio: what the player reads and hears when a |
 | `trigger.rs` | 4902 | CHK trigger parsing and a deterministic subset of the trigger VM. |
 | `ui.rs` | 383 | Retail Remastered `.ui.json` dialog layouts. |
 | `ui_art.rs` | 1278 | Retail UI art bindings: console plates, command buttons, wireframes, |
-| `unit_anim.rs` | 1338 | Render-side iscript animation: unit poses (walking, attacking), bullets in |
+| `unit_anim.rs` | 1358 | Render-side iscript animation: unit poses (walking, attacking), bullets in |
 | `video.rs` | 1725 | Retail WebM cinematics: intros, campaign disks and briefing intermissions. |
 | `vision.rs` | 603 | Per-player tile visibility. |
 | `voice.rs` | 562 | Retail unit voice sets. |

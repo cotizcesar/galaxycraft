@@ -2,7 +2,7 @@
 # Only shrink this list (scripts/check_file_sizes.py --update).
 engine-rust/src/aiscript.rs 2877
 engine-rust/src/audio.rs 3042
-engine-rust/src/bin/sc_view.rs 10729
+engine-rust/src/bin/sc_view.rs 10723
 engine-rust/src/bin/sc_view/draw_world.rs 1762
 engine-rust/src/bin/sc_view/hud.rs 1814
 engine-rust/src/bin/sc_view/menu_draw.rs 2129
@@ -14,10 +14,10 @@ engine-rust/src/menu.rs 2776
 engine-rust/src/net.rs 2315
 engine-rust/src/orders.rs 1526
 engine-rust/src/path.rs 4123
-engine-rust/src/render.rs 5518
+engine-rust/src/render.rs 5509
 engine-rust/src/replay.rs 1593
 engine-rust/src/retail.rs 2632
-engine-rust/src/sim/mod.rs 2579
+engine-rust/src/sim/mod.rs 2573
 engine-rust/src/sim/tests.rs 3739
 engine-rust/src/trigger.rs 4902
 engine-rust/src/video.rs 1725

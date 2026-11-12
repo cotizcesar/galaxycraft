@@ -215,27 +215,43 @@ impl World {
                 .map(|w| (w.damage as i32) * fp(1) / (w.cooldown.max(1) as i32))
                 .unwrap_or(0);
             if damage > 0 {
-                let mut targets = Vec::new();
-                for j in 0..self.units.len() {
+                let eligible = |j: usize| {
                     let u = &self.units[j];
-                    if !u.alive || u.in_transport.is_some() {
-                        continue;
-                    }
                     let ty = self.data.unit(u.type_id);
-                    if !ty.is_organic()
-                        || ty.is_building()
-                        || matches!(
+                    u.alive
+                        && ty.is_organic()
+                        && !ty.is_building()
+                        && !matches!(
                             u.type_id,
                             uid::LARVA | uid::EGG | uid::COCOON | uid::LURKER_EGG
                         )
+                };
+                let mut targets = Vec::new();
+                // OpenBW `deal_irradiate_damage`: a burrowed unit only
+                // hurts itself; a loaded one only its transport; otherwise
+                // the aura (loaded units are out of reach).
+                if self.units[i].status.burrowed {
+                    if eligible(i) {
+                        targets.push(i);
+                    }
+                } else if let Some(carrier) = self.units[i].in_transport {
+                    if let Some(c) = self.index_of(carrier)
+                        && eligible(c)
                     {
-                        continue;
+                        targets.push(c);
                     }
-                    if j != i && u.status.burrowed {
-                        continue;
-                    }
-                    if self.box_gap_px(i, j) <= IRRADIATE_RADIUS_PX {
-                        targets.push(j);
+                } else {
+                    for j in 0..self.units.len() {
+                        let u = &self.units[j];
+                        if u.in_transport.is_some() || !eligible(j) {
+                            continue;
+                        }
+                        if j != i && u.status.burrowed {
+                            continue;
+                        }
+                        if self.box_gap_px(i, j) <= IRRADIATE_RADIUS_PX {
+                            targets.push(j);
+                        }
                     }
                 }
                 for j in targets {
@@ -755,7 +771,7 @@ impl World {
                             && !v.invincible
                             && !self.data.unit(v.type_id).is_building()
                             && !self.is_air_unit(n)
-                            && !is_hover_type(v.type_id)
+                            && self.data.unit(v.type_id).movement_flags != 0xc1
                             && (v.x - mx).abs() <= half
                             && (v.y - my).abs() <= half
                     })

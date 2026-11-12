@@ -1308,6 +1308,7 @@ pub const SPRITE_PATHS: &[&str] = &[
     "terran/comsat.grp",
     "terran/nukesilo.grp",
     "terran/control.grp",
+    "terran/drydocks.grp",
     "terran/physics.grp",
     "terran/machines.grp",
     "neutral/starbase.grp",
@@ -1414,8 +1415,7 @@ pub const FIXTURE_SOURCES: &[(&str, &str)] = &[
 
 /// Main-menu, title and score-panel surfaces from the retail glue layer.
 pub const GLUE_ART: &[&str] = &[
-    // Remastered menu entries: animated WebM buttons (idle + hover) that
-    // already carry their glow, so the client draws them instead of text.
+    // Remastered menu entries: animated WebM buttons (idle + hover), glow included.
     "glue/mainmenu/single.webm",
     "glue/mainmenu/singleon.webm",
     "glue/mainmenu/multi.webm",

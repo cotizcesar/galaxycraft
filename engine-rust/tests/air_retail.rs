@@ -419,3 +419,102 @@ fn idle_flyers_bob_up_and_down() {
     // iscript 0x79a2: setvertpos 1, 2, 1, 0 with random waits.
     assert!(seen.contains(&1) && seen.contains(&2), "{seen:?}");
 }
+
+#[test]
+fn yamato_energy_goes_when_the_charge_starts() {
+    // OpenBW `order_CastSpell` spends the energy as the cast animation
+    // starts; the raw orders.dat row 113 charges too.
+    for raw in [false, true] {
+        let mut w = world();
+        w.players[0].techs[tech::YAMATO_GUN as usize] = true;
+        let bc = w.spawn_px(0, uid::BATTLECRUISER, 400, 400).unwrap();
+        let target = w.spawn_px(1, uid::COMMAND_CENTER, 650, 400).unwrap();
+        w.units[target].completed = true;
+        let (bid, tid) = (w.units[bc].id, w.units[target].id);
+        w.units[bc].set_energy_fixed(200 * ENERGY_SCALE);
+        if raw {
+            w.issue_order_id(
+                bid,
+                galaxycraft::ids::order::FIRE_YAMATO_GUN,
+                Some(tid),
+                None,
+            )
+            .unwrap();
+        } else {
+            w.issue(
+                bid,
+                Order::Cast {
+                    spell: Spell::YamatoGun,
+                    target: SpellTarget::Unit(tid),
+                },
+            )
+            .unwrap();
+        }
+        for _ in 0..10 {
+            w.step();
+        }
+        assert!(w.projectiles.is_empty(), "still charging (raw {raw})");
+        assert_eq!(w.units[bc].energy_fixed() / ENERGY_SCALE, 50, "raw {raw}");
+        for _ in 0..80 {
+            w.step();
+        }
+        // Spent once: only regeneration since then (about 1 per 36 ticks).
+        let e = w.units[bc].energy_fixed() / ENERGY_SCALE;
+        assert!((50..=53).contains(&e), "spent once: {e}");
+    }
+}
+
+#[test]
+fn irradiate_on_a_burrowed_or_loaded_unit_spares_its_neighbours() {
+    // OpenBW `deal_irradiate_damage`.
+    let mut w = world();
+    let a = w.spawn_px(1, uid::ZERGLING, 400, 400).unwrap();
+    let b = w.spawn_px(1, uid::ZERGLING, 410, 400).unwrap();
+    w.units[a].status.burrowed = true;
+    w.units[a].status.apply_irradiate(10);
+    let (ha, hb) = (w.units[a].hp, w.units[b].hp);
+    for _ in 0..16 {
+        w.step();
+    }
+    assert!(w.units[a].hp < ha, "the burrowed unit burns");
+    assert_eq!(w.units[b].hp, hb, "its neighbour does not");
+    // A Marine irradiated inside a Dropship: the (mechanical) Dropship
+    // takes nothing, and neither does a Marine next to it.
+    let mut w = world();
+    let d = w.spawn_px(0, uid::DROPSHIP, 600, 600).unwrap();
+    let m = w.spawn_px(0, uid::MARINE, 600, 600).unwrap();
+    let n = w.spawn_px(0, uid::MARINE, 610, 600).unwrap();
+    let did = w.units[d].id;
+    let mid = w.units[m].id;
+    w.units[m].in_transport = Some(did);
+    w.units[d].cargo.push(mid);
+    w.units[m].status.apply_irradiate(10);
+    let (hm, hn, hd) = (w.units[m].hp, w.units[n].hp, w.units[d].hp);
+    for _ in 0..16 {
+        w.step();
+    }
+    assert_eq!((w.units[m].hp, w.units[n].hp, w.units[d].hp), (hm, hn, hd));
+}
+
+#[test]
+fn halo_rockets_spread_by_each_valkyries_own_offset_index() {
+    let mut w = world();
+    let v1 = w.spawn_px(0, uid::VALKYRIE, 300, 300).unwrap();
+    let v2 = w.spawn_px(0, uid::VALKYRIE, 300, 400).unwrap();
+    assert_eq!(
+        (w.units[v1].near_target_index, w.units[v2].near_target_index),
+        (0, 0)
+    );
+    let t = w.spawn_px(1, uid::OVERLORD, 400, 350).unwrap();
+    let tid = w.units[t].id;
+    for v in [v1, v2] {
+        let id = w.units[v].id;
+        w.issue(id, Order::AttackUnit { target: tid }).unwrap();
+    }
+    for _ in 0..60 {
+        w.step();
+    }
+    // Each shooter walks its own table: equal counts of rockets fired.
+    let (i1, i2) = (w.units[v1].near_target_index, w.units[v2].near_target_index);
+    assert!(i1 > 0 && i2 > 0, "both fired ({i1}, {i2})");
+}

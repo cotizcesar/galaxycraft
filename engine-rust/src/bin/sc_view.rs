@@ -1529,13 +1529,6 @@ fn mouse_move_factor(options: &GameOptions, surface: (i32, i32)) -> f32 {
     scaled.clamp(0.25, 4.0)
 }
 
-/// The operating-system pointer is visible only when there is no virtual
-/// pointer to draw.  With the mouse inside the game, the retail/fallback
-/// cursor is drawn instead, so the player never sees two pointers.
-fn system_cursor_visible_for(pointer_present: bool) -> bool {
-    !pointer_present
-}
-
 /// StarCraft 1 selection normalisation: a building is selected alone, and
 /// mobile units stop at twelve.  `(id, is_building)` pairs are consumed in
 /// selection order.
@@ -7469,6 +7462,7 @@ fn main() {
         }
     };
     let intro = menu && !no_intro && glue.is_some();
+    galaxycraft::team_colors::load(install_handle.as_ref());
     // Retail pointer skins, HD and SD (see `CursorShape`).
     let cursor_art = install_handle.as_ref().map(|inst| {
         let mut art = CursorArt::default();
