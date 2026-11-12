@@ -19,12 +19,18 @@ pub const DEAD_ZONE: f32 = 0.18;
 pub const CURSOR_SPEED: f32 = 16.0;
 /// Camera pan at full right-stick deflection, game px/frame.
 pub const PAN_SPEED: i32 = 14;
-/// Right-stick deflection that starts moving the command-wheel focus.
+/// Stick deflection that starts moving the radial focus.
 pub const WHEEL_AIM_THRESHOLD: f32 = 0.5;
+/// Slots of one radial: the twelve clock positions.
+pub const RADIAL_SLOTS: usize = 12;
+/// Longest LT press that still counts as a tap.
+pub const TRIGGER_TAP_MS: u64 = 280;
 /// A second A press within this window selects every unit of the same type.
 pub const DOUBLE_TAP_MS: u64 = 350;
 
-/// One frame of controller intent.
+/// One frame of controller intent.  The layout follows the Baldur's Gate 3
+/// controller scheme: bumpers open the action radials, RT the shortcut
+/// radial, LT the group ("party") radial, the D-pad steps through targets.
 #[derive(Clone, Debug, Default)]
 pub struct PadFrame {
     pub active: bool,
@@ -32,56 +38,44 @@ pub struct PadFrame {
     pub cursor: (f32, f32),
     /// Camera pan (x, y) in game pixels this frame.
     pub pan: (i32, i32),
-    /// Right stick after the radial dead zone, screen axes (+x right,
-    /// +y down).  Drives the command wheel while it is open.
+    /// Left stick after the radial dead zone, screen axes (+x right,
+    /// +y down).  Picks the radial slot while a radial is open.
+    pub stick: (f32, f32),
+    /// Right stick after the radial dead zone, screen axes.
     pub aim: (f32, f32),
     /// Held trigger/button levels.
     pub lmb: bool,
+    /// LT held: add to the selection / queue the order.
     pub shift: bool,
     pub ctrl: bool,
     /// A edge: select / confirm / activate.
     pub primary: bool,
     /// B edge: cancel / back / deselect.
     pub cancel: bool,
-    /// X edge: open the context command wheel.
-    pub command_wheel: bool,
-    /// Y edge: cycle an idle worker / army unit.
-    pub cycle_idle: bool,
-    /// LB / RB edges: previous / next command wheel page.
+    /// X edge: context order (move / attack / gather) at the pointer; in
+    /// the group radial it assigns the selection to the focused group.
+    pub smart_order: bool,
+    /// Y edge: attack-move to the pointer.
+    pub attack_move: bool,
+    /// LB / RB edges: open the action radials, then previous / next radial.
     pub page_prev: bool,
     pub page_next: bool,
-    /// Start edge: game menu.
+    /// RT edge: toggle the shortcut radial.
+    pub shortcut_radial: bool,
+    /// Any face / bumper / RT / D-pad button is down; cancels an LT tap.
+    pub chord: bool,
+    /// Start/Menu edge: game menu.
     pub menu: bool,
-    /// Select/View edge: objectives / score.
-    pub objectives: bool,
-    /// Y edge: issue an attack-move to the pointer.
-    pub attack_move: bool,
-    /// X edge: smart order (move / attack / gather) at the pointer.
-    pub smart_order: bool,
-    /// RT held: the nine positional buttons address the command card.
-    pub command_layer: bool,
-    /// RT + one of the nine positional buttons: command-card index 0..8.
-    pub command_slot: Option<usize>,
-    /// LB + one of eight buttons: group edge / held slot (0..7 => groups 1..8).
-    pub group_pressed: Option<usize>,
-    pub group_held: Option<usize>,
-    /// D-pad down/left/right without a modifier: saved camera 0..2.
-    pub camera_slot: Option<usize>,
-    /// LT + camera D-pad edge: save the current camera.
-    pub camera_save: bool,
-    /// LT + camera D-pad edge: slot 0..2 to overwrite.
-    pub camera_save_slot: Option<usize>,
-    /// D-pad up: jump to the last damage alert.
-    pub last_alert: bool,
-    /// RB held: confine the pointer to the minimap; A jumps there.
-    pub minimap_hold: bool,
+    /// Select/View edge: minimap pointer ("map").
+    pub map: bool,
     /// Edge-triggered keys for the in-game handler.
     pub pressed: Vec<Key>,
     /// Edge-triggered keys for menus/dialogs (A is Enter, B is Escape).
     pub menu_pressed: Vec<Key>,
     /// Held arrow levels for menu navigation/camera.
     pub nav: (bool, bool, bool, bool),
-    /// D-pad edges (left, right, up, down) for wheel navigation.
+    /// D-pad edges (left, right, up, down): previous / next group, last
+    /// alert ("jump"), centre on the selection ("examine"); radial focus.
     pub nav_pressed: (bool, bool, bool, bool),
     pub wheel: i32,
 }
@@ -128,146 +122,63 @@ pub fn map_state(
 ) -> PadFrame {
     let (lx, ly) = radial(left.0, left.1);
     let (rx, ry) = radial(right.0, right.1);
-    let dpad_edge = |now: bool, before: bool| now && !before;
-    let rt = buttons.rt;
-    let lb = buttons.lb;
-    let lt = buttons.lt;
     let edge = |now: bool, before: bool| now && !before;
-    let group_button =
-        |i: usize, now: PadButtons, before: PadButtons| -> (Option<usize>, Option<usize>) {
-            let slot = match i {
-                0 => (now.dpad_down, before.dpad_down, 0usize),
-                1 => (now.dpad_left, before.dpad_left, 1),
-                2 => (now.dpad_right, before.dpad_right, 2),
-                3 => (now.dpad_up, before.dpad_up, 3),
-                4 => (now.south, before.south, 4),
-                5 => (now.east, before.east, 5),
-                6 => (now.west, before.west, 6),
-                _ => (now.north, before.north, 7),
-            };
-            if lb && slot.0 {
-                (edge(slot.0, slot.1).then_some(slot.2), Some(slot.2))
-            } else {
-                (None, None)
-            }
-        };
-    let mut group_pressed = None;
-    let mut group_held = None;
-    for i in 0..8 {
-        let (pressed, held) = group_button(i, buttons, prev);
-        if pressed.is_some() {
-            group_pressed = pressed;
-        }
-        if held.is_some() {
-            group_held = held;
-        }
-    }
-    let command_slot = if rt {
-        let slots = [
-            (buttons.west, prev.west),
-            (buttons.north, prev.north),
-            (buttons.east, prev.east),
-            (buttons.dpad_left, prev.dpad_left),
-            (buttons.dpad_up, prev.dpad_up),
-            (buttons.dpad_right, prev.dpad_right),
-            (buttons.dpad_down, prev.dpad_down),
-            (buttons.south, prev.south),
-            (buttons.rb, prev.rb),
-        ];
-        slots.iter().position(|&(now, before)| edge(now, before))
-    } else {
-        None
-    };
-    let camera_modifier = !lb && !rt;
-    let camera_slot = if camera_modifier && !lt {
-        if edge(buttons.dpad_down, prev.dpad_down) {
-            Some(0)
-        } else if edge(buttons.dpad_left, prev.dpad_left) {
-            Some(1)
-        } else if edge(buttons.dpad_right, prev.dpad_right) {
-            Some(2)
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-    let camera_save_slot = if camera_modifier && lt {
-        if edge(buttons.dpad_down, prev.dpad_down) {
-            Some(0)
-        } else if edge(buttons.dpad_left, prev.dpad_left) {
-            Some(1)
-        } else if edge(buttons.dpad_right, prev.dpad_right) {
-            Some(2)
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-    let camera_save = camera_save_slot.is_some();
-    let last_alert = camera_modifier && !lt && edge(buttons.dpad_up, prev.dpad_up);
+    let chord = buttons.south
+        || buttons.east
+        || buttons.west
+        || buttons.north
+        || buttons.lb
+        || buttons.rb
+        || buttons.rt
+        || buttons.start
+        || buttons.select
+        || buttons.dpad_up
+        || buttons.dpad_down
+        || buttons.dpad_left
+        || buttons.dpad_right;
     let mut frame = PadFrame {
         active: lx != 0.0
             || ly != 0.0
             || rx != 0.0
             || ry != 0.0
-            || buttons.south
-            || buttons.east
-            || buttons.west
-            || buttons.north
-            || buttons.lb
-            || buttons.rb
-            || buttons.start
-            || buttons.select
+            || chord
             || buttons.lt
-            || buttons.rt
-            || buttons.dpad_up
-            || buttons.dpad_down
-            || buttons.dpad_left
-            || buttons.dpad_right
             || buttons.l3
-            || buttons.r3,
+            || buttons.r3
+            // The release frame still carries the LT tap.
+            || prev.lt,
         cursor: (lx * CURSOR_SPEED, -ly * CURSOR_SPEED),
         pan: (
             (rx * PAN_SPEED as f32).round() as i32,
             (-ry * PAN_SPEED as f32).round() as i32,
         ),
+        stick: (lx, -ly),
         aim: (rx, -ry),
         lmb: buttons.south,
-        shift: lt,
+        shift: buttons.lt,
         ctrl: false,
-        attack_move: !rt && !lb && edge(buttons.north, prev.north),
-        smart_order: !rt && !lb && edge(buttons.west, prev.west),
-        command_layer: rt,
-        command_slot,
-        group_pressed,
-        group_held,
-        camera_slot,
-        camera_save,
-        camera_save_slot,
-        last_alert,
-        minimap_hold: buttons.rb && !rt,
-        primary: buttons.south && !prev.south && !rt && !lb,
-        cancel: buttons.east && !prev.east && !rt && !lb,
-        command_wheel: false,
-        cycle_idle: false,
-        page_prev: false,
-        page_next: false,
-        menu: buttons.start && !prev.start,
-        objectives: buttons.select && !prev.select,
+        primary: edge(buttons.south, prev.south),
+        cancel: edge(buttons.east, prev.east),
+        smart_order: edge(buttons.west, prev.west),
+        attack_move: edge(buttons.north, prev.north),
+        page_prev: edge(buttons.lb, prev.lb),
+        page_next: edge(buttons.rb, prev.rb),
+        shortcut_radial: edge(buttons.rt, prev.rt),
+        chord,
+        menu: edge(buttons.start, prev.start),
+        map: edge(buttons.select, prev.select),
         nav: (false, false, false, false),
         nav_pressed: (
-            dpad_edge(buttons.dpad_left, prev.dpad_left) && !lb && !rt,
-            dpad_edge(buttons.dpad_right, prev.dpad_right) && !lb && !rt,
-            dpad_edge(buttons.dpad_up, prev.dpad_up) && !lb && !rt,
-            dpad_edge(buttons.dpad_down, prev.dpad_down) && !lb && !rt,
+            edge(buttons.dpad_left, prev.dpad_left),
+            edge(buttons.dpad_right, prev.dpad_right),
+            edge(buttons.dpad_up, prev.dpad_up),
+            edge(buttons.dpad_down, prev.dpad_down),
         ),
         wheel,
         ..PadFrame::default()
     };
     // L3 remains a convenience for centring on the base.
-    if buttons.l3 && !prev.l3 {
+    if edge(buttons.l3, prev.l3) {
         frame.pressed.push(Key::Home);
     }
     // Menus: A activates, B goes back, Start confirms/opens the game menu.
@@ -294,6 +205,39 @@ pub fn map_state(
         frame.menu_pressed.push(Key::Down);
     }
     frame
+}
+
+/// LT is two controls, as on the Baldur's Gate 3 pad: a short tap opens the
+/// group radial, a hold is the add / queue modifier.  A tap is a press and
+/// release within [`TRIGGER_TAP_MS`] with no other button in between.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TriggerTap {
+    since: Option<u64>,
+    spoiled: bool,
+}
+
+impl TriggerTap {
+    /// Feed one frame; returns true on the frame a clean tap is released.
+    pub fn update(&mut self, now_ms: u64, held: bool, chord: bool) -> bool {
+        match (self.since, held) {
+            (None, true) => {
+                self.since = Some(now_ms);
+                self.spoiled = chord;
+                false
+            }
+            (Some(_), true) => {
+                self.spoiled |= chord;
+                false
+            }
+            (Some(since), false) => {
+                let tap = !self.spoiled && now_ms.saturating_sub(since) <= TRIGGER_TAP_MS;
+                self.since = None;
+                self.spoiled = false;
+                tap
+            }
+            (None, false) => false,
+        }
+    }
 }
 
 /// Controller command-wheel state: which page and sector are focused.  The
@@ -339,6 +283,13 @@ impl WheelState {
         true
     }
 
+    /// Focus one sector of the current page directly.
+    pub fn set_focus(&mut self, focus: usize) {
+        if focus < self.counts.get(self.page).copied().unwrap_or(0) {
+            self.focus = focus;
+        }
+    }
+
     pub fn close(&mut self) {
         self.open = false;
         self.page = 0;
@@ -361,7 +312,8 @@ impl WheelState {
         true
     }
 
-    /// D-pad: move the focused sector, wrapping around.
+    /// Step the focused sector, wrapping around.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn focus_delta(&mut self, delta: isize) -> bool {
         if !self.open {
             return false;
@@ -376,7 +328,7 @@ impl WheelState {
         changed
     }
 
-    /// Right stick: focus the sector under the stick.  `dx`/`dy` are screen
+    /// Stick: focus the sector under the stick.  `dx`/`dy` are screen
     /// axes (right / down) and index 0 is the top sector, clockwise.
     pub fn aim(&mut self, dx: f32, dy: f32) -> bool {
         if !self.open || (dx * dx + dy * dy).sqrt() < WHEEL_AIM_THRESHOLD {
@@ -704,13 +656,13 @@ mod tests {
         assert!(f.lmb, "A still clicks the pointer in menus");
         assert!(f.primary);
         assert!(f.smart_order);
-        assert!(f.shift, "LT is the queue/add modifier");
+        assert!(f.shift, "LT held is the queue/add modifier");
+        assert!(f.chord, "another button spoils the LT tap");
         assert!(f.menu_pressed.contains(&Key::Enter));
-        assert!(!f.nav.0, "the D-pad is reserved for saved cameras");
+        assert!(!f.nav.0, "the D-pad is edge-triggered in game");
         assert!(f.nav_pressed.0, "menus still see the D-pad edge");
-        assert!(f.camera_save);
-        assert_eq!(f.camera_save_slot, Some(1));
         assert!(f.cursor.0 > 0.0);
+        assert_eq!(f.stick, (1.0, 0.0));
         // A held button does not press again.
         let f2 = map_state((1.0, 0.0), (0.0, 0.0), b, b, 0);
         assert!(!f2.primary);
@@ -720,204 +672,89 @@ mod tests {
     }
 
     #[test]
-    fn controller_buttons_follow_the_starcraft_xbox_scheme() {
-        let b = PadButtons {
+    fn controller_buttons_follow_the_bg3_scheme() {
+        let none = PadButtons::default();
+        let press = |b: PadButtons| map_state((0.0, 0.0), (0.0, 0.0), b, none, 0);
+        // Face buttons: A select, B cancel, X context order, Y attack.
+        let a = press(PadButtons {
             south: true,
-            east: true,
-            west: true,
+            ..none
+        });
+        assert!(a.primary && !a.cancel && !a.smart_order && !a.attack_move);
+        let b = press(PadButtons { east: true, ..none });
+        assert!(b.cancel && b.menu_pressed.contains(&Key::Escape));
+        let x = press(PadButtons { west: true, ..none });
+        assert!(x.smart_order && !x.attack_move);
+        let y = press(PadButtons {
             north: true,
-            rb: true,
-            start: true,
+            ..none
+        });
+        assert!(y.attack_move && !y.smart_order);
+        // Bumpers open / step the action radials.
+        let lb = press(PadButtons { lb: true, ..none });
+        assert!(lb.page_prev && !lb.page_next && !lb.shortcut_radial);
+        let rb = press(PadButtons { rb: true, ..none });
+        assert!(rb.page_next && !rb.page_prev);
+        // RT is the shortcut radial; LT alone is not a chord (it can tap).
+        let rt = press(PadButtons { rt: true, ..none });
+        assert!(rt.shortcut_radial && rt.chord && !rt.shift);
+        let lt = press(PadButtons { lt: true, ..none });
+        assert!(lt.shift && !lt.chord && lt.active);
+        // View is the map (minimap pointer), Menu the game menu.
+        let view = press(PadButtons {
             select: true,
-            ..PadButtons::default()
-        };
-        let f = map_state((0.0, 0.0), (0.0, 0.0), b, PadButtons::default(), 0);
-        assert!(f.primary, "A selects");
-        assert!(f.cancel, "B cancels");
-        assert!(f.smart_order, "X is the smart order");
-        assert!(f.attack_move, "Y is attack-move");
-        assert!(f.menu);
-        assert!(f.objectives);
-        assert!(f.minimap_hold, "RB confines the pointer to the minimap");
-        assert!(f.menu_pressed.contains(&Key::Escape));
-        assert!(f.menu_pressed.contains(&Key::F10));
-        assert!(!f.command_wheel && !f.cycle_idle && !f.page_prev && !f.page_next);
-
-        // RT turns the nine positional buttons into command-card slots in
-        // exactly this order: X/Y/B, D-pad left/up/right, D-pad down/A/RB.
-        let rt = PadButtons {
+            ..none
+        });
+        assert!(view.map && !view.menu);
+        let menu = press(PadButtons {
+            start: true,
+            ..none
+        });
+        assert!(menu.menu && menu.menu_pressed.contains(&Key::F10));
+        // L3 centres on the base.
+        let l3 = press(PadButtons { l3: true, ..none });
+        assert!(l3.pressed.contains(&Key::Home));
+        // Face buttons are plain edges even while a trigger is held.
+        let combo = press(PadButtons {
             rt: true,
-            ..PadButtons::default()
-        };
-        let cases = [
-            (
-                "RT+X",
-                PadButtons {
-                    west: true,
-                    ..PadButtons::default()
-                },
-                0,
-            ),
-            (
-                "RT+Y",
-                PadButtons {
-                    north: true,
-                    ..PadButtons::default()
-                },
-                1,
-            ),
-            (
-                "RT+B",
-                PadButtons {
-                    east: true,
-                    ..PadButtons::default()
-                },
-                2,
-            ),
-            (
-                "RT+D-pad left",
-                PadButtons {
-                    dpad_left: true,
-                    ..PadButtons::default()
-                },
-                3,
-            ),
-            (
-                "RT+D-pad up",
-                PadButtons {
-                    dpad_up: true,
-                    ..PadButtons::default()
-                },
-                4,
-            ),
-            (
-                "RT+D-pad right",
-                PadButtons {
-                    dpad_right: true,
-                    ..PadButtons::default()
-                },
-                5,
-            ),
-            (
-                "RT+D-pad down",
-                PadButtons {
-                    dpad_down: true,
-                    ..PadButtons::default()
-                },
-                6,
-            ),
-            (
-                "RT+A",
-                PadButtons {
-                    south: true,
-                    ..PadButtons::default()
-                },
-                7,
-            ),
-            (
-                "RT+RB",
-                PadButtons {
-                    rb: true,
-                    ..PadButtons::default()
-                },
-                8,
-            ),
-        ];
-        for (name, pressed, want) in cases {
-            let card = map_state(
-                (0.0, 0.0),
-                (0.0, 0.0),
-                PadButtons {
-                    rt: true,
-                    ..pressed
-                },
-                rt,
-                0,
-            );
-            assert_eq!(card.command_slot, Some(want), "{name}");
-            assert!(card.command_layer, "{name} opens the card layer");
-            assert!(!card.primary && !card.cancel && !card.attack_move, "{name}");
-        }
+            south: true,
+            ..none
+        });
+        assert!(combo.primary && combo.shortcut_radial);
     }
 
     #[test]
-    fn lb_groups_and_dpad_cameras_are_positional() {
-        // LB + A is group 5 in the 1..8 table.
-        let lb = PadButtons {
-            lb: true,
-            ..PadButtons::default()
+    fn dpad_edges_and_the_lt_release_frame_are_reported() {
+        let none = PadButtons::default();
+        let up = PadButtons {
+            dpad_up: true,
+            ..none
         };
-        let f = map_state(
-            (0.0, 0.0),
-            (0.0, 0.0),
-            PadButtons {
-                lb: true,
-                south: true,
-                ..PadButtons::default()
-            },
-            lb,
-            0,
-        );
-        assert_eq!(f.group_pressed, Some(4));
-        assert_eq!(f.group_held, Some(4));
-        assert!(
-            !f.primary,
-            "LB+A does not select while the group layer is held"
-        );
-        // LB + D-pad down is group 1.
-        let f = map_state(
-            (0.0, 0.0),
-            (0.0, 0.0),
-            PadButtons {
-                lb: true,
-                dpad_down: true,
-                ..PadButtons::default()
-            },
-            lb,
-            0,
-        );
-        assert_eq!(f.group_pressed, Some(0));
-        // D-pad down restores camera 1, LT+D-pad down saves it.
-        let f = map_state(
-            (0.0, 0.0),
-            (0.0, 0.0),
-            PadButtons {
-                dpad_down: true,
-                ..PadButtons::default()
-            },
-            PadButtons::default(),
-            0,
-        );
-        assert_eq!(f.camera_slot, Some(0));
-        assert!(!f.camera_save);
-        let f = map_state(
-            (0.0, 0.0),
-            (0.0, 0.0),
-            PadButtons {
-                lt: true,
-                dpad_left: true,
-                ..PadButtons::default()
-            },
-            PadButtons {
-                lt: true,
-                ..PadButtons::default()
-            },
-            0,
-        );
-        assert!(f.camera_save);
-        assert_eq!(f.camera_slot, None);
-        // D-pad up is the last-alert jump.
-        let f = map_state(
-            (0.0, 0.0),
-            (0.0, 0.0),
-            PadButtons {
-                dpad_up: true,
-                ..PadButtons::default()
-            },
-            PadButtons::default(),
-            0,
-        );
-        assert!(f.last_alert);
+        let f = map_state((0.0, 0.0), (0.0, 0.0), up, none, 0);
+        assert_eq!(f.nav_pressed, (false, false, true, false));
+        assert!(f.menu_pressed.contains(&Key::Up));
+        let held = map_state((0.0, 0.0), (0.0, 0.0), up, up, 0);
+        assert_eq!(held.nav_pressed, (false, false, false, false));
+        // The frame LT is released on is still active, so the tap is seen.
+        let lt = PadButtons { lt: true, ..none };
+        let released = map_state((0.0, 0.0), (0.0, 0.0), none, lt, 0);
+        assert!(released.active && !released.shift);
+    }
+
+    #[test]
+    fn lt_tap_opens_the_groups_and_a_hold_or_chord_does_not() {
+        let mut tap = TriggerTap::default();
+        assert!(!tap.update(0, true, false));
+        assert!(tap.update(120, false, false), "short clean press is a tap");
+        // Held past the window: a modifier, not a tap.
+        assert!(!tap.update(1000, true, false));
+        assert!(!tap.update(1000 + TRIGGER_TAP_MS + 1, false, false));
+        // Another button during the press: LT+A is add-select, not a tap.
+        assert!(!tap.update(2000, true, false));
+        assert!(!tap.update(2050, true, true));
+        assert!(!tap.update(2100, false, false));
+        // Idle frames never tap.
+        assert!(!tap.update(3000, false, false));
     }
 
     #[test]

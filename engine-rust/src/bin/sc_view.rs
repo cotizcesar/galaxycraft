@@ -104,6 +104,9 @@ mod gamepad;
 /// Multiplayer front end (Select Connection, Games, Create, lobby, score).
 #[path = "sc_view/mp.rs"]
 mod mp;
+/// Controller radials and button prompts (Baldur's Gate 3 pad layout).
+#[path = "sc_view/pad_ui.rs"]
+mod pad_ui;
 
 const HUD_H: i32 = 240;
 /// Intro movie playback: 12 fps at 960 px wide keeps the decoder ahead of
@@ -1801,6 +1804,8 @@ struct WheelEntry {
     tooltip: String,
     icon: u16,
     enabled: bool,
+    /// What A does on the slot (a card command, a shortcut, a group).
+    action: pad_ui::PadAction,
 }
 
 /// One context page of the command wheel (Commands, Build, Train, ...).
@@ -1970,6 +1975,7 @@ fn wheel_page_for_selection(world: &World, units: &[SimUnit], card_set: Option<u
             tooltip: button_tooltip_text(raw),
             icon: b.icon,
             enabled,
+            action: pad_ui::PadAction::Card,
         });
     }
     WheelPage { title, entries }
@@ -2008,6 +2014,7 @@ fn wheel_pages_for(world: &World, unit: &SimUnit) -> Vec<WheelPage> {
             tooltip: button_tooltip_text(raw),
             icon: b.icon,
             enabled,
+            action: pad_ui::PadAction::Card,
         }
     };
     // Build-card sets reachable from the unit's own card.
@@ -2683,10 +2690,6 @@ struct App {
     /// A physical mouse move suspends pad control until the controller goes
     /// neutral, so both devices can share the session without fighting.
     pad_suppressed: bool,
-    /// LB group key currently held: slot, press time, long-press assigned.
-    pad_group: Option<(usize, Instant, bool)>,
-    /// Last completed group tap, used for double-tap camera centring.
-    pad_group_tap: Option<(usize, Instant)>,
     /// A held A started in the playfield; released as a click or a box.
     pad_drag: Option<(i32, i32, bool)>,
     /// Last local unit that lost hit points, for the D-pad up alert jump.
@@ -2707,7 +2710,14 @@ struct App {
     pad_last_poll: Instant,
     /// Previous RT state, so the ring opens on the press edge and stays
     /// closed after a selection until RT is released and pressed again.
-    pad_rt_was_held: bool,
+    /// Which radial set is open (actions, shortcuts, groups).
+    pad_wheel_kind: pad_ui::RadialKind,
+    /// LT tap (group radial) versus LT hold (add / queue).
+    pad_lt_tap: gamepad::TriggerTap,
+    /// View toggled the minimap pointer.
+    pad_minimap_mode: bool,
+    /// Group last recalled with the D-pad.
+    pad_group_at: usize,
     /// Controller button hints stay visible briefly after the last input.
     pad_hint_until: Instant,
     /// Reused 16:9 box for the briefing/score screens, avoiding a full
@@ -6666,6 +6676,51 @@ fn run_game_script(app: &mut App, fb: &mut Framebuffer, script: &str) {
                     parts[0] == "shift-click-slot",
                 );
             }
+            // `pad:BUTTON` (a b x y lb rb rt lt view menu up down left
+            // right) or `pad:stick:X:Y` (percent): one controller edge.
+            "pad" => {
+                app.pad_control = true;
+                let mut f = gamepad::PadFrame {
+                    active: true,
+                    ..gamepad::PadFrame::default()
+                };
+                match parts.get(1).copied().unwrap_or("") {
+                    "a" => f.primary = true,
+                    "b" => f.cancel = true,
+                    "x" => f.smart_order = true,
+                    "y" => f.attack_move = true,
+                    "lb" => f.page_prev = true,
+                    "rb" => f.page_next = true,
+                    "rt" => f.shortcut_radial = true,
+                    "lt" => f.shift = true,
+                    "view" => f.map = true,
+                    "menu" => f.menu = true,
+                    "left" => f.nav_pressed.0 = true,
+                    "right" => f.nav_pressed.1 = true,
+                    "up" => f.nav_pressed.2 = true,
+                    "down" => f.nav_pressed.3 = true,
+                    "stick" => f.stick = (num(2) as f32 / 100.0, num(3) as f32 / 100.0),
+                    _ => {}
+                }
+                f.chord = !f.shift && f.stick == (0.0, 0.0);
+                for pad in [
+                    f,
+                    gamepad::PadFrame {
+                        active: true,
+                        ..gamepad::PadFrame::default()
+                    },
+                ] {
+                    frame(
+                        app,
+                        fb,
+                        GameInput {
+                            shift: pad.shift,
+                            pad,
+                            ..base(mouse)
+                        },
+                    );
+                }
+            }
             "click-cmd" => {
                 let slots = app.command_slots();
                 if let Some(r) = slots.get((num(1) - 1).max(0) as usize) {
@@ -7338,26 +7393,20 @@ fn main() {
                 if frame.attack_move {
                     println!("gamepad: attack-move (Y)");
                 }
-                if let Some(slot) = frame.command_slot {
-                    println!("gamepad: command slot {slot} (RT)");
+                if frame.page_prev || frame.page_next {
+                    println!("gamepad: action radials (LB/RB)");
                 }
-                if frame.command_layer {
-                    println!("gamepad: command layer (RT)");
+                if frame.shortcut_radial {
+                    println!("gamepad: shortcut radial (RT)");
                 }
-                if let Some(group) = frame.group_pressed {
-                    println!("gamepad: group {} (LB)", group + 1);
+                if frame.shift {
+                    println!("gamepad: group radial / add (LT)");
                 }
-                if let Some(slot) = frame.camera_slot {
-                    println!("gamepad: camera {} (D-pad)", slot + 1);
+                if frame.map {
+                    println!("gamepad: minimap pointer (View)");
                 }
-                if let Some(slot) = frame.camera_save_slot {
-                    println!("gamepad: save camera {} (LT+D-pad)", slot + 1);
-                }
-                if frame.last_alert {
-                    println!("gamepad: last alert (D-pad up)");
-                }
-                if frame.minimap_hold {
-                    println!("gamepad: minimap cursor (RB)");
+                if frame.nav_pressed != (false, false, false, false) {
+                    println!("gamepad: d-pad {:?}", frame.nav_pressed);
                 }
                 if frame.pan != (0, 0) {
                     println!("gamepad: pan {:?}", frame.pan);
@@ -7922,8 +7971,6 @@ fn main() {
         pad_cursor: (640, 360),
         pad_control: false,
         pad_suppressed: false,
-        pad_group: None,
-        pad_group_tap: None,
         pad_drag: None,
         last_alert_pos: None,
         last_health: Vec::new(),
@@ -7932,7 +7979,10 @@ fn main() {
         pad_tap: gamepad::TapTracker::default(),
         pad_started: Instant::now(),
         pad_last_poll: Instant::now(),
-        pad_rt_was_held: false,
+        pad_wheel_kind: pad_ui::RadialKind::default(),
+        pad_lt_tap: gamepad::TriggerTap::default(),
+        pad_minimap_mode: false,
+        pad_group_at: 0,
         pad_hint_until: Instant::now(),
         boxed_fb: None,
         overlay: 0,
@@ -16916,7 +16966,6 @@ impl App {
         self.pad_frame = self.gamepad.poll();
         if !self.pad_frame.active {
             self.pad_suppressed = false;
-            self.pad_rt_was_held = false;
         }
         if self.pad_frame.active && self.pad_suppressed {
             // The player moved the mouse: the pad stays ignored until it is
@@ -16948,7 +16997,7 @@ impl App {
             let step = frame_dt * 60.0;
             self.pad_cursor.0 = (self.pad_cursor.0 + (dx * step).round() as i32).clamp(0, sw - 1);
             self.pad_cursor.1 = (self.pad_cursor.1 + (dy * step).round() as i32).clamp(0, sh - 1);
-            if self.pad_frame.minimap_hold {
+            if self.pad_minimap_mode && !self.menu && !self.intro {
                 let (rx, ry, rw, rh) = self.minimap_rect();
                 self.pad_cursor.0 = self.pad_cursor.0.clamp(rx, rx + rw - 1);
                 self.pad_cursor.1 = self.pad_cursor.1.clamp(ry, ry + rh - 1);
@@ -17108,10 +17157,7 @@ impl App {
         self.track_last_alert();
         self.drag_now = (mx, my);
         let in_view = input.mouse.is_some() && my < self.playfield_bottom();
-        if (input.pad.active
-            || self.pad_group.is_some()
-            || self.pad_drag.is_some()
-            || self.pad_wheel.is_open())
+        if (input.pad.active || self.pad_drag.is_some() || self.pad_wheel.is_open())
             && self.handle_pad_input(input, mx, my, in_view)
         {
             return;
@@ -17741,295 +17787,6 @@ impl App {
         removed
     }
 
-    /// Controller-first gameplay input.  Returns true when the action opened
-    /// a modal or consumed the frame, so the rest of the frame must stop.
-    fn handle_pad_input(&mut self, input: &GameInput, mx: i32, my: i32, in_view: bool) -> bool {
-        let pad = &input.pad;
-        if pad.menu {
-            self.close_command_wheel();
-            self.open_game_dialog(GameDialog::Menu);
-            self.play("ui_click");
-            return true;
-        }
-        if pad.objectives {
-            self.close_command_wheel();
-            if self.game_dialog == Some(GameDialog::Objectives) {
-                self.close_game_dialog();
-            } else {
-                self.open_game_dialog(GameDialog::Objectives);
-            }
-            self.play("ui_click");
-            return true;
-        }
-        // LB + face/D-pad: hold to assign the group, tap to recall it, and
-        // double-tap the same group to centre the camera on it.
-        if let Some(slot) = pad.group_pressed {
-            self.pad_group = Some((slot, Instant::now(), false));
-        }
-        if let Some((slot, since, assigned)) = self.pad_group {
-            if pad.group_held == Some(slot) {
-                if !assigned
-                    && since.elapsed() >= Duration::from_millis(450)
-                    && !self.selected.is_empty()
-                {
-                    self.groups[slot + 1] = self.selected.iter().take(12).copied().collect();
-                    self.pad_group = Some((slot, since, true));
-                    self.status(format!("Group {} assigned", slot + 1));
-                    self.play("ui_click");
-                }
-            } else {
-                if !assigned {
-                    self.recall_group(slot + 1);
-                    let now = Instant::now();
-                    let double = self.pad_group_tap.is_some_and(|(last, at)| {
-                        last == slot && now.duration_since(at) < Duration::from_millis(350)
-                    });
-                    if double {
-                        self.centre_on_group(slot + 1);
-                        self.pad_group_tap = None;
-                    } else {
-                        self.pad_group_tap = Some((slot, now));
-                    }
-                }
-                self.pad_group = None;
-            }
-        }
-
-        // RT + one of the nine positional buttons: command-card slot.
-        if let Some(slot) = pad.command_slot {
-            self.activate_command(slot);
-            self.pad_tap.reset();
-            return true;
-        }
-
-        // Saved cameras on the D-pad; LT stores the current view.
-        if pad.camera_save
-            && let Some(slot) = pad.camera_save_slot
-        {
-            self.save_camera_slot(slot);
-            return true;
-        }
-        if let Some(slot) = pad.camera_slot {
-            if let Some(pos) = self.camera_slot_target(slot) {
-                self.jump_camera_to(pos.0, pos.1);
-                self.status(format!("Camera {}", slot + 1));
-                self.play("ui_move");
-            }
-            return true;
-        }
-        if pad.last_alert {
-            self.jump_to_last_alert();
-            return true;
-        }
-
-        // RB confines the pointer to the minimap; A jumps the camera there.
-        if pad.minimap_hold {
-            if pad.primary {
-                self.jump_camera_to_minimap(mx, my);
-                self.play("ui_click");
-            }
-            return true;
-        }
-
-        // X: smart order (move / attack / gather).  Y: attack-move.
-        if pad.smart_order {
-            if self.target_act.is_some() || self.build_mode.is_some() {
-                self.status("Confirm with A or cancel with B");
-            } else if in_view {
-                self.command_at(mx, my, false, false, input.shift);
-            }
-            return true;
-        }
-        if pad.attack_move {
-            if self.target_act.is_some() || self.build_mode.is_some() {
-                self.status("Confirm with A or cancel with B");
-            } else if in_view {
-                self.command_at(mx, my, true, false, input.shift);
-            }
-            return true;
-        }
-
-        // A: press starts a click/drag; release selects a unit or a box.
-        if pad.cancel {
-            self.pad_cancel();
-            return true;
-        }
-        if pad.primary {
-            if in_view {
-                if self.target_act.is_some() {
-                    self.execute_target(mx, my);
-                } else if self.build_mode.is_some() {
-                    self.place_building(mx, my);
-                } else {
-                    self.pad_drag = Some((mx, my, pad.shift));
-                    self.drag_start = Some((mx, my));
-                    self.drag_now = (mx, my);
-                }
-            } else {
-                self.pad_primary(input, mx, my, false);
-            }
-            return true;
-        }
-        if self.pad_drag.is_some() && pad.lmb {
-            // A is held: keep the drag box alive and visible until release.
-            self.drag_now = (mx, my);
-            return true;
-        }
-        if let Some((start_x, start_y, additive)) = self.pad_drag
-            && !pad.lmb
-        {
-            self.pad_drag = None;
-            self.drag_start = None;
-            let start = (start_x, start_y);
-            let dist = (mx - start.0).abs() + (my - start.1).abs();
-            if dist < 6 {
-                self.pad_click_select(mx, my, in_view, additive);
-            } else {
-                self.select_box_region(start, (mx, my), additive);
-            }
-            return true;
-        }
-
-        // RT opens the radial command wheel.  Releasing RT closes it; the
-        // ring is the visible context, while RT+button still hits the
-        // corresponding 3x3 card slot directly.
-        let rt_edge = pad.command_layer && !self.pad_rt_was_held;
-        self.pad_rt_was_held = pad.command_layer;
-        if !pad.command_layer && self.pad_wheel.is_open() {
-            self.close_command_wheel();
-        } else if rt_edge && self.first_selected().is_some() {
-            self.open_command_wheel();
-        }
-        if self.pad_wheel.is_open() {
-            let mut moved = false;
-            if pad.page_prev {
-                moved |= self.pad_wheel.page_delta(-1);
-            }
-            if pad.page_next {
-                moved |= self.pad_wheel.page_delta(1);
-            }
-            if pad.aim != (0.0, 0.0) {
-                moved |= self.pad_wheel.aim(pad.aim.0, pad.aim.1);
-            }
-            if pad.nav_pressed.0 || pad.nav_pressed.2 {
-                moved |= self.pad_wheel.focus_delta(-1);
-            }
-            if pad.nav_pressed.1 || pad.nav_pressed.3 {
-                moved |= self.pad_wheel.focus_delta(1);
-            }
-            if moved {
-                self.play("ui_move");
-            }
-            if pad.command_slot == Some(7) || pad.primary {
-                self.activate_wheel_focus();
-                return true;
-            }
-            if pad.command_slot == Some(2) || pad.cancel {
-                self.close_command_wheel();
-                return true;
-            }
-            if pad.cycle_idle {
-                self.close_command_wheel();
-                self.cycle_idle_unit();
-                return true;
-            }
-            // The wheel is modal: while it is open no other game input runs,
-            // and the pointer stays hidden until it closes.
-            return true;
-        }
-        if pad.page_prev {
-            self.cycle_command_page(-1);
-        }
-        if pad.page_next {
-            self.cycle_command_page(1);
-        }
-        if pad.command_wheel {
-            self.toggle_command_wheel();
-            return true;
-        }
-        if pad.cycle_idle {
-            self.cycle_idle_unit();
-            return true;
-        }
-        false
-    }
-
-    fn toggle_command_wheel(&mut self) {
-        if self.pad_wheel.is_open() {
-            self.close_command_wheel();
-            return;
-        }
-        self.open_command_wheel();
-    }
-
-    /// RT opens the radial command wheel; the direct RT+button mapping still
-    /// activates its 3×3 card slot (and the right stick picks a sector).
-    fn open_command_wheel(&mut self) {
-        if self.target_act.is_some() || self.build_mode.is_some() {
-            self.status("Finish or cancel the current order first");
-            return;
-        }
-        let units: Vec<SimUnit> = self.selected_units().into_iter().cloned().collect();
-        if units.is_empty() {
-            self.status("No unit selected");
-            return;
-        }
-        if units.iter().any(|u| u.owner as usize != self.local_player) {
-            self.status("No commands for this selection");
-            return;
-        }
-        let page = wheel_page_for_selection(&self.world, &units, self.card_set);
-        if page.entries.is_empty() {
-            self.status("No shared commands");
-            return;
-        }
-        let counts = [page.entries.len()];
-        if !self.pad_wheel.open(counts) {
-            self.status("No commands for this selection");
-            return;
-        }
-        self.pad_wheel_pages = vec![page];
-        self.play("ui_click");
-    }
-
-    fn close_command_wheel(&mut self) {
-        if self.pad_wheel.is_open() {
-            self.play("ui_click");
-        }
-        self.pad_wheel.close();
-        self.pad_wheel_pages.clear();
-    }
-
-    fn wheel_focused_entry(&self) -> Option<&WheelEntry> {
-        self.pad_wheel_pages
-            .get(self.pad_wheel.page())
-            .and_then(|p| p.entries.get(self.pad_wheel.focus()))
-    }
-
-    /// A while the wheel is open: activate the focused card slot.  Disabled
-    /// buttons keep the wheel open so the player can pick another sector.
-    fn activate_wheel_focus(&mut self) {
-        let Some(entry) = self.wheel_focused_entry().cloned() else {
-            self.close_command_wheel();
-            return;
-        };
-        if !entry.enabled {
-            self.status(format!("{} is not available yet", entry.label));
-            return;
-        }
-        if self.pad_wheel.activate().is_none() {
-            return;
-        }
-        self.pad_wheel_pages.clear();
-        // `activate_command` reads the card through `card_set`; point it at
-        // the wheel entry's real set, then restore the HUD's page.
-        let old_set = self.card_set;
-        self.card_set = entry.set.filter(|s| *s != 228);
-        self.activate_command(entry.slot);
-        self.card_set = old_set;
-        self.pad_tap.reset();
-    }
-
     /// A released without dragging: own unit selects (double tap = every
     /// same type on screen), empty ground clears the selection.  LT toggles
     /// the unit in or out of the selection.
@@ -18196,37 +17953,6 @@ impl App {
             })
             .map(|u| u.id)
             .collect()
-    }
-
-    /// LB / RB outside the wheel: cycle the retail card pages a unit exposes
-    /// through its `Act::Card` buttons (base card <-> build cards).
-    fn cycle_command_page(&mut self, delta: i32) {
-        let Some(unit) = self.first_selected().cloned() else {
-            self.status("No units selected");
-            return;
-        };
-        let base = galaxycraft::buttons::card_of_set(&self.world, &unit, None);
-        let mut pages: Vec<Option<u16>> = vec![None];
-        for (b, _) in base.iter().flatten() {
-            if galaxycraft::buttons::Act::of(b.act) == galaxycraft::buttons::Act::Card
-                && b.act_var != 228
-                && !pages.contains(&Some(b.act_var))
-            {
-                pages.push(Some(b.act_var));
-            }
-        }
-        if pages.len() < 2 {
-            self.status("No other command page");
-            return;
-        }
-        let current = self.card_set.filter(|s| *s != 228);
-        let at = pages.iter().position(|p| *p == current).unwrap_or(0);
-        let next = (at as i32 + delta).rem_euclid(pages.len() as i32) as usize;
-        self.card_set = pages[next];
-        self.target_act = None;
-        self.build_mode = None;
-        self.play("ui_move");
-        self.status(format!("Command page {}/{}", next + 1, pages.len()));
     }
 
     fn minimap_rect(&self) -> (i32, i32, i32, i32) {
@@ -18980,7 +18706,7 @@ impl App {
         marks.push(("hud", Instant::now()));
         self.draw_overlay(fb);
         marks.push(("overlay", Instant::now()));
-        self.draw_pad_legend(fb);
+        self.draw_pad_prompts(fb);
         if prof {
             let parts: Vec<String> = marks
                 .windows(2)
@@ -20105,320 +19831,6 @@ impl App {
         "statbtndefault"
     }
 
-    /// Content-space point of a surface pixel (the HUD font helpers take
-    /// content units, the wheel is laid out in window pixels).
-    fn content_point(&self, fb: &Framebuffer, x: i32, y: i32) -> (f32, f32) {
-        let (cx, cy, _cw, ch) = Self::content_rect(fb);
-        let k = (ch as f32 / 1440.0).max(0.5);
-        ((x - cx) as f32 / k, (y - cy) as f32 / k)
-    }
-
-    /// Radial command wheel.  The sectors are
-    /// the retail command-card slots grouped by
-    /// [`galaxycraft::buttons::WheelCategory`], so activating one dispatches
-    /// the same action as a mouse click or hotkey.
-    fn draw_command_wheel(&mut self, fb: &mut Framebuffer) {
-        if self.game_dialog.is_some() || self.paused || self.game_result.is_some() {
-            return;
-        }
-        let (cx, cy, cw, ch) = Self::content_rect(fb);
-        if !self.pad_wheel.is_open() {
-            return;
-        }
-        let Some(page) = self.pad_wheel_pages.get(self.pad_wheel.page()).cloned() else {
-            self.pad_wheel.close();
-            return;
-        };
-        if page.entries.is_empty() {
-            self.pad_wheel.close();
-            return;
-        }
-
-        let center = (cx + cw / 2, cy + (ch as f32 * 0.44) as i32);
-        let ring = (ch as f32 * 0.155).max(96.0);
-        let icon = (ch as f32 * 0.038).clamp(30.0, 56.0);
-        let icon_ring = ring + icon * 0.78;
-        let inner = ring * 0.58;
-        let focus = self.pad_wheel.focus();
-
-        // The explanation plate is the only filled disc; the icons live
-        // outside the thin ring, so the playfield stays visible between them.
-        blend_circle(
-            fb,
-            center.0,
-            center.1,
-            inner as i32,
-            Rgb::new(3, 7, 13),
-            196,
-        );
-        fb.circle_outline(center.0, center.1, ring as i32, Rgb::new(108, 140, 176));
-        fb.circle_outline(center.0, center.1, inner as i32, Rgb::new(58, 84, 112));
-        fb.circle_outline(
-            center.0,
-            center.1,
-            (inner - 2.0).max(1.0) as i32,
-            Rgb::new(32, 48, 68),
-        );
-
-        let n = page.entries.len();
-        let step = std::f32::consts::TAU / n as f32;
-        for (i, entry) in page.entries.iter().enumerate() {
-            let boundary = -std::f32::consts::FRAC_PI_2 + i as f32 * step;
-            let (bsin, bcos) = boundary.sin_cos();
-            fb.line(
-                center.0 + (bcos * (inner + 4.0)) as i32,
-                center.1 + (bsin * (inner + 4.0)) as i32,
-                center.0 + (bcos * (ring - 3.0)) as i32,
-                center.1 + (bsin * (ring - 3.0)) as i32,
-                Rgb::new(48, 70, 96),
-            );
-
-            let angle = boundary + step / 2.0;
-            let (sin, cos) = angle.sin_cos();
-            let ix = center.0 + (cos * icon_ring) as i32;
-            let iy = center.1 + (sin * icon_ring) as i32;
-            let focused = i == focus;
-            let enabled = entry.enabled;
-            blend_circle(
-                fb,
-                ix,
-                iy,
-                (icon * 0.62) as i32,
-                Rgb::new(6, 10, 16),
-                if focused { 220 } else { 150 },
-            );
-            fb.circle_outline(
-                ix,
-                iy,
-                (icon * 0.62) as i32,
-                if focused {
-                    Rgb::new(255, 214, 96)
-                } else if enabled {
-                    Rgb::new(78, 108, 142)
-                } else {
-                    Rgb::new(58, 64, 74)
-                },
-            );
-            if focused {
-                fb.line(
-                    center.0 + (cos * (ring + 2.0)) as i32,
-                    center.1 + (sin * (ring + 2.0)) as i32,
-                    ix - (cos * icon * 0.62) as i32,
-                    iy - (sin * icon * 0.62) as i32,
-                    Rgb::new(255, 214, 96),
-                );
-            }
-            if let Some(console) = &self.console
-                && let Some(img) = console
-                    .cmdicons4
-                    .as_ref()
-                    .and_then(|g| g.frame(entry.icon as usize))
-            {
-                let size = (icon * 0.72) as i32;
-                let color = if !enabled {
-                    Rgb::new(96, 102, 112)
-                } else if focused {
-                    Rgb::new(255, 238, 180)
-                } else {
-                    Rgb::new(214, 226, 240)
-                };
-                draw_tinted(fb, img, (ix - size / 2, iy - size / 2, size, size), color);
-            }
-        }
-
-        // Every word of the focused command lives on the central plate.
-        let (tx, _) = self.content_point(fb, center.0, center.1);
-        let (_, title_y) = self.content_point(fb, center.0, center.1 - (inner * 0.58) as i32);
-        let (_, label_y) = self.content_point(fb, center.0, center.1 - (inner * 0.18) as i32);
-        let (_, page_y) = self.content_point(fb, center.0, center.1 + (inner * 0.58) as i32);
-        let (_, hint_y) = self.content_point(fb, center.0, center.1 + (ring * 0.80) as i32);
-
-        let title = page.title.to_uppercase();
-        self.glue_ink_centered(
-            fb,
-            &title,
-            tx,
-            title_y,
-            8.5,
-            Rgb::new(168, 184, 202),
-            None,
-            GlueFace::Hud,
-        );
-        if let Some(entry) = page.entries.get(focus) {
-            self.glue_ink_centered(
-                fb,
-                &entry.label,
-                tx,
-                label_y,
-                13.0,
-                if entry.enabled {
-                    Rgb::new(238, 242, 248)
-                } else {
-                    Rgb::new(132, 138, 148)
-                },
-                None,
-                GlueFace::Hud,
-            );
-            let rule_y = center.1 + (inner * 0.03) as i32;
-            let half = (inner * 0.42) as i32;
-            fb.line(
-                center.0 - half,
-                rule_y,
-                center.0 + half,
-                rule_y,
-                Rgb::new(64, 88, 116),
-            );
-            let tooltip: Vec<char> = entry.tooltip.chars().collect();
-            for line in 0..3 {
-                let start = line * 26;
-                if start >= tooltip.len() {
-                    break;
-                }
-                let end = (start + 26).min(tooltip.len());
-                let text: String = tooltip[start..end].iter().collect();
-                let (_, ty) = self.content_point(
-                    fb,
-                    center.0,
-                    center.1 + (inner * 0.08) as i32 + line as i32 * 11,
-                );
-                self.glue_ink_centered(
-                    fb,
-                    text.trim(),
-                    tx,
-                    ty,
-                    7.8,
-                    Rgb::new(178, 188, 200),
-                    None,
-                    GlueFace::Hud,
-                );
-            }
-        }
-        let page_text = format!("{} / {}", self.pad_wheel.page() + 1, self.pad_wheel.pages());
-        self.glue_ink_centered(
-            fb,
-            &page_text,
-            tx,
-            page_y,
-            7.5,
-            Rgb::new(150, 164, 180),
-            None,
-            GlueFace::Hud,
-        );
-        self.glue_ink_centered(
-            fb,
-            "A Activate   B Close   R-Stick Navigate",
-            tx,
-            hint_y,
-            7.0,
-            Rgb::new(132, 146, 162),
-            None,
-            GlueFace::Hud,
-        );
-    }
-
-    /// Vertical controller legend above the command console.  The plate is
-    /// rounded and has no bright rim; the button names use their controller
-    /// colours and the text is deliberately compact.
-    fn draw_pad_legend(&mut self, fb: &mut Framebuffer) {
-        use galaxycraft::menu::LabelAlign;
-        if !self.pad_control
-            || self.pad_wheel.is_open()
-            || self.game_dialog.is_some()
-            || self.paused
-        {
-            return;
-        }
-        let slots = self.command_slots();
-        let (scale, ox, oy) = self.ui_metrics(fb);
-        let panel_w = 108.0;
-        let row_h = 7.2;
-        let panel_h = 10.0 + row_h * 12.0 + 2.0;
-        let pw = (panel_w * scale).round() as i32;
-        let ph = (panel_h * scale).round() as i32;
-        let px = (slots[8].x + slots[8].w - pw).max(4);
-        // Keep clear of the console's top plate, which extends above the
-        // first command slot.
-        let py = (slots[0].y - ph - (22.0 * scale).round() as i32).max(4);
-        let x = (px - ox) as f32 / scale;
-        let y = (py - oy) as f32 / scale;
-        // 25 % transparent: the playfield shows through the plate.
-        draw_rounded_box_alpha(
-            fb,
-            (px, py, pw, ph),
-            (5.0 * scale).max(2.0),
-            (1.0 * scale).max(1.0),
-            Rgb::new(8, 10, 14),
-            Rgb::new(8, 10, 14),
-            191,
-        );
-        // Faux bold: the UI face has no bold weight, so draw the title twice
-        // with a sub-pixel offset.
-        for dx in [0.0, 0.4] {
-            let w = self.hd_advance_px("CONTROLS", 6.2, scale, false);
-            self.draw_hd_text(
-                fb,
-                "CONTROLS",
-                x + 4.0 + dx,
-                y + 2.0,
-                LabelAlign::Left,
-                w,
-                6.2,
-                scale,
-                ox,
-                oy,
-                Rgb::new(205, 210, 215),
-                false,
-            );
-        }
-        let rows = [
-            ("L-Stick", "Move pointer", Rgb::new(195, 200, 208)),
-            ("R-Stick", "Move screen", Rgb::new(195, 200, 208)),
-            ("A", "Select unit", Rgb::new(126, 225, 132)),
-            ("X", "Smart order", Rgb::new(120, 190, 245)),
-            ("Y", "Attack", Rgb::new(245, 215, 110)),
-            ("B", "Deselect", Rgb::new(240, 120, 120)),
-            ("LT", "Add / Queue", Rgb::new(190, 170, 255)),
-            ("RT", "Command wheel", Rgb::new(255, 220, 130)),
-            ("LB", "Groups", Rgb::new(190, 170, 255)),
-            ("RB", "Minimap", Rgb::new(150, 205, 225)),
-            ("Start", "Menu", Rgb::new(225, 233, 246)),
-            ("Select", "Score / Objectives", Rgb::new(195, 200, 208)),
-        ];
-        for (i, (button, action, color)) in rows.iter().enumerate() {
-            let row_y = y + 10.0 + i as f32 * row_h;
-            let bw = self.hd_advance_px(button, 6.0, scale, false);
-            self.draw_hd_text(
-                fb,
-                button,
-                x + 4.0,
-                row_y,
-                LabelAlign::Left,
-                bw,
-                6.0,
-                scale,
-                ox,
-                oy,
-                *color,
-                false,
-            );
-            let aw = self.hd_advance_px(action, 5.6, scale, false);
-            self.draw_hd_text(
-                fb,
-                action,
-                x + 29.0,
-                row_y,
-                LabelAlign::Left,
-                aw,
-                5.6,
-                scale,
-                ox,
-                oy,
-                Rgb::new(168, 174, 182),
-                false,
-            );
-        }
-    }
-
     fn draw_hud(&mut self, fb: &mut Framebuffer) {
         let (scale, ox, oy) = self.ui_metrics(fb);
         let (cx, cy, cw, ch) = Self::content_rect(fb);
@@ -20547,7 +19959,7 @@ impl App {
             );
         }
         self.draw_net_chat(fb);
-        self.draw_command_wheel(fb);
+        self.draw_pad_radials(fb);
 
         if self.show_leaderboard {
             self.draw_leaderboard(fb, scale, ox, oy);
