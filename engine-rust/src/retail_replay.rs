@@ -260,7 +260,19 @@ impl RetailReplay {
                 off = n2;
             }
         }
-        let _ = off;
+        // [len word][map]: when the inflated map is exactly the announced
+        // length it replaces the heuristic concatenation of the legacy path
+        // (which can carry trailing bytes of the following sections).
+        if let Some((len_word, n1)) = read_stream(bytes, off)
+            && len_word.len() == 4
+            && let Some((map, _)) = read_stream(bytes, n1)
+        {
+            let announced =
+                u32::from_le_bytes([len_word[0], len_word[1], len_word[2], len_word[3]]);
+            if map.len() as u32 == announced && map.starts_with(b"VER ") {
+                self.chk = map;
+            }
+        }
         self.header = Some(header);
     }
 
