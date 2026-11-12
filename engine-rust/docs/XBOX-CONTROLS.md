@@ -1,35 +1,72 @@
-# Xbox controller — StarCraft 1 scheme
+# Xbox controller — Baldur's Gate 3 pad layout
 
 The controller backend lives in `src/bin/sc_view/gamepad.rs`; the in-game
-actions are routed through `App::handle_pad_input` in `src/bin/sc_view.rs`.
-The simulation never sees a gamepad: every action enters through the same
-selection, command-card and order entry points as the mouse/keyboard.
+actions, the radials and the button prompts live in
+`src/bin/sc_view/pad_ui.rs` (`App::handle_pad_input`, `draw_pad_radials`,
+`draw_pad_prompts`).  The simulation never sees a gamepad: every action
+enters through the same selection, command-card and order entry points as
+the mouse/keyboard.
+
+The scheme and the on-screen sizes follow the controller interface of
+Baldur's Gate 3: bumpers open the action radials, RT the shortcut radial,
+LT the party (here: control groups), the D-pad steps through targets.
 
 ## Mapping
 
 | Input | Action |
 |---|---|
-| Left stick | Virtual cursor (mouse pointer) |
-| Right stick | Camera pan (arrow keys) |
-| A | Select; hold = box selection; double tap = every unit of that type on screen |
-| X | Smart order (move / attack / gather) |
+| Left stick | Virtual cursor; picks the slot while a radial is open |
+| Right stick | Camera pan; also picks the slot while a radial is open |
+| A | Select / confirm; hold = box selection; double tap = every unit of that type on screen |
+| B | Cancel / close; with a production building selected, removes the newest queued item |
+| X | Context order (move / attack / gather); in the group radial: assign the selection |
 | Y | Attack-move |
-| B | Cancel; with a production building selected, removes the newest queued item |
-| LT | Add/remove from selection; queue waypoints (`Shift`) |
-| RT + X / Y / B | Command-card row 1, slots 0 / 1 / 2 |
-| RT + D-pad ← / ↑ / → | Command-card row 2, slots 3 / 4 / 5 |
-| RT + D-pad ↓ / A / RB | Command-card row 3, slots 6 / 7 / 8 |
-| LB + D-pad / A / B / X / Y | Groups 1–8; hold to assign, tap to recall, double tap to centre |
-| D-pad ↓ / ← / → | Saved cameras (base / expansion / front) |
-| LT + D-pad ↓ / ← / → | Save the current view to that camera |
-| D-pad ↑ | Last damage alert (falls back to the last transmission) |
-| RB held | Confine the virtual cursor to the minimap; A jumps the camera there |
-| Start | Game menu |
+| LB / RB | Open the action radials; then previous / next radial |
+| RT | Toggle the shortcut radial |
+| LT tap | Toggle the group radial |
+| LT held | Add/remove from selection; queue waypoints (`Shift`) |
+| D-pad ← / → | Previous / next control group (recall and centre) |
+| D-pad ↑ | Jump to the last alert (falls back to the last transmission) |
+| D-pad ↓ | Examine: centre the screen on the selection |
+| L3 | Centre on the main base |
+| View | Minimap pointer: A jumps the camera there, B / View leaves |
+| Menu | Game menu |
 
-The command card is positional, so it works with every unit without
-per-unit letter hotkeys: remap the nine card cells to
-`Q W E / A S D / Z X C` in Remastered and the controller grid matches the
-keyboard grid.
+## Radials
+
+A radial has the twelve clock slots.  The stick points at one, the D-pad
+steps over the filled ones, A uses the focused slot and B closes.
+
+- **Action radials (LB / RB)**: the first radial is the selection's retail
+  command card (the commands every selected unit shares).  A lone unit also
+  gets one radial per build card its card links to (`Structures`,
+  `Advanced Structures`).  The neighbouring radials are drawn dimmed on
+  both sides and LB / RB step through them.
+- **Shortcut radial (RT)**: game menu, objectives, idle unit, last alert,
+  main base, minimap pointer, cameras 1–3 and save camera 1–3.
+- **Group radial (LT tap)**: groups 1–9 and 0.  A recalls the group (again
+  to centre on it), X stores the current selection in the focused slot.
+
+Geometry, as fractions of the 16:9 content height (measured on a
+1920x1080 capture of the reference interface; constants at the top of
+`pad_ui.rs`):
+
+| Element | Size |
+|---|---|
+| Focused radial | outer radius 0.200, inner 0.133 (432 / 288 px wide at 1080p) |
+| Neighbour radials | outer 0.128, inner 0.089 (64 %), centres 0.43 apart |
+| LB / RB tags | 0.264 left / right of the centre, 0.16 above it |
+| Description panel | 0.65 wide, 0.218 below the radial centre |
+| Button prompts | right margin 0.051, row pitch 0.048, glyph radius 0.013 |
+
+The reference has no console under the radial, so the radial and its
+description panel are lifted until the panel clears the StarCraft console,
+and the prompt list rests on top of the command card instead of the
+bottom-right corner.
+
+`--game-script` accepts `pad:BUTTON` (`a b x y lb rb rt lt view menu up
+down left right`) and `pad:stick:X:Y` (percent), so the radials can be
+captured headlessly with `shot:NAME`.
 
 ## StarCraft 1 selection rules
 
