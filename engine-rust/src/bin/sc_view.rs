@@ -18483,6 +18483,33 @@ impl App {
     /// Frame of the sieged tank's base (iscript 92): frames 0..=5 unfold
     /// over the deploy animation (five frames of 5, then it holds 5) and
     /// fold back at the end of the pack-up one (38 frames of hold first).
+    /// Frame of the sieged cannon (iscript 93) while the tank deploys or
+    /// packs up: it waits folded (17), then unfolds 34 / 51 / 68 / 85 three
+    /// frames apart and rests at 0; packing up runs 85 down to 17.  `None`
+    /// outside those animations.
+    fn siege_turret_frame(&self, u: &galaxycraft::sim::SimUnit) -> Option<u16> {
+        use galaxycraft::sim::{SIEGE_FRAMES, UNSIEGE_FRAMES};
+        if u.type_id != galaxycraft::ids::unit::SIEGE_MODE || u.order_wait == 0 {
+            return None;
+        }
+        let wait = u.order_wait as i32;
+        Some(match u.order {
+            Order::Siege => {
+                let e = SIEGE_FRAMES as i32 - (wait - 1);
+                match e {
+                    e if e < 42 => 17,
+                    e if e < 54 => (34 + 17 * ((e - 42) / 3)) as u16,
+                    _ => 0,
+                }
+            }
+            Order::Unsiege => {
+                let e = UNSIEGE_FRAMES as i32 - (wait - 1);
+                (85 - 17 * (e / 3)).max(17) as u16
+            }
+            _ => return None,
+        })
+    }
+
     fn siege_base_frame(&self, u: &galaxycraft::sim::SimUnit) -> usize {
         use galaxycraft::sim::{SIEGE_FRAMES, UNSIEGE_FRAMES};
         let wait = u.order_wait as i32;
@@ -18657,8 +18684,8 @@ impl App {
                     && let Some(grp) = self.sd_image_grp(timage)
                 {
                     let raw = self
-                        .animator
-                        .turret_frame(self.world.units[i].id)
+                        .siege_turret_frame(&self.world.units[i])
+                        .or_else(|| self.animator.turret_frame(self.world.units[i].id))
                         .unwrap_or(0);
                     let frame = galaxycraft::render::sd_frame_index(
                         grp.frames.len(),
@@ -19950,7 +19977,10 @@ impl App {
                     })
             {
                 let n = ti.header.frames.len();
-                let raw = self.animator.turret_frame(u.id).unwrap_or(0) as usize;
+                let raw = self
+                    .siege_turret_frame(u)
+                    .or_else(|| self.animator.turret_frame(u.id))
+                    .unwrap_or(0) as usize;
                 let (tframe, tflip) = if n >= 17 {
                     let dir = ((tfacing as i32 + 4) / 8).rem_euclid(32);
                     let (d, flip) = if dir <= 16 {

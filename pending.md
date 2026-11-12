@@ -49,8 +49,6 @@ on screen.
   weapon; the turret's heading turns at its own rate and gates the shot,
   and its attack animation, sound and muzzle overlays play.  Not modelled:
   the hull is not held still while it fires.
-- **Siege Mode.**  The sieged turret's unfolding frames are not drawn
-  (only the base's).
 - **Spider Mine.**  The hover list is a hardcoded type list rather than the
   `units.dat` movement flags; the burrow / unburrow frames and sounds are
   not drawn; a mine is nudged by collision while it waits.
