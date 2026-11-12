@@ -68,3 +68,27 @@ upgrade.  Decoded but not executed: `0x28`, `0x33` cancel upgrade, `0x62`.
 3. More replays: short, controlled ones (combat, tanks, pathfinding) record far
    fewer AI interleavings and isolate rule differences better than a 17-minute
    game.
+
+## Unit by unit: Terran SCV (2026-11-12)
+
+Checked against the retail data (iscript 84, `weapons.dat` rows 13 / 14,
+`flingy.dat`, `images.dat`) and OpenBW's worker rules; tests in
+`tests/scv_retail.rs`.
+
+| aspect | retail | engine |
+|---|---|---|
+| walking | Walking anim, `imgol 249` thruster glow | matches (`tests/unit_glow.rs`) |
+| mining minerals | AlmostBuilt loop: frame 34, `useweapon 14`, frame 17; spark image 526 appears 10 px ahead; cutter sounds 35..39 | **fixed**: the animator runs AlmostBuilt while `gather_timer > 0`; the worker faces its field |
+| cargo in hands | overlay image: OreChunk 397 / 398, GasTank 403 / 404 (Orb 399, Sac 401 for the other races) until delivery | **fixed**: `Animator::carry_overlays`, drawn in SD and HD |
+| gas | worker hidden for 37 frames inside the building | **fixed**: `World::inside_gas_building` (not drawn, not selectable, not visible to enemies, no collision) |
+| building / repair | AlmostBuilt loop with sparks, facing the structure | **fixed**: same animation path (replaces the HD-only fake weld) |
+| attack | Fusion Cutter: 5 damage, cooldown 15, range 10 px, GndAttkInit/Rpt | matches |
+| speed | flingy top speed 1280, acceleration 67, turn 40; no speed upgrade | **fixed**: Metabolic Boost was applied to every worker; it is Zergling-only |
+| sight | 7 tiles | matches |
+| collision | a gathering worker collides only with buildings | **fixed**: `World::is_gathering` units are skipped by `resolve_collisions` |
+
+Still approximate: the construction walk (the SCV changes spot every 48
+ticks at a hashed point of the building's edge; retail picks random points),
+the 93-frame mining dwell (75 in retail plus an unmodelled wait) and the exit
+position after gas (retail places the worker at the building's edge towards
+the depot).

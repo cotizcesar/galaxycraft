@@ -4526,20 +4526,6 @@ fn frames_to_end_check(tick: u64) -> u32 {
     ((END_CHECK_PERIOD - tick % END_CHECK_PERIOD) % END_CHECK_PERIOD) as u32
 }
 
-/// `scvspark` (Fusion Cutter hit) image.
-const SCV_SPARK_IMAGE: u16 = 526;
-/// Fusion Cutter cooldown in frames (`weapons.dat` 15).
-const WELD_CYCLE: u64 = 15;
-
-/// See `App::welding_pose`.
-#[derive(Clone, Copy, Debug)]
-struct WeldPose {
-    facing: u8,
-    raw: usize,
-    spark: Option<(i32, i32)>,
-    spark_frame: usize,
-}
-
 /// `cmdbtns` frame of the arrow under the unit in training.
 const QUEUE_ARROW_FRAME: usize = 11;
 
@@ -15673,7 +15659,7 @@ impl App {
         let (sx, sy) = self.to_logical(px, py);
         let mut best: Option<(i32, u32)> = None;
         for (i, u) in self.world.units.iter().enumerate() {
-            if !u.alive {
+            if !u.alive || self.world.inside_gas_building(i) {
                 continue;
             }
             // Cannot click an enemy the fog hides.
@@ -17436,12 +17422,17 @@ impl App {
             .world
             .units
             .iter()
-            .filter(|u| u.alive && u.owner as usize == self.local_player)
-            .filter(|u| {
+            .enumerate()
+            .filter(|(i, u)| {
+                u.alive
+                    && u.owner as usize == self.local_player
+                    && !self.world.inside_gas_building(*i)
+            })
+            .filter(|(_, u)| {
                 let (ux, uy) = self.screen_of(u);
                 ux >= x0 && ux <= x1 && uy >= y0 && uy <= y1
             })
-            .map(|u| (u.id, self.data.unit(u.type_id).is_building()))
+            .map(|(_, u)| (u.id, self.data.unit(u.type_id).is_building()))
             .collect();
         // Left edge first, like retail's x-sorted unit finder.
         inside.sort_by_key(|(id, _)| {
@@ -18503,7 +18494,7 @@ impl App {
         }
 
         let mut order: Vec<usize> = (0..self.world.units.len())
-            .filter(|&i| self.world.units[i].alive)
+            .filter(|&i| self.world.units[i].alive && !self.world.inside_gas_building(i))
             .collect(); // Elevation first, then y (retail sprite order); an SCV welding a
         // building is drawn in front of it.
         order.sort_by_key(|&i| {
@@ -18880,51 +18871,6 @@ impl App {
         }
     }
 
-    /// Pose of an SCV constructing a Terran building next to it: facing the
-    /// building, the Fusion Cutter cycle (`iscript` GndAttkRpt: frame 34
-    /// then 17) every `WELD_CYCLE` frames, and a `scvspark` on a point of the
-    /// building that changes each cycle (Boot Camp recording 175-199 s: the
-    /// SCV works the depot with blue sparks).  Render only; the simulation
-    /// keeps `Order::Construct`.
-    fn welding_pose(&self, u: &SimUnit) -> Option<WeldPose> {
-        let Order::Construct { building } = u.order else {
-            return None;
-        };
-        let b = self.world.unit(building)?;
-        if b.completed {
-            return None;
-        }
-        let (dx, dy) = ((b.x - u.x) / 256, (b.y - u.y) / 256);
-        if dx * dx + dy * dy > 96 * 96 {
-            return None;
-        }
-        let facing = (((dy as f32).atan2(dx as f32).to_degrees() + 90.0).rem_euclid(360.0) * 256.0
-            / 360.0) as u8;
-        let tick = self.world.tick + u.id as u64 * 7;
-        let phase = (tick % WELD_CYCLE) as usize;
-        let cycle = tick / WELD_CYCLE;
-        let ty = self.data.unit(b.type_id);
-        let (hw, hh) = (
-            (ty.dimensions.left.max(ty.dimensions.right) as i64).max(8),
-            (ty.dimensions.top.max(ty.dimensions.bottom) as i64).max(8),
-        );
-        let h = (cycle as i64)
-            .wrapping_mul(2654435761)
-            .wrapping_add(building as i64 * 97);
-        let spark = (phase < 10).then(|| {
-            (
-                b.x / 256 + (h.rem_euclid(2 * hw) - hw) as i32 * 2 / 3,
-                b.y / 256 + ((h / 7).rem_euclid(2 * hh) - hh) as i32 * 2 / 3,
-            )
-        });
-        Some(WeldPose {
-            facing,
-            raw: if phase < 2 { 34 } else { 17 },
-            spark,
-            spark_frame: phase,
-        })
-    }
-
     /// Overlays one image's animation `anim` attaches (the Terran scaffold's
     /// shadow, `TBldSml` Init -> image 331).
     fn hd_image_layers(&self, image: u16, anim: usize) -> Vec<(u16, i8, i8, bool)> {
@@ -19016,9 +18962,6 @@ impl App {
             self.rendered_facing(u),
         ));
         let directional = img.header.frames.len() >= 17;
-        // An SCV welding its building faces it (`welding_pose`).
-        let weld = self.welding_pose(u);
-        let facing = weld.map_or(facing, |w| w.facing);
         let (frame, flip) = if directional {
             let dir = ((facing as i32 + 4) / 8).rem_euclid(32);
             if dir <= 16 {
@@ -19044,14 +18987,7 @@ impl App {
                 .image(self.data.hd_anim_id(id), |path| install?.read(path))
         };
         let (mut img, mut frame) = (img, frame);
-        if let Some(w) = weld {
-            // Attack frames are `raw + direction` like every directional
-            // GRP (17 frames per pose).
-            let posed = w.raw + frame;
-            if posed < img.header.frames.len() {
-                frame = posed;
-            }
-        } else if directional
+        if directional
             && !ty.is_building()
             && let Some(raw) = self.animator.unit_frame(u.id)
         {
@@ -19102,19 +19038,6 @@ impl App {
                 layer_list = self.hd_unit_layers(src, true);
             }
         }
-        let spark = weld.and_then(|w| {
-            let (bx, by) = w.spark?;
-            let si = fetch(SCV_SPARK_IMAGE)?;
-            let n = si.header.frames.len().max(1);
-            Some(HdPart {
-                image_id: SCV_SPARK_IMAGE,
-                frame: w.spark_frame.min(n - 1),
-                img: si,
-                x: cx as f32 + (bx - self.camera.0) as f32 * s,
-                y: content.1 as f32 + (by - self.camera.1) as f32 * s,
-                below: false,
-            })
-        });
         let layers = layer_list
             .into_iter()
             .filter_map(|(id, ox, oy, below)| {
@@ -19129,7 +19052,6 @@ impl App {
                     below,
                 })
             })
-            .chain(spark)
             .collect();
         // Geyser smoke (`creategasoverlays`): image 430 + overlay at the
         // geyser's LO offset, above it.
@@ -19233,6 +19155,12 @@ impl App {
             )
             .chain(
                 self.animator
+                    .carry_overlays(&self.world)
+                    .into_iter()
+                    .map(|b| (b.image, b.x, b.y, b.facing, b.frame)),
+            )
+            .chain(
+                self.animator
                     .effects()
                     .map(|e| (e.image, e.x, e.y, e.facing, e.frame)),
             )
@@ -19317,6 +19245,12 @@ impl App {
             .chain(
                 self.animator
                     .bullets()
+                    .into_iter()
+                    .map(|b| (b.image, b.x, b.y, b.facing, b.frame)),
+            )
+            .chain(
+                self.animator
+                    .carry_overlays(&self.world)
                     .into_iter()
                     .map(|b| (b.image, b.x, b.y, b.facing, b.frame)),
             )

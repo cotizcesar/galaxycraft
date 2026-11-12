@@ -6918,10 +6918,41 @@ impl World {
         }
     }
 
+    /// Retail hides a worker while it is inside a Refinery / Assimilator /
+    /// Extractor (OpenBW `order_HarvestGas` calls `hide_unit` for the 37
+    /// frames): it is not drawn, cannot be selected or targeted and takes no
+    /// part in collision.
+    pub fn inside_gas_building(&self, i: usize) -> bool {
+        let Some(u) = self.units.get(i) else {
+            return false;
+        };
+        if !u.alive || u.gather_timer == 0 {
+            return false;
+        }
+        let Order::Gather { resource } = u.order else {
+            return false;
+        };
+        self.index_of(resource)
+            .is_some_and(|r| is_gas_building(self.units[r].type_id))
+    }
+
+    /// Retail `status_flag_gathering`: set while a worker walks to a
+    /// resource, mines it or carries cargo back.  Such a worker collides
+    /// only with buildings (OpenBW `unit_can_collide_with`), which is why
+    /// mineral lines do not jam.
+    pub fn is_gathering(&self, i: usize) -> bool {
+        self.units.get(i).is_some_and(|u| {
+            u.alive && matches!(u.order, Order::Gather { .. } | Order::ReturnCargo { .. })
+        })
+    }
+
     /// Half extents of a ground unit's collision box in 1/256 pixels.
     fn collision_extents(&self, i: usize) -> Option<(i32, i32)> {
         let u = &self.units[i];
         if !u.alive || u.in_transport.is_some() || u.status.burrowed {
+            return None;
+        }
+        if self.is_gathering(i) {
             return None;
         }
         let ty = self.data.unit(u.type_id);
@@ -7284,7 +7315,10 @@ impl World {
             speed = 1280;
         }
         let owner = u.owner as usize;
-        if ty.is_worker() && self.players[owner].upgrade_level(upgrade::METABOLIC_BOOST) > 0 {
+        // Metabolic Boost is the Zergling speed upgrade; workers have none.
+        if u.type_id == uid::ZERGLING
+            && self.players[owner].upgrade_level(upgrade::METABOLIC_BOOST) > 0
+        {
             speed = speed * 3 / 2;
         }
         speed
@@ -7656,6 +7690,17 @@ impl World {
                 MINING_FRAMES
             };
             self.units[i].resource_target = Some(resource);
+            // The worker faces what it mines (its Fusion Cutter spark appears
+            // 10 px ahead of it, weapons.dat row 14).
+            let (dx, dy) = (
+                self.units[ridx].x - self.units[i].x,
+                self.units[ridx].y - self.units[i].y,
+            );
+            if dx != 0 || dy != 0 {
+                self.units[i].facing = direction_byte(dx, dy);
+            }
+            self.units[i].path.clear();
+            self.units[i].path_goal = None;
             return;
         }
         if self.units[i].gather_timer > 1 {
@@ -7873,6 +7918,14 @@ impl World {
         } else {
             self.units[i].path.clear();
             self.units[i].path_goal = None;
+            // Welding: the SCV faces the structure.
+            let (dx, dy) = (
+                self.units[b].x - self.units[i].x,
+                self.units[b].y - self.units[i].y,
+            );
+            if dx != 0 || dy != 0 {
+                self.units[i].facing = direction_byte(dx, dy);
+            }
         }
     }
 
