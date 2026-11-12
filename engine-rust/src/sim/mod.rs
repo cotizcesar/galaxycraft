@@ -1090,13 +1090,6 @@ pub struct SimUnit {
 }
 
 impl SimUnit {
-    /// A finished add-on with no building attached.  Retail gives it to
-    /// the neutral player (OpenBW `building_abandon_addon`): it trains,
-    /// researches and upgrades nothing until a building lands next to it.
-    pub fn is_detached_addon(&self) -> bool {
-        self.completed && !self.addon_attached && addon_parent(self.type_id).is_some()
-    }
-
     pub fn is_completed_building(&self, data: &GameData) -> bool {
         self.completed && data.unit(self.type_id).is_building()
     }
@@ -2421,31 +2414,6 @@ pub fn spell_for_order_row(order_id: u8) -> Option<Spell> {
     row_spell(order_id)
 }
 
-/// Terran structures that can lift off in the retail game.
-fn can_lift_building(type_id: u16) -> bool {
-    matches!(
-        type_id,
-        uid::COMMAND_CENTER
-            | uid::BARRACKS
-            | uid::FACTORY
-            | uid::STARPORT
-            | uid::SCIENCE_FACILITY
-            | uid::ENGINEERING_BAY
-            | uid::INFESTED_COMMAND_CENTER
-    )
-}
-
-/// Parent building for each Terran add-on.
-fn addon_parent(addon: u16) -> Option<u16> {
-    Some(match addon {
-        uid::COMSAT_STATION | uid::NUCLEAR_SILO => uid::COMMAND_CENTER,
-        uid::MACHINE_SHOP => uid::FACTORY,
-        uid::CONTROL_TOWER => uid::STARPORT,
-        uid::COVERT_OPS | uid::PHYSICS_LAB => uid::SCIENCE_FACILITY,
-        _ => return None,
-    })
-}
-
 /// The buildings that generate creep.
 /// Creep reach of every creep source (px, retail `get_max_creep_bb`).
 const CREEP_RX: i32 = 320;
@@ -2568,14 +2536,6 @@ fn isqrt(n: i64) -> i64 {
 /// `units.dat` half-extents (`FUN_005b6a60/80/90/a0`).
 /// `0x005b52f0`: build the unit's `units.dat` rectangle from its centre
 /// (`x-left`, `y-top`, `x+right`, `y+bottom`).
-/// The tiles a building occupies: its `units.dat` placement box around
-/// `centre` (right / bottom exclusive).
-fn placement_rect(ty: &UnitType, centre: (i32, i32)) -> Rect {
-    let (w, h) = (ty.placement.x.max(1) as i32, ty.placement.y.max(1) as i32);
-    let (l, t) = (centre.0 - w / 2, centre.1 - h / 2);
-    Rect::new(l, t, l + w, t + h)
-}
-
 fn unit_box_rect(ty: &UnitType, centre: (i32, i32)) -> Rect {
     let (l, t, r, b) = ty.dimensions.rect_at(centre);
     Rect::new(l, t, r, b)
@@ -2604,9 +2564,11 @@ mod animation;
 mod combat;
 mod creep_power;
 mod damage;
+mod lift;
 mod movement;
 mod nuke;
 mod orders;
+use lift::{addon_parent, can_lift_building, placement_rect};
 mod production;
 mod projectiles;
 mod spawn;

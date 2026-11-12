@@ -104,146 +104,6 @@ impl App {
         );
     }
 
-    pub(super) fn draw_cursor(&self, fb: &mut Framebuffer) {
-        // The command wheel is modal: no pointer while it is open.
-        if self.pad_wheel.is_open() {
-            return;
-        }
-        let shape = self.cursor_shape();
-        // Classic graphics use the classic (SD) cursors.
-        let sd = (!self.game_options.video_hd).then(|| self.sprites.palette());
-        draw_virtual_cursor(
-            fb,
-            self.pointer,
-            self.cursor_art.as_ref(),
-            shape,
-            self.cursor_started.elapsed(),
-            sd,
-        );
-    }
-
-    /// Which retail cursor the pointer shows this frame: a scroll arrow at
-    /// a screen edge, the crosshair while a selection box is dragged, the
-    /// target cursors while a command waits for its target, the magnifier
-    /// over a unit, otherwise the arrow.
-    pub(super) fn cursor_shape(&self) -> CursorShape {
-        let Some((mx, my)) = self.pointer else {
-            return CursorShape::Arrow;
-        };
-        // Only the live game transforms the pointer; menus, briefing
-        // screens and dialogs keep the arrow.
-        if self.menu
-            || self.intro
-            || self.briefing
-            || self.overlay != 0
-            || self.game_dialog.is_some()
-            || self.ingame_options
-        {
-            return CursorShape::Arrow;
-        }
-        if let Some(dir) = self.edge_scroll {
-            return CursorShape::Scroll(dir);
-        }
-        if self.target_act.is_none()
-            && self.build_mode.is_none()
-            && drag_box(self.drag_start, (mx, my)).is_some()
-        {
-            return CursorShape::Drag;
-        }
-        // The console keeps the arrow.
-        if my >= self.playfield_bottom() {
-            return CursorShape::Arrow;
-        }
-        let relation = self
-            .unit_at(mx, my)
-            .and_then(|id| self.world.unit(id))
-            .map(|u| {
-                // Resources are stored under player 0: neutral first.
-                let neutral = u.is_resource()
-                    || u.type_id == galaxycraft::ids::unit::VESPENE_GEYSER
-                    || u.owner >= 11
-                    || u.is_detached_addon();
-                if neutral {
-                    CursorTarget::Neutral
-                } else if u.owner as usize == self.local_player {
-                    CursorTarget::Own
-                } else if self.world.hostile(self.local_player as u8, u.owner) {
-                    CursorTarget::Enemy
-                } else {
-                    CursorTarget::Neutral
-                }
-            });
-        if self.target_act.is_some() {
-            return CursorShape::Targ(relation);
-        }
-        if self.build_mode.is_some() {
-            return CursorShape::Arrow;
-        }
-        relation.map_or(CursorShape::Arrow, CursorShape::Mag)
-    }
-
-    /// Facing byte the renderer should draw.
-    /// Turret of a Siege Tank or Goliath (`units.dat` subunit): its image
-    /// and heading (`SimUnit::turret_facing`).  Drawn on top of the base at
-    /// the same position.
-    pub(super) fn turret_pose(&self, u: &galaxycraft::sim::SimUnit) -> Option<(u16, u8)> {
-        let ty = self.data.unit(u.type_id);
-        self.data.turret(ty)?;
-        let image = galaxycraft::unit_anim::unit_image(&self.data, ty.turret)?;
-        // The simulation turns the turret at its own rate.
-        Some((image, u.turret_facing))
-    }
-
-    /// Frame of the sieged tank's base (iscript 92): frames 0..=5 unfold
-    /// over the deploy animation (five frames of 5, then it holds 5) and
-    /// fold back at the end of the pack-up one (38 frames of hold first).
-    /// Frame of the sieged cannon (iscript 93) while the tank deploys or
-    /// packs up: it waits folded (17), then unfolds 34 / 51 / 68 / 85 three
-    /// frames apart and rests at 0; packing up runs 85 down to 17.  `None`
-    /// outside those animations.
-    pub(super) fn siege_turret_frame(&self, u: &galaxycraft::sim::SimUnit) -> Option<u16> {
-        use galaxycraft::sim::{SIEGE_FRAMES, UNSIEGE_FRAMES};
-        if u.type_id != galaxycraft::ids::unit::SIEGE_MODE || u.order_wait == 0 {
-            return None;
-        }
-        let wait = u.order_wait as i32;
-        Some(match u.order {
-            Order::Siege => {
-                let e = SIEGE_FRAMES as i32 - (wait - 1);
-                match e {
-                    e if e < 42 => 17,
-                    e if e < 54 => (34 + 17 * ((e - 42) / 3)) as u16,
-                    _ => 0,
-                }
-            }
-            Order::Unsiege => {
-                let e = UNSIEGE_FRAMES as i32 - (wait - 1);
-                (85 - 17 * (e / 3)).max(17) as u16
-            }
-            _ => return None,
-        })
-    }
-
-    pub(super) fn siege_base_frame(&self, u: &galaxycraft::sim::SimUnit) -> usize {
-        use galaxycraft::sim::{SIEGE_FRAMES, UNSIEGE_FRAMES};
-        let wait = u.order_wait as i32;
-        match u.order {
-            Order::Siege if wait > 0 => {
-                let elapsed = SIEGE_FRAMES as i32 - (wait - 1);
-                ((elapsed - 1) / 5).clamp(0, 5) as usize
-            }
-            Order::Unsiege if wait > 0 => {
-                let elapsed = UNSIEGE_FRAMES as i32 - (wait - 1);
-                if elapsed < 38 {
-                    5
-                } else {
-                    (4 - (elapsed - 38) / 5).clamp(0, 5) as usize
-                }
-            }
-            _ => 5,
-        }
-    }
-
     pub(super) fn rendered_facing(&self, u: &galaxycraft::sim::SimUnit) -> u8 {
         self.smooth_facing
             .get(&u.id)
@@ -485,17 +345,7 @@ impl App {
                 }
             }
         }
-        // Enemy buildings in sight are remembered for the fog.
-        let local = self.local_player as u8;
-        for (i, u) in self.world.units.iter().enumerate() {
-            if u.alive
-                && u.owner != local
-                && self.data.unit(u.type_id).is_building()
-                && self.world.can_see_unit(local, i)
-            {
-                self.seen_buildings.insert(u.id);
-            }
-        }
+        self.remember_seen_buildings();
         let mut hd_units = Vec::new();
         for i in order {
             let u = &self.world.units[i];
@@ -1563,50 +1413,6 @@ impl App {
                 fb, &img, frame, sx, sy, s, flip, None, clip, env,
             );
         }
-    }
-
-    /// Green circle on the ground where a move order was given, blinking
-    /// like the target flash.  INFERENCE: retail's cursor-marker sprite is
-    /// approximated with the 32 px selection circle.
-    /// World point of the right-click ground marker while it blinks on.
-    fn order_marker_shown(&mut self) -> Option<(i32, i32)> {
-        let (at, t) = self.order_marker?;
-        let age = t.elapsed().as_secs_f32();
-        if age > ORDER_FLASH_SECS {
-            self.order_marker = None;
-            return None;
-        }
-        order_flash_on(age).then_some(at)
-    }
-
-    /// SD right-click marker: the 32 px selection oval (image 562) in green.
-    pub(super) fn draw_order_marker_sd(&mut self, fb: &mut Framebuffer) {
-        let Some((wx, wy)) = self.order_marker_shown() else {
-            return;
-        };
-        if let Some(grp) = self.sd_image_grp(562) {
-            let at = (wx - self.camera.0, wy - self.camera.1);
-            galaxycraft::render::draw_grp_flat(fb, &grp, 0, at, HUD_SELECT_GREEN);
-        }
-    }
-
-    pub(super) fn draw_order_marker(
-        &mut self,
-        fb: &mut Framebuffer,
-        clip: (i32, i32, i32, i32),
-        scale: f32,
-    ) {
-        let Some((wx, wy)) = self.order_marker_shown() else {
-            return;
-        };
-        let install = self.install.as_ref();
-        let Some(img) = self.hd_sprites.image(561 + 1, |path| install?.read(path)) else {
-            return;
-        };
-        let s = scale;
-        let sx = clip.0 as f32 + (wx - self.camera.0) as f32 * scale;
-        let sy = clip.1 as f32 + (wy - self.camera.1) as f32 * scale;
-        galaxycraft::hd_sprites::draw_flat(fb, &img, 0, sx, sy, s, HUD_SELECT_GREEN, clip);
     }
 
     /// Capture the Flag marker: a small pole and coloured pennant over the
