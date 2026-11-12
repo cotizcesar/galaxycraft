@@ -746,6 +746,13 @@ fn ability_order_rows_dispatch_to_the_recovered_casts() {
     let z_id = world.units[z].id;
     let hp0 = world.units[z].hp;
     world.issue_order_id(bc_id, 113, Some(z_id), None).unwrap();
+    // The blast is a bullet: it has to fly to the Zergling.
+    for _ in 0..60 {
+        world.step();
+        if !world.units[z].alive {
+            break;
+        }
+    }
     assert!(
         !world.units[z].alive || world.units[z].hp < hp0,
         "row 113 fires Yamato Gun"

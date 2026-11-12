@@ -849,6 +849,14 @@ pub const NUKE_TOP_SPEED: i32 = 8533;
 pub const SIEGE_FRAMES: u8 = 64;
 pub const UNSIEGE_FRAMES: u8 = 63;
 
+/// Frames between two units leaving a transport (OpenBW `unit_unload`:
+/// `container->main_order_timer = 15`).
+pub const TRANSPORT_UNLOAD_FRAMES: u8 = 15;
+
+/// The Yamato Gun's charge overlay (`images.dat` 543, iscript 314): its
+/// `castspell` releases the shot.
+pub const YAMATO_CHARGE_IMAGE: u16 = 543;
+
 /// Spell cues kept for the renderer.
 pub const SPELL_CUE_KEEP: usize = 64;
 
@@ -4528,6 +4536,9 @@ impl World {
         if self.is_transforming(i) {
             return Err(SimError::ProducerBusy);
         }
+        // A new order drops whatever the old one was counting (a Yamato
+        // charge, an unload in progress).
+        self.units[i].order_wait = 0;
         self.cancel_nuke_for(unit_id);
         match &new_order {
             Order::AttackUnit { target } => {
@@ -5019,8 +5030,11 @@ impl World {
             let cloak_drain = if self.units[i].status.cloaked && !self.units[i].status.hallucination
             {
                 match self.units[i].type_id {
-                    uid::GHOST => GHOST_CLOAK_COST_PER_TICK,
-                    uid::WRAITH => WRAITH_CLOAK_COST_PER_TICK,
+                    // OpenBW `unit_cloak_energy_cost`: the Ghost heroes
+                    // (and Infested Kerrigan, 51) pay 10, Tom Kazansky's
+                    // Wraith (21) pays 13.
+                    t if is_ghost_type(t) || t == 51 => GHOST_CLOAK_COST_PER_TICK,
+                    uid::WRAITH | 21 => WRAITH_CLOAK_COST_PER_TICK,
                     _ => 0,
                 }
             } else {
@@ -5477,6 +5491,17 @@ impl World {
                 // Handled by update_production.
             }
             Order::Cast { spell, target } => {
+                // Yamato Gun charging: the shot leaves when the charge
+                // overlay (image 543, iscript 314) reaches `castspell`.
+                if spell == Spell::YamatoGun && self.units[i].order_wait > 0 {
+                    self.units[i].order_wait -= 1;
+                    if self.units[i].order_wait == 0 {
+                        let id = self.units[i].id;
+                        let _ = self.cast_unrecorded(id, spell, target);
+                        self.order_done(i);
+                    }
+                    return;
+                }
                 if think {
                     self.order_cast(i, spell, target);
                 } else {
@@ -6150,6 +6175,44 @@ impl World {
     /// Create a stationary `bullet_type` 3 field at a point.  Psionic Storm
     /// uses this path (`0x568a5a`); `0x568aa5` re-applies its radial hit
     /// every seven updates for the weapon's 60-update lifetime.
+    /// A bullet that flies from `source` to a point on the ground and goes
+    /// off there (EMP Shockwave).
+    fn spawn_point_bullet(
+        &mut self,
+        source: usize,
+        weapon_id: u8,
+        weapon: &WeaponType,
+        target: (i32, i32),
+    ) {
+        if self.projectiles.len() >= MAX_PROJECTILES {
+            return;
+        }
+        let (owner, source_id, x, y) = {
+            let u = &self.units[source];
+            (u.owner, u.id, u.x, u.y)
+        };
+        self.projectiles.push(Projectile {
+            id: self.next_projectile_id,
+            owner,
+            source: source_id,
+            weapon: weapon_id,
+            behavior: behavior::FLY,
+            hit_type: weapon.explosion,
+            state: BulletState::Fly,
+            x,
+            y,
+            target: None,
+            target_pos: target,
+            speed: self.data.weapon_speed(weapon).max(256),
+            remaining_time: 300,
+            bounces_left: 0,
+            hit_flags: 0,
+            previous_target: None,
+            last_dot_tick: self.tick as i64,
+        });
+        self.next_projectile_id = self.next_projectile_id.wrapping_add(1).max(1);
+    }
+
     fn spawn_persistent_field(
         &mut self,
         source: usize,
@@ -6178,15 +6241,29 @@ impl World {
     }
 
     fn projectile_near_offset(&mut self, _attacker: usize) -> (i32, i32) {
-        // The retail engine cycles through a 14-entry table of small offsets
-        // so repeated Corrosive Acid shots do not stack exactly.  A
-        // deterministic ring preserves that behaviour.
-        let n = (self.next_projectile_id % 14) as i32;
-        let angle = n as f32 * std::f32::consts::TAU / 14.0;
-        (
-            (angle.cos() * 8.0 * fp(1) as f32) as i32,
-            (angle.sin() * 8.0 * fp(1) as f32) as i32,
-        )
+        // OpenBW `hit_near_target_positions`: bullets of type "attack
+        // target position" (Halo Rockets, Corrosive Acid) aim at the target
+        // plus the next of these 14 offsets, so a volley spreads around it.
+        // (Retail keeps the index per shooter; the bullet counter cycles
+        // through the same table.)
+        const NEAR: [(i32, i32); 14] = [
+            (-1, -1),
+            (-51, -31),
+            (-7, -12),
+            (36, 52),
+            (49, -25),
+            (-40, 46),
+            (4, 19),
+            (-28, -50),
+            (-50, 15),
+            (54, 13),
+            (-11, 53),
+            (-15, 9),
+            (19, -50),
+            (17, -8),
+        ];
+        let (x, y) = NEAR[(self.next_projectile_id % 14) as usize];
+        (x * fp(1), y * fp(1))
     }
 
     pub fn world_rand(&mut self) -> u32 {
@@ -6436,11 +6513,37 @@ impl World {
                 }
             }
             hit::EMP => {
+                // OpenBW `emp_shockwave`: every unit whose box touches the
+                // square of the weapon's inner splash radius (64 px) around
+                // the impact loses its energy and shields, except the
+                // caster and units in stasis; hallucinations die.
+                let half = weapon.inner_splash as i32;
+                let (ix, iy) = (pos.0 / fp(1), pos.1 / fp(1));
                 for j in 0..self.units.len() {
-                    if self.units[j].alive && self.distance_to_point(j, pos) <= fp(64) {
-                        self.units[j].shields = 0;
-                        self.units[j].set_energy_fixed(0);
+                    if !self.units[j].alive || j == source {
+                        continue;
                     }
+                    let rect = self
+                        .data
+                        .unit(self.units[j].type_id)
+                        .dimensions
+                        .rect_at((self.units[j].x / fp(1), self.units[j].y / fp(1)));
+                    if rect.2 < ix - half
+                        || rect.0 > ix + half
+                        || rect.3 < iy - half
+                        || rect.1 > iy + half
+                    {
+                        continue;
+                    }
+                    if self.units[j].status.hallucination {
+                        self.kill_unit(j);
+                        continue;
+                    }
+                    if self.units[j].status.stasis_ticks > 0 {
+                        continue;
+                    }
+                    self.units[j].shields = 0;
+                    self.units[j].set_energy_fixed(0);
                 }
             }
             hit::IRRADIATE => {
@@ -6587,6 +6690,10 @@ impl World {
         let inner = weapon.inner_splash as i64 * fp(1) as i64;
         let middle = weapon.middle_splash as i64 * fp(1) as i64;
         let outer = weapon.outer_splash as i64 * fp(1) as i64;
+        if air_only {
+            self.apply_air_splash(owner, source, weapon, target, impact);
+            return;
+        }
         for j in 0..self.units.len() {
             if !self.units[j].alive {
                 continue;
@@ -6645,6 +6752,78 @@ impl World {
             if weapon_id == wid::PSIONIC_STORM {
                 self.units[j].status.psi_storm_guard = 1;
             }
+            self.apply_hit_from(owner, source, j, weapon, divisor);
+        }
+    }
+
+    /// Air splash (Halo Rockets; OpenBW `bullet_deal_splash_damage` with
+    /// `is_air_splash`).  One unit takes the full hit: the bullet's target
+    /// if the rocket landed within the inner radius of it, else one valid
+    /// air unit in the outer radius picked at random.  Every other valid
+    /// unit in reach, except the bullet's target and Interceptors, takes
+    /// half within the middle radius and a quarter within the outer one.
+    /// The shooter's own units are spared unless they are the target.
+    fn apply_air_splash(
+        &mut self,
+        owner: u8,
+        source: usize,
+        weapon: &WeaponType,
+        target: Option<u32>,
+        impact: (i32, i32),
+    ) {
+        let (inner, middle, outer) = (
+            weapon.inner_splash as i32,
+            weapon.middle_splash as i32,
+            weapon.outer_splash as i32,
+        );
+        let (ix, iy) = (impact.0 / fp(1), impact.1 / fp(1));
+        // (unit, distance from the impact to its box)
+        let mut reach: Vec<(usize, i32)> = Vec::new();
+        for j in 0..self.units.len() {
+            let u = &self.units[j];
+            if !u.alive || j == source || !self.is_air_unit(j) {
+                continue;
+            }
+            if u.owner == owner && Some(u.id) != target {
+                continue;
+            }
+            let ty = self.data.unit(u.type_id);
+            if !weapon_can_target_unit(weapon, ty, true) {
+                continue;
+            }
+            let rect = ty.dimensions.rect_at((u.x / fp(1), u.y / fp(1)));
+            let dx = (rect.0 - ix).max(ix - rect.2).max(0) as i64;
+            let dy = (rect.1 - iy).max(iy - rect.3).max(0) as i64;
+            let d = isqrt(dx * dx + dy * dy) as i32;
+            if d <= outer {
+                reach.push((j, d));
+            }
+        }
+        if reach.is_empty() {
+            return;
+        }
+        let on_target = reach
+            .iter()
+            .find(|(j, d)| Some(self.units[*j].id) == target && *d <= inner)
+            .map(|(j, _)| *j);
+        let main = on_target.unwrap_or_else(|| {
+            if reach.len() == 1 {
+                reach[0].0
+            } else {
+                reach[self.world_rand() as usize % reach.len()].0
+            }
+        });
+        self.apply_hit_from(owner, source, main, weapon, 1);
+        for (j, d) in reach {
+            let u = &self.units[j];
+            if !u.alive
+                || Some(u.id) == target
+                || u.type_id == uid::INTERCEPTOR
+                || u.status.burrowed
+            {
+                continue;
+            }
+            let divisor = if d <= middle { 2 } else { 4 };
             self.apply_hit_from(owner, source, j, weapon, divisor);
         }
     }
@@ -8573,19 +8752,49 @@ impl World {
         Ok(())
     }
 
+    /// Unload (OpenBW `order_Unload` / `unit_unload`).  A Bunker empties at
+    /// once.  A transport lets one unit out every 15 frames; each one
+    /// lands with its weapon on cooldown, so a drop does not fire the
+    /// instant it touches the ground.
     fn order_unload(&mut self, i: usize) {
-        let cargo = std::mem::take(&mut self.units[i].cargo);
+        let building = self.data.unit(self.units[i].type_id).is_building();
+        if !building && self.units[i].order_wait > 0 {
+            self.units[i].order_wait -= 1;
+            return;
+        }
         let (x, y) = self.exit_position(i);
-        for id in cargo {
-            if let Some(j) = self.index_of(id) {
-                self.units[j].alive = true;
-                self.units[j].clear_transport_link();
-                self.units[j].set_in_bunker(false);
-                self.units[j].x = x;
-                self.units[j].y = y;
+        let count = if building {
+            self.units[i].cargo.len()
+        } else {
+            1.min(self.units[i].cargo.len())
+        };
+        for _ in 0..count {
+            let id = self.units[i].cargo.remove(0);
+            let Some(j) = self.index_of(id) else {
+                continue;
+            };
+            self.units[j].alive = true;
+            self.units[j].clear_transport_link();
+            self.units[j].set_in_bunker(false);
+            self.units[j].x = x;
+            self.units[j].y = y;
+            if !building {
+                let ty = self.data.unit(self.units[j].type_id).clone();
+                let cooldown = [self.data.ground_weapon(&ty), self.data.air_weapon(&ty)]
+                    .into_iter()
+                    .flatten()
+                    .map(|w| self.modified_cooldown(j, w))
+                    .max()
+                    .unwrap_or(0);
+                self.units[j].cooldown = self.units[j].cooldown.max(cooldown);
             }
         }
-        self.order_done(i);
+        if building || self.units[i].cargo.is_empty() {
+            self.units[i].order_wait = 0;
+            self.order_done(i);
+        } else {
+            self.units[i].order_wait = TRANSPORT_UNLOAD_FRAMES;
+        }
     }
 
     // ------------------------------------------------------------------
@@ -8923,6 +9132,26 @@ impl World {
             self.move_towards(i, (p.0 / fp(1), p.1 / fp(1)), range / fp(1));
             return;
         }
+        if spell == Spell::YamatoGun {
+            // Stop and charge; the Battlecruiser's CastSpell animation
+            // shows the charge overlay.
+            let charge = self
+                .data
+                .image(YAMATO_CHARGE_IMAGE)
+                .and_then(|im| {
+                    self.data
+                        .iscript
+                        .frames_until(im.iscript_id as u16, 0, 0x27)
+                })
+                .unwrap_or(0);
+            if charge > 0 {
+                self.units[i].path.clear();
+                self.units[i].path_goal = None;
+                self.units[i].order_wait = charge.min(255) as u8;
+                self.start_animation(i, ANIM_CAST_SPELL);
+                return;
+            }
+        }
         let has_anim = self
             .data
             .unit_iscript_id(self.data.unit(self.units[i].type_id))
@@ -8973,9 +9202,14 @@ impl World {
                 self.units[caster].status.burrowed = true;
             }
             Spell::YamatoGun => {
-                if let Some(t) = target_idx {
-                    let w = self.data.weapon(wid::YAMATO_GUN).cloned();
-                    if let Some(w) = w {
+                // The blast travels (weapons.dat row 30, a flying bullet)
+                // and deals its 260 on arrival.
+                if let Some(t) = target_idx
+                    && let Some(w) = self.data.weapon(wid::YAMATO_GUN).cloned()
+                {
+                    if Projectile::weapon_is_travelling(&w) {
+                        self.spawn_projectile(caster, t, wid::YAMATO_GUN, &w);
+                    } else {
                         self.apply_hit(caster, t, &w, 1);
                     }
                 }
@@ -8986,20 +9220,28 @@ impl World {
                 }
             }
             Spell::EmpShockwave => {
-                if let Some((tx, ty)) = point {
-                    for j in 0..self.units.len() {
-                        if self.units[j].alive && self.distance_to_point(j, (tx, ty)) <= fp(64) {
-                            self.units[j].shields = 0;
-                            self.units[j].set_energy_fixed(0);
-                        }
-                    }
+                // The EMP missile flies to the point (weapons.dat row 33)
+                // and goes off there (`hit::EMP`).
+                if let Some(p) = point
+                    && let Some(w) = self.data.weapon(wid::EMP_SHOCKWAVE).cloned()
+                {
+                    self.spawn_point_bullet(caster, wid::EMP_SHOCKWAVE, &w, p);
                 }
             }
             Spell::Irradiate => {
+                // Irradiate lands with its bullet (weapons.dat row 34,
+                // "appear on target"), a few frames after the cast.
                 if let Some(t) = target_idx
                     && !self.data.unit(self.units[t].type_id).is_building()
                 {
-                    self.units[t].status.apply_irradiate(IRRADIATE_UPDATES);
+                    let tid = self.units[t].id;
+                    let pos = (self.units[t].x, self.units[t].y);
+                    match self.data.weapon(wid::IRRADIATE).cloned() {
+                        Some(w) if w.explosion == hit::IRRADIATE => {
+                            self.instant_hit(c_owner, Some(tid), caster, wid::IRRADIATE, &w, pos);
+                        }
+                        _ => self.units[t].status.apply_irradiate(IRRADIATE_UPDATES),
+                    }
                 }
             }
             Spell::PsionicStorm => {
@@ -9341,7 +9583,7 @@ impl World {
         let owner = self.units[i].owner as usize;
         let (tech_id, spell) = match self.units[i].type_id {
             t if is_ghost_type(t) => (tech_id::PERSONNEL_CLOAKING, Spell::PersonnelCloaking),
-            uid::WRAITH => (tech_id::CLOAKING_FIELD, Spell::CloakingField),
+            uid::WRAITH | 21 => (tech_id::CLOAKING_FIELD, Spell::CloakingField),
             _ => return Err(SimError::Unsupported),
         };
         let hero = self.data.unit(self.units[i].type_id).flags & 0x40 != 0;
@@ -12485,6 +12727,16 @@ mod tests {
                 _ => SpellTarget::Point(point.0, point.1),
             };
             w.apply_spell(caster, spell, target);
+            if spell == Spell::Irradiate {
+                // It lands with its bullet, a few frames after the cast.
+                assert_eq!(w.units[idx].status.irradiate_ticks, 0);
+                for _ in 0..10 {
+                    w.step();
+                    if w.units[idx].status.irradiate_ticks > 0 {
+                        break;
+                    }
+                }
+            }
             let s = &w.units[idx].status;
             let value = match field {
                 0 => s.ensnare_ticks,
