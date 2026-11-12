@@ -323,3 +323,45 @@ fn a_turret_turns_at_its_own_rate_before_it_fires() {
         "turning takes time: {ahead} vs {behind}"
     );
 }
+
+#[test]
+fn a_tank_that_sieges_on_top_of_a_building_is_destroyed() {
+    use galaxycraft::ids::tech;
+    use galaxycraft::sim::Order;
+    let mut w = world();
+    w.players[0].techs[tech::TANK_SIEGE_MODE as usize] = true;
+    let depot = w.spawn_px(0, uid::SUPPLY_DEPOT, 400, 400).unwrap();
+    w.units[depot].completed = true;
+    // Placed overlapping the depot (as after a lift-off / land mix-up).
+    let tank = w.spawn_px(0, uid::SIEGE_TANK, 400, 400).unwrap();
+    let id = w.units[tank].id;
+    w.issue(id, Order::Siege).unwrap();
+    for _ in 0..20 {
+        w.step();
+    }
+    assert!(!w.units[tank].alive, "OpenBW order_Sieging kills it");
+}
+
+#[test]
+fn infantry_boards_a_bunker_when_their_boxes_touch() {
+    use galaxycraft::sim::Order;
+    let mut w = world();
+    let bunker = w.spawn_px(0, uid::BUNKER, 400, 400).unwrap();
+    w.units[bunker].completed = true;
+    // From each side, including a diagonal approach to a corner.
+    for (x, y) in [(400, 520), (300, 400), (520, 520), (280, 290)] {
+        let m = w.spawn_px(0, uid::MARINE, x, y).unwrap();
+        let (mid, bid) = (w.units[m].id, w.units[bunker].id);
+        w.issue(mid, Order::EnterTransport { transport: bid })
+            .unwrap();
+        let mut ok = false;
+        for _ in 0..200 {
+            w.step();
+            if w.units[m].in_transport.is_some() {
+                ok = true;
+                break;
+            }
+        }
+        assert!(ok, "the Marine from ({x},{y}) got in");
+    }
+}

@@ -49,14 +49,14 @@ on screen.
   weapon; the turret's heading turns at its own rate and gates the shot,
   and its attack animation, sound and muzzle overlays play.  Not modelled:
   the hull is not held still while it fires.
-- **Siege Mode.**  A tank is not destroyed when a building occupies its
-  spot, and the sieged turret's unfolding frames are not drawn (only the
-  base's).
+- **Siege Mode.**  The sieged turret's unfolding frames are not drawn
+  (only the base's).
 - **Spider Mine.**  The hover list is a hardcoded type list rather than the
   `units.dat` movement flags; the burrow / unburrow frames and sounds are
   not drawn; a mine is nudged by collision while it waits.
-- **Dropship.**  Boarding a Bunker still uses 8 px (1 px for transports,
-  which fly over to fetch).
+- **Bunker boarding** uses 8 px instead of retail's 1: the engine's
+  building footprint holds walkers a few pixels off the box, and at 1 px
+  Marines stalled on the corners (tested).  Transports use 1 px.
 - **Valkyrie.**  The near-target offset index is global, not per Valkyrie,
   and the 80-bullet cap on Halo Rockets is not enforced.
 - **Yamato Gun.**  Energy is spent when the blast leaves, not when the

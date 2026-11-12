@@ -8974,6 +8974,10 @@ impl World {
             };
             self.units[tidx].order_row = 94;
         }
+        // OpenBW `order_EnterTransport`: board when the boxes are within
+        // 1 px.  A Bunker keeps 8 px: the engine's building footprint holds
+        // walkers a few pixels off its box, and at 1 px Marines stalled on
+        // its corners.
         let reach = if mobile { 1 } else { 8 };
         if self.box_gap_px(i, tidx) > reach {
             let (tx, ty) = (self.units[tidx].x, self.units[tidx].y);
@@ -9182,6 +9186,11 @@ impl World {
                 {
                     return;
                 }
+                // A tank that deploys on top of a building is destroyed.
+                if self.overlaps_grounded_building(i) {
+                    self.kill_unit(i);
+                    return;
+                }
                 self.units[i].status.sieged = true;
                 self.units[i].type_id = uid::SIEGE_MODE;
                 self.units[i].order_wait = SIEGE_FRAMES + 1;
@@ -9210,6 +9219,25 @@ impl World {
         }
         self.units[i].order_wait = 0;
         self.order_done(i);
+    }
+
+    /// Whether unit `i`'s box overlaps a building on the ground.
+    fn overlaps_grounded_building(&self, i: usize) -> bool {
+        let r = self
+            .data
+            .unit(self.units[i].type_id)
+            .dimensions
+            .rect_at((self.units[i].x / fp(1), self.units[i].y / fp(1)));
+        self.units.iter().enumerate().any(|(k, b)| {
+            k != i && b.alive && !b.lifted && self.data.unit(b.type_id).is_building() && {
+                let o = self
+                    .data
+                    .unit(b.type_id)
+                    .dimensions
+                    .rect_at((b.x / fp(1), b.y / fp(1)));
+                r.0 <= o.2 && o.0 <= r.2 && r.1 <= o.3 && o.1 <= r.3
+            }
+        })
     }
 
     /// True while a tank is in the middle of its siege / unsiege animation.
