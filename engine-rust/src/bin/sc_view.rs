@@ -2657,6 +2657,10 @@ struct App {
     /// SD GRPs of free-standing images (bullets, explosions, fire) for the
     /// SD view, read from the install on first use.
     sd_image_grps: std::collections::HashMap<u16, Option<std::rc::Rc<galaxycraft::render::Grp>>>,
+    /// Retail remap tables of the current tileset (`ofire` 1, `gfire` 2,
+    /// `bfire` 3, `bexpl` 4), read from the install on first use.
+    remap_tables:
+        std::collections::HashMap<(u16, u8), Option<std::rc::Rc<galaxycraft::render::RemapTable>>>,
     /// Mixer gains last sent to the audio thread.
     volumes_sent: Option<(f32, f32)>,
     /// Left edge of the 16:9 content box (pillarbox offset).
@@ -7906,6 +7910,7 @@ fn main() {
         animator: galaxycraft::unit_anim::Animator::default(),
         image_names: None,
         sd_image_grps: std::collections::HashMap::new(),
+        remap_tables: std::collections::HashMap::new(),
         volumes_sent: None,
         content_x0: 0,
         mouse_was_down: false,
@@ -19352,15 +19357,33 @@ impl App {
             // lockdown, smoke): the pixel values are strengths of a tinted
             // light, not palette colours.  INFERENCE: tints approximate
             // the `ofire` / `gfire` / `bfire` / `bexpl` remap tables.
-            let ink = match self.data.image(image) {
-                Some(i) if i.modifier == 9 => {
-                    galaxycraft::render::GrpInk::Glow(match i.color_shift {
-                        2 => Rgb::new(90, 255, 90),
-                        3 | 4 => Rgb::new(90, 170, 255),
-                        _ => Rgb::new(255, 150, 40),
-                    })
-                }
-                _ => galaxycraft::render::GrpInk::Solid(None),
+            let glow = self
+                .data
+                .image(image)
+                .filter(|i| i.modifier == 9)
+                .map(|i| i.color_shift);
+            // The retail way: through the tileset's remap table.
+            if let Some(remap) = glow
+                && let Some(table) = self.remap_table(remap)
+            {
+                galaxycraft::render::draw_grp_remapped(
+                    fb,
+                    &grp,
+                    index,
+                    (x - self.camera.0, y - self.camera.1),
+                    galaxycraft::render::sd_frame_flip(grp.frames.len(), facing),
+                    &table,
+                );
+                continue;
+            }
+            // Without the install's table: a tinted light.
+            let ink = match glow {
+                Some(shift) => galaxycraft::render::GrpInk::Glow(match shift {
+                    2 => Rgb::new(90, 255, 90),
+                    3 | 4 => Rgb::new(90, 170, 255),
+                    _ => Rgb::new(255, 150, 40),
+                }),
+                None => galaxycraft::render::GrpInk::Solid(None),
             };
             galaxycraft::render::draw_grp_posed(
                 fb,
@@ -19399,6 +19422,18 @@ impl App {
             };
             let index =
                 galaxycraft::render::sd_frame_index(grp.frames.len(), facing, Some(set), false, 0);
+            let remap = self.data.image(image).map_or(1, |i| i.color_shift);
+            if let Some(table) = self.remap_table(remap) {
+                galaxycraft::render::draw_grp_remapped(
+                    fb,
+                    &grp,
+                    index,
+                    (x - self.camera.0, y - self.camera.1),
+                    galaxycraft::render::sd_frame_flip(grp.frames.len(), facing),
+                    &table,
+                );
+                continue;
+            }
             galaxycraft::render::draw_grp_posed(
                 fb,
                 &grp,
@@ -19409,6 +19444,31 @@ impl App {
                 galaxycraft::render::GrpInk::Glow(Rgb::new(255, 150, 40)),
             );
         }
+    }
+
+    /// The remap table an image's `images.dat` remapping names, for the
+    /// current tileset.
+    fn remap_table(&mut self, remap: u8) -> Option<std::rc::Rc<galaxycraft::render::RemapTable>> {
+        let name = match remap {
+            1 => "ofire",
+            2 => "gfire",
+            3 => "bfire",
+            4 => "bexpl",
+            _ => return None,
+        };
+        let era = self.scenario.era;
+        if let Some(t) = self.remap_tables.get(&(era, remap)) {
+            return t.clone();
+        }
+        let path = format!("tileset/{}/{name}.pcx", galaxycraft::render::era_name(era));
+        let table = self
+            .install
+            .as_ref()
+            .and_then(|i| i.read(&path))
+            .and_then(|b| galaxycraft::render::RemapTable::parse(&b))
+            .map(std::rc::Rc::new);
+        self.remap_tables.insert((era, remap), table.clone());
+        table
     }
 
     /// `arr/images.tbl` (index n = entry n - 1), read once from the install.

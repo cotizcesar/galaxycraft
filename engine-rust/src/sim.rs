@@ -829,10 +829,11 @@ pub struct SpellCue {
 /// Frames the nuclear missile spends off the map between its climb and its
 /// fall: its WarpIn animation (iscript 131: two `wait 125`).
 pub const NUKE_WARP_FRAMES: i32 = 250;
-/// Speed of the falling nuclear bullet (1/256 px per frame): 320 px in
-/// about 70 frames, the time the missile unit needs from rest with its
-/// flingy acceleration of 33.
-pub const NUKE_FALL_SPEED: i32 = 1170;
+/// The nuclear missile's flingy (`flingy.dat` row 109): acceleration 33 and
+/// top speed 8533, in 1/256 px per frame.  It starts both its climb and its
+/// fall from rest.
+pub const NUKE_ACCELERATION: i32 = 33;
+pub const NUKE_TOP_SPEED: i32 = 8533;
 
 /// Spell cues kept for the renderer.
 pub const SPELL_CUE_KEEP: usize = 64;
@@ -9667,7 +9668,9 @@ impl World {
             if let Ok(m) = self.spawn_px(owner as usize, uid::NUCLEAR_MISSILE, sx, sy) {
                 self.units[m].invincible = true;
                 self.units[m].connected_unit = Some(ghost);
-                self.units[m].order = Order::Move { pos: (sx, 8) };
+                self.units[m].order = Order::Idle;
+                self.units[m].facing = 0;
+                self.units[m].speed = 0;
                 self.nuke_strikes[k].missile = self.units[m].id;
             }
         }
@@ -9719,7 +9722,21 @@ impl World {
                 continue;
             };
             if timer > 0 {
+                // Climbing straight up from rest with the missile's flingy
+                // acceleration (33/256 px per frame per frame, top speed
+                // 8533/256).
+                let v = (self.units[m].speed + NUKE_ACCELERATION).min(NUKE_TOP_SPEED);
+                self.units[m].speed = v;
+                self.units[m].y -= v;
                 continue;
+            }
+            // The falling bomb accelerates the same way.
+            if let Some(p) = self
+                .projectiles
+                .iter_mut()
+                .find(|p| p.weapon == wid::NUCLEAR_STRIKE && p.source == ghost)
+            {
+                p.speed = (p.speed + NUKE_ACCELERATION).min(NUKE_TOP_SPEED);
             }
             match falling(self, ghost) {
                 Some((x, y)) => {
@@ -9771,9 +9788,9 @@ impl World {
             y: target.1 - 320 * fp(1),
             target: target_unit,
             target_pos: target,
-            // The missile accelerates from rest at its flingy's 33/256 px
-            // per frame per frame, so the 320 px take about 70 frames.
-            speed: NUKE_FALL_SPEED,
+            // From rest; `advance_nuke_strikes` accelerates it each frame,
+            // so the 320 px take about 70 frames.
+            speed: NUKE_ACCELERATION,
             remaining_time: 300,
             bounces_left: 0,
             hit_flags: 0,
