@@ -51,6 +51,43 @@ pub struct RetailReplay {
     /// Residual payload after the map: the command stream of a player-saved
     /// replay. Empty for the autosaves, which only carry map + settings.
     pub commands: Vec<u8>,
+    /// Decoded 633-byte header (game, map, roster, length) when the container
+    /// follows the framed-stream layout.
+    pub header: Option<ReplayHeader>,
+    /// The action log split into per-frame blocks.  Empty for autosaves.
+    pub actions: Vec<ActionBlock>,
+}
+
+/// One player slot of the replay header (36-byte records at `0xa1`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HeaderSlot {
+    pub index: u8,
+    /// 1 = computer, 2 = human (as stored).
+    pub kind: u8,
+    /// 0 = Zerg, 1 = Terran, 2 = Protoss.
+    pub race: u8,
+    pub name: String,
+}
+
+/// The fixed-size replay header.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReplayHeader {
+    pub engine: u8,
+    /// Game length in frames.
+    pub frames: u32,
+    pub game_name: String,
+    pub map_name: String,
+    pub map_width: u16,
+    pub map_height: u16,
+    pub slots: Vec<HeaderSlot>,
+}
+
+/// One block of the action log: the actions issued at `frame`.  `data` is
+/// the raw `[player][action id][params]...` sequence of that frame.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ActionBlock {
+    pub frame: u32,
+    pub data: Vec<u8>,
 }
 
 impl RetailReplay {
@@ -191,7 +228,40 @@ impl RetailReplay {
             rest = &rest[8 + size..];
         }
         out.commands = rest.to_vec();
+        out.fill_structured(bytes);
         Some(out)
+    }
+
+    /// Read the framed streams `[checksum][count]{[size][zlib|raw]}*`: header,
+    /// length word + action log, length word + map.  Layout verified on a
+    /// player-saved Remastered replay (container 0x8909): the header is 633
+    /// bytes, the log decodes to exactly the announced length.
+    fn fill_structured(&mut self, bytes: &[u8]) {
+        let mut off = 0x14;
+        let Some((header, next)) = read_stream(bytes, off) else {
+            return;
+        };
+        off = next;
+        let Some(header) = parse_header(&header) else {
+            return;
+        };
+        if self.map_name.is_empty() {
+            self.map_name = header.map_name.clone();
+        }
+        // [len word][log]: the length word announces the decoded log size.
+        if let Some((len_word, n1)) = read_stream(bytes, off)
+            && len_word.len() == 4
+            && let Some((log, n2)) = read_stream(bytes, n1)
+        {
+            let announced =
+                u32::from_le_bytes([len_word[0], len_word[1], len_word[2], len_word[3]]);
+            if log.len() as u32 == announced {
+                self.actions = split_action_blocks(&log);
+                off = n2;
+            }
+        }
+        let _ = off;
+        self.header = Some(header);
     }
 
     /// True when the file carries the action stream (a player-saved replay).
@@ -289,6 +359,84 @@ impl RetailReplay {
         self.has_commands()
             .then(|| CommandStream::parse(&self.commands))
     }
+}
+
+/// Read one framed stream `[u32 checksum][u32 count]{[u32 size][data]}*count`
+/// and return the concatenated, inflated payload.
+fn read_stream(bytes: &[u8], off: usize) -> Option<(Vec<u8>, usize)> {
+    let count = u32::from_le_bytes(bytes.get(off + 4..off + 8)?.try_into().ok()?) as usize;
+    if count == 0 || count > 4096 {
+        return None;
+    }
+    let mut pos = off + 8;
+    let mut out = Vec::new();
+    for _ in 0..count {
+        let size = u32::from_le_bytes(bytes.get(pos..pos + 4)?.try_into().ok()?) as usize;
+        let body = bytes.get(pos + 4..pos + 4 + size)?;
+        match inflate(body) {
+            Some(chunk) => out.extend_from_slice(&chunk),
+            None => out.extend_from_slice(body),
+        }
+        pos += 4 + size;
+    }
+    Some((out, pos))
+}
+
+fn fixed_string(data: &[u8]) -> String {
+    let end = data.iter().position(|b| *b == 0).unwrap_or(data.len());
+    String::from_utf8_lossy(&data[..end]).to_string()
+}
+
+fn parse_header(h: &[u8]) -> Option<ReplayHeader> {
+    if h.len() < 0x279 {
+        return None;
+    }
+    let mut slots = Vec::new();
+    for i in 0..12usize {
+        let o = 0xa1 + i * 36;
+        let r = &h[o..o + 36];
+        if r[8] == 0 {
+            continue;
+        }
+        slots.push(HeaderSlot {
+            index: i as u8,
+            kind: r[8],
+            race: r[9],
+            name: fixed_string(&r[11..]),
+        });
+    }
+    Some(ReplayHeader {
+        engine: h[0],
+        frames: u32::from_le_bytes(h[1..5].try_into().ok()?),
+        game_name: fixed_string(&h[0x18..0x18 + 28]),
+        map_name: fixed_string(&h[0x61..0x61 + 32]),
+        map_width: u16::from_le_bytes([h[0x34], h[0x35]]),
+        map_height: u16::from_le_bytes([h[0x36], h[0x37]]),
+        slots,
+    })
+}
+
+/// Split the log into `[u32 frame][u8 len][len bytes]` blocks.  Stops at the
+/// first inconsistency (frames going backwards or a block past the end), so a
+/// malformed log yields a prefix instead of garbage.
+fn split_action_blocks(log: &[u8]) -> Vec<ActionBlock> {
+    let mut out = Vec::new();
+    let mut off = 0usize;
+    let mut last = 0u32;
+    while off + 5 <= log.len() {
+        let frame = u32::from_le_bytes([log[off], log[off + 1], log[off + 2], log[off + 3]]);
+        let len = log[off + 4] as usize;
+        if frame < last || off + 5 + len > log.len() {
+            break;
+        }
+        out.push(ActionBlock {
+            frame,
+            data: log[off + 5..off + 5 + len].to_vec(),
+        });
+        last = frame;
+        off += 5 + len;
+    }
+    out
 }
 
 /// Read one `[u32 checksum][u32 count][u32 size][zlib]` block.
@@ -424,5 +572,79 @@ mod tests {
         let packed = enc.finish().unwrap();
         assert_eq!(inflate(&packed).as_deref(), Some(&raw[..]));
         assert!(inflate(b"\x00\x01\x02").is_none());
+    }
+}
+
+#[cfg(test)]
+mod structured_tests {
+    use super::*;
+    use std::io::Write;
+
+    fn stream(chunks: &[Vec<u8>]) -> Vec<u8> {
+        let mut out = vec![0, 0, 0, 0];
+        out.extend_from_slice(&(chunks.len() as u32).to_le_bytes());
+        for c in chunks {
+            let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+            z.write_all(c).unwrap();
+            let z = z.finish().unwrap();
+            out.extend_from_slice(&(z.len() as u32).to_le_bytes());
+            out.extend_from_slice(&z);
+        }
+        out
+    }
+
+    #[test]
+    fn action_blocks_split_and_stop_at_inconsistencies() {
+        let mut log = Vec::new();
+        for (frame, data) in [(5u32, vec![0u8, 0x14, 1, 2]), (9, vec![1, 0x1f])] {
+            log.extend_from_slice(&frame.to_le_bytes());
+            log.push(data.len() as u8);
+            log.extend_from_slice(&data);
+        }
+        let blocks = split_action_blocks(&log);
+        assert_eq!(blocks.len(), 2);
+        assert_eq!((blocks[0].frame, blocks[1].frame), (5, 9));
+        // A block that runs past the end is dropped, not decoded.
+        log.extend_from_slice(&[12, 0, 0, 0, 200, 1]);
+        assert_eq!(split_action_blocks(&log).len(), 2);
+        // Frames going backwards end the log.
+        let mut back = log[..log.len() - 6].to_vec();
+        back.extend_from_slice(&[3, 0, 0, 0, 0]);
+        assert_eq!(split_action_blocks(&back).len(), 2);
+    }
+
+    #[test]
+    fn framed_streams_round_trip_with_raw_and_inflated_chunks() {
+        let body = stream(&[vec![1, 2, 3], vec![4, 5]]);
+        let (data, next) = read_stream(&body, 0).unwrap();
+        assert_eq!(data, vec![1, 2, 3, 4, 5]);
+        assert_eq!(next, body.len());
+        // A raw (non-zlib) chunk is passed through.
+        let mut raw = vec![0, 0, 0, 0, 1, 0, 0, 0, 4, 0, 0, 0];
+        raw.extend_from_slice(&9787u32.to_le_bytes());
+        assert_eq!(read_stream(&raw, 0).unwrap().0, 9787u32.to_le_bytes());
+        assert!(read_stream(&[0, 0, 0, 0, 0, 0, 0, 0], 0).is_none());
+    }
+
+    #[test]
+    fn header_fields_are_read_from_their_fixed_offsets() {
+        let mut h = vec![0u8; 0x279];
+        h[0] = 1;
+        h[1..5].copy_from_slice(&25437u32.to_le_bytes());
+        h[0x18..0x18 + 5].copy_from_slice(b"LinKa");
+        h[0x34..0x36].copy_from_slice(&96u16.to_le_bytes());
+        h[0x36..0x38].copy_from_slice(&128u16.to_le_bytes());
+        h[0x61..0x61 + 10].copy_from_slice(b"Challenger");
+        let o = 0xa1 + 36;
+        h[o + 8] = 2;
+        h[o + 9] = 1;
+        h[o + 11..o + 16].copy_from_slice(b"LinKa");
+        let hd = parse_header(&h).unwrap();
+        assert_eq!((hd.frames, hd.map_name.as_str()), (25437, "Challenger"));
+        assert_eq!((hd.map_width, hd.map_height), (96, 128));
+        assert_eq!(hd.slots.len(), 1);
+        assert_eq!((hd.slots[0].kind, hd.slots[0].race), (2, 1));
+        assert_eq!(hd.slots[0].name, "LinKa");
+        assert!(parse_header(&h[..100]).is_none());
     }
 }

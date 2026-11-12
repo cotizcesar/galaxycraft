@@ -94,3 +94,33 @@ fn every_available_replay_parses_and_reports_its_contents() {
     );
     let _ = Path::new(".");
 }
+
+#[test]
+fn player_saved_replay_exposes_header_and_action_log() {
+    for path in replays() {
+        let bytes = std::fs::read(&path).expect("read replay");
+        let rep = RetailReplay::parse(&bytes).expect("parse");
+        let Some(h) = rep.header.as_ref() else {
+            continue;
+        };
+        if rep.actions.is_empty() {
+            continue;
+        }
+        println!(
+            "{}: {} {}x{} frames={} slots={:?} blocks={} last={}",
+            path.display(),
+            h.map_name,
+            h.map_width,
+            h.map_height,
+            h.frames,
+            h.slots
+                .iter()
+                .map(|s| (s.name.as_str(), s.race))
+                .collect::<Vec<_>>(),
+            rep.actions.len(),
+            rep.actions.last().map(|b| b.frame).unwrap_or(0)
+        );
+        assert!(rep.actions.windows(2).all(|w| w[0].frame <= w[1].frame));
+        assert!(rep.actions.last().unwrap().frame <= h.frames);
+    }
+}
