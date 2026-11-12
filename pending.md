@@ -30,6 +30,10 @@ energy, Medic heal rules and search square, Ghost paint range, the nuke's
 
 - **Cloak look.**  Retail distorts cloaked units through the palette; the
   client fades them (`render::CLOAK_KEEP`) in SD and HD.
+- **Annoyed-line threshold.**  The client plays three "what?" lines and
+  the annoyed ones from the fourth click (`voice::WHAT_CLICKS`, an
+  inference); a fan wiki says "five or more" clicks.  Needs a check against
+  the real game.
 - **Voice lines** for selection and orders are picked at random, from
   memory of the retail behaviour.  OpenBW has no voice logic and a web
   search (2026-11-12) found no source for the exact rule; the annoyed lines
