@@ -4526,20 +4526,6 @@ fn frames_to_end_check(tick: u64) -> u32 {
     ((END_CHECK_PERIOD - tick % END_CHECK_PERIOD) % END_CHECK_PERIOD) as u32
 }
 
-/// `scvspark` (Fusion Cutter hit) image.
-const SCV_SPARK_IMAGE: u16 = 526;
-/// Fusion Cutter cooldown in frames (`weapons.dat` 15).
-const WELD_CYCLE: u64 = 15;
-
-/// See `App::welding_pose`.
-#[derive(Clone, Copy, Debug)]
-struct WeldPose {
-    facing: u8,
-    raw: usize,
-    spark: Option<(i32, i32)>,
-    spark_frame: usize,
-}
-
 /// `cmdbtns` frame of the arrow under the unit in training.
 const QUEUE_ARROW_FRAME: usize = 11;
 
@@ -4551,6 +4537,10 @@ const GROUP_BOX_HERO: usize = 19;
 
 /// iscript animation of a Terran building past its scaffold.
 const ALMOST_BUILT_ANIM: usize = 15;
+
+/// iscript animations of the three early construction stages: Init,
+/// SpecialState1, SpecialState2 (then AlmostBuilt).
+const CONSTRUCTION_STAGE_ANIMS: [usize; 3] = [0, 13, 14];
 
 /// How an unfinished Terran building is drawn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -4571,7 +4561,14 @@ fn terran_construction_stage(
     u: &SimUnit,
     ty: &galaxycraft::data::UnitType,
 ) -> Option<ConstructionStage> {
-    if u.completed || !ty.is_building() || !(325..=330).contains(&ty.construction_image) {
+    // The Refinery has no scaffold (`units.dat` construction image 0): it
+    // runs the same stages on its own image (iscript 125: Init frame 1,
+    // SpecialState1 frame 2, SpecialState2 frame 3, AlmostBuilt frame 4).
+    let own_stages = u.type_id == galaxycraft::ids::unit::REFINERY;
+    if u.completed
+        || !ty.is_building()
+        || !((325..=330).contains(&ty.construction_image) || own_stages)
+    {
         return None;
     }
     let total = u.build_total.max(1) as i64;
@@ -6291,7 +6288,7 @@ fn script_key(name: &str) -> Key {
 /// `spawn:OWNER:TYPE_ID:x:y`, `key:K`, `ctrl-key:K`, `ticks:N` (simulation ticks),
 /// `click-unit:NAME` / `rclick-unit:NAME` (the nearest on-screen unit whose
 /// name contains NAME), `click-cmd:N` (command-card slot N, 1..9),
-/// `click-world:x:y` (world game px), `click-view:px:py` / `rclick-view`
+/// `click-world:x:y` / `rclick-world:x:y` (world game px), `click-view:px:py` / `rclick-view`
 /// (percent of the visible playfield), `minimap-click:px:py` /
 /// `minimap-rclick` (percent of the minimap), `look:x:y` (minimap click on a
 /// world point), `dump-units:NAME`, `shot:NAME`.  Writes `game.tsv` (one
@@ -6607,9 +6604,9 @@ fn run_game_script(app: &mut App, fb: &mut Framebuffer, script: &str) {
                 let at = (rx + rw * num(1) / 100, ry + rh * num(2) / 100);
                 mouse = click(app, fb, at, parts[0] == "minimap-rclick", false);
             }
-            "click-world" => {
+            "click-world" | "rclick-world" => {
                 let at = app.screen_point_of_world(num(1), num(2));
-                mouse = click(app, fb, at, false, false);
+                mouse = click(app, fb, at, parts[0] == "rclick-world", false);
             }
             "click-cargo" => {
                 // Cargo slot N of the selected transport.
@@ -15673,7 +15670,7 @@ impl App {
         let (sx, sy) = self.to_logical(px, py);
         let mut best: Option<(i32, u32)> = None;
         for (i, u) in self.world.units.iter().enumerate() {
-            if !u.alive {
+            if !u.alive || self.world.inside_gas_building(i) {
                 continue;
             }
             // Cannot click an enemy the fog hides.
@@ -17436,12 +17433,17 @@ impl App {
             .world
             .units
             .iter()
-            .filter(|u| u.alive && u.owner as usize == self.local_player)
-            .filter(|u| {
+            .enumerate()
+            .filter(|(i, u)| {
+                u.alive
+                    && u.owner as usize == self.local_player
+                    && !self.world.inside_gas_building(*i)
+            })
+            .filter(|(_, u)| {
                 let (ux, uy) = self.screen_of(u);
                 ux >= x0 && ux <= x1 && uy >= y0 && uy <= y1
             })
-            .map(|u| (u.id, self.data.unit(u.type_id).is_building()))
+            .map(|(_, u)| (u.id, self.data.unit(u.type_id).is_building()))
             .collect();
         // Left edge first, like retail's x-sorted unit finder.
         inside.sort_by_key(|(id, _)| {
@@ -18503,7 +18505,7 @@ impl App {
         }
 
         let mut order: Vec<usize> = (0..self.world.units.len())
-            .filter(|&i| self.world.units[i].alive)
+            .filter(|&i| self.world.units[i].alive && !self.world.inside_gas_building(i))
             .collect(); // Elevation first, then y (retail sprite order); an SCV welding a
         // building is drawn in front of it.
         order.sort_by_key(|&i| {
@@ -18516,6 +18518,55 @@ impl App {
             };
             (self.data.unit(u.type_id).elevation, y)
         });
+        // SD: a Terran building under construction shows its scaffold
+        // (`units.dat` construction image) and then its AlmostBuilt frame,
+        // at the same progress marks as the HD path.
+        let mut building_stage: std::collections::HashMap<
+            usize,
+            (std::rc::Rc<galaxycraft::render::Grp>, usize),
+        > = std::collections::HashMap::new();
+        if !hd {
+            for &i in &order {
+                let (type_id, stage) = {
+                    let u = &self.world.units[i];
+                    (
+                        u.type_id,
+                        terran_construction_stage(u, self.data.unit(u.type_id)),
+                    )
+                };
+                let pick = match stage {
+                    Some(ConstructionStage::Scaffold(n))
+                        if self.data.unit(type_id).construction_image == 0 =>
+                    {
+                        galaxycraft::unit_anim::unit_image(&self.data, type_id).map(|img| {
+                            (
+                                img,
+                                self.first_frame_of(img, CONSTRUCTION_STAGE_ANIMS[n.min(2)])
+                                    .unwrap_or(0),
+                            )
+                        })
+                    }
+                    Some(ConstructionStage::Scaffold(n)) => {
+                        Some((self.data.unit(type_id).construction_image, n))
+                    }
+                    Some(ConstructionStage::AlmostBuilt) => {
+                        galaxycraft::unit_anim::unit_image(&self.data, type_id).map(|img| {
+                            (
+                                img,
+                                self.first_frame_of(img, ALMOST_BUILT_ANIM).unwrap_or(0),
+                            )
+                        })
+                    }
+                    None => None,
+                };
+                if let Some((image, frame)) = pick
+                    && let Some(grp) = self.sd_image_grp(image)
+                    && grp.frame(frame).is_some()
+                {
+                    building_stage.insert(i, (grp, frame));
+                }
+            }
+        }
         let mut hd_units = Vec::new();
         for i in order {
             let u = &self.world.units[i];
@@ -18538,7 +18589,15 @@ impl App {
                 .then(|| self.animator.unit_frame(u.id))
                 .flatten();
             let facing = self.rendered_facing(u);
-            if !self
+            if let Some((grp, frame)) = building_stage.get(&i) {
+                galaxycraft::render::draw_grp_centered(
+                    fb,
+                    grp,
+                    *frame,
+                    self.sprites.palette(),
+                    (sx, sy),
+                );
+            } else if !self
                 .sprites
                 .draw_unit_turned(fb, u, (sx, sy), self.world.tick, pose, facing)
             {
@@ -18548,7 +18607,10 @@ impl App {
                 let r = ((ty.dimensions.right - ty.dimensions.left) as i32 / 2).max(12) + 4;
                 fb.circle_outline(sx, sy, r, Rgb::new(80, 255, 80));
             }
-            if selected || u.owner as usize == self.local_player {
+            // Neutral resources are stored under player 0: no bar on them
+            // unless selected.
+            let neutral = u.is_resource() || u.type_id == galaxycraft::ids::unit::VESPENE_GEYSER;
+            if selected || (u.owner as usize == self.local_player && !neutral) {
                 self.sprites.draw_health(fb, u, &self.data, (sx, sy));
             }
         }
@@ -18880,51 +18942,6 @@ impl App {
         }
     }
 
-    /// Pose of an SCV constructing a Terran building next to it: facing the
-    /// building, the Fusion Cutter cycle (`iscript` GndAttkRpt: frame 34
-    /// then 17) every `WELD_CYCLE` frames, and a `scvspark` on a point of the
-    /// building that changes each cycle (Boot Camp recording 175-199 s: the
-    /// SCV works the depot with blue sparks).  Render only; the simulation
-    /// keeps `Order::Construct`.
-    fn welding_pose(&self, u: &SimUnit) -> Option<WeldPose> {
-        let Order::Construct { building } = u.order else {
-            return None;
-        };
-        let b = self.world.unit(building)?;
-        if b.completed {
-            return None;
-        }
-        let (dx, dy) = ((b.x - u.x) / 256, (b.y - u.y) / 256);
-        if dx * dx + dy * dy > 96 * 96 {
-            return None;
-        }
-        let facing = (((dy as f32).atan2(dx as f32).to_degrees() + 90.0).rem_euclid(360.0) * 256.0
-            / 360.0) as u8;
-        let tick = self.world.tick + u.id as u64 * 7;
-        let phase = (tick % WELD_CYCLE) as usize;
-        let cycle = tick / WELD_CYCLE;
-        let ty = self.data.unit(b.type_id);
-        let (hw, hh) = (
-            (ty.dimensions.left.max(ty.dimensions.right) as i64).max(8),
-            (ty.dimensions.top.max(ty.dimensions.bottom) as i64).max(8),
-        );
-        let h = (cycle as i64)
-            .wrapping_mul(2654435761)
-            .wrapping_add(building as i64 * 97);
-        let spark = (phase < 10).then(|| {
-            (
-                b.x / 256 + (h.rem_euclid(2 * hw) - hw) as i32 * 2 / 3,
-                b.y / 256 + ((h / 7).rem_euclid(2 * hh) - hh) as i32 * 2 / 3,
-            )
-        });
-        Some(WeldPose {
-            facing,
-            raw: if phase < 2 { 34 } else { 17 },
-            spark,
-            spark_frame: phase,
-        })
-    }
-
     /// Overlays one image's animation `anim` attaches (the Terran scaffold's
     /// shadow, `TBldSml` Init -> image 331).
     fn hd_image_layers(&self, image: u16, anim: usize) -> Vec<(u16, i8, i8, bool)> {
@@ -19016,9 +19033,6 @@ impl App {
             self.rendered_facing(u),
         ));
         let directional = img.header.frames.len() >= 17;
-        // An SCV welding its building faces it (`welding_pose`).
-        let weld = self.welding_pose(u);
-        let facing = weld.map_or(facing, |w| w.facing);
         let (frame, flip) = if directional {
             let dir = ((facing as i32 + 4) / 8).rem_euclid(32);
             if dir <= 16 {
@@ -19044,14 +19058,7 @@ impl App {
                 .image(self.data.hd_anim_id(id), |path| install?.read(path))
         };
         let (mut img, mut frame) = (img, frame);
-        if let Some(w) = weld {
-            // Attack frames are `raw + direction` like every directional
-            // GRP (17 frames per pose).
-            let posed = w.raw + frame;
-            if posed < img.header.frames.len() {
-                frame = posed;
-            }
-        } else if directional
+        if directional
             && !ty.is_building()
             && let Some(raw) = self.animator.unit_frame(u.id)
         {
@@ -19064,6 +19071,11 @@ impl App {
         let mut layer_list = self.hd_unit_layers(u.type_id, u.is_completed_building(&self.data));
         if let Some(stage) = terran_construction_stage(u, ty) {
             match stage {
+                ConstructionStage::Scaffold(n) if ty.construction_image == 0 => {
+                    frame = self
+                        .first_frame_of(image_id, CONSTRUCTION_STAGE_ANIMS[n.min(2)])
+                        .unwrap_or(frame);
+                }
                 ConstructionStage::Scaffold(n) => {
                     if let Some(si) = fetch(ty.construction_image) {
                         image_id = ty.construction_image;
@@ -19102,19 +19114,6 @@ impl App {
                 layer_list = self.hd_unit_layers(src, true);
             }
         }
-        let spark = weld.and_then(|w| {
-            let (bx, by) = w.spark?;
-            let si = fetch(SCV_SPARK_IMAGE)?;
-            let n = si.header.frames.len().max(1);
-            Some(HdPart {
-                image_id: SCV_SPARK_IMAGE,
-                frame: w.spark_frame.min(n - 1),
-                img: si,
-                x: cx as f32 + (bx - self.camera.0) as f32 * s,
-                y: content.1 as f32 + (by - self.camera.1) as f32 * s,
-                below: false,
-            })
-        });
         let layers = layer_list
             .into_iter()
             .filter_map(|(id, ox, oy, below)| {
@@ -19129,7 +19128,6 @@ impl App {
                     below,
                 })
             })
-            .chain(spark)
             .collect();
         // Geyser smoke (`creategasoverlays`): image 430 + overlay at the
         // geyser's LO offset, above it.
@@ -19233,6 +19231,12 @@ impl App {
             )
             .chain(
                 self.animator
+                    .carry_overlays(&self.world)
+                    .into_iter()
+                    .map(|b| (b.image, b.x, b.y, b.facing, b.frame)),
+            )
+            .chain(
+                self.animator
                     .effects()
                     .map(|e| (e.image, e.x, e.y, e.facing, e.frame)),
             )
@@ -19251,12 +19255,51 @@ impl App {
             } else {
                 raw as usize
             };
-            galaxycraft::render::draw_grp_centered(
+            galaxycraft::render::draw_grp_posed(
                 fb,
                 &grp,
                 index,
                 self.sprites.palette(),
                 (x - self.camera.0, y - self.camera.1),
+                galaxycraft::render::sd_frame_flip(grp.frames.len(), facing),
+                galaxycraft::render::GrpInk::Solid(None),
+            );
+        }
+        // Engine glows of moving units (the SCV's thruster, image 249):
+        // the glow's own direction frame, alternating its two frame sets
+        // (iscript 291: `engset 0`, `engset 1`, one tick each).
+        let glows: Vec<(u16, i32, i32, u8)> = self
+            .world
+            .units
+            .iter()
+            .enumerate()
+            .filter(|(i, u)| {
+                u.alive
+                    && !self.world.inside_gas_building(*i)
+                    && (!self.fog_on()
+                        || u.owner as usize == self.local_player
+                        || self.world.can_see_unit(local, *i))
+            })
+            .filter_map(|(_, u)| {
+                let glow = self.animator.unit_glow(u.id)?;
+                Some((glow, u.x / 256, u.y / 256, self.rendered_facing(u)))
+            })
+            .collect();
+        let set = (self.world.tick % 2) as u16 * 17;
+        for (image, x, y, facing) in glows {
+            let Some(grp) = self.sd_image_grp(image) else {
+                continue;
+            };
+            let index =
+                galaxycraft::render::sd_frame_index(grp.frames.len(), facing, Some(set), false, 0);
+            galaxycraft::render::draw_grp_posed(
+                fb,
+                &grp,
+                index,
+                self.sprites.palette(),
+                (x - self.camera.0, y - self.camera.1),
+                galaxycraft::render::sd_frame_flip(grp.frames.len(), facing),
+                galaxycraft::render::GrpInk::Glow(Rgb::new(255, 150, 40)),
             );
         }
     }
@@ -19317,6 +19360,12 @@ impl App {
             .chain(
                 self.animator
                     .bullets()
+                    .into_iter()
+                    .map(|b| (b.image, b.x, b.y, b.facing, b.frame)),
+            )
+            .chain(
+                self.animator
+                    .carry_overlays(&self.world)
                     .into_iter()
                     .map(|b| (b.image, b.x, b.y, b.facing, b.frame)),
             )

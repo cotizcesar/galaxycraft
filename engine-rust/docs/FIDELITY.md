@@ -68,3 +68,37 @@ upgrade.  Decoded but not executed: `0x28`, `0x33` cancel upgrade, `0x62`.
 3. More replays: short, controlled ones (combat, tanks, pathfinding) record far
    fewer AI interleavings and isolate rule differences better than a 17-minute
    game.
+
+## Unit by unit: Terran SCV (2026-11-12)
+
+Checked against the retail data (iscript 84, `weapons.dat` rows 13 / 14,
+`flingy.dat`, `images.dat`) and OpenBW's worker rules; tests in
+`tests/scv_retail.rs`.
+
+| aspect | retail | engine |
+|---|---|---|
+| walking | Walking anim, `imgol 249` thruster glow; 32 directions, the western half mirrored | HD matches (`tests/unit_glow.rs`); **fixed in SD**: the 17 direction frames were spread over the whole circle without mirroring (a unit heading west showed a wrong direction), and the glow was not drawn |
+| mining minerals | AlmostBuilt loop: frame 34, `useweapon 14`, frame 17; spark image 526 appears 10 px ahead; cutter sounds 35..39 | **fixed**: the animator runs AlmostBuilt while `gather_timer > 0`; the worker faces its field |
+| cargo in hands | overlay image: OreChunk 397 / 398, GasTank 403 / 404 (Orb 399, Sac 401 for the other races) until delivery | **fixed**: `Animator::carry_overlays`, drawn in SD and HD |
+| gas | worker hidden for 37 frames inside the building | **fixed**: `World::inside_gas_building` (not drawn, not selectable, not visible to enemies, no collision) |
+| building / repair | AlmostBuilt loop with sparks, facing the structure | **fixed**: same animation path (replaces the HD-only fake weld) |
+| attack | Fusion Cutter: 5 damage, cooldown 15, range 10 px, GndAttkInit/Rpt | **fixed** (three engine bugs, all units): weapon range was measured between centres instead of between unit boxes, so a 10 px weapon never reached; scripts that end a swing with `gotorepeatattk` and an idle loop (SCV, Zergling) never attacked twice; a unit already in reach kept walking into its target |
+| speed | flingy top speed 1280, acceleration 67, turn 40; no speed upgrade | **fixed**: Metabolic Boost was applied to every worker; it is Zergling-only |
+| sight | 7 tiles | matches |
+| collision | a gathering worker collides only with buildings | **fixed**: `World::is_gathering` units are skipped by `resolve_collisions` |
+
+
+| aspect | retail | engine |
+|---|---|---|
+| gas exit | the worker reappears on the building's edge towards its depot | **fixed**: `World::place_at_gas_exit` |
+| building stages | scaffold frames 0 / 1 / 2 then AlmostBuilt; the Refinery uses its own frames 1 / 2 / 3 / 4 | **fixed**: SD now draws the stages too, and the Refinery (construction image 0) runs them on its own image |
+
+Checked on screen (HD and `--sd`, scripted sessions on a melee map): mining
+pose and spark, mineral chunk and gas tank, worker hidden inside the
+Refinery and its exit side, welding with sparks, the construction stages.
+
+Measured rather than derived: the mining dwell is the 93 frames recorded
+from the retail game (75-frame timer plus the wait around it,
+`tests/economy_original.rs`), and the welding walk follows the Boot Camp
+recording (the SCV works the left, front and right edges, changing spot);
+retail draws those spots from its RNG, so the exact sequence differs.

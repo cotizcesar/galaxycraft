@@ -1836,6 +1836,24 @@ fn sprite_path(type_id: u16) -> Option<&'static str> {
 /// direction; a known iscript pose (`playfram` operand, already a multiple
 /// of 17) wins, else the walk cycle is guessed from the tick while moving.
 /// Buildings, resources and other static GRPs use their first frame.
+/// Direction frame and mirror flag of a facing byte.  A directional GRP
+/// stores 17 frames per pose for the 32 retail directions: frames 0..=16
+/// are north clockwise to south, and the western half is the eastern one
+/// drawn mirrored (direction `d > 16` shows frame `32 - d` flipped).
+pub fn sd_direction(facing: u8) -> (usize, bool) {
+    let dir = ((facing as i32 + 4) / 8).rem_euclid(32) as usize;
+    if dir <= 16 {
+        (dir, false)
+    } else {
+        (32 - dir, true)
+    }
+}
+
+/// Whether a GRP of `frames` frames is drawn mirrored for `facing`.
+pub fn sd_frame_flip(frames: usize, facing: u8) -> bool {
+    frames >= 17 && sd_direction(facing).1
+}
+
 pub fn sd_frame_index(
     frames: usize,
     facing: u8,
@@ -1846,7 +1864,7 @@ pub fn sd_frame_index(
     if frames < 17 {
         return 0;
     }
-    let dir = ((facing as i32 + 8) * 17 / 256).rem_euclid(17) as usize;
+    let dir = sd_direction(facing).0;
     if let Some(raw) = pose
         && (raw as usize) + dir < frames
     {
@@ -1870,17 +1888,64 @@ pub fn draw_grp_centered(
     palette: &Palette,
     screen: (i32, i32),
 ) {
+    draw_grp_posed(fb, grp, index, palette, screen, false, GrpInk::Solid(None));
+}
+
+/// How [`draw_grp_posed`] writes a pixel.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum GrpInk {
+    /// Palette colour, with the team colour ramp when given.
+    Solid(Option<Rgb>),
+    /// Light added to what is already there (engine glows; `images.dat`
+    /// draw function 9).  INFERENCE: retail remaps through `ofire.pcx` on
+    /// the paletted screen; this true-colour view adds a warm tint scaled
+    /// by the pixel value instead.
+    Glow(Rgb),
+}
+
+/// Draw GRP frame `index` centred on `screen`, optionally mirrored (the
+/// western directions of a directional GRP).
+pub fn draw_grp_posed(
+    fb: &mut Framebuffer,
+    grp: &Grp,
+    index: usize,
+    palette: &Palette,
+    screen: (i32, i32),
+    flip: bool,
+    ink: GrpInk,
+) {
     let Some(frame) = grp.frame(index) else {
         return;
     };
-    let ox = screen.0 - grp.width / 2 + frame.x;
+    let fx = if flip {
+        grp.width - frame.x - frame.w
+    } else {
+        frame.x
+    };
+    let ox = screen.0 - grp.width / 2 + fx;
     let oy = screen.1 - grp.height / 2 + frame.y;
     for y in 0..frame.h {
         for x in 0..frame.w {
-            let c = frame.indices[(y * frame.w + x) as usize];
-            if c != 0 {
-                fb.put(ox + x, oy + y, palette.color(c, None));
+            let sx = if flip { frame.w - 1 - x } else { x };
+            let c = frame.indices[(y * frame.w + sx) as usize];
+            if c == 0 {
+                continue;
             }
+            let out = match ink {
+                GrpInk::Solid(team) => palette.color(c, team),
+                GrpInk::Glow(tint) => {
+                    let d = fb.get(ox + x, oy + y).0;
+                    // The pixel value is the glow's strength (`tscGlow`:
+                    // 1 at the rim up to 46 on the two exhausts).
+                    let k = (c as u32).min(48);
+                    let add = |shift: u32| {
+                        (((d >> shift) & 0xff) + ((tint.0 >> shift) & 0xff) * k / 48).min(255)
+                            << shift
+                    };
+                    Rgb(add(16) | add(8) | add(0))
+                }
+            };
+            fb.put(ox + x, oy + y, out);
         }
     }
 }
@@ -2135,16 +2200,16 @@ impl SpriteBank {
             return false;
         }
         let team = Some(PLAYER_COLORS[unit.owner as usize % PLAYER_COLORS.len()]);
-        let ox = screen.0 - grp.width / 2 + frame.x;
-        let oy = screen.1 - grp.height / 2 + frame.y;
-        for y in 0..frame.h {
-            for x in 0..frame.w {
-                let c = frame.indices[(y * frame.w + x) as usize];
-                if c != 0 {
-                    fb.put(ox + x, oy + y, self.palette.color(c, team));
-                }
-            }
-        }
+        let flip = !matches!(unit.type_id, 0xcd..=0xd0) && sd_frame_flip(grp.frames.len(), facing);
+        draw_grp_posed(
+            fb,
+            grp,
+            index,
+            &self.palette,
+            screen,
+            flip,
+            GrpInk::Solid(team),
+        );
         true
     }
 
@@ -2493,10 +2558,14 @@ mod sd_pose_tests {
         );
         assert_eq!(
             sd_frame_index(238, 128, Some(34), false, 0),
-            // Facing 128 (down) is direction (128 + 8) * 17 / 256 = 9.
-            34 + 9,
+            // Facing 128 (south) is direction 16, the last unmirrored frame.
+            34 + 16,
             "facing down"
         );
+        // West (192) is direction 24: frame 32 - 24 = 8, mirrored.
+        assert_eq!(sd_frame_index(238, 192, Some(34), false, 0), 34 + 8);
+        assert!(super::sd_frame_flip(238, 192) && !super::sd_frame_flip(238, 64));
+        assert!(!super::sd_frame_flip(4, 192), "static GRPs never mirror");
         assert_eq!(
             sd_frame_index(238, 0, None, false, 7),
             0,

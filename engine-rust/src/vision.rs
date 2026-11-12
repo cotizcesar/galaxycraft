@@ -416,6 +416,11 @@ impl World {
         if !target.alive {
             return false;
         }
+        // A worker inside a gas building is hidden from everyone but its
+        // owner (retail `hide_unit`).
+        if target.owner != observer_owner && self.inside_gas_building(target_idx) {
+            return false;
+        }
         if target.status.revealed_ticks > 0 {
             return true;
         }

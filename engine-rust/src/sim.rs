@@ -5243,6 +5243,13 @@ impl World {
         if let Some(tidx) = self.index_of(target)
             && self.units[tidx].alive
         {
+            // Already in weapon reach: stand still (walking on into the
+            // target shoved both fighters across the map).
+            if let Some((_, w)) = self.weapon_for(i, tidx)
+                && self.units_distance_px(i, tidx) <= w.max_range as i32
+            {
+                return;
+            }
             // Game pixels (see `attack_target`).
             let p = (self.units[tidx].x / fp(1), self.units[tidx].y / fp(1));
             self.move_towards(i, p, fp(2));
@@ -5484,10 +5491,12 @@ impl World {
         let Some((weapon_id, weapon)) = self.weapon_for(i, tidx) else {
             return self.special_attack(i, tidx);
         };
-        let dist = self.distance(i, tidx);
+        // Weapon range is measured between the units' boxes, not their
+        // centres (OpenBW `units_distance`): a melee weapon (SCV 10 px,
+        // Zergling / Zealot 15 px) reaches a target whose box it touches.
         // Translation batch 21 (`0x005a0836`): maximum range plus the
         // `CUnit+0x105` bit-1 gate, in whole pixels.
-        let distance = dist / fp(1);
+        let distance = self.units_distance_px(i, tidx);
         // Translation batch 23 (`0x005a4835` / `0x005a485f`): the matching
         // ground/air weapon must clear its `weapons.dat` minimum range.
         let min_ok = if self.is_air_unit(tidx) {
@@ -5504,14 +5513,17 @@ impl World {
         // The attack animation supplies the release timing: the weapon fires
         // on its `attack`/`attackwith`/`attackmelee` opcode, not on the tick
         // the order is issued.
+        // `gotorepeatattk` ends the swing: scripts that go on to an idle
+        // loop instead of `ignorerest` (SCV, Zergling) may attack again.
         let attacking = self.units[i].anim.as_ref().is_some_and(|a| {
-            matches!(
-                a.anim as usize,
-                ANIM_GND_ATTACK_INIT
-                    | ANIM_AIR_ATTACK_INIT
-                    | ANIM_GND_ATTACK_REPEAT
-                    | ANIM_AIR_ATTACK_REPEAT
-            )
+            !a.repeat_attack
+                && matches!(
+                    a.anim as usize,
+                    ANIM_GND_ATTACK_INIT
+                        | ANIM_AIR_ATTACK_INIT
+                        | ANIM_GND_ATTACK_REPEAT
+                        | ANIM_AIR_ATTACK_REPEAT
+                )
         });
         if attacking {
             return true;
@@ -5654,6 +5666,22 @@ impl World {
         let uj = &self.units[bi];
         let dx = (ui.x - uj.x) as i64;
         let dy = (ui.y - uj.y) as i64;
+        isqrt(dx * dx + dy * dy) as i32
+    }
+
+    /// Distance in pixels between the `units.dat` boxes of two units (0 when
+    /// they touch or overlap), as retail measures weapon range.
+    pub fn units_distance_px(&self, a: usize, b: usize) -> i32 {
+        let bx = |i: usize| {
+            let u = &self.units[i];
+            self.data
+                .unit(u.type_id)
+                .dimensions
+                .rect_at((u.x / fp(1), u.y / fp(1)))
+        };
+        let (a0, b0) = (bx(a), bx(b));
+        let dx = (b0.0 - a0.2).max(a0.0 - b0.2).max(0) as i64;
+        let dy = (b0.1 - a0.3).max(a0.1 - b0.3).max(0) as i64;
         isqrt(dx * dx + dy * dy) as i32
     }
 
@@ -6918,10 +6946,41 @@ impl World {
         }
     }
 
+    /// Retail hides a worker while it is inside a Refinery / Assimilator /
+    /// Extractor (OpenBW `order_HarvestGas` calls `hide_unit` for the 37
+    /// frames): it is not drawn, cannot be selected or targeted and takes no
+    /// part in collision.
+    pub fn inside_gas_building(&self, i: usize) -> bool {
+        let Some(u) = self.units.get(i) else {
+            return false;
+        };
+        if !u.alive || u.gather_timer == 0 {
+            return false;
+        }
+        let Order::Gather { resource } = u.order else {
+            return false;
+        };
+        self.index_of(resource)
+            .is_some_and(|r| is_gas_building(self.units[r].type_id))
+    }
+
+    /// Retail `status_flag_gathering`: set while a worker walks to a
+    /// resource, mines it or carries cargo back.  Such a worker collides
+    /// only with buildings (OpenBW `unit_can_collide_with`), which is why
+    /// mineral lines do not jam.
+    pub fn is_gathering(&self, i: usize) -> bool {
+        self.units.get(i).is_some_and(|u| {
+            u.alive && matches!(u.order, Order::Gather { .. } | Order::ReturnCargo { .. })
+        })
+    }
+
     /// Half extents of a ground unit's collision box in 1/256 pixels.
     fn collision_extents(&self, i: usize) -> Option<(i32, i32)> {
         let u = &self.units[i];
         if !u.alive || u.in_transport.is_some() || u.status.burrowed {
+            return None;
+        }
+        if self.is_gathering(i) {
             return None;
         }
         let ty = self.data.unit(u.type_id);
@@ -7284,7 +7343,10 @@ impl World {
             speed = 1280;
         }
         let owner = u.owner as usize;
-        if ty.is_worker() && self.players[owner].upgrade_level(upgrade::METABOLIC_BOOST) > 0 {
+        // Metabolic Boost is the Zergling speed upgrade; workers have none.
+        if u.type_id == uid::ZERGLING
+            && self.players[owner].upgrade_level(upgrade::METABOLIC_BOOST) > 0
+        {
             speed = speed * 3 / 2;
         }
         speed
@@ -7656,6 +7718,17 @@ impl World {
                 MINING_FRAMES
             };
             self.units[i].resource_target = Some(resource);
+            // The worker faces what it mines (its Fusion Cutter spark appears
+            // 10 px ahead of it, weapons.dat row 14).
+            let (dx, dy) = (
+                self.units[ridx].x - self.units[i].x,
+                self.units[ridx].y - self.units[i].y,
+            );
+            if dx != 0 || dy != 0 {
+                self.units[i].facing = direction_byte(dx, dy);
+            }
+            self.units[i].path.clear();
+            self.units[i].path_goal = None;
             return;
         }
         if self.units[i].gather_timer > 1 {
@@ -7686,6 +7759,55 @@ impl World {
         self.units[i].carry_kind = kind;
         self.units[i].resource_target = Some(resource);
         self.units[i].order = Order::ReturnCargo { depot: 0 };
+        if gas {
+            self.place_at_gas_exit(i, ridx);
+        }
+    }
+
+    /// Retail `order_HarvestGas`: the worker that was hidden inside the gas
+    /// building reappears on the building's edge, on the side of the depot it
+    /// will return to, already facing it.
+    fn place_at_gas_exit(&mut self, i: usize, ridx: usize) {
+        let Some(d) = self.nearest_depot(i) else {
+            return;
+        };
+        let (rx, ry) = (self.units[ridx].x / fp(1), self.units[ridx].y / fp(1));
+        let (dx, dy) = (
+            (self.units[d].x / fp(1) - rx) as i64,
+            (self.units[d].y / fp(1) - ry) as i64,
+        );
+        if dx == 0 && dy == 0 {
+            return;
+        }
+        let rd = self.data.unit(self.units[ridx].type_id).dimensions;
+        let wd = self.data.unit(self.units[i].type_id).dimensions;
+        // Half extents of the building's box grown by the worker's own.
+        let hw = (if dx >= 0 {
+            rd.right + wd.left
+        } else {
+            rd.left + wd.right
+        }) as i64
+            + 1;
+        let hh = (if dy >= 0 {
+            rd.bottom + wd.top
+        } else {
+            rd.top + wd.bottom
+        }) as i64
+            + 1;
+        // Where the line to the depot leaves that box.
+        let (ex, ey) = if dx.abs() * hh >= dy.abs() * hw {
+            (hw * dx.signum(), dy * hw / dx.abs())
+        } else {
+            (dx * hh / dy.abs(), hh * dy.signum())
+        };
+        let (nx, ny) = (rx + ex as i32, ry + ey as i32);
+        if self.terrain.walkable_px(nx, ny) {
+            self.units[i].x = nx * fp(1);
+            self.units[i].y = ny * fp(1);
+            self.units[i].path.clear();
+            self.units[i].path_goal = None;
+        }
+        self.units[i].facing = direction_byte(dx as i32, dy as i32);
     }
 
     fn order_return(&mut self, i: usize, depot: u32) {
@@ -7873,6 +7995,14 @@ impl World {
         } else {
             self.units[i].path.clear();
             self.units[i].path_goal = None;
+            // Welding: the SCV faces the structure.
+            let (dx, dy) = (
+                self.units[b].x - self.units[i].x,
+                self.units[b].y - self.units[i].y,
+            );
+            if dx != 0 || dy != 0 {
+                self.units[i].facing = direction_byte(dx, dy);
+            }
         }
     }
 

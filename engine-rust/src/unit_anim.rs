@@ -20,7 +20,7 @@ use std::collections::HashMap;
 
 use crate::data::GameData;
 use crate::iscript::{AnimContext, AnimEvent, AnimState};
-use crate::sim::World;
+use crate::sim::{Order, World};
 
 /// iscript animation entries (`iscript.bin` header order).
 pub mod anim {
@@ -34,6 +34,33 @@ pub mod anim {
     pub const AIR_ATTK_TO_IDLE: usize = 9;
     pub const WALKING: usize = 11;
     pub const WALKING_TO_IDLE: usize = 12;
+    /// Workers loop this one while they mine, build or repair (OpenBW
+    /// `order_MiningMinerals` / `order_ConstructingBuilding` /
+    /// `order_Repair` run `iscript_anims::AlmostBuilt`); the SCV's fires
+    /// `useweapon 14`, the harvest Fusion Cutter spark.
+    pub const ALMOST_BUILT: usize = 15;
+}
+
+/// Carried-resource images (`images.dat`): `OreChunk` 397 / 398, `GasOrb`
+/// 399 / 400 (Protoss), `GasSac` 401 / 402 (Zerg), `GasTank` 403 / 404
+/// (Terran).  The second of each pair is the small load of a depleted
+/// source (OpenBW `order_MiningMinerals` / `order_HarvestGas`: type 2 when
+/// fewer than 8 units were taken).
+pub fn carry_image(type_id: u16, kind: crate::sim::CarryKind, amount: i32) -> Option<u16> {
+    use crate::ids::unit as uid;
+    use crate::sim::CarryKind;
+    let small = u16::from(amount < 8);
+    match kind {
+        CarryKind::None => None,
+        CarryKind::Minerals => Some(397 + small),
+        CarryKind::Gas => Some(
+            match type_id {
+                uid::PROBE => 399,
+                uid::DRONE => 401,
+                _ => 403,
+            } + small,
+        ),
+    }
 }
 
 /// Ticks one script may lag behind before it is fast-forwarded in one go.
@@ -61,6 +88,8 @@ struct Track {
     frame: Option<u16>,
     /// `playsnd` / `playsndrand` / `playsndbtwn` ids since the last drain.
     sounds: Vec<u16>,
+    /// `useweapon` operands since the last drain.
+    weapons: Vec<u8>,
 }
 
 /// What the animator remembers about a unit between ticks.
@@ -222,6 +251,7 @@ impl Track {
             state,
             frame: None,
             sounds: Vec::new(),
+            weapons: Vec::new(),
         })
     }
 
@@ -240,6 +270,9 @@ impl Track {
             match e {
                 AnimEvent::Frame { raw, .. } => self.frame = Some(raw),
                 AnimEvent::Sound(id) | AnimEvent::RandomSound(id) => self.sounds.push(id),
+                AnimEvent::Attack {
+                    weapon: Some(w), ..
+                } => self.weapons.push(w),
                 AnimEvent::Overlay {
                     id,
                     x,
@@ -406,7 +439,7 @@ impl Animator {
         let mut rng = self.rng.wrapping_add(world.tick as u32);
         let mut alive_ids = Vec::with_capacity(world.units.len());
         let mut spawned: Vec<Effect> = Vec::new();
-        for u in world.units.iter().filter(|u| u.alive) {
+        for (idx, u) in world.units.iter().enumerate().filter(|(_, u)| u.alive) {
             alive_ids.push(u.id);
             let ty = data.unit(u.type_id);
             let Some(image) = unit_image(data, u.type_id) else {
@@ -423,8 +456,26 @@ impl Animator {
                 image,
                 building,
             });
-            let fired = u.cooldown > seen.cooldown;
             let moving = !u.path.is_empty();
+            // Mining a field, welding a structure or repairing: the worker
+            // loops AlmostBuilt.  Inside a gas building it is hidden.
+            let hidden = world.inside_gas_building(idx);
+            let working = ty.is_worker()
+                && !hidden
+                && match u.order {
+                    Order::Gather { .. } => u.gather_timer > 0,
+                    Order::Construct { building } => {
+                        !moving
+                            && world
+                                .unit(building)
+                                .is_some_and(|b| b.alive && !b.completed && b.builder == u.id)
+                    }
+                    Order::Repair { target } => {
+                        !moving && world.unit(target).is_some_and(|t| t.alive)
+                    }
+                    _ => false,
+                };
+            let fired = !working && u.cooldown > seen.cooldown;
             let air = ty.ground_weapon == 255 && ty.air_weapon != 255
                 || u.target
                     .and_then(|t| world.unit(t))
@@ -435,7 +486,15 @@ impl Animator {
                     .track
                     .as_ref()
                     .is_none_or(|t| t.state.ended || t.state.ignore_rest);
-                let want = if fired {
+                let want = if working {
+                    (current != Some(anim::ALMOST_BUILT)).then_some(anim::ALMOST_BUILT)
+                } else if current == Some(anim::ALMOST_BUILT) {
+                    Some(if moving {
+                        anim::WALKING
+                    } else {
+                        anim::WALKING_TO_IDLE
+                    })
+                } else if fired {
                     let attacking = matches!(
                         current,
                         Some(anim::GND_ATTK_INIT | anim::GND_ATTK_RPT)
@@ -480,6 +539,32 @@ impl Animator {
                     let spawned_now = t.tick(data, u.facing, &mut rng);
                     for id in t.sounds.drain(..) {
                         self.sounds.push((id, u.x / 256, u.y / 256));
+                    }
+                    // `useweapon`: the weapon's bullet image where its
+                    // behaviour puts it (the harvest cutter appears at the
+                    // source unit, `forward_offset` px ahead of it).
+                    for w in t.weapons.drain(..) {
+                        let Some(wd) = data.weapon(w) else { continue };
+                        let Some(img) = bullet_image(data, w) else {
+                            continue;
+                        };
+                        let a = u.facing as f64 / 256.0 * std::f64::consts::TAU;
+                        let fwd = wd.forward_offset as f64;
+                        let (ox, oy) = (
+                            (a.sin() * fwd).round() as i32,
+                            (-a.cos() * fwd).round() as i32,
+                        );
+                        if let Some(track) = Track::start(data, img, anim::INIT, u.facing) {
+                            spawned.push(Effect {
+                                image: img,
+                                x: u.x / 256 + ox,
+                                y: u.y / 256 + oy - wd.vertical_offset as i32,
+                                facing: u.facing,
+                                frame: 0,
+                                track,
+                                age: 0,
+                            });
+                        }
                     }
                     for (img, dx, dy) in spawned_now {
                         if data
@@ -662,6 +747,33 @@ impl Animator {
     /// drawn with the unit's own frame.
     pub fn unit_glow(&self, id: u32) -> Option<u16> {
         self.units.get(&id)?.glow
+    }
+
+    /// The mineral chunk / gas container each loaded worker holds: an
+    /// overlay on the worker's own position, showing the first frame of its
+    /// Init script (retail attaches it with `create_image` above the main
+    /// image when the load is taken and removes it at the depot).
+    pub fn carry_overlays(&self, world: &World) -> Vec<BulletPose> {
+        let data = &*world.data;
+        world
+            .units
+            .iter()
+            .enumerate()
+            .filter(|(i, u)| u.alive && u.carry > 0 && !world.inside_gas_building(*i))
+            .filter_map(|(_, u)| {
+                let image = carry_image(u.type_id, u.carry_kind, u.carry)?;
+                let mut track = Track::start(data, image, anim::INIT, u.facing)?;
+                let mut rng = 0;
+                let _ = track.tick(data, u.facing, &mut rng);
+                Some(BulletPose {
+                    image,
+                    x: u.x / 256,
+                    y: u.y / 256,
+                    facing: u.facing,
+                    frame: track.frame?,
+                })
+            })
+            .collect()
     }
 
     /// Bullets in flight with their current frame.
