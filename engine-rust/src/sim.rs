@@ -5243,6 +5243,13 @@ impl World {
         if let Some(tidx) = self.index_of(target)
             && self.units[tidx].alive
         {
+            // Already in weapon reach: stand still (walking on into the
+            // target shoved both fighters across the map).
+            if let Some((_, w)) = self.weapon_for(i, tidx)
+                && self.units_distance_px(i, tidx) <= w.max_range as i32
+            {
+                return;
+            }
             // Game pixels (see `attack_target`).
             let p = (self.units[tidx].x / fp(1), self.units[tidx].y / fp(1));
             self.move_towards(i, p, fp(2));
@@ -5484,10 +5491,12 @@ impl World {
         let Some((weapon_id, weapon)) = self.weapon_for(i, tidx) else {
             return self.special_attack(i, tidx);
         };
-        let dist = self.distance(i, tidx);
+        // Weapon range is measured between the units' boxes, not their
+        // centres (OpenBW `units_distance`): a melee weapon (SCV 10 px,
+        // Zergling / Zealot 15 px) reaches a target whose box it touches.
         // Translation batch 21 (`0x005a0836`): maximum range plus the
         // `CUnit+0x105` bit-1 gate, in whole pixels.
-        let distance = dist / fp(1);
+        let distance = self.units_distance_px(i, tidx);
         // Translation batch 23 (`0x005a4835` / `0x005a485f`): the matching
         // ground/air weapon must clear its `weapons.dat` minimum range.
         let min_ok = if self.is_air_unit(tidx) {
@@ -5504,14 +5513,17 @@ impl World {
         // The attack animation supplies the release timing: the weapon fires
         // on its `attack`/`attackwith`/`attackmelee` opcode, not on the tick
         // the order is issued.
+        // `gotorepeatattk` ends the swing: scripts that go on to an idle
+        // loop instead of `ignorerest` (SCV, Zergling) may attack again.
         let attacking = self.units[i].anim.as_ref().is_some_and(|a| {
-            matches!(
-                a.anim as usize,
-                ANIM_GND_ATTACK_INIT
-                    | ANIM_AIR_ATTACK_INIT
-                    | ANIM_GND_ATTACK_REPEAT
-                    | ANIM_AIR_ATTACK_REPEAT
-            )
+            !a.repeat_attack
+                && matches!(
+                    a.anim as usize,
+                    ANIM_GND_ATTACK_INIT
+                        | ANIM_AIR_ATTACK_INIT
+                        | ANIM_GND_ATTACK_REPEAT
+                        | ANIM_AIR_ATTACK_REPEAT
+                )
         });
         if attacking {
             return true;
@@ -5654,6 +5666,22 @@ impl World {
         let uj = &self.units[bi];
         let dx = (ui.x - uj.x) as i64;
         let dy = (ui.y - uj.y) as i64;
+        isqrt(dx * dx + dy * dy) as i32
+    }
+
+    /// Distance in pixels between the `units.dat` boxes of two units (0 when
+    /// they touch or overlap), as retail measures weapon range.
+    pub fn units_distance_px(&self, a: usize, b: usize) -> i32 {
+        let bx = |i: usize| {
+            let u = &self.units[i];
+            self.data
+                .unit(u.type_id)
+                .dimensions
+                .rect_at((u.x / fp(1), u.y / fp(1)))
+        };
+        let (a0, b0) = (bx(a), bx(b));
+        let dx = (b0.0 - a0.2).max(a0.0 - b0.2).max(0) as i64;
+        let dy = (b0.1 - a0.3).max(a0.1 - b0.3).max(0) as i64;
         isqrt(dx * dx + dy * dy) as i32
     }
 

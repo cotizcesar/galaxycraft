@@ -283,3 +283,41 @@ fn an_scv_builds_a_refinery_on_a_geyser_and_then_gathers_from_it() {
     }
     assert_eq!(w.players[0].gas_gathered, 8);
 }
+
+#[test]
+fn an_scv_ordered_to_attack_closes_in_and_hits_with_its_cutter() {
+    let mut w = world();
+    let scv = w.spawn_px(0, uid::SCV, 400, 400).unwrap();
+    let ling = w.spawn_px(1, uid::ZERGLING, 480, 330).unwrap();
+    let (sid, lid) = (w.units[scv].id, w.units[ling].id);
+    let hp0 = w.units[ling].hp;
+    w.issue(sid, Order::AttackUnit { target: lid }).unwrap();
+    let mut trace = Vec::new();
+    for t in 0..120 {
+        w.step();
+        if t % 10 == 0 {
+            trace.push((
+                w.units[scv].x / 256,
+                w.units[scv].y / 256,
+                w.units[ling].x / 256,
+                w.units[ling].y / 256,
+                w.units[ling].hp / 256,
+                w.units[scv].hp / 256,
+                w.units[scv].cooldown,
+            ));
+        }
+    }
+    // Fusion Cutter: 5 damage every 15 frames once in reach (about 30
+    // frames of approach), so at least four hits in 120 frames.
+    assert!(
+        w.units[ling].hp <= hp0 - 4 * 5 * 256 || !w.units[ling].alive,
+        "the cutter keeps hitting: {trace:?}"
+    );
+    // Once in reach the fighters stand their ground instead of shoving each
+    // other across the map.
+    let (a, b) = (trace[6], trace[trace.len() - 1]);
+    assert!(
+        (a.0 - b.0).abs() <= 8 && (a.1 - b.1).abs() <= 8,
+        "the SCV holds its position while it fights: {trace:?}"
+    );
+}

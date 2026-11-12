@@ -82,7 +82,7 @@ Checked against the retail data (iscript 84, `weapons.dat` rows 13 / 14,
 | cargo in hands | overlay image: OreChunk 397 / 398, GasTank 403 / 404 (Orb 399, Sac 401 for the other races) until delivery | **fixed**: `Animator::carry_overlays`, drawn in SD and HD |
 | gas | worker hidden for 37 frames inside the building | **fixed**: `World::inside_gas_building` (not drawn, not selectable, not visible to enemies, no collision) |
 | building / repair | AlmostBuilt loop with sparks, facing the structure | **fixed**: same animation path (replaces the HD-only fake weld) |
-| attack | Fusion Cutter: 5 damage, cooldown 15, range 10 px, GndAttkInit/Rpt | matches |
+| attack | Fusion Cutter: 5 damage, cooldown 15, range 10 px, GndAttkInit/Rpt | **fixed** (three engine bugs, all units): weapon range was measured between centres instead of between unit boxes, so a 10 px weapon never reached; scripts that end a swing with `gotorepeatattk` and an idle loop (SCV, Zergling) never attacked twice; a unit already in reach kept walking into its target |
 | speed | flingy top speed 1280, acceleration 67, turn 40; no speed upgrade | **fixed**: Metabolic Boost was applied to every worker; it is Zergling-only |
 | sight | 7 tiles | matches |
 | collision | a gathering worker collides only with buildings | **fixed**: `World::is_gathering` units are skipped by `resolve_collisions` |
