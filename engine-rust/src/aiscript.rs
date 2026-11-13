@@ -388,10 +388,10 @@ impl CampaignAi {
         self.update_main(world, enemy_base);
         self.update_subthreads(world, enemy_base);
         self.defend(world);
+        self.gather_attack(world, enemy_base);
     }
 
-    /// `default_build` trains a race's standard army when the town has spare
-    /// resources.
+    /// `default_build`: the race's standard army when the town has spare resources.
     fn maintain_army(&self, world: &mut World, enemy_base: Option<(i32, i32)>) {
         if !self.town_started {
             return;
@@ -1890,7 +1890,7 @@ impl CampaignAi {
         enemy_base: Option<(i32, i32)>,
         group_only: bool,
     ) {
-        let ids = self.military_ids(world);
+        let ids = self.attackers(world, enemy_base);
         if ids.is_empty() {
             return;
         }
@@ -2298,7 +2298,7 @@ pub const OPCODE_ARGS: &[&[u8]] = &[
     &[],
 ];
 
+mod attack_prep;
+mod defend;
 #[cfg(test)]
 mod tests;
-
-mod defend;

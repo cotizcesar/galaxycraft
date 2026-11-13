@@ -14,6 +14,7 @@ Sizes are lines.  Find a function with `rg -n 'fn name' engine-rust/src`.
 | `ai_recovered/translated/a87.rs` | 1523 |  |
 | `ai_recovered/translated/a88.rs` | 1441 |  |
 | `ai_recovered/translated/mod.rs` | 15 |  |
+| `aiscript/attack_prep.rs` | 148 | `attack_prepare`: build the attack party and gather it towards the target. |
 | `aiscript/defend.rs` | 47 | The campaign AI's defence response. |
 | `aiscript/tests.rs` | 575 |  |
 | `aiscript.rs` | 2304 | `scripts\aiscript.bin` / `scripts\bwscript.bin` reader. |
