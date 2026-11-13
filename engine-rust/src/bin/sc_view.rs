@@ -2429,6 +2429,11 @@ struct App {
     /// Edge-scroll direction while the pointer rests on a screen edge of
     /// the focused window (0 = up, clockwise), set by the window loop.
     edge_scroll: Option<u8>,
+    /// Seconds the last window frame took (`None` in scripted runs) and
+    /// the sub-pixel camera motion carried over.
+    frame_dt: Option<f32>,
+    scroll_frac: (f32, f32),
+    pad_cursor_frac: (f32, f32),
     /// Cheats typed before the first tick (`apply_cheat_code`).
     deferred_cheats: Vec<u8>,
     remap_tables:
@@ -5845,66 +5850,6 @@ fn blit_scaled_keyed(src: &Framebuffer, dst: &mut Framebuffer, scale: f32, x0: i
     }
 }
 
-fn blit_scaled_at(src: &Framebuffer, dst: &mut Framebuffer, scale: f32, x0: i32, filter: f32) {
-    let s = scale.max(0.5);
-    let dw = ((src.width as f32 * s).round() as i32).min(dst.width);
-    let dh = ((src.height as f32 * s).round() as i32).min(dst.height);
-    let max_sx = (src.width - 1) as f32;
-    let max_sy = (src.height - 1) as f32;
-    // The Video tab's SD Graphics Filter: the sharp end is nearest-neighbour
-    // (the classic 640x480 look), while the filtered stops use the bilinear
-    // upscale measured on the retail HD screenshots.
-    let sharp = filter <= 0.01;
-    if sharp {
-        for y in 0..dh {
-            let sy = (y as f32 / s).floor().clamp(0.0, max_sy) as i32;
-            for x in 0..dw {
-                let sx = (x as f32 / s).floor().clamp(0.0, max_sx) as i32;
-                dst.put(x0 + x, y, src.get(sx, sy));
-            }
-        }
-        return;
-    }
-    // Bilinear, like the retail client's HD upscale: the SD art is magnified
-    // smoothly there, while a nearest-neighbour blit leaves hard 3 px steps
-    // that the references do not have.
-    for y in 0..dh {
-        let fy = (((y as f32 + 0.5) / s) - 0.5).clamp(0.0, max_sy);
-        let y0 = fy.floor() as i32;
-        let y1 = (y0 + 1).min(max_sy as i32);
-        let wy = fy - y0 as f32;
-        for x in 0..dw {
-            let fx = (((x as f32 + 0.5) / s) - 0.5).clamp(0.0, max_sx);
-            let x0s = fx.floor() as i32;
-            let x1s = (x0s + 1).min(max_sx as i32);
-            let wx = fx - x0s as f32;
-            let p00 = src.get(x0s, y0).0;
-            let p10 = src.get(x1s, y0).0;
-            let p01 = src.get(x0s, y1).0;
-            let p11 = src.get(x1s, y1).0;
-            let mix = |a: u32, b: u32, t: f32| -> u32 {
-                let a = a as f32;
-                let b = b as f32;
-                (a + (b - a) * t).round() as u32
-            };
-            let top = mix(p00 & 0xff, p10 & 0xff, wx);
-            let bottom = mix(p01 & 0xff, p11 & 0xff, wx);
-            let blue = mix(top, bottom, wy);
-            let top = mix((p00 >> 8) & 0xff, (p10 >> 8) & 0xff, wx);
-            let bottom = mix((p01 >> 8) & 0xff, (p11 >> 8) & 0xff, wx);
-            let green = mix(top, bottom, wy);
-            let top = mix(p00 >> 16, p10 >> 16, wx);
-            let bottom = mix(p01 >> 16, p11 >> 16, wx);
-            let red = mix(top, bottom, wy);
-            dst.put(
-                x0 + x,
-                y,
-                galaxycraft::render::Rgb::new(red as u8, green as u8, blue as u8),
-            );
-        }
-    }
-}
-
 fn parse_race(s: &str) -> Race {
     match s.to_ascii_lowercase().as_str() {
         "zerg" | "z" => Race::Zerg,
@@ -7734,6 +7679,9 @@ fn main() {
         sd_image_grps: std::collections::HashMap::new(),
         fog_mem: Default::default(),
         edge_scroll: None,
+        frame_dt: None,
+        scroll_frac: (0.0, 0.0),
+        pad_cursor_frac: (0.0, 0.0),
         deferred_cheats: Vec::new(),
         remap_tables: std::collections::HashMap::new(),
         volumes_sent: None,
@@ -8733,6 +8681,7 @@ fn main() {
 
     let mut fps_frames = 0u32;
     let mut fps_last = Instant::now();
+    let mut last_frame_at = Instant::now();
     let mut draw_ms = 0.0f64;
     let mut present_ms = 0.0f64;
     let mut needs_centre = start_screen.is_some();
@@ -8753,6 +8702,9 @@ fn main() {
             app.last_raw_pointer = None;
             app.update_view(&fb);
         }
+        let now = Instant::now();
+        app.frame_dt = Some(now.duration_since(last_frame_at).as_secs_f32());
+        last_frame_at = now;
         let raw_pointer = app.surface_mouse(&window);
         app.update_pointer(raw_pointer, (fb.width, fb.height));
         // Mouse edge scrolling, only with the pointer inside the focused window.
@@ -10660,8 +10612,11 @@ mod portrait_panel;
 mod reference;
 #[path = "sc_view/results.rs"]
 mod results;
+#[path = "sc_view/sd_blit.rs"]
+mod sd_blit;
 #[path = "sc_view/session.rs"]
 mod session;
+use sd_blit::blit_scaled_at;
 #[path = "sc_view/sounds.rs"]
 mod sounds;
 #[path = "sc_view/turrets.rs"]

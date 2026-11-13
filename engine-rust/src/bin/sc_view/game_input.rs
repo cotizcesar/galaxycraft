@@ -198,9 +198,14 @@ impl App {
             // CURSOR_SPEED is px per 60 Hz frame; scale by the real frame
             // time so the cursor feels the same in the main menu and in the
             // heavier briefing/ready-room renderer.
+            // The sub-pixel rest carries over, so a slight tilt still moves
+            // the cursor at high frame rates.
             let step = frame_dt * 60.0;
-            self.pad_cursor.0 = (self.pad_cursor.0 + (dx * step).round() as i32).clamp(0, sw - 1);
-            self.pad_cursor.1 = (self.pad_cursor.1 + (dy * step).round() as i32).clamp(0, sh - 1);
+            let fx = self.pad_cursor_frac.0 + dx * step;
+            let fy = self.pad_cursor_frac.1 + dy * step;
+            self.pad_cursor_frac = (fx.fract(), fy.fract());
+            self.pad_cursor.0 = (self.pad_cursor.0 + fx.trunc() as i32).clamp(0, sw - 1);
+            self.pad_cursor.1 = (self.pad_cursor.1 + fy.trunc() as i32).clamp(0, sh - 1);
             if self.pad_minimap_mode && !self.menu && !self.intro {
                 let (rx, ry, rw, rh) = self.minimap_rect();
                 self.pad_cursor.0 = self.pad_cursor.0.clamp(rx, rx + rw - 1);
@@ -514,27 +519,20 @@ impl App {
 
         // Camera scrolling.  Arrow keys and the right stick; A/S/H/P are
         // unit commands.  The Speed tab's Key Scroll slider scales the
-        // keyboard rate around the retail default (0.5 -> 14 px).
-        let scroll = (14.0 * (0.5 + self.game_options.key_scroll)).round() as i32;
-        self.camera.0 += input.pan.0;
-        self.camera.1 += input.pan.1;
-        if input.left {
-            self.camera.0 -= scroll;
-        }
-        if input.right {
-            self.camera.0 += scroll;
-        }
-        if input.up {
-            self.camera.1 -= scroll;
-        }
-        if input.down {
-            self.camera.1 += scroll;
-        }
+        // keyboard rate around the retail default (0.5 -> 14 px).  The
+        // rates are per 60 Hz frame: the window loop's frame time scales
+        // them, keeping the fraction, so the camera glides at the same
+        // speed whatever the frame rate (scripts step whole frames).
+        let k = self.frame_dt.map_or(1.0, |dt| (dt * 60.0).clamp(0.0, 4.0));
+        let key = 14.0 * (0.5 + self.game_options.key_scroll);
+        let (mut dx, mut dy) = (input.pan.0 as f32, input.pan.1 as f32);
+        dx += key * (input.right as i32 - input.left as i32) as f32;
+        dy += key * (input.down as i32 - input.up as i32) as f32;
         // Mouse at a screen edge.  INFERENCE: the rate follows the Mouse
         // Scroll slider the way the Key Scroll one scales the keys.
         if let Some(dir) = self.edge_scroll {
-            let step = (14.0 * (0.5 + self.game_options.mouse_scroll)).round() as i32;
-            let (dx, dy) = [
+            let step = 14.0 * (0.5 + self.game_options.mouse_scroll);
+            let (ex, ey) = [
                 (0, -1),
                 (1, -1),
                 (1, 0),
@@ -544,8 +542,17 @@ impl App {
                 (-1, 0),
                 (-1, -1),
             ][dir as usize % 8];
-            self.camera.0 += dx * step;
-            self.camera.1 += dy * step;
+            dx += ex as f32 * step;
+            dy += ey as f32 * step;
+        }
+        if dx != 0.0 || dy != 0.0 {
+            let fx = self.scroll_frac.0 + dx * k;
+            let fy = self.scroll_frac.1 + dy * k;
+            self.camera.0 += fx.trunc() as i32;
+            self.camera.1 += fy.trunc() as i32;
+            self.scroll_frac = (fx.fract(), fy.fract());
+        } else {
+            self.scroll_frac = (0.0, 0.0);
         }
         if input.wheel != 0.0 {
             // Mouse Scroll Speed: 0.5 is the retail default of 48 px/notch.
