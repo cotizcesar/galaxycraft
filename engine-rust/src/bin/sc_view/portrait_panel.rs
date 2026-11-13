@@ -43,18 +43,38 @@ impl App {
                 }
                 continue;
             }
+            // In a live game the clip decodes on a worker thread (~55 ms
+            // for 64 frames: a hitch each time a new idle clip came up); the
+            // still portrait shows meanwhile.  Captures decode at once.
+            if !self.headless {
+                match poll_decode(&path) {
+                    Decode::Ready(frames) => {
+                        let decoded = (!frames.is_empty()).then(|| std::rc::Rc::new(frames));
+                        self.portrait_clips.insert(path, decoded.clone());
+                        if decoded.is_some() {
+                            return decoded;
+                        }
+                        continue;
+                    }
+                    Decode::Pending => return None,
+                    Decode::Idle => {
+                        let Some(bytes) = self
+                            .install
+                            .as_ref()
+                            .and_then(|i| i.read_by_path(&path).ok())
+                        else {
+                            self.portrait_clips.insert(path, None);
+                            continue;
+                        };
+                        start_decode(path, move || decode_clip(&bytes));
+                        return None;
+                    }
+                }
+            }
             let decoded = (|| {
                 let install = self.install.as_ref()?;
                 let bytes = install.read_by_path(&path).ok()?;
-                let info = galaxycraft::video::parse_webm(&bytes).ok()?;
-                let frames = galaxycraft::video::decode_frames(
-                    &bytes,
-                    &info,
-                    0.0,
-                    64,
-                    galaxycraft::portrait::PORTRAIT_FPS,
-                    256,
-                );
+                let frames = decode_clip(&bytes);
                 (!frames.is_empty()).then(|| std::rc::Rc::new(frames))
             })();
             self.portrait_clips.insert(path, decoded.clone());
@@ -108,4 +128,63 @@ impl App {
             img.draw_scaled(fb, cx - w / 2, cy - h / 2, w, h);
         }
     }
+}
+
+thread_local! {
+    /// Portrait decodes running on a worker thread, by key.
+    static PENDING: std::cell::RefCell<
+        std::collections::HashMap<String, std::sync::mpsc::Receiver<Vec<PosterFrame>>>,
+    > = Default::default();
+}
+
+/// State of a background portrait decode.
+pub(super) enum Decode {
+    Ready(Vec<PosterFrame>),
+    Pending,
+    /// Not started (or its thread died).
+    Idle,
+}
+
+/// Poll the background decode under `key`.
+pub(super) fn poll_decode(key: &str) -> Decode {
+    PENDING.with(|p| {
+        let mut p = p.borrow_mut();
+        match p.get(key).map(|rx| rx.try_recv()) {
+            Some(Ok(frames)) => {
+                p.remove(key);
+                Decode::Ready(frames)
+            }
+            Some(Err(std::sync::mpsc::TryRecvError::Empty)) => Decode::Pending,
+            Some(Err(_)) => {
+                p.remove(key);
+                Decode::Idle
+            }
+            None => Decode::Idle,
+        }
+    })
+}
+
+/// Decode on a worker thread; [`poll_decode`] picks the result up.  In a
+/// live game a portrait decode (~55 ms) on the frame was a visible hitch.
+pub(super) fn start_decode(key: String, job: impl FnOnce() -> Vec<PosterFrame> + Send + 'static) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(job());
+    });
+    PENDING.with(|p| p.borrow_mut().insert(key, rx));
+}
+
+/// Up to 64 frames of a portrait WebM clip at the portrait rate.
+fn decode_clip(bytes: &[u8]) -> Vec<PosterFrame> {
+    let Ok(info) = galaxycraft::video::parse_webm(bytes) else {
+        return Vec::new();
+    };
+    galaxycraft::video::decode_frames(
+        bytes,
+        &info,
+        0.0,
+        64,
+        galaxycraft::portrait::PORTRAIT_FPS,
+        256,
+    )
 }

@@ -494,8 +494,7 @@ impl App {
             self.draw_order_marker_sd(&mut world_fb);
         }
 
-        // Blit the logical frame scaled to the window, then draw the HUD in
-        // screen space on top.
+        // Blit the 1x frame to the window, then the HUD in screen space.
         let prof = std::env::var_os("GC_PROFILE").is_some();
         let mut marks: Vec<(&str, Instant)> = vec![("world1x", Instant::now())];
         if hd {
@@ -527,6 +526,7 @@ impl App {
                 )
             };
             marks.push(("lights", Instant::now()));
+            galaxycraft::hd_sprites::begin_frame();
             for &i in &hd_units {
                 // A cloaked unit we can see is drawn faded.
                 let u = &self.world.units[i];
