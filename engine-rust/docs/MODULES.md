@@ -185,7 +185,7 @@ Sizes are lines.  Find a function with `rg -n 'fn name' engine-rust/src`.
 | `tech.rs` | 301 | The hard-coded build/research tree. |
 | `text.rs` | 1231 | Remastered front-end text: the shipped TrueType faces. |
 | `transmission.rs` | 256 | Trigger text and map audio: what the player reads and hears when a |
-| `trigger.rs` | 4903 | CHK trigger parsing and a deterministic subset of the trigger VM. |
+| `trigger.rs` | 4902 | CHK trigger parsing and a deterministic subset of the trigger VM. |
 | `ui.rs` | 383 | Retail Remastered `.ui.json` dialog layouts. |
 | `ui_art.rs` | 1278 | Retail UI art bindings: console plates, command buttons, wireframes, |
 | `unit_anim.rs` | 1479 | Render-side iscript animation: unit poses (walking, attacking), bullets in |
