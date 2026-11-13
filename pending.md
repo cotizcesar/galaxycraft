@@ -63,4 +63,6 @@ on screen.
   instead of restarting at trigger 0 (otherwise Brood War Zerg 1 cannot
   end).  Falsifier: the retail trigger loop in the corpus.
 - **Campaign AI defence response** (`CampaignAi::defend`) timing is an
-  inference.
+  inference, as is the `attack_prepare` gathering point (three quarters of
+  the way to the target); only Desperate Alliance's first wave is matched
+  to retail.
