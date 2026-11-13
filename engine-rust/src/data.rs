@@ -144,6 +144,12 @@ impl UnitType {
         self.flags & 0x0000_0200 != 0
     }
 
+    /// `units.dat` permanent-cloak flag 0x400000 (Observer, Dark Templar and
+    /// their heroes, cloaked from the moment they exist).
+    pub fn is_permanently_cloaked(&self) -> bool {
+        self.flags & 0x0040_0000 != 0
+    }
+
     /// `0x005b61d0`: `units.dat` resource-container flag 0x2000
     /// (refineries, mineral fields, caves and geysers).
     pub fn is_resource_container(&self) -> bool {

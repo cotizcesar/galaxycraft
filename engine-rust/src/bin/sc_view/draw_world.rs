@@ -528,9 +528,12 @@ impl App {
             marks.push(("lights", Instant::now()));
             self.begin_hd_frame(scale);
             for &i in &hd_units {
-                // A cloaked unit we can see is drawn faded.
+                // Retail HD (measured): an own cloaked unit no detector of
+                // ours reaches is drawn see-through, about half opacity, with
+                // no distortion; one we detect is drawn as usual.
                 let u = &self.world.units[i];
-                let cloak = u.status.cloaked.then(|| {
+                let seen = self.world.can_see_unit(self.local_player as u8, i);
+                let cloak = (u.status.cloaked && !seen).then(|| {
                     let sx = cx + ((u.x / 256 - self.camera.0) as f32 * scale) as i32;
                     let sy = cy + ((u.y / 256 - self.camera.1) as f32 * scale) as i32;
                     let half = (56.0 * scale) as i32;
@@ -538,11 +541,7 @@ impl App {
                 });
                 self.draw_unit_hd(fb_full, i, (cx, cy, cw, ch), scale, &env);
                 if let Some(saved) = &cloak {
-                    fb_full.refract_rect(
-                        saved,
-                        galaxycraft::render::CLOAK_KEEP,
-                        (self.world.tick / 3) as u32,
-                    );
+                    fb_full.fade_rect(saved, galaxycraft::render::CLOAK_HD_KEEP);
                 }
             }
             self.draw_ctf_flags(fb_full, (cx, cy, cw, ch), scale, true);

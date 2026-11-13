@@ -578,18 +578,19 @@ fn selection_and_order_voices_cover_every_retail_line() {
         assert_eq!(n(VoiceCue::What), 4, "what of {ty}");
         assert_eq!(n(VoiceCue::Yes), 4, "yes of {ty}");
         assert_eq!(n(VoiceCue::Pissed), pissed, "annoyed of {ty}");
-        // Clicking the same unit again and again: three "what?" lines,
-        // then every annoyed line in order, then it starts over.
-        for click in 1..=3 {
+        // Clicking the same unit again and again: four "what?" lines (as
+        // measured in retail), then every annoyed line in order, then it
+        // starts over.
+        for click in 1..=4 {
             assert_eq!(selection_cue(click, pissed).0, VoiceCue::What);
         }
         for k in 0..pissed {
             assert_eq!(
-                selection_cue(4 + k as u32, pissed),
+                selection_cue(5 + k as u32, pissed),
                 (VoiceCue::Pissed, k, false)
             );
         }
-        let (cue, _, restart) = selection_cue(4 + pissed as u32, pissed);
+        let (cue, _, restart) = selection_cue(5 + pissed as u32, pissed);
         assert!(cue == VoiceCue::What && restart);
     }
 }

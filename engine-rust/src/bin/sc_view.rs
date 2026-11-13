@@ -2041,7 +2041,7 @@ struct App {
     /// Number of acknowledgements, used to cycle voice takes.
     ack_variant: usize,
     /// Last selection click: unit id, clicks in a row, when.
-    select_streak: Option<(u32, u32, Instant)>,
+    select_streak: Option<(u32, u32, Instant, Option<usize>)>,
     /// Unit types last frame (id -> type), to hear "ready" lines.
     unit_types_seen: std::collections::HashMap<u32, u16>,
     /// Player orders/commands issued, used for the APM plate.

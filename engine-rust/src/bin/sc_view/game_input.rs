@@ -534,20 +534,19 @@ impl App {
         }
 
         // Camera scrolling.  Arrow keys and the right stick; A/S/H/P are
-        // unit commands.  The Speed tab's Key Scroll slider scales the
-        // keyboard rate around the retail default (0.5 -> 14 px).  The
-        // rates are per 60 Hz frame: the window loop's frame time scales
-        // them, keeping the fraction, so the camera glides at the same
-        // speed whatever the frame rate (scripts step whole frames).
+        // unit commands.  The Key / Mouse Scroll sliders pick the retail
+        // rate (`scroll_rate`, measured).  The rates are per 60 Hz frame:
+        // the window loop's frame time scales them, keeping the fraction,
+        // so the camera glides at the same speed whatever the frame rate
+        // (scripts step whole frames).
         let k = self.frame_dt.map_or(1.0, |dt| (dt * 60.0).clamp(0.0, 4.0));
-        let key = 14.0 * (0.5 + self.game_options.key_scroll);
+        let key = scroll_rate(self.game_options.key_scroll);
         let (mut dx, mut dy) = (input.pan.0 as f32, input.pan.1 as f32);
         dx += key * (input.right as i32 - input.left as i32) as f32;
         dy += key * (input.down as i32 - input.up as i32) as f32;
-        // Mouse at a screen edge.  INFERENCE: the rate follows the Mouse
-        // Scroll slider the way the Key Scroll one scales the keys.
+        // Mouse at a screen edge, at the Mouse Scroll slider's rate.
         if let Some(dir) = self.edge_scroll {
-            let step = 14.0 * (0.5 + self.game_options.mouse_scroll);
+            let step = scroll_rate(self.game_options.mouse_scroll);
             let (ex, ey) = [
                 (0, -1),
                 (1, -1),

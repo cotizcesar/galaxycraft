@@ -11,22 +11,17 @@ energy, Medic heal rules and search square, Ghost paint range, the nuke's
 90 / 45 frame timers and 320 px drop, splash rings measured to unit boxes,
 `attkshiftproj`, Lockdown 131, blind / restore.  What is still open:
 
-- **Cloak look.**  The client now shows the background displaced through
-  the unit (`Framebuffer::refract_rect`); retail does it through palette
-  tables, so the shift and tint are tuned by eye.  In HD the selection
-  circle and bar of a cloaked unit are distorted too.
-- **Annoyed-line threshold.**  The client plays three "what?" lines and
-  the annoyed ones from the fourth click (`voice::WHAT_CLICKS`, an
-  inference); a fan wiki says "five or more" clicks.  A second web search
-  (2026-11-12) and OpenBW have no number, and the decompiled corpus has no
-  readable reference to the units.dat what / annoyed arrays (0x00f903e0,
-  0x00f90770): the code that picks them is in the obfuscated part.  Needs
-  a check against the real game.
-- **Voice lines** for selection and orders are picked at random, from
-  memory of the retail behaviour.  OpenBW has no voice logic and a web
-  search (2026-11-12) found no source for the exact rule; the annoyed lines
-  after repeated clicks are confirmed to exist (Blizzard, "The Sounds of
-  Koprulu").
+- **Cloak look, SD only.**  HD is settled (measured in retail 2026-11-13:
+  an own cloaked unit that no own detector reaches is see-through and
+  undistorted, `CLOAK_HD_KEEP`; a detected one, like an Observer, is drawn
+  normally).  The opacity (~half) is estimated from screenshots, and that a
+  Dark Templar beside an Observer turns opaque is an INFERENCE from the
+  Observer case.  The SD path still displaces the background
+  (`refract_rect`, tuned by eye).
+- **"What?" take choice.**  Retail never repeated a take back to back in ~30
+  recorded lines; `voice::pick_what` excludes the previous take (INFERENCE:
+  the sample is small).  The click count itself is measured
+  (`voice::WHAT_CLICKS`).
 
 ## Vehicles and air units, 2026-11-12
 
@@ -57,11 +52,6 @@ on screen.
   may still count them for the old owner.
 - **Landing** crushes nothing (OpenBW kills burrowed / immobile units
   under the building and lifts off again if blocked by one).
-- **Edge scrolling speed** follows the Mouse Scroll slider by inference:
-  the executable only registers the `MouseScroll` option in readable code
-  (`FUN_008aa1d5`); the speed itself needs a measurement in the real game.
-  (Cursor rates are settled: the loader `FUN_0069df10` gives all eighteen
-  cursors the same frame time, 10, the arrow's measured 6 fps.)
 - **Wireframe damage**: the order in which sections turn yellow / red is a
   seeded permutation per unit (INFERENCE); retail picks them at random.
 

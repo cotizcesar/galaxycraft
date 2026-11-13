@@ -39,11 +39,11 @@ Sizes are lines.  Find a function with `rg -n 'fn name' engine-rust/src`.
 | `bin/sc_view/briefing.rs` | 958 | `impl App`: briefing (moved out of `sc_view.rs` by scripts/split_impl.py). |
 | `bin/sc_view/collections.rs` | 667 | `impl App`: collections (moved out of `sc_view.rs` by scripts/split_impl.py). |
 | `bin/sc_view/commands.rs` | 1106 | `impl App`: commands (moved out of `sc_view.rs` by scripts/split_impl.py). |
-| `bin/sc_view/cursor.rs` | 690 | The in-game pointer: retail cursor shapes and art (HD and SD), edge |
-| `bin/sc_view/draw_world.rs` | 1753 | `impl App`: draw world (moved out of `sc_view.rs` by scripts/split_impl.py). |
+| `bin/sc_view/cursor.rs` | 710 | The in-game pointer: retail cursor shapes and art (HD and SD), edge |
+| `bin/sc_view/draw_world.rs` | 1752 | `impl App`: draw world (moved out of `sc_view.rs` by scripts/split_impl.py). |
 | `bin/sc_view/fog_memory.rs` | 121 | Fog of war memory: enemy buildings the local player has scouted stay |
 | `bin/sc_view/game_dialog.rs` | 1091 | `impl App`: game dialog (moved out of `sc_view.rs` by scripts/split_impl.py). |
-| `bin/sc_view/game_input.rs` | 1182 | `impl App`: game input (moved out of `sc_view.rs` by scripts/split_impl.py). |
+| `bin/sc_view/game_input.rs` | 1181 | `impl App`: game input (moved out of `sc_view.rs` by scripts/split_impl.py). |
 | `bin/sc_view/game_loop.rs` | 442 | `impl App`: game loop (moved out of `sc_view.rs` by scripts/split_impl.py). |
 | `bin/sc_view/gamepad.rs` | 842 | Gamepad support: one optional `gilrs` backend that turns a standard |
 | `bin/sc_view/hotkeys.rs` | 868 | `impl App`: hotkeys (moved out of `sc_view.rs` by scripts/split_impl.py). |
@@ -63,7 +63,7 @@ Sizes are lines.  Find a function with `rg -n 'fn name' engine-rust/src`.
 | `bin/sc_view/results.rs` | 737 | `impl App`: results (moved out of `sc_view.rs` by scripts/split_impl.py). |
 | `bin/sc_view/sd_blit.rs` | 79 | The SD view: the 1x world frame scaled up to the window. |
 | `bin/sc_view/session.rs` | 876 | `impl App`: session (moved out of `sc_view.rs` by scripts/split_impl.py). |
-| `bin/sc_view/sounds.rs` | 383 | `impl App`: sounds (moved out of `sc_view.rs` by scripts/split_impl.py). |
+| `bin/sc_view/sounds.rs` | 396 | `impl App`: sounds (moved out of `sc_view.rs` by scripts/split_impl.py). |
 | `bin/sc_view/turrets.rs` | 68 | Turret images of the Siege Tank and Goliath and the sieged tank's |
 | `bin/sc_view.rs` | 10608 | Playable graphical client for the reconstructed StarCraft rules engine. |
 | `button_sets.rs` | 258 | Retail command-card button sets. |
@@ -109,7 +109,7 @@ Sizes are lines.  Find a function with `rg -n 'fn name' engine-rust/src`.
 | `combat.rs` | 1066 | Combat rules reconstructed from StarCraft 1.23. |
 | `contour.rs` | 1196 | Terrain contours for the client's short-range path search. |
 | `credits.rs` | 419 | The Remastered Credits screen: layout and scrolling of the CEF panel. |
-| `data.rs` | 1236 | Data tables recovered from StarCraft 1.23.10.13515. |
+| `data.rs` | 1242 | Data tables recovered from StarCraft 1.23.10.13515. |
 | `dds.rs` | 646 | DirectDraw Surface decoding for the Remastered glue/console art. |
 | `economy.rs` | 318 | Economy and production rules. |
 | `handlers.rs` | 4849 | Behavioural reconstruction of the 137 fixed order-handler targets. |
@@ -174,9 +174,10 @@ Sizes are lines.  Find a function with `rg -n 'fn name' engine-rust/src`.
 | `sim/orders.rs` | 660 | `impl World`: orders (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/production.rs` | 1343 | `impl World`: production (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/projectiles.rs` | 363 | `impl World`: projectiles (moved out of `mod.rs` by scripts/split_impl.py). |
-| `sim/spawn.rs` | 880 | `impl World`: spawn (moved out of `mod.rs` by scripts/split_impl.py). |
+| `sim/spawn.rs` | 888 | `impl World`: spawn (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/spells.rs` | 1052 | `impl World`: spells (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/step.rs` | 825 | `impl World`: step (moved out of `mod.rs` by scripts/split_impl.py). |
+| `sim/tests/cloak.rs` | 23 | Permanent cloak (`units.dat` 0x400000). |
 | `sim/tests.rs` | 3739 |  |
 | `sim/translated/mod.rs` | 18 |  |
 | `sim/transport.rs` | 226 | `impl World`: transport (moved out of `mod.rs` by scripts/split_impl.py). |
@@ -194,7 +195,7 @@ Sizes are lines.  Find a function with `rg -n 'fn name' engine-rust/src`.
 | `unit_anim.rs` | 1479 | Render-side iscript animation: unit poses (walking, attacking), bullets in |
 | `video.rs` | 1725 | Retail WebM cinematics: intros, campaign disks and briefing intermissions. |
 | `vision.rs` | 603 | Per-player tile visibility. |
-| `voice.rs` | 562 | Retail unit voice sets. |
+| `voice.rs` | 601 | Retail unit voice sets. |
 
 ## Wave blocks
 

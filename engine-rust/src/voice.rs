@@ -159,9 +159,15 @@ pub fn voice_ids(table: &SfxTable, unit_id: u16, cue: VoiceCue) -> Vec<u16> {
 }
 
 /// Clicks on the same unit that answer with "what?" lines before it gets
-/// annoyed.  INFERENCE: retail's exact count was not measured; three
-/// "what?" lines then the annoyed ones in order matches how it plays.
-pub const WHAT_CLICKS: u32 = 3;
+/// annoyed.  FACT (retail 1.23.10.13515, 2026-11-13: an SCV and a Probe
+/// clicked 7-18 times, 2-4.5 s apart, the game audio recorded and every
+/// line matched against the unit's `wht` / `pss` files): after selecting
+/// the unit, clicks 1-4 say "what?", clicks 5.. play every annoyed line in
+/// order, then the cycle starts over with four "what?" lines.  Time does
+/// not reset the count (a 100 s pause carried it on); selecting another
+/// unit does.  A click while the unit is still talking plays nothing and
+/// does not count.
+pub const WHAT_CLICKS: u32 = 4;
 
 /// The line a selection click plays: `streak` is how many times in a row
 /// (1-based) the player clicked this unit, `pissed_takes` how many annoyed
@@ -182,6 +188,21 @@ pub fn selection_cue(streak: u32, pissed_takes: usize) -> (VoiceCue, usize, bool
         (VoiceCue::Pissed, k, false)
     } else {
         (VoiceCue::What, 0, true)
+    }
+}
+
+/// The "what?" take for a selection click: random (`roll`), never the take
+/// played just before (`prev`) when there is a choice.  Retail never
+/// repeated a take back to back in ~30 recorded lines (INFERENCE that it
+/// excludes the previous one; plain random repeats a quarter of the time).
+pub fn pick_what(prev: Option<usize>, takes: usize, roll: usize) -> usize {
+    if takes <= 1 {
+        return 0;
+    }
+    let pick = roll % takes;
+    match prev {
+        Some(p) if p % takes == pick => (pick + 1 + roll / takes % (takes - 1)) % takes,
+        _ => pick,
     }
 }
 
@@ -338,14 +359,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn what_takes_are_random_but_never_repeat_back_to_back() {
+        for prev in 0..4 {
+            for roll in 0..64 {
+                assert_ne!(pick_what(Some(prev), 4, roll), prev);
+                assert!(pick_what(Some(prev), 4, roll) < 4);
+            }
+        }
+        let firsts: std::collections::HashSet<usize> =
+            (0..64).map(|r| pick_what(None, 4, r)).collect();
+        assert_eq!(firsts.len(), 4, "every take can come first");
+        assert_eq!(pick_what(Some(0), 1, 7), 0, "one take: no choice");
+    }
+
+    #[test]
     fn repeated_clicks_get_annoyed_then_start_over() {
         // A unit with four annoyed lines.
-        let seq: Vec<(VoiceCue, usize, bool)> = (1..=9).map(|n| selection_cue(n, 4)).collect();
+        let seq: Vec<(VoiceCue, usize, bool)> = (1..=10).map(|n| selection_cue(n, 4)).collect();
         assert_eq!(seq[0], (VoiceCue::What, 0, false));
-        assert_eq!(seq[2], (VoiceCue::What, 2, false));
-        assert_eq!(seq[3], (VoiceCue::Pissed, 0, false), "4th click");
-        assert_eq!(seq[6], (VoiceCue::Pissed, 3, false), "last annoyed line");
-        assert_eq!(seq[7], (VoiceCue::What, 0, true), "then it starts over");
+        assert_eq!(
+            seq[3],
+            (VoiceCue::What, 3, false),
+            "4th click still \"what?\""
+        );
+        assert_eq!(seq[4], (VoiceCue::Pissed, 0, false), "5th click");
+        assert_eq!(seq[7], (VoiceCue::Pissed, 3, false), "last annoyed line");
+        assert_eq!(seq[8], (VoiceCue::What, 0, true), "then it starts over");
         // A unit without annoyed lines keeps saying "what?".
         assert_eq!(selection_cue(5, 0).0, VoiceCue::What);
     }
