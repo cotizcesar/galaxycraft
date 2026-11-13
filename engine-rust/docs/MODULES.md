@@ -35,7 +35,7 @@ Sizes are lines.  Find a function with `rg -n 'fn name' engine-rust/src`.
 | `bin/sc_shot.rs` | 226 | Headless graphics smoke test: render one real map frame to a BMP. |
 | `bin/sc_sim.rs` | 187 | Small command-line demonstration of the reconstructed rules. |
 | `bin/sc_solve.rs` | 844 | Drive campaign missions to their end through their own triggers. |
-| `bin/sc_view/bench.rs` | 75 | `GC_BENCH=N`: run N frames of the live loop (update + draw) on the |
+| `bin/sc_view/bench.rs` | 99 | `GC_BENCH=N`: run N frames of the live loop (update + draw) on the |
 | `bin/sc_view/briefing.rs` | 958 | `impl App`: briefing (moved out of `sc_view.rs` by scripts/split_impl.py). |
 | `bin/sc_view/collections.rs` | 667 | `impl App`: collections (moved out of `sc_view.rs` by scripts/split_impl.py). |
 | `bin/sc_view/commands.rs` | 1106 | `impl App`: commands (moved out of `sc_view.rs` by scripts/split_impl.py). |
@@ -53,7 +53,7 @@ Sizes are lines.  Find a function with `rg -n 'fn name' engine-rust/src`.
 | `bin/sc_view/lobby.rs` | 998 | `impl App`: lobby (moved out of `sc_view.rs` by scripts/split_impl.py). |
 | `bin/sc_view/menu_draw.rs` | 2129 | `impl App`: menu draw (moved out of `sc_view.rs` by scripts/split_impl.py). |
 | `bin/sc_view/menu_input.rs` | 1661 | `impl App`: menu input (moved out of `sc_view.rs` by scripts/split_impl.py). |
-| `bin/sc_view/minimap_cache.rs` | 247 | The HD minimap's terrain + fog layer, cached (`App::minimap_cache`). |
+| `bin/sc_view/minimap_cache.rs` | 250 | The HD minimap's terrain + fog layer, cached (`App::minimap_cache`). |
 | `bin/sc_view/mp.rs` | 3797 | Multiplayer front end, as the retail client shows it on the user's |
 | `bin/sc_view/net.rs` | 669 | `impl App`: net (moved out of `sc_view.rs` by scripts/split_impl.py). |
 | `bin/sc_view/options.rs` | 1443 | `impl App`: options (moved out of `sc_view.rs` by scripts/split_impl.py). |
@@ -63,9 +63,9 @@ Sizes are lines.  Find a function with `rg -n 'fn name' engine-rust/src`.
 | `bin/sc_view/results.rs` | 737 | `impl App`: results (moved out of `sc_view.rs` by scripts/split_impl.py). |
 | `bin/sc_view/sd_blit.rs` | 79 | The SD view: the 1x world frame scaled up to the window. |
 | `bin/sc_view/session.rs` | 876 | `impl App`: session (moved out of `sc_view.rs` by scripts/split_impl.py). |
-| `bin/sc_view/sounds.rs` | 346 | `impl App`: sounds (moved out of `sc_view.rs` by scripts/split_impl.py). |
+| `bin/sc_view/sounds.rs` | 383 | `impl App`: sounds (moved out of `sc_view.rs` by scripts/split_impl.py). |
 | `bin/sc_view/turrets.rs` | 68 | Turret images of the Siege Tank and Goliath and the sieged tank's |
-| `bin/sc_view.rs` | 10607 | Playable graphical client for the reconstructed StarCraft rules engine. |
+| `bin/sc_view.rs` | 10608 | Playable graphical client for the reconstructed StarCraft rules engine. |
 | `button_sets.rs` | 258 | Retail command-card button sets. |
 | `buttons.rs` | 605 | Command card of a unit: the retail button set ([`crate::button_sets`]) |
 | `calibration.rs` | 173 | Deterministic capture correction layers. |
@@ -115,7 +115,7 @@ Sizes are lines.  Find a function with `rg -n 'fn name' engine-rust/src`.
 | `handlers.rs` | 4849 | Behavioural reconstruction of the 137 fixed order-handler targets. |
 | `hd_anim.rs` | 394 | Reader for the Remastered HD animation containers (`hd2/anim/main_NNN.anim`). |
 | `hd_lights.rs` | 408 | Remastered point lights: `anim/main.lit` and the deferred-blit shader term. |
-| `hd_sprites.rs` | 1088 | Remastered 4x HD sprites (`anim/main_NNN.anim`, NNN = `images.dat` id) |
+| `hd_sprites.rs` | 1091 | Remastered 4x HD sprites (`anim/main_NNN.anim`, NNN = `images.dat` id) |
 | `hotkey_data.rs` | 804 | Complete Hotkeys browser data (all races, units and buildings). |
 | `ids.rs` | 378 | Symbolic ids for the stock StarCraft tables. |
 | `iscript.rs` | 1231 | `scripts\iscript.bin` reader and animation virtual machine. |

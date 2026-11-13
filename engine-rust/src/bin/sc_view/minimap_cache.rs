@@ -8,7 +8,8 @@ impl App {
     /// scroll into unseen ground does not decode them on the spot (5 ms
     /// extra a frame at 1440p).
     pub(super) fn begin_hd_frame(&mut self, scale: f32) {
-        galaxycraft::hd_sprites::begin_frame();
+        let moving = LAST_CAMERA.with(|c| c.replace(self.camera) != self.camera);
+        galaxycraft::hd_sprites::begin_frame(moving);
         let Some(t) = &self.hd_terrain else {
             return;
         };
@@ -241,6 +242,8 @@ mod minimap_cache_tests {
 }
 
 thread_local! {
+    /// Camera of the previous HD frame (a moving view defers sprite bakes).
+    static LAST_CAMERA: std::cell::Cell<(i32, i32)> = const { std::cell::Cell::new((i32::MIN, 0)) };
     /// Terrain pre-decode cursor: next map tile, for `(tile size, map)`.
     static WARM: std::cell::Cell<(usize, (usize, usize, usize))> =
         const { std::cell::Cell::new((0, (0, 0, 0))) };

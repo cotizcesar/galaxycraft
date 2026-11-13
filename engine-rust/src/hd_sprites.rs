@@ -575,9 +575,12 @@ thread_local! {
         Default::default();
 }
 
-/// Start a frame: sprites may be baked again (see [`draw_baked`]).
-pub fn begin_frame() {
-    REBAKES.with(|c| c.set(REBAKES_PER_FRAME));
+/// Start a frame: sprites may be baked again (see [`draw_baked`]).  While
+/// the view is `moving`, only sprites with no bake at all are baked (every
+/// lit sprite changes eye bucket each frame of a scroll: re-baking two a
+/// frame cost ~4 ms at 3440x1440); the rest catch up once it stops.
+pub fn begin_frame(moving: bool) {
+    REBAKES.with(|c| c.set(if moving { 0 } else { REBAKES_PER_FRAME }));
 }
 
 /// Spend one of this frame's bakes; `false` when none is left.

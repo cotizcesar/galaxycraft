@@ -8685,6 +8685,7 @@ fn main() {
         let now = Instant::now();
         app.frame_dt = Some(now.duration_since(last_frame_at).as_secs_f32());
         last_frame_at = now;
+        bench::log_frame(&app);
         let raw_pointer = app.surface_mouse(&window);
         app.update_pointer(raw_pointer, (fb.width, fb.height));
         // Mouse edge scrolling, only with the pointer inside the focused window.
