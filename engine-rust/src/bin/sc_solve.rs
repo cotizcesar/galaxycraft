@@ -114,7 +114,26 @@ fn solve(data: &Arc<GameData>, tiles: &[Option<TileTables>], raw: &[u8], ticks: 
             p.is_computer = s.computer;
         }
     }
-    let _ = w.apply_cheat(human as u8, cheat::POWER_OVERWHELMING);
+    // `SOLVE_IDLE=1`: no cheat and no solver; report when an enemy first
+    // hurts one of the player's units (the computer's pace with the player
+    // idle, to compare with the retail game).
+    let idle = std::env::var_os("SOLVE_IDLE").is_some();
+    if !idle {
+        let _ = w.apply_cheat(human as u8, cheat::POWER_OVERWHELMING);
+    }
+    let health = |w: &World| -> i64 {
+        w.units
+            .iter()
+            .filter(|u| u.alive && u.owner as usize == human)
+            .map(|u| (u.hp + u.shields) as i64)
+            .sum()
+    };
+    let mut last_health = health(&w);
+    let mut last_count = w
+        .units
+        .iter()
+        .filter(|u| u.alive && u.owner as usize == human)
+        .count();
     if std::env::var_os("SOLVE_DUMP").is_some()
         && let Some(t) = w.triggers.as_ref()
     {
@@ -304,6 +323,33 @@ fn solve(data: &Arc<GameData>, tiles: &[Option<TileTables>], raw: &[u8], ticks: 
         }
         for u in &w.units {
             seen.entry(u.id).or_insert(w.tick);
+        }
+        if idle {
+            let (now, count) = (
+                health(&w),
+                w.units
+                    .iter()
+                    .filter(|u| u.alive && u.owner as usize == human)
+                    .count(),
+            );
+            // Losing health with no fewer units (a new unit adds health,
+            // a finished construction too): an attack.
+            if now < last_health && count >= last_count {
+                return format!(
+                    "FIRST ATTACK at tick {} ({:.0} s at Fastest)",
+                    w.tick,
+                    w.tick as f64 / 23.81
+                );
+            }
+            if count < last_count {
+                return format!(
+                    "FIRST LOSS at tick {} ({:.0} s at Fastest)",
+                    w.tick,
+                    w.tick as f64 / 23.81
+                );
+            }
+            (last_health, last_count) = (now, count);
+            continue;
         }
         if w.tick.is_multiple_of(8) {
             step_solver(
