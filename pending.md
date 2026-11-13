@@ -70,8 +70,16 @@ on screen.
 - **Alliances are one team per player** (transitive); retail keeps them
   per pair.  No Terran mission puts the human in an allied force with a
   computer.  See `engine-rust/docs/CAMPAIGN-TERRAN.md`.
-- **Terran missions reach victory only through `sc_solve`**, which moves or
-  spawns the units a goal asks for and gives the player invincibility.  A
-  normal play-through (difficulty, attack timing) is not checked.
+- **The 68 campaign missions (all six episodes) reach victory only through
+  `sc_solve`**, which moves or spawns the units a goal asks for and gives
+  the player invincibility.  A normal play-through (difficulty, attack
+  timing) is not checked.
+- **Rescue range** (`RESCUE_RANGE_PX` = 36, per-axis box gap) is fitted to
+  the Wasteland recording and to two Brood War missions that require an
+  immediate rescue; any value 33-40 fits.  Falsifier: a retail recording
+  of a rescue at a measured distance.
+- **Trigger pass after a Wait** goes on after the trigger that waited
+  instead of restarting at trigger 0 (otherwise Brood War Zerg 1 cannot
+  end).  Falsifier: the retail trigger loop in the corpus.
 - **Campaign AI defence response** (`CampaignAi::defend`) timing is an
   inference.

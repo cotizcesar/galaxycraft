@@ -2548,7 +2548,7 @@ pub use translated::*;
 
 // `impl World` split by subsystem (scripts/split_impl.py).
 mod alliances;
-pub use alliances::{OWNR_RESCUE_PASSIVE, RESCUE_INTERVAL, RESCUE_RANGE_PX};
+pub use alliances::{OWNR_RESCUE_PASSIVE, RESCUE_INTERVAL, RESCUE_RANGE_PX, trigger_owner};
 mod animation;
 mod combat;
 mod creep_power;

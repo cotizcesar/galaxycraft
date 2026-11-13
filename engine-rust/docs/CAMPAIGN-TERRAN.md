@@ -66,10 +66,37 @@ Episode V is 35 (First Strike) to 43 (To Chain the Beast).
 
    Result (60 000-tick cap, 2026-11-13): **all 22 missions end in
    VICTORY** fired by their own victory trigger.  Episode I at ticks
-   752 (tutorial), 30, 3218, 2502, 315, 2010, 1939, 2010, 741, 2772,
-   2689, 3271, 2010; Episode V at 2355, 6570, 2691, 2284, 5011 (5a),
-   5101 (5b), 3936, 859, 2934.  The Dylarian Shipyards needs its full
+   722 (tutorial), 30, 3218, 2502, 705, 2010, 1969, 2010, 741, 2772,
+   2689, 3271, 2010; Episode V at 2355, 6540, 2691, 2284, 5041 (5a),
+   5371 (5b), 4056, 859, 3084.  The Dylarian Shipyards needs its full
    eight-switch battlecruiser chain, civilian deaths included.
+
+## Zerg and Protoss campaigns
+
+The same solver runs the other four episodes (`--episode zerg`,
+`protoss`, `expzerg`, `expprotoss`).  Result (60 000-tick cap,
+2026-11-13): **all 46 missions end in VICTORY**, so all 68 campaign
+missions do.
+
+| episode | missions | victory ticks |
+|---|---|---|
+| Zerg | tutorial + 10 | 2010, 2010, 219, 2443, 3382, 700, 3813, 2010, 3538, 301, 1099 |
+| Protoss | tutorial + 10 | 2083, 2405, 2312, 2526, 2382, 54, 2007, 4719, 4395, 900, 2821 |
+| Brood War Zerg | 10 + 4b-f + bonus | 2970, 2034, 402, 3136 (4a-4f), 2550, 2130, 1344, 3120, 4110, 3420, 5499 |
+| Brood War Protoss | 8 | 2340, 2944, 1823, 1408, 2040, 354, 4368, 15439 |
+
+Three engine bugs made missions unwinnable, for a player too:
+
+| problem | missions | fix |
+|---|---|---|
+| Rescue measured centre to centre (64 px): units a mission expects to change hands at once stayed rescuable, and a defeat trigger fired | Brood War Zerg 8 (defeat on tick 1), Protoss 5 (Artanis, tick 49) | gap between the `units.dat` boxes, per axis, ≤ 36 px (`sim/alliances.rs`; INFERENCE, see `pending.md`) |
+| Map resources are kept under player 1, so "Player 1 commands at most 0 buildings" never held while a Vespene Geyser stood; Set Resources (action 52) on player 12 found nothing | Protoss tutorial, Protoss 1, Protoss 3 | triggers see resources as player 12's (`sim::trigger_owner`) |
+| After a Wait the trigger pass started over at trigger 0, so a preserved trigger with a Wait ran again before any later trigger, forever | Brood War Zerg 1 | the pass goes on after the trigger that waited, also when the Wait ends between trigger cycles (`trigger.rs`; INFERENCE) |
+
+The rest were solver gaps (goals it did not yet read): "at most / exactly
+N in a location", enemy units to clear from a location, unit classes in
+"commands at most 0", one hero needed at several beacons in turn, a goal
+on another player's hero.
 
 ## Fixed
 
@@ -87,8 +114,8 @@ Episode V is 35 (First Strike) to 43 (To Chain the Beast).
 - Alliances are one team per player, so they are transitive; retail keeps
   pairs.  No Terran mission puts the human in an allied force with a
   computer, so the campaign is not affected.
-- The trigger chains were driven to victory by `sc_solve` (check 4), but
-  not by a human with normal units: how hard each mission is and whether
+- The trigger chains of all 68 missions were driven to victory by
+  `sc_solve`, but not by a human with normal units: how hard each mission is and whether
   the computer's attacks are timed like retail is not checked.
 - The `defenseuse` response timing (every 24 ticks, idle units only) is an
   inference.

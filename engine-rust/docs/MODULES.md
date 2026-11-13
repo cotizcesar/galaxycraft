@@ -34,7 +34,7 @@ Sizes are lines.  Find a function with `rg -n 'fn name' engine-rust/src`.
 | `bin/sc_retailrep.rs` | 762 | Play a retail Remastered `.rep` through the engine and report where it |
 | `bin/sc_shot.rs` | 226 | Headless graphics smoke test: render one real map frame to a BMP. |
 | `bin/sc_sim.rs` | 187 | Small command-line demonstration of the reconstructed rules. |
-| `bin/sc_solve.rs` | 547 | Drive campaign missions to their end through their own triggers. |
+| `bin/sc_solve.rs` | 844 | Drive campaign missions to their end through their own triggers. |
 | `bin/sc_view/briefing.rs` | 958 | `impl App`: briefing (moved out of `sc_view.rs` by scripts/split_impl.py). |
 | `bin/sc_view/collections.rs` | 667 | `impl App`: collections (moved out of `sc_view.rs` by scripts/split_impl.py). |
 | `bin/sc_view/commands.rs` | 1106 | `impl App`: commands (moved out of `sc_view.rs` by scripts/split_impl.py). |
@@ -160,7 +160,7 @@ Sizes are lines.  Find a function with `rg -n 'fn name' engine-rust/src`.
 | `runtime/translated/mod.rs` | 43 |  |
 | `scene.rs` | 165 | Reference scenes: the unit layout the retail screenshots show. |
 | `sfx.rs` | 281 | `arr\sfxdata.tbl` — the shipped sound-file name table. |
-| `sim/alliances.rs` | 65 | `impl World`: starting alliances of a use-map-settings scenario. |
+| `sim/alliances.rs` | 83 | `impl World`: starting alliances of a use-map-settings scenario. |
 | `sim/animation.rs` | 241 | `impl World`: animation (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/combat.rs` | 742 | `impl World`: combat (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/creep_power.rs` | 224 | `impl World`: creep power (moved out of `mod.rs` by scripts/split_impl.py). |
@@ -174,7 +174,7 @@ Sizes are lines.  Find a function with `rg -n 'fn name' engine-rust/src`.
 | `sim/projectiles.rs` | 363 | `impl World`: projectiles (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/spawn.rs` | 880 | `impl World`: spawn (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/spells.rs` | 1052 | `impl World`: spells (moved out of `mod.rs` by scripts/split_impl.py). |
-| `sim/step.rs` | 827 | `impl World`: step (moved out of `mod.rs` by scripts/split_impl.py). |
+| `sim/step.rs` | 825 | `impl World`: step (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/tests.rs` | 3739 |  |
 | `sim/translated/mod.rs` | 18 |  |
 | `sim/transport.rs` | 226 | `impl World`: transport (moved out of `mod.rs` by scripts/split_impl.py). |
@@ -185,7 +185,8 @@ Sizes are lines.  Find a function with `rg -n 'fn name' engine-rust/src`.
 | `tech.rs` | 301 | The hard-coded build/research tree. |
 | `text.rs` | 1231 | Remastered front-end text: the shipped TrueType faces. |
 | `transmission.rs` | 256 | Trigger text and map audio: what the player reads and hears when a |
-| `trigger.rs` | 4902 | CHK trigger parsing and a deterministic subset of the trigger VM. |
+| `trigger/queries.rs` | 57 | Read-only queries on the trigger state: locations and which triggers |
+| `trigger.rs` | 4882 | CHK trigger parsing and a deterministic subset of the trigger VM. |
 | `ui.rs` | 383 | Retail Remastered `.ui.json` dialog layouts. |
 | `ui_art.rs` | 1278 | Retail UI art bindings: console plates, command buttons, wireframes, |
 | `unit_anim.rs` | 1479 | Render-side iscript animation: unit poses (walking, attacking), bullets in |
