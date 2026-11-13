@@ -115,6 +115,12 @@ town hall, the attack target was the nearest unit of any other owner
 also passes the human's town hall as the target, as `sc_view` does (it
 passed none).
 
+0.1.42: `build` is a lasting town request too (`src/aiscript/requests.rs`):
+a `build` the town could not afford at that tick was forgotten, so a later
+`wait_build` for it waited forever and lost buildings were never rebuilt.
+The idle table does not change (the towns start rich); it matters once the
+player hurts the town.
+
 ## Zerg and Protoss campaigns
 
 The same solver runs the other four episodes (`--episode zerg`,

@@ -310,8 +310,10 @@ pub struct CampaignAi {
     pub defense_requests: [Option<(u8, u16)>; 4],
     pub defense_units: [Option<(u8, u16)>; 4],
     pub attack_prepared: bool,
-    /// Queued `upgrade` / `tech` requests not started yet (research.rs).
-    pub pending_research: Vec<research::Research>,
+    /// Queued `upgrade` / `tech` requests not started yet (requests.rs).
+    pub pending_research: Vec<requests::Research>,
+    /// `build` requests the town keeps filling: (unit type, count).
+    pub build_requests: Vec<(u16, u8)>,
     pub killable: bool,
     pub scout_unit: Option<u16>,
     pub bunkers: u8,
@@ -362,6 +364,7 @@ impl CampaignAi {
             defense_units: [None; 4],
             attack_prepared: false,
             pending_research: Vec::new(),
+            build_requests: Vec::new(),
             killable: false,
             scout_unit: None,
             bunkers: 0,
@@ -618,23 +621,12 @@ impl CampaignAi {
                 self.pc += 1;
             }
             6 => {
-                let count = ins.byte(0).unwrap_or(1);
-                let unit_type = ins.word(1).unwrap_or(0);
-                let already = self.count(world, unit_type) + self.training_count(world, unit_type);
-                if already < count as i32 {
-                    let building = world.data.unit(unit_type).is_building();
-                    if building {
-                        let _ = self.try_build(world, unit_type);
-                    } else {
-                        let _ = self.try_train_or_morph(world, unit_type);
-                    }
-                }
-                // `build` enqueues a town request in the retail engine and
-                // continues; it does not block the script thread.
+                // A lasting town request (requests.rs); the script goes on.
+                self.request_build(world, ins);
                 self.pc += 1;
             }
             7 | 8 => {
-                // Queued as a town request; the script goes on (research.rs).
+                // Queued as a town request; the script goes on (requests.rs).
                 self.request_research(world, ins);
                 self.pc += 1;
             }
@@ -2291,6 +2283,6 @@ pub const OPCODE_ARGS: &[&[u8]] = &[
 
 mod attack_prep;
 mod defend;
-mod research;
+mod requests;
 #[cfg(test)]
 mod tests;

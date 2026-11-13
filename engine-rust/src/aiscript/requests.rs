@@ -1,4 +1,11 @@
-//! `upgrade` / `tech`: queued town requests.
+//! `build`, `upgrade` / `tech`: queued town requests.
+//!
+//! `build N type` is a lasting request: the town builds or trains until it
+//! has N (counting those in production and workers on their way to the
+//! site) and rebuilds what is lost.  Before, a `build` the town could not
+//! afford at that very tick was forgotten, and a later `wait_build` for it
+//! waited forever.  INFERENCE: the rebuild of lost units and buildings
+//! (retail campaign towns rebuild; the exact rule is not read).
 //!
 //! Retail campaign scripts list a dozen upgrades in a row (The Hammer
 //! Falls' T12N / T12P, Norad II's Ter6) and then wait for their first
@@ -22,6 +29,38 @@ pub enum Research {
 }
 
 impl CampaignAi {
+    /// Opcode 6 (`build`): keep the largest count asked for each type and
+    /// try at once.
+    pub(super) fn request_build(&mut self, world: &mut World, ins: &Instruction) {
+        let (qty, unit) = (ins.byte(0).unwrap_or(1), ins.word(1).unwrap_or(0));
+        match self.build_requests.iter_mut().find(|(t, _)| *t == unit) {
+            Some(r) => r.1 = r.1.max(qty),
+            None => self.build_requests.push((unit, qty)),
+        }
+        self.fill_build_request(world, unit, qty);
+    }
+
+    fn fill_build_request(&self, world: &mut World, unit: u16, qty: u8) {
+        let me = self.player;
+        let en_route = world
+            .units
+            .iter()
+            .filter(|u| {
+                u.alive
+                    && u.owner == me
+                    && matches!(u.order, crate::sim::Order::Build { unit_type, .. } if unit_type == unit)
+            })
+            .count() as i32;
+        if self.count(world, unit) + self.training_count(world, unit) + en_route >= qty as i32 {
+            return;
+        }
+        if world.data.unit(unit).is_building() {
+            let _ = self.try_build(world, unit);
+        } else {
+            let _ = self.try_train_or_morph(world, unit);
+        }
+    }
+
     /// Opcodes 7 (`upgrade`) and 8 (`tech`): queue the request, try it at
     /// once, never block.
     pub(super) fn request_research(&mut self, world: &mut World, ins: &Instruction) {
@@ -45,6 +84,9 @@ impl CampaignAi {
     pub(super) fn start_pending_research(&mut self, world: &mut World) {
         if (world.tick + self.player as u64).is_multiple_of(24) {
             self.try_pending_research(world);
+            for (unit, qty) in self.build_requests.clone() {
+                self.fill_build_request(world, unit, qty);
+            }
         }
         for t in &mut self.subthreads {
             t.start_pending_research(world);
@@ -82,6 +124,38 @@ mod tests {
     use crate::map::Terrain;
     use crate::sim::Race;
     use std::sync::Arc;
+
+    #[test]
+    fn a_build_the_town_cannot_afford_yet_is_kept() {
+        let mut world = World::new(
+            Arc::new(GameData::bundled().unwrap()),
+            Terrain::open(64, 64),
+            2,
+        );
+        world.players[0].race = Race::Terran;
+        world.players[0].minerals = 0;
+        world.spawn_px(0, uid::COMMAND_CENTER, 320, 320).unwrap();
+        world.spawn_px(0, uid::SCV, 420, 420).unwrap();
+        // build 1 Barracks; wait_build 1 Barracks; stop.
+        let script = AiScript {
+            id: *b"Bld1",
+            label: 1,
+            flags: 0,
+            code: vec![6, 1, 111, 0, 80, 9, 1, 111, 0, 36],
+            external: false,
+        };
+        let mut ai = CampaignAi::new(0, &script);
+        for _ in 0..48 {
+            ai.update(&mut world, None);
+            world.step();
+        }
+        world.players[0].minerals = 500;
+        for _ in 0..3000 {
+            ai.update(&mut world, None);
+            world.step();
+        }
+        assert!(ai.finished, "the Barracks got built once the money came");
+    }
 
     #[test]
     fn upgrades_queue_and_the_script_goes_on() {
