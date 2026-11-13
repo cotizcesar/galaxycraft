@@ -530,7 +530,7 @@ impl TriggerSystem {
             .all(|c| self.condition_holds(world, player, c))
     }
 
-    fn condition_holds(&self, world: &World, player: usize, c: &TriggerCondition) -> bool {
+    pub fn condition_holds(&self, world: &World, player: usize, c: &TriggerCondition) -> bool {
         // Condition ids are the classic CHK list (0 no condition, 1 countdown,
         // 2 command, 3 bring, ... 22 always, 23 never).
         if c.kind == 11 {
