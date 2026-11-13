@@ -526,7 +526,11 @@ impl World {
     /// allies never) and neither side a rescuable player, whose units
     /// nobody targets (they wait to be rescued).
     pub fn hostile(&self, a: u8, b: u8) -> bool {
-        let rescuable = |p: u8| self.players.get(p as usize).is_some_and(|p| p.rescuable);
+        let rescuable = |p: u8| {
+            self.players
+                .get(p as usize)
+                .is_some_and(|p| p.rescuable || p.neutral)
+        };
         self.is_enemy(a, b) && !rescuable(a) && !rescuable(b)
     }
 

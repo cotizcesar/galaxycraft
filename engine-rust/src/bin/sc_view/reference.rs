@@ -287,7 +287,7 @@ impl App {
             .world
             .units
             .iter()
-            .find(|u| u.alive && u.owner as usize == self.local_player)
+            .find(|u| u.alive && u.owner as usize == self.local_player && !u.is_resource())
         {
             let (x, y) = (u.x / 256, u.y / 256);
             self.camera = (x - self.view.0 / 2, y - self.view.1 / 2);

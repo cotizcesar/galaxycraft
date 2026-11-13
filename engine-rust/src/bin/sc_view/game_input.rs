@@ -137,14 +137,20 @@ impl App {
                         uid::COMMAND_CENTER | uid::NEXUS | uid::HATCHERY | uid::LAIR | uid::HIVE
                     )
             })
+            .map(|u| (u.x / 256, u.y / 256))
+            // No town hall: the start location, else the first own unit
+            // that is not a resource (resources are stored under player 0,
+            // so a player-0 mission opened on a far mineral field).
+            .or_else(|| self.scenario.start_location_of(self.local_player as u8))
             .or_else(|| {
                 self.world
                     .units
                     .iter()
-                    .find(|u| u.alive && u.owner as usize == self.local_player)
+                    .find(|u| u.alive && u.owner as usize == self.local_player && !u.is_resource())
+                    .map(|u| (u.x / 256, u.y / 256))
             });
-        if let Some(u) = base {
-            self.camera = (u.x / 256 - self.view.0 / 2, u.y / 256 - self.view.1 / 2);
+        if let Some((x, y)) = base {
+            self.camera = (x - self.view.0 / 2, y - self.view.1 / 2);
             self.clamp_camera();
         }
     }
@@ -200,7 +206,17 @@ impl App {
             // heavier briefing/ready-room renderer.
             // The sub-pixel rest carries over, so a slight tilt still moves
             // the cursor at high frame rates.
-            let step = frame_dt * 60.0;
+            let mut step = frame_dt * 60.0;
+            // Aim assist: the cursor slows down over a unit in the
+            // playfield, so a stick sweep stops on it instead of past it.
+            let (cx, cy) = self.pad_cursor;
+            if !self.menu
+                && !self.intro
+                && cy < self.playfield_bottom()
+                && self.unit_at(cx, cy).is_some()
+            {
+                step *= gamepad::AIM_FRICTION;
+            }
             let fx = self.pad_cursor_frac.0 + dx * step;
             let fy = self.pad_cursor_frac.1 + dy * step;
             self.pad_cursor_frac = (fx.fract(), fy.fract());

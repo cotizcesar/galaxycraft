@@ -129,6 +129,7 @@ fn main() {
     let campaign_script = ai_script.as_ref().and_then(|id| {
         data.aiscripts
             .get_str(id)
+            .filter(|s| !s.code.is_empty())
             .or_else(|| data.bwscripts.get_str(id))
             .cloned()
     });
@@ -228,12 +229,7 @@ fn main() {
                 if campaign_ais.iter().any(|c| c.player == player as u8) {
                     continue;
                 }
-                if let Some(script) = world
-                    .data
-                    .aiscripts
-                    .get(&id)
-                    .or_else(|| world.data.bwscripts.get(&id))
-                {
+                if let Some(script) = world.data.campaign_ai_script(&id) {
                     let mut ai = CampaignAi::new(player as u8, script);
                     ai.location = at;
                     campaign_ais.push(ai);

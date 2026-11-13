@@ -19,6 +19,8 @@ pub const DEAD_ZONE: f32 = 0.18;
 pub const CURSOR_SPEED: f32 = 16.0;
 /// Camera pan at full right-stick deflection, game px/frame.
 pub const PAN_SPEED: i32 = 14;
+/// Share of the cursor speed kept while it is over a unit (aim assist).
+pub const AIM_FRICTION: f32 = 0.45;
 /// Stick deflection that starts moving the radial focus.
 pub const WHEEL_AIM_THRESHOLD: f32 = 0.5;
 /// Slots of one radial: the twelve clock positions.

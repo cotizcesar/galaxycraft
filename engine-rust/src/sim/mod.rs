@@ -161,17 +161,6 @@ pub const STASIS_UPDATES: i32 = 0x83;
 pub const MAELSTROM_UPDATES: i32 = 0x16;
 /// Creep spreads/recedes one maturity step every 8 logical ticks.
 pub const CREEP_GROW_INTERVAL: u32 = 8;
-/// `OWNR` value of a "Rescue Passive" player.
-pub const OWNR_RESCUE_PASSIVE: u8 = 3;
-/// Ticks between two rescue checks (retail order 160 handler resets its
-/// timer at `+0x54` to 15).
-pub const RESCUE_INTERVAL: u64 = 15;
-/// Centre distance at which a rescuable unit is rescued.  Retail Wasteland
-/// recording (2026-11-05, `Screencast_20261105_074011`): Raynor changes
-/// hands at 15.7 s with the nearest Marine ~55 px away, not at ~65-75 px
-/// half a second earlier; 2 tiles is the INFERENCE that fits.
-pub const RESCUE_RANGE_PX: i32 = 64;
-
 /// `units.dat` build times, `techdata.dat` research times and
 /// `upgrades.dat` times are game frames, i.e. simulation ticks.  FACT
 /// (Backwater Station recording, 2026-11-05): the Command Center's SCV
@@ -1718,6 +1707,9 @@ pub struct Player {
     /// `OWNR` 3 "Rescue Passive": the player's units are nobody's enemy
     /// and change hands when another player's unit reaches them.
     pub rescuable: bool,
+    /// `OWNR` 7 "Neutral": like a rescue player, nobody's enemy (OpenBW
+    /// sets its alliances to neutral both ways), but never rescued.
+    pub neutral: bool,
     /// Resources ever gathered, used by the "accumulate" trigger condition.
     pub minerals_gathered: i32,
     pub gas_gathered: i32,
@@ -1772,6 +1764,7 @@ impl Player {
             defeated: false,
             is_computer: false,
             rescuable: false,
+            neutral: false,
             minerals_gathered: 0,
             gas_gathered: 0,
             kills: 0,
@@ -2554,6 +2547,8 @@ mod translated;
 pub use translated::*;
 
 // `impl World` split by subsystem (scripts/split_impl.py).
+mod alliances;
+pub use alliances::{OWNR_RESCUE_PASSIVE, RESCUE_INTERVAL, RESCUE_RANGE_PX};
 mod animation;
 mod combat;
 mod creep_power;
