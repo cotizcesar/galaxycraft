@@ -564,6 +564,49 @@ static DRAW_STATS: [std::sync::atomic::AtomicUsize; 2] = [
     std::sync::atomic::AtomicUsize::new(0),
 ];
 
+/// New bakes allowed per frame before stale bakes are reused (a sprite
+/// with no bake at all is always baked).
+const REBAKES_PER_FRAME: u32 = 4;
+
+thread_local! {
+    static REBAKES: std::cell::Cell<u32> = const { std::cell::Cell::new(REBAKES_PER_FRAME) };
+    /// Last bake of each sprite, keyed without the eye position and phase.
+    static STALE: std::cell::RefCell<std::collections::HashMap<BakeKey, std::rc::Rc<Baked>>> =
+        Default::default();
+}
+
+/// Start a frame: sprites may be baked again (see [`draw_baked`]).
+pub fn begin_frame() {
+    REBAKES.with(|c| c.set(REBAKES_PER_FRAME));
+}
+
+/// Spend one of this frame's bakes; `false` when none is left.
+fn take_rebake() -> bool {
+    REBAKES.with(|c| {
+        let left = c.get();
+        c.set(left.saturating_sub(1));
+        left > 0
+    })
+}
+
+/// Signature of the lights reaching a frame without the eye position.
+fn light_set_signature(env: &crate::hd_lights::LightEnv) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for l in &env.lights {
+        (
+            l.x.to_bits(),
+            l.y.to_bits(),
+            l.radius.to_bits(),
+            l.intensity.to_bits(),
+        )
+            .hash(&mut h);
+        l.color.map(f32::to_bits).hash(&mut h);
+    }
+    env.scale.to_bits().hash(&mut h);
+    h.finish() | 1
+}
+
 /// Read and reset the sprite draw counters.
 pub fn take_draw_stats() -> (usize, usize) {
     use std::sync::atomic::Ordering::Relaxed;
@@ -779,7 +822,23 @@ fn draw_baked(
         half: half.map(f32::to_bits),
     };
     let baked = BAKED.with(|cache| cache.borrow().0.get(&key).cloned());
-    let baked = match baked {
+    // A lit sprite's key moves with the eye (32 px buckets), so a scrolling
+    // view missed on every lit sprite every frame (~1.5 ms each, the scroll
+    // hitch over mineral fields), and a scroll that turns round meets new
+    // sub-pixel phases for every sprite at once.  Past `REBAKES_PER_FRAME`
+    // new bakes in a frame, a sprite reuses its last bake for another eye
+    // position or phase (a 1/4 px offset, the specular highlight a few
+    // frames late) and is baked on a later frame.
+    let stale_key = BakeKey {
+        lights: lights.map_or(0, |(_, env)| light_set_signature(env)),
+        phase: (0, 0),
+        ..key
+    };
+    let stale = match &baked {
+        None if !take_rebake() => STALE.with(|c| c.borrow().get(&stale_key).cloned()),
+        _ => None,
+    };
+    let baked = match baked.or(stale) {
         Some(b) => b,
         None => {
             let (fx, fy) = (phase.0 as f32 / BAKE_PHASES, phase.1 as f32 / BAKE_PHASES);
@@ -809,6 +868,13 @@ fn draw_baked(
                 }
                 c.1 += (w * h) as usize;
                 c.0.insert(key, b.clone());
+            });
+            STALE.with(|c| {
+                let mut c = c.borrow_mut();
+                if c.len() > 4096 {
+                    c.clear();
+                }
+                c.insert(stale_key, b.clone());
             });
             b
         }

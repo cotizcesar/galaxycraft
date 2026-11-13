@@ -1982,7 +1982,7 @@ struct App {
     /// Composed console plates for (fb w, fb h, box x, box w, box h).
     plates_layer: Option<(PlatesKey, LayerCache)>,
     /// Minimap terrain + fog layer: (w, h, tick, fog on, pixels).
-    minimap_cache: Option<(i32, i32, u64, bool, Framebuffer)>,
+    minimap_cache: Option<minimap_cache::MinimapCache>,
     /// Offset of the drawing surface inside the window (`letterbox`): the
     /// pointer is read in window pixels and moved into surface pixels.
     present_offset: (i32, i32),
@@ -8575,32 +8575,12 @@ fn main() {
             "gamemenu" => 3,
             _ => 0,
         };
-        // `GC_BENCH=N`: run N frames of the live loop (update + draw) on the
-        // captured screen and report the frame cost (in-game performance).
+        // `GC_BENCH=N`: frame cost of the live loop (`bench.rs`).
         if let Some(n) = std::env::var("GC_BENCH")
             .ok()
             .and_then(|v| v.parse::<u32>().ok())
         {
-            let (mut upd, mut drw, mut worst) = (0.0f64, 0.0f64, 0.0f64);
-            for _ in 0..n {
-                let t0 = Instant::now();
-                app.update();
-                let t1 = Instant::now();
-                app.draw(&mut fb);
-                let t2 = Instant::now();
-                upd += (t1 - t0).as_secs_f64() * 1000.0;
-                drw += (t2 - t1).as_secs_f64() * 1000.0;
-                worst = worst.max((t2 - t0).as_secs_f64() * 1000.0);
-            }
-            eprintln!(
-                "bench {shot_screen} {}x{}: {n} frames, update {:.2} ms, draw {:.2} ms, worst {:.2} ms, tick {}",
-                fb.width,
-                fb.height,
-                upd / n.max(1) as f64,
-                drw / n.max(1) as f64,
-                worst,
-                app.world.tick
-            );
+            bench::run(&mut app, &mut fb, &shot_screen, n);
         }
         apply_capture_correction(&mut fb);
         if let Some(path) = &shot {
@@ -10580,6 +10560,8 @@ mod commands;
 #[path = "sc_view/cursor.rs"]
 mod cursor;
 use cursor::*;
+#[path = "sc_view/bench.rs"]
+mod bench;
 #[path = "sc_view/draw_world.rs"]
 mod draw_world;
 #[path = "sc_view/fog_memory.rs"]
@@ -10602,6 +10584,8 @@ mod lobby;
 mod menu_draw;
 #[path = "sc_view/menu_input.rs"]
 mod menu_input;
+#[path = "sc_view/minimap_cache.rs"]
+mod minimap_cache;
 #[path = "sc_view/net.rs"]
 mod net;
 #[path = "sc_view/options.rs"]

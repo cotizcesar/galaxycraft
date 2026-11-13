@@ -15,8 +15,8 @@ impl App {
         if let Some(hit) = self.portraits.get(&type_id) {
             return hit.clone();
         }
-        let decoded = (|| {
-            let (clip, at) = self.portrait_pick.unwrap_or((0, 0.6));
+        let (clip, at) = self.portrait_pick.unwrap_or((0, 0.6));
+        let path = (|| {
             let portrait = self.data.unit(type_id).portrait;
             let (dat, tbl) = self.portrait_tables()?;
             let c = galaxycraft::portrait::PortraitClip {
@@ -24,12 +24,36 @@ impl App {
                 talking: false,
                 clip,
             };
-            let path = galaxycraft::portrait::clip_path(dat, tbl, c, clip)?;
-            let install = self.install.as_ref()?;
-            let bytes = install.read_by_path(&path).ok()?;
-            let info = galaxycraft::video::parse_webm(&bytes).ok()?;
-            galaxycraft::video::decode_frame_at(&bytes, &info, Some(at), 256)
+            galaxycraft::portrait::clip_path(dat, tbl, c, clip)
         })();
+        let bytes = path
+            .as_ref()
+            .and_then(|p| self.install.as_ref()?.read_by_path(p).ok());
+        let still = move |bytes: &[u8]| {
+            let info = galaxycraft::video::parse_webm(bytes).ok()?;
+            galaxycraft::video::decode_frame_at(bytes, &info, Some(at), 256)
+        };
+        // A live game decodes on a worker thread (see `start_decode`).
+        if let (false, Some(path)) = (self.headless, &path) {
+            let key = format!("still {at} {path}");
+            match portrait_panel::poll_decode(&key) {
+                portrait_panel::Decode::Ready(mut f) => {
+                    let decoded = f.pop();
+                    self.portraits.insert(type_id, decoded.clone());
+                    return decoded;
+                }
+                portrait_panel::Decode::Pending => return None,
+                portrait_panel::Decode::Idle => {
+                    if let Some(bytes) = bytes {
+                        portrait_panel::start_decode(key, move || {
+                            still(&bytes).into_iter().collect()
+                        });
+                        return None;
+                    }
+                }
+            }
+        }
+        let decoded = bytes.as_deref().and_then(still);
         if std::env::var("GC_DEBUG_PORTRAIT").is_ok() {
             eprintln!(
                 "portrait type={type_id} name={:?} install={} -> {}",
@@ -495,59 +519,12 @@ impl App {
         // HD terrain minimap (134905): the terrain renderer at minimap scale
         // (3 px per tile at 1440p, creep included) under the smooth fog, so
         // the visible area fades out like the playfield's.
-        let creep = self.creep_lookup();
-        let mode = match (self.minimap_terrain, &self.hd_terrain) {
-            (false, _) => galaxycraft::render::MinimapTerrain::Hidden,
-            (true, None) => galaxycraft::render::MinimapTerrain::Tiles,
-            (true, Some(t)) => {
-                // The terrain + fog layer is recomposed every
-                // `MINIMAP_REFRESH_TICKS` (it was 11.6 ms of every 1080p
-                // frame); vision and creep change slowly.
-                let tick = self.world.tick;
-                let fresh = self
-                    .minimap_cache
-                    .as_ref()
-                    .is_some_and(|(w, h, at, fog, _)| {
-                        (*w, *h, *fog) == (rw, rh, self.fog_on())
-                            && tick >= *at
-                            && tick - *at < MINIMAP_REFRESH_TICKS
-                    });
-                if !fresh {
-                    let (mw, _mh) = self.tileset.minimap_size;
-                    let s = rw as f32 / (mw.max(1) as f32 * 32.0);
-                    let mut tmp = Framebuffer::new(rw.max(1) as usize, rh.max(1) as usize);
-                    t.draw(
-                        &mut tmp,
-                        &self.tileset,
-                        &self.scenario,
-                        (0, 0),
-                        (0, 0, rw, rh),
-                        s,
-                        &creep,
-                        None,
-                    );
-                    if self.fog_on() {
-                        galaxycraft::render::draw_fog_smooth(
-                            &mut tmp,
-                            &self.scenario,
-                            &self.world,
-                            self.local_player as u8,
-                            (0, 0),
-                            (0, 0, rw, rh),
-                            s,
-                        );
-                    }
-                    self.minimap_cache = Some((rw, rh, tick, self.fog_on(), tmp));
-                }
-                if let Some((_, _, _, _, tmp)) = &self.minimap_cache {
-                    for yy in 0..rh {
-                        for xx in 0..rw {
-                            fb.put(rx + xx, ry + yy, tmp.get(xx, yy));
-                        }
-                    }
-                }
-                galaxycraft::render::MinimapTerrain::Prepainted
-            }
+        let mode = if !self.minimap_terrain {
+            galaxycraft::render::MinimapTerrain::Hidden
+        } else if self.prepaint_minimap(fb, (rx, ry, rw, rh)) {
+            galaxycraft::render::MinimapTerrain::Prepainted
+        } else {
+            galaxycraft::render::MinimapTerrain::Tiles
         };
         self.tileset.draw_minimap_with_terrain(
             fb,
