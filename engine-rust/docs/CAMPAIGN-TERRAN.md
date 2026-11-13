@@ -49,6 +49,27 @@ Episode V is 35 (First Strike) to 43 (To Chain the Beast).
    and the computer players build and attack (the player loses units in
    Desperate Alliance, Assault on Korhal and Birds of War).  Screenshots
    checked at the start and after 1 000 ticks.
+4. **Objectives.**  `sc_solve` (`src/bin/sc_solve.rs`) plays every mission
+   to its end through the real trigger VM and campaign AIs.  It reads
+   the human's goal conditions from the triggers: bring units to a
+   location, command / kill counts, deaths, resources.  It satisfies them
+   in stage order (the mission's own switches decide which goal comes
+   next), but it does not steer units: it moves or spawns the units
+   itself.  The player has invincibility (`power overwhelming`), and
+   enemies are killed by script once they have been seen.  So it shows
+   that every chain of triggers can reach victory; it does not show that
+   a human can win the mission.
+
+   ```text
+   sc_solve --install "$SC_INSTALL" --episode terran|expterran [--mission KEY]
+   ```
+
+   Result (60 000-tick cap, 2026-11-13): **all 22 missions end in
+   VICTORY** fired by their own victory trigger.  Episode I at ticks
+   752 (tutorial), 30, 3218, 2502, 315, 2010, 1939, 2010, 741, 2772,
+   2689, 3271, 2010; Episode V at 2355, 6570, 2691, 2284, 5011 (5a),
+   5101 (5b), 3936, 859, 2934.  The Dylarian Shipyards needs its full
+   eight-switch battlecruiser chain, civilian deaths included.
 
 ## Fixed
 
@@ -66,8 +87,8 @@ Episode V is 35 (First Strike) to 43 (To Chain the Beast).
 - Alliances are one team per player, so they are transitive; retail keeps
   pairs.  No Terran mission puts the human in an allied force with a
   computer, so the campaign is not affected.
-- A full play-through of each mission (every objective reached, every
-  victory and defeat trigger fired by play) was not done; the runs above
-  leave the player idle.
+- The trigger chains were driven to victory by `sc_solve` (check 4), but
+  not by a human with normal units: how hard each mission is and whether
+  the computer's attacks are timed like retail is not checked.
 - The `defenseuse` response timing (every 24 ticks, idle units only) is an
   inference.

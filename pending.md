@@ -70,7 +70,8 @@ on screen.
 - **Alliances are one team per player** (transitive); retail keeps them
   per pair.  No Terran mission puts the human in an allied force with a
   computer.  See `engine-rust/docs/CAMPAIGN-TERRAN.md`.
-- **Terran missions were run with the player idle**, not played through;
-  objectives reached by play are not checked.
+- **Terran missions reach victory only through `sc_solve`**, which moves or
+  spawns the units a goal asks for and gives the player invincibility.  A
+  normal play-through (difficulty, attack timing) is not checked.
 - **Campaign AI defence response** (`CampaignAi::defend`) timing is an
   inference.
