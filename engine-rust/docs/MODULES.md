@@ -63,7 +63,7 @@ Sizes are lines.  Find a function with `rg -n 'fn name' engine-rust/src`.
 | `bin/sc_view/results.rs` | 737 | `impl App`: results (moved out of `sc_view.rs` by scripts/split_impl.py). |
 | `bin/sc_view/sd_blit.rs` | 79 | The SD view: the 1x world frame scaled up to the window. |
 | `bin/sc_view/session.rs` | 876 | `impl App`: session (moved out of `sc_view.rs` by scripts/split_impl.py). |
-| `bin/sc_view/sounds.rs` | 396 | `impl App`: sounds (moved out of `sc_view.rs` by scripts/split_impl.py). |
+| `bin/sc_view/sounds.rs` | 405 | `impl App`: sounds (moved out of `sc_view.rs` by scripts/split_impl.py). |
 | `bin/sc_view/turrets.rs` | 68 | Turret images of the Siege Tank and Goliath and the sieged tank's |
 | `bin/sc_view.rs` | 10608 | Playable graphical client for the reconstructed StarCraft rules engine. |
 | `button_sets.rs` | 258 | Retail command-card button sets. |
@@ -195,7 +195,7 @@ Sizes are lines.  Find a function with `rg -n 'fn name' engine-rust/src`.
 | `unit_anim.rs` | 1479 | Render-side iscript animation: unit poses (walking, attacking), bullets in |
 | `video.rs` | 1725 | Retail WebM cinematics: intros, campaign disks and briefing intermissions. |
 | `vision.rs` | 603 | Per-player tile visibility. |
-| `voice.rs` | 601 | Retail unit voice sets. |
+| `voice.rs` | 603 | Retail unit voice sets. |
 
 ## Wave blocks
 

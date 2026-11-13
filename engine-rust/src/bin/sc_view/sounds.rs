@@ -2,6 +2,10 @@
 
 use super::*;
 
+/// Selection-voice state: the unit last clicked, its click count, when its
+/// line ends, and the last "what?" heard (unit type, take).
+pub(super) type SelectStreak = (u32, u32, Instant, Option<(u16, usize)>);
+
 impl App {
     pub(super) fn play(&mut self, name: &str) {
         self.audio.play_named(&self.sounds, name);
@@ -196,7 +200,11 @@ impl App {
         let (streak, last_what) = match self.select_streak {
             Some((last, _, busy, _)) if last == id && now < busy => return,
             Some((last, n, _, what)) if last == id => (n + 1, what),
-            _ => (1, None),
+            // Another unit: a new count, but the take to avoid is the last
+            // "what?" heard, whoever said it (measured: 0 repeats in 79
+            // clicks alternating two SCVs, ~25% within each SCV).
+            Some((_, _, _, what)) => (1, what),
+            None => (1, None),
         };
         let pissed = self.voices.takes(unit_type, VoiceCue::Pissed);
         let (cue, take, reset) = galaxycraft::voice::selection_cue(streak, pissed);
@@ -205,12 +213,13 @@ impl App {
         let take = if cue == VoiceCue::What {
             self.ack_variant = random_take(self.ack_variant);
             let takes = self.voices.takes(unit_type, VoiceCue::What);
-            galaxycraft::voice::pick_what(last_what, takes, self.ack_variant)
+            let prev = last_what.filter(|&(t, _)| t == unit_type).map(|(_, k)| k);
+            galaxycraft::voice::pick_what(prev, takes, self.ack_variant)
         } else {
             take
         };
         let what = if cue == VoiceCue::What {
-            Some(take)
+            Some((unit_type, take))
         } else {
             last_what
         };
