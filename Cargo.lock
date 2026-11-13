@@ -284,7 +284,7 @@ dependencies = [
 
 [[package]]
 name = "galaxycraft"
-version = "0.1.34"
+version = "0.1.35"
 dependencies = [
  "cc",
  "flate2",

@@ -566,7 +566,7 @@ static DRAW_STATS: [std::sync::atomic::AtomicUsize; 2] = [
 
 /// New bakes allowed per frame before stale bakes are reused (a sprite
 /// with no bake at all is always baked).
-const REBAKES_PER_FRAME: u32 = 4;
+const REBAKES_PER_FRAME: u32 = 2;
 
 thread_local! {
     static REBAKES: std::cell::Cell<u32> = const { std::cell::Cell::new(REBAKES_PER_FRAME) };
