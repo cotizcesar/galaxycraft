@@ -3,6 +3,34 @@
 use super::*;
 
 impl App {
+    /// Per-frame HD bookkeeping: open the sprite bake budget and, once per
+    /// map and tile size, decode all of the map's terrain megatiles, so a
+    /// scroll into unseen ground does not decode them on the spot (5 ms
+    /// extra a frame at 1440p).
+    pub(super) fn begin_hd_frame(&mut self, scale: f32) {
+        galaxycraft::hd_sprites::begin_frame();
+        let Some(t) = &self.hd_terrain else {
+            return;
+        };
+        let size = (32.0 * scale).round().max(1.0) as usize;
+        let tiles = &self.scenario.tiles;
+        WARM.with(|w| {
+            let key = (size, tiles.as_ptr() as usize, tiles.len());
+            let (mut next, warmed) = w.get();
+            if warmed != key {
+                next = 0;
+            }
+            // Everything on the map's first HD frame (the game is starting):
+            // spread over later frames it pushed busy ones past 16.7 ms.
+            while next < tiles.len() {
+                let mega = self.tileset.megatile(tiles[next]) as usize;
+                let _ = t.tile(mega, size);
+                next += 1;
+            }
+            w.set((next, key));
+        });
+    }
+
     /// Paint the HD minimap terrain under the smooth fog into `(rx, ry, rw,
     /// rh)` (134905: the terrain renderer at minimap scale, 3 px per tile at
     /// 1440p, creep included, so the visible area fades out like the
@@ -210,4 +238,10 @@ mod minimap_cache_tests {
         new[0] = true;
         assert_eq!(changed_tiles(&old, &new, 8), Some((0, 0, 8, 7)));
     }
+}
+
+thread_local! {
+    /// Terrain pre-decode cursor: next map tile, for `(tile size, map)`.
+    static WARM: std::cell::Cell<(usize, (usize, usize, usize))> =
+        const { std::cell::Cell::new((0, (0, 0, 0))) };
 }

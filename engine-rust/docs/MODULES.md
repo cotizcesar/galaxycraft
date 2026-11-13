@@ -53,7 +53,7 @@ Sizes are lines.  Find a function with `rg -n 'fn name' engine-rust/src`.
 | `bin/sc_view/lobby.rs` | 998 | `impl App`: lobby (moved out of `sc_view.rs` by scripts/split_impl.py). |
 | `bin/sc_view/menu_draw.rs` | 2129 | `impl App`: menu draw (moved out of `sc_view.rs` by scripts/split_impl.py). |
 | `bin/sc_view/menu_input.rs` | 1661 | `impl App`: menu input (moved out of `sc_view.rs` by scripts/split_impl.py). |
-| `bin/sc_view/minimap_cache.rs` | 213 | The HD minimap's terrain + fog layer, cached (`App::minimap_cache`). |
+| `bin/sc_view/minimap_cache.rs` | 247 | The HD minimap's terrain + fog layer, cached (`App::minimap_cache`). |
 | `bin/sc_view/mp.rs` | 3797 | Multiplayer front end, as the retail client shows it on the user's |
 | `bin/sc_view/net.rs` | 669 | `impl App`: net (moved out of `sc_view.rs` by scripts/split_impl.py). |
 | `bin/sc_view/options.rs` | 1443 | `impl App`: options (moved out of `sc_view.rs` by scripts/split_impl.py). |

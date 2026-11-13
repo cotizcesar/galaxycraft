@@ -526,7 +526,7 @@ impl App {
                 )
             };
             marks.push(("lights", Instant::now()));
-            galaxycraft::hd_sprites::begin_frame();
+            self.begin_hd_frame(scale);
             for &i in &hd_units {
                 // A cloaked unit we can see is drawn faded.
                 let u = &self.world.units[i];
