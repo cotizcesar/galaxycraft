@@ -11,13 +11,9 @@ energy, Medic heal rules and search square, Ghost paint range, the nuke's
 90 / 45 frame timers and 320 px drop, splash rings measured to unit boxes,
 `attkshiftproj`, Lockdown 131, blind / restore.  What is still open:
 
-- **Cloak look, SD only.**  HD is settled (measured in retail 2026-11-13:
-  an own cloaked unit that no own detector reaches is see-through and
-  undistorted, `CLOAK_HD_KEEP`; a detected one, like an Observer, is drawn
-  normally).  The opacity (~half) is estimated from screenshots, and that a
-  Dark Templar beside an Observer turns opaque is an INFERENCE from the
-  Observer case.  The SD path still displaces the background
-  (`refract_rect`, tuned by eye).
+- **Cloak of enemy units we detect** is not measured: HD draws them as
+  usual, SD still displaces the ground (`refract_rect`, tuned by eye).
+  Own units are settled (see `engine-rust/docs/FIDELITY.md`).
 - **"What?" take choice.**  Retail never repeated a take back to back in ~30
   recorded lines; `voice::pick_what` excludes the previous take (INFERENCE:
   the sample is small).  The click count itself is measured

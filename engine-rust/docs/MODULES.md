@@ -40,7 +40,7 @@ Sizes are lines.  Find a function with `rg -n 'fn name' engine-rust/src`.
 | `bin/sc_view/collections.rs` | 667 | `impl App`: collections (moved out of `sc_view.rs` by scripts/split_impl.py). |
 | `bin/sc_view/commands.rs` | 1106 | `impl App`: commands (moved out of `sc_view.rs` by scripts/split_impl.py). |
 | `bin/sc_view/cursor.rs` | 710 | The in-game pointer: retail cursor shapes and art (HD and SD), edge |
-| `bin/sc_view/draw_world.rs` | 1752 | `impl App`: draw world (moved out of `sc_view.rs` by scripts/split_impl.py). |
+| `bin/sc_view/draw_world.rs` | 1753 | `impl App`: draw world (moved out of `sc_view.rs` by scripts/split_impl.py). |
 | `bin/sc_view/fog_memory.rs` | 121 | Fog of war memory: enemy buildings the local player has scouted stay |
 | `bin/sc_view/game_dialog.rs` | 1091 | `impl App`: game dialog (moved out of `sc_view.rs` by scripts/split_impl.py). |
 | `bin/sc_view/game_input.rs` | 1181 | `impl App`: game input (moved out of `sc_view.rs` by scripts/split_impl.py). |
@@ -53,7 +53,7 @@ Sizes are lines.  Find a function with `rg -n 'fn name' engine-rust/src`.
 | `bin/sc_view/lobby.rs` | 998 | `impl App`: lobby (moved out of `sc_view.rs` by scripts/split_impl.py). |
 | `bin/sc_view/menu_draw.rs` | 2129 | `impl App`: menu draw (moved out of `sc_view.rs` by scripts/split_impl.py). |
 | `bin/sc_view/menu_input.rs` | 1661 | `impl App`: menu input (moved out of `sc_view.rs` by scripts/split_impl.py). |
-| `bin/sc_view/minimap_cache.rs` | 250 | The HD minimap's terrain + fog layer, cached (`App::minimap_cache`). |
+| `bin/sc_view/minimap_cache.rs` | 260 | The HD minimap's terrain + fog layer, cached (`App::minimap_cache`). |
 | `bin/sc_view/mp.rs` | 3797 | Multiplayer front end, as the retail client shows it on the user's |
 | `bin/sc_view/net.rs` | 669 | `impl App`: net (moved out of `sc_view.rs` by scripts/split_impl.py). |
 | `bin/sc_view/options.rs` | 1443 | `impl App`: options (moved out of `sc_view.rs` by scripts/split_impl.py). |
