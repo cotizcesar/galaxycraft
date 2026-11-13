@@ -2,7 +2,8 @@
 //! captured screen and report the frame cost (in-game performance).
 //!
 //! `GC_BENCH_SCROLL=1` holds the pointer at a screen edge (the direction
-//! reversed every 120 frames, 60 Hz frame time) so every frame scrolls;
+//! reversed every 120 frames, 60 Hz frame time) so every frame scrolls,
+//! `GC_BENCH_SCROLL=pad` the controller's right stick instead;
 //! `GC_BENCH_SLOW=1` lists the frames over 16.7 ms.
 
 use super::*;
@@ -11,18 +12,26 @@ pub(super) fn run(app: &mut App, fb: &mut Framebuffer, screen: &str, n: u32) {
     // Measured as a live game: portrait clips decode in the background.
     app.headless = false;
     let scroll = std::env::var_os("GC_BENCH_SCROLL").is_some();
+    // `GC_BENCH_SCROLL=pad`: the right stick held on the diagonal instead.
+    let pad = std::env::var("GC_BENCH_SCROLL").is_ok_and(|v| v == "pad");
     let list_slow = std::env::var_os("GC_BENCH_SLOW").is_some();
     let (mut upd, mut drw, mut worst, mut worst_warm) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
     let (cam0, mut moved, mut slow) = (app.camera, 0i64, 0u32);
     for f in 0..n {
         if scroll {
-            app.edge_scroll = Some(if (f / 120) % 2 == 0 { 3 } else { 7 });
+            app.edge_scroll = (!pad).then_some(if (f / 120) % 2 == 0 { 3 } else { 7 });
             app.frame_dt = Some(1.0 / 60.0);
         }
         let before = app.camera;
         let t0 = Instant::now();
         if scroll {
-            app.handle_game_input(&GameInput::default());
+            let sign = if (f / 120) % 2 == 0 { 1 } else { -1 };
+            let p = gamepad::PAN_SPEED as i32 * sign;
+            let input = GameInput {
+                pan: if pad { (p, p) } else { (0, 0) },
+                ..GameInput::default()
+            };
+            app.handle_game_input(&input);
         }
         app.update();
         let t1 = Instant::now();
