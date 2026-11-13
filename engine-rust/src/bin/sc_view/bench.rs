@@ -26,7 +26,7 @@ pub(super) fn run(app: &mut App, fb: &mut Framebuffer, screen: &str, n: u32) {
         let t0 = Instant::now();
         if scroll {
             let sign = if (f / 120) % 2 == 0 { 1 } else { -1 };
-            let p = gamepad::PAN_SPEED as i32 * sign;
+            let p = gamepad::PAN_SPEED * sign;
             let input = GameInput {
                 pan: if pad { (p, p) } else { (0, 0) },
                 ..GameInput::default()
