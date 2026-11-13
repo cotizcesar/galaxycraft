@@ -272,7 +272,9 @@ fn solve(data: &Arc<GameData>, tiles: &[Option<TileTables>], raw: &[u8], ticks: 
     let mut seen: std::collections::HashMap<u32, u64> = std::collections::HashMap::new();
     while w.tick < ticks {
         for ai in &mut campaign {
-            ai.update(&mut w, None);
+            // As in sc_view: the human's town hall first.
+            let enemy_base = w.enemy_town_hall(ai.player, human as u8);
+            ai.update(&mut w, enemy_base);
         }
         w.step();
         if let Some(t) = w.triggers.as_mut() {

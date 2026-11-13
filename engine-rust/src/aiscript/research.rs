@@ -1,0 +1,116 @@
+//! `upgrade` / `tech`: queued town requests.
+//!
+//! Retail campaign scripts list a dozen upgrades in a row (The Hammer
+//! Falls' T12N / T12P, Norad II's Ter6) and then wait for their first
+//! attack; the script thread does not stop at each one.  The request goes
+//! to the town, which starts it once a building of the right type is free
+//! and the money is there, and `wait_upgrades` waits until every queued
+//! request has started.  Before, each `upgrade` held the script until the
+//! research could start, so a busy Engineering Bay held the thread through
+//! the previous research and The Hammer Falls never attacked.  INFERENCE:
+//! the 24-tick retry cadence and the order (first queued, first tried).
+
+use super::*;
+
+/// One queued research request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Research {
+    /// `upgrade <level> <id>`: raise the upgrade to `level`.
+    Upgrade { id: u8, level: u8 },
+    /// `tech <id>`.
+    Tech { id: u8 },
+}
+
+impl CampaignAi {
+    /// Opcodes 7 (`upgrade`) and 8 (`tech`): queue the request, try it at
+    /// once, never block.
+    pub(super) fn request_research(&mut self, world: &mut World, ins: &Instruction) {
+        let r = if ins.opcode == 7 {
+            Research::Upgrade {
+                id: ins.word(1).unwrap_or(0) as u8,
+                level: ins.byte(0).unwrap_or(1),
+            }
+        } else {
+            Research::Tech {
+                id: ins.word(0).unwrap_or(0) as u8,
+            }
+        };
+        if !self.pending_research.contains(&r) && !self.research_done(world, r) {
+            self.pending_research.push(r);
+        }
+        self.try_pending_research(world);
+    }
+
+    /// Every 24 ticks: start what can be started (also in child threads).
+    pub(super) fn start_pending_research(&mut self, world: &mut World) {
+        if (world.tick + self.player as u64).is_multiple_of(24) {
+            self.try_pending_research(world);
+        }
+        for t in &mut self.subthreads {
+            t.start_pending_research(world);
+        }
+    }
+
+    fn try_pending_research(&mut self, world: &mut World) {
+        let pending = std::mem::take(&mut self.pending_research);
+        for r in pending {
+            let started = self.research_done(world, r)
+                || match r {
+                    Research::Upgrade { id, .. } => self.try_upgrade(world, id),
+                    Research::Tech { id } => self.try_tech(world, id),
+                };
+            if !started {
+                self.pending_research.push(r);
+            }
+        }
+    }
+
+    fn research_done(&self, world: &World, r: Research) -> bool {
+        let p = &world.players[self.player as usize];
+        match r {
+            Research::Upgrade { id, level } => p.upgrade_level(id) >= level,
+            Research::Tech { id } => p.has_tech(id),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::data::GameData;
+    use crate::ids::unit as uid;
+    use crate::map::Terrain;
+    use crate::sim::Race;
+    use std::sync::Arc;
+
+    #[test]
+    fn upgrades_queue_and_the_script_goes_on() {
+        let mut world = World::new(
+            Arc::new(GameData::bundled().unwrap()),
+            Terrain::open(64, 64),
+            2,
+        );
+        world.players[0].race = Race::Terran;
+        world.players[0].minerals = 5000;
+        world.players[0].gas = 5000;
+        world.spawn_px(0, uid::COMMAND_CENTER, 320, 320).unwrap();
+        world.spawn_px(0, uid::ENGINEERING_BAY, 600, 320).unwrap();
+        // upgrade 1 Infantry Weapons (7); upgrade 1 Infantry Armor (0):
+        // one Engineering Bay, so the second waits; stop.
+        let script = AiScript {
+            id: *b"Rsch",
+            label: 1,
+            flags: 0,
+            code: vec![7, 1, 7, 0, 30, 7, 1, 0, 0, 30, 36],
+            external: false,
+        };
+        let mut ai = CampaignAi::new(0, &script);
+        ai.update(&mut world, None);
+        assert!(ai.finished, "the script ran past both upgrades");
+        assert_eq!(
+            ai.pending_research.len(),
+            1,
+            "the busy bay leaves one queued"
+        );
+    }
+}
