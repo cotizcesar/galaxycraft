@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Measure scrolling in the live client window with real input devices.
 
-    python3 scripts/real_scroll.py mouse|pad|keys LOG [sc_view args...]
+    python3 scripts/real_scroll.py mouse|pad|keys LOG [--float WxH] [sc_view args...]
 
 Opens `sc_view --start-screen game --shot-map 4` (extra args are passed
 on, e.g. `--sd` or `--shot-map 0`), focuses it (Hyprland), then scrolls
@@ -10,6 +10,10 @@ for ~30 s with a uinput virtual device the game sees as real hardware:
 - `mouse`: a relative mouse pushed to every screen edge and corner;
 - `pad`:   an Xbox 360 pad (045e:028e) with the right stick held each way;
 - `keys`:  the arrow keys held through `wtype`.
+
+`--float WxH` runs the client in a floating window of exactly that size
+(Hyprland tiles windows otherwise); the mouse then goes to the window's
+edges instead of the screen's.
 
 The client writes one line per frame to LOG (`GC_FRAME_LOG`); the summary
 splits frames with the camera moving from frames with it still.  Needs
@@ -50,6 +54,10 @@ def summary(log: str) -> None:
 
 def main() -> None:
     mode, log, extra = sys.argv[1], sys.argv[2], sys.argv[3:]
+    float_size = None
+    if extra[:1] == ["--float"]:
+        float_size = tuple(int(v) for v in extra[1].split("x"))
+        extra = ["--windowed", "--width", str(float_size[0]), "--height", str(float_size[1])] + extra[2:]
     install = os.environ.get("SC_INSTALL") or os.path.expanduser(
         "~/Games/battlenet/drive_c/Program Files (x86)/StarCraft"
     )
@@ -73,8 +81,39 @@ def main() -> None:
         cwd=ROOT, env=env, stdout=open(log + ".stderr", "w"), stderr=subprocess.STDOUT,
     )
     time.sleep(12)
-    subprocess.run(["hyprctl", "dispatch", "focuswindow", f"pid:{game.pid}"], capture_output=True)
-    if mode == "mouse":
+    hypr = lambda cmd: subprocess.run(["hyprctl", "dispatch", cmd], capture_output=True)
+    hypr(f"hl.dsp.focus({{ window = 'pid:{game.pid}' }})")
+    rect = None
+    if float_size:
+        hypr("hl.dsp.window.float({ action = 'enable' })")
+        time.sleep(0.5)
+        hypr(f"hl.dsp.window.resize({{ x = {float_size[0]}, y = {float_size[1]}, exact = true }})")
+        hypr("hl.dsp.window.center()")
+        time.sleep(1)
+        hypr(f"hl.dsp.focus({{ window = 'pid:{game.pid}' }})")
+        time.sleep(1)
+        out = subprocess.run(["hyprctl", "clients", "-j"], capture_output=True, text=True).stdout
+        import json
+        for c in json.loads(out):
+            if c["pid"] == game.pid:
+                rect = (c["at"][0], c["at"][1], c["size"][0], c["size"][1])
+        print("window", rect)
+        if rect:
+            # Focus follows the mouse: keep the pointer on the game.
+            hypr(f"hl.dsp.cursor.move({{ x = {rect[0] + rect[2] // 2}, y = {rect[1] + rect[3] // 2} }})")
+            time.sleep(0.5)
+    if mode == "mouse" and rect:
+        x, y, w, h = rect
+        edges = [(x + w // 2, y + h // 2), (x + w - 1, y + h // 2), (x + w // 2, y + h - 1),
+                 (x, y + h // 2), (x + w // 2, y), (x + w - 1, y + h - 1), (x, y), (x + w // 2, y + h // 2)]
+        for ex, ey in edges:
+            hypr(f"hl.dsp.cursor.move({{ x = {ex}, y = {ey} }})")
+            for d in (1, -1):
+                ui.write(e.EV_REL, e.REL_X, d)
+                ui.syn()
+                time.sleep(0.02)
+            time.sleep(5)
+    elif mode == "mouse":
         for dx, dy in [(-6000, -6000), (1700, 700), (6000, 0), (-1700, 6000), (-6000, 0),
                        (1700, -6000), (6000, 6000), (-6000, -6000)]:
             for _ in range(20):

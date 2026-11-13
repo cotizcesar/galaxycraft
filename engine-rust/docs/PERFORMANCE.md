@@ -15,7 +15,7 @@ How the client's frame time is measured and what it was on 2026-11-13.
 
 ## Real window, 3440x1440 at 60 Hz (Hyprland)
 
-`scripts/real_scroll.py mouse|pad|keys LOG [--sd]` opens the client on
+`scripts/real_scroll.py mouse|pad|keys LOG [--float WxH] [--sd]` opens the client on
 map 4 and scrolls for ~30 s with a uinput virtual mouse (pushed to every
 edge and corner), a virtual Xbox 360 pad (right stick held each way) or
 the arrow keys (`wtype`); the game sees them as real devices.
@@ -27,7 +27,19 @@ the arrow keys (`wtype`); the game sees them as real devices.
 | arrow keys | mean 14.2 ms (70 fps), p99 18.0 ms, worst 23.6 ms | 12.0 ms (83 fps), p99 14.8 ms |
 
 With the camera still: 13.6-13.8 ms in HD, 11.7-11.8 ms in SD, so
-scrolling costs no more than standing still.  Before 0.1.36 HD scrolling
+scrolling costs no more than standing still.
+
+## Real window, 2560x1440 HD (0.1.38)
+
+`scripts/real_scroll.py MODE LOG --float 2560x1440` (a floating window of
+exactly that size; the pointer stays on it, as Hyprland's focus follows
+the mouse):
+
+| input | scrolling | p99 | worst |
+|---|---|---|---|
+| mouse at the window edge | 11.1 ms (90 fps) | 13.0 ms | 14.8 ms |
+| controller stick | 9.0 ms (111 fps) | 13.3 ms | 17.9 ms |
+| arrow keys | 7.6 ms (131 fps) | 13.7 ms | 21.9 ms (one frame) |  Before 0.1.36 HD scrolling
 ran at 51 fps (19.5 ms) and every game froze ~400 ms at 32 s.
 
 ## Hitches removed
