@@ -71,6 +71,28 @@ Episode V is 35 (First Strike) to 43 (To Chain the Beast).
    5371 (5b), 4056, 859, 3084.  The Dylarian Shipyards needs its full
    eight-switch battlecruiser chain, civilian deaths included.
 
+## The computer's pace with the player idle
+
+`SOLVE_IDLE=1 sc_solve --episode E` runs each mission with no cheat and no
+solver and reports when an enemy first hurts (ATTACK) or kills (LOSS) one
+of the player's units (2026-11-13, 30 000-tick cap, ~21 min at Fastest):
+
+| Episode I | first hit | Episode V | first hit |
+|---|---|---|---|
+| tutorial, 1, 2, 4, 6, 12 | none | 1 | attack 137 s |
+| 3 Desperate Alliance | attack 84 s | 2 | attack 27 s |
+| 5 | loss 529 s | 3 | loss at once (scripted) |
+| 7 | loss 750 s | 4 | attack 141 s |
+| 8 | attack 38 s | 5a / 5b | attack 49 s / 28 s |
+| 9 | loss 364 s | 6 | loss at once (scripted) |
+| 10 | loss 924 s | 7 | none |
+| 11 | loss 475 s | 8 | attack 1 s |
+
+Missions with no hit start no AI script for an enemy (Backwater Station's
+15 triggers have no Run AI Script action), so its units only hold their
+ground, as in retail, where a campaign computer runs only the scripts its
+triggers start.  These times are not yet compared with the retail game.
+
 ## Zerg and Protoss campaigns
 
 The same solver runs the other four episodes (`--episode zerg`,
