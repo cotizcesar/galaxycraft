@@ -10,20 +10,25 @@ How the client's frame time is measured and what it was on 2026-11-13.
   reverse every 120 frames); `GC_BENCH_SLOW=1` lists the frames over
   16.7 ms; `GC_PROFILE=1` prints the draw phases of every frame.
 - `GC_FRAME_LOG=path`: the live window loop writes one line per frame
-  (`ms camera_x camera_y edge in_menu`), for measuring a real session.
+  (`ms camera_x camera_y edge in_menu`), for measuring a real session
+  (`scripts/real_scroll.py` drives one and summarises it).
 
-## Real window, 3440x1440 at 60 Hz (Hyprland, keyboard arrows)
+## Real window, 3440x1440 at 60 Hz (Hyprland)
 
-Game started with `--start-screen game --shot-map 4`, the arrow keys held
-5 s each through `wtype`.
+`scripts/real_scroll.py mouse|pad|keys LOG [--sd]` opens the client on
+map 4 and scrolls for ~30 s with a uinput virtual mouse (pushed to every
+edge and corner), a virtual Xbox 360 pad (right stick held each way) or
+the arrow keys (`wtype`); the game sees them as real devices.
 
-| mode | scrolling | camera still |
+| input | HD scrolling | SD scrolling |
 |---|---|---|
-| HD | mean 14.2 ms (70 fps), p99 18.0 ms, worst 23.6 ms | mean 13.7 ms, p99 17.1 ms |
-| SD | mean 12.0 ms (83 fps), p99 14.8 ms | mean 11.8 ms |
+| mouse at the edge | mean 13.9 ms (72 fps), p99 16.7 ms, worst 20.8 ms | 11.6 ms (86 fps), p99 14.4 ms |
+| controller stick | mean 14.0 ms (71 fps), p99 17.3 ms, worst 22.0 ms | 12.1 ms (83 fps), p99 16.0 ms |
+| arrow keys | mean 14.2 ms (70 fps), p99 18.0 ms, worst 23.6 ms | 12.0 ms (83 fps), p99 14.8 ms |
 
-Mouse edge scrolling could not be driven this way: a cursor warped with
-`hyprctl dispatch movecursor` does not reach the window as pointer motion.
+With the camera still: 13.6-13.8 ms in HD, 11.7-11.8 ms in SD, so
+scrolling costs no more than standing still.  Before 0.1.36 HD scrolling
+ran at 51 fps (19.5 ms) and every game froze ~400 ms at 32 s.
 
 ## Hitches removed
 
