@@ -688,6 +688,17 @@ impl GameData {
     }
 
     /// iscript id for a unit's main image, if the chain is present.
+    /// A campaign AI script by id.  `aiscript.bin` lists the Brood War
+    /// scripts too, with offset 0: their code is in `bwscript.bin`, so an
+    /// empty entry falls through to it (every expansion mission AI ran
+    /// nothing before).
+    pub fn campaign_ai_script(&self, id: &[u8; 4]) -> Option<&crate::aiscript::AiScript> {
+        self.aiscripts
+            .get(id)
+            .filter(|s| !s.code.is_empty())
+            .or_else(|| self.bwscripts.get(id))
+    }
+
     pub fn unit_iscript_id(&self, unit: &UnitType) -> Option<u16> {
         let flingy = self.flingy(unit.flingy)?;
         let sprite = self.sprite(flingy.sprite)?;

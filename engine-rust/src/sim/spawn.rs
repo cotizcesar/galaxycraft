@@ -105,8 +105,12 @@ impl World {
         }
         for (i, p) in world.players.iter_mut().enumerate() {
             p.rescuable = scenario.owners.get(i) == Some(&OWNR_RESCUE_PASSIVE);
+            p.neutral = scenario.owners.get(i) == Some(&7);
         }
         world.trigger_victory = scenario.has_placed_force() && !scenario.triggers.is_empty();
+        if world.trigger_victory {
+            world.apply_ums_alliances(scenario);
+        }
         let mut serial_to_index: HashMap<u32, usize> = HashMap::new();
         for mu in &scenario.units {
             // Start-location markers are metadata, not units.

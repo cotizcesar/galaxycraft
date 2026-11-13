@@ -265,15 +265,18 @@ impl App {
             if let Some(t) = self.world.triggers.as_mut() {
                 let pending = std::mem::take(&mut t.pending_ai_scripts);
                 for (player, id, at) in pending {
-                    if self.campaign_ais.iter().any(|c| c.player == player as u8) {
+                    // A player runs several AI threads (a town script and
+                    // helpers such as "+Vi2" or "EnBk"); only the same
+                    // script still running is skipped.  Finished ones stay
+                    // listed so the skirmish AI never takes the player over.
+                    if self
+                        .campaign_ais
+                        .iter()
+                        .any(|c| c.player == player as u8 && c.id == id && !c.finished)
+                    {
                         continue;
                     }
-                    if let Some(script) = self
-                        .data
-                        .aiscripts
-                        .get(&id)
-                        .or_else(|| self.data.bwscripts.get(&id))
-                    {
+                    if let Some(script) = self.data.campaign_ai_script(&id) {
                         let mut ai = CampaignAi::new(player as u8, script);
                         ai.location = at;
                         self.campaign_ais.push(ai);

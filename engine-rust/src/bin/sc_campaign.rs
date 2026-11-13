@@ -299,12 +299,7 @@ fn run_map_bytes(
                 if campaign.iter().any(|c| c.player == player as u8) {
                     continue;
                 }
-                if let Some(script) = world
-                    .data
-                    .aiscripts
-                    .get(&id)
-                    .or_else(|| world.data.bwscripts.get(&id))
-                {
+                if let Some(script) = world.data.campaign_ai_script(&id) {
                     let mut ai = CampaignAi::new(player as u8, script);
                     ai.location = at;
                     campaign.push(ai);
