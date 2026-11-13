@@ -277,7 +277,7 @@ impl World {
 
     /// `Rescue Passive` (order 160): every [`RESCUE_INTERVAL`] ticks a unit
     /// of a rescuable player joins the first human (not computer, not
-    /// rescuable) player with a unit within [`RESCUE_RANGE_PX`].  The
+    /// rescuable) player with a unit within [`RESCUE_RANGE_PX`] of its box.  The
     /// cadence is the retail handler's (`+0x54 = 0xf`, FACT); range and
     /// rescuer rule are INFERENCE (the Wasteland enemy sits near Raynor and
     /// must not take him; falsifier: a retail recording of that rescue).
@@ -285,7 +285,6 @@ impl World {
         if !self.players.iter().any(|p| p.rescuable) {
             return;
         }
-        let range = (RESCUE_RANGE_PX * fp(1)) as i64;
         for i in 0..self.units.len() {
             let u = &self.units[i];
             if !u.alive
@@ -296,8 +295,7 @@ impl World {
             {
                 continue;
             }
-            let (x, y) = (u.x as i64, u.y as i64);
-            let rescuer = self.units.iter().find(|o| {
+            let rescuer = self.units.iter().enumerate().find(|&(j, o)| {
                 o.alive
                     && (o.owner as usize) < 8
                     && !self
@@ -306,9 +304,9 @@ impl World {
                         .is_none_or(|p| p.rescuable || p.defeated || p.is_computer)
                     && !is_resource_type(o.type_id)
                     && o.type_id != uid::START_LOCATION
-                    && (o.x as i64 - x).pow(2) + (o.y as i64 - y).pow(2) <= range * range
+                    && self.box_gap_px(i, j) <= RESCUE_RANGE_PX
             });
-            if let Some(owner) = rescuer.map(|o| o.owner) {
+            if let Some(owner) = rescuer.map(|(_, o)| o.owner) {
                 self.units[i].owner = owner;
                 self.rescues.push((self.units[i].id, owner));
             }

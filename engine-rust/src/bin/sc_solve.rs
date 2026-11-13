@@ -13,7 +13,13 @@
 //! for "Elapsed" and countdown objectives.  The report says whether the
 //! mission's Victory fired, its Defeat fired, or neither within the ticks:
 //! a check that every mission's trigger chain can be completed, not of how
-//! hard it is to play.
+//! hard it is to play.  `--episode` is any campaign key: `terran`, `zerg`,
+//! `protoss`, `expterran`, `expzerg`, `expprotoss`.
+//!
+//! Debug output (stderr): `SOLVE_DUMP=1` every trigger and the starting
+//! units, `SOLVE_WHY=1` the victory conditions left and the switch chain
+//! behind them, `SOLVE_DEBUG=1` the goals and the player's units,
+//! `SOLVE_TRIGGER=k` trigger k's conditions.
 
 use std::sync::Arc;
 
@@ -109,6 +115,53 @@ fn solve(data: &Arc<GameData>, tiles: &[Option<TileTables>], raw: &[u8], ticks: 
         }
     }
     let _ = w.apply_cheat(human as u8, cheat::POWER_OVERWHELMING);
+    if std::env::var_os("SOLVE_DUMP").is_some()
+        && let Some(t) = w.triggers.as_ref()
+    {
+        for (k, tr) in t.triggers.iter().enumerate() {
+            let en: Vec<usize> = (0..28).filter(|&i| tr.enabled[i]).collect();
+            let c: Vec<_> = tr
+                .conditions
+                .iter()
+                .map(|c| {
+                    (
+                        c.kind,
+                        c.group,
+                        c.unit_id,
+                        c.comparison,
+                        c.quantity,
+                        c.amount_modifier,
+                    )
+                })
+                .collect();
+            let a: Vec<_> = tr
+                .actions
+                .iter()
+                .map(|a| (a.kind, a.group, a.group2, a.num, a.extra, a.location))
+                .collect();
+            eprintln!("T{k} {en:?} C{c:?} A{a:?}");
+        }
+        let mut by: std::collections::BTreeMap<u8, Vec<u16>> = Default::default();
+        for u in w.units.iter().filter(|u| u.alive) {
+            by.entry(u.owner).or_default().push(u.type_id);
+        }
+        for (k, tr) in t.triggers.iter().enumerate() {
+            if tr.actions.iter().any(|a| a.kind == 2) {
+                let h: Vec<bool> = tr
+                    .conditions
+                    .iter()
+                    .map(|c| t.condition_holds(&w, human, c))
+                    .collect();
+                eprintln!("start defeat T{k}: {h:?}");
+            }
+        }
+        eprintln!(
+            "human P{} owners {:?} forces {:?} units {by:?}",
+            human + 1,
+            &scenario.owners[..8],
+            scenario.forces
+        );
+    }
     let force = scenario.forces.get(human).copied().unwrap_or(0) as usize;
     let mut deaths: Vec<(TriggerCondition, Vec<TriggerCondition>)> = Vec::new();
     let (bring, protected, eliminate) = {
@@ -129,7 +182,12 @@ fn solve(data: &Arc<GameData>, tiles: &[Option<TileTables>], raw: &[u8], ticks: 
             .filter(|tr| !tr.actions.iter().any(|a| a.kind == 2))
             .flat_map(|tr| tr.conditions.iter())
             .filter(|c| {
-                c.kind == 2 && c.comparison == 1 && c.quantity == 0 && c.group as usize != human
+                // Also "brings at most / exactly 0 to a location": clear it.
+                matches!(c.kind, 2 | 3)
+                    && matches!(c.comparison, 1 | 10)
+                    && c.quantity == 0
+                    && !matches!(c.group as usize, 13)
+                    && c.group as usize != human
             })
             .cloned()
             .collect();
@@ -159,11 +217,11 @@ fn solve(data: &Arc<GameData>, tiles: &[Option<TileTables>], raw: &[u8], ticks: 
                 }
             }
             if !mine(tr) {
-                for c in tr
-                    .conditions
-                    .iter()
-                    .filter(|c| c.kind == 3 && c.comparison == 0 && about_me(c))
-                {
+                for c in tr.conditions.iter().filter(|c| {
+                    c.kind == 3
+                        && (matches!(c.comparison, 0 | 10) || (c.comparison == 1 && c.quantity > 0))
+                        && about_me(c)
+                }) {
                     if !defeat {
                         bring.push((c.clone(), tr.conditions.clone()));
                     }
@@ -174,9 +232,11 @@ fn solve(data: &Arc<GameData>, tiles: &[Option<TileTables>], raw: &[u8], ticks: 
                 // "Bring" and "Command at least" (a build objective) and
                 // "Accumulate": the solver provides them.
                 if matches!(c.kind, 2..=4)
-                    && c.comparison == 0
+                    && (c.comparison == 0
+                        || (c.kind == 3
+                            && (c.comparison == 10 || (c.comparison == 1 && c.quantity > 0))))
                     && !defeat
-                    && (about_me(c) || matches!(c.group, 13 | 17))
+                    && (about_me(c) || matches!(c.group, 13 | 17) || (c.kind == 3 && c.group < 8))
                 {
                     bring.push((c.clone(), tr.conditions.clone()));
                 }
@@ -209,7 +269,38 @@ fn solve(data: &Arc<GameData>, tiles: &[Option<TileTables>], raw: &[u8], ticks: 
             return format!("VICTORY at tick {}", w.tick);
         }
         if w.players[human].defeated {
-            return format!("DEFEAT at tick {}", w.tick);
+            if std::env::var_os("SOLVE_DEBUG").is_some()
+                && let Some(t) = w.triggers.as_ref()
+            {
+                for (k, tr) in t.triggers.iter().enumerate() {
+                    if tr.actions.iter().any(|a| a.kind == 2) {
+                        let held: Vec<_> = tr
+                            .conditions
+                            .iter()
+                            .map(|c| {
+                                (
+                                    c.kind,
+                                    c.group,
+                                    c.unit_id,
+                                    c.comparison,
+                                    c.quantity,
+                                    t.condition_holds(&w, human, c),
+                                )
+                            })
+                            .collect();
+                        eprintln!(
+                            "defeat trigger {k} enabled {:?}: {held:?}",
+                            tr.enabled
+                                .iter()
+                                .enumerate()
+                                .filter(|e| *e.1)
+                                .map(|e| e.0)
+                                .collect::<Vec<_>>()
+                        );
+                    }
+                }
+            }
+            return format!("DEFEAT at tick {} (human P{})", w.tick, human + 1);
         }
         for u in &w.units {
             seen.entry(u.id).or_insert(w.tick);
@@ -226,6 +317,92 @@ fn solve(data: &Arc<GameData>, tiles: &[Option<TileTables>], raw: &[u8], ticks: 
             );
             sacrifice(&mut w, human, &deaths);
         }
+    }
+    if std::env::var_os("SOLVE_WHY").is_some()
+        && let Some(t) = w.triggers.as_ref()
+    {
+        for (k, tr) in t.triggers.iter().enumerate() {
+            if tr.actions.iter().any(|a| a.kind == 1) {
+                let c: Vec<_> = tr
+                    .conditions
+                    .iter()
+                    .map(|c| {
+                        (
+                            c.kind,
+                            c.group,
+                            c.unit_id,
+                            c.comparison,
+                            c.quantity,
+                            c.amount_modifier,
+                            c.location,
+                            t.condition_holds(&w, human, c),
+                        )
+                    })
+                    .collect();
+                let en: Vec<usize> = (0..28).filter(|&i| tr.enabled[i]).collect();
+                eprintln!("victory T{k} {en:?}: {c:?}");
+                let mut want: Vec<u8> = tr
+                    .conditions
+                    .iter()
+                    .filter(|c| c.kind == 11 && !t.condition_holds(&w, human, c))
+                    .map(|c| c.amount_modifier)
+                    .collect();
+                let mut seen_sw: Vec<u8> = Vec::new();
+                while let Some(sw) = want.pop() {
+                    if seen_sw.contains(&sw) || seen_sw.len() > 12 {
+                        continue;
+                    }
+                    seen_sw.push(sw);
+                    for (j, sr) in t.triggers.iter().enumerate() {
+                        if sr
+                            .actions
+                            .iter()
+                            .any(|a| a.kind == 13 && a.group2 == sw as u32 && a.num == 4)
+                        {
+                            let c: Vec<_> = sr
+                                .conditions
+                                .iter()
+                                .map(|c| {
+                                    (
+                                        c.kind,
+                                        c.group,
+                                        c.unit_id,
+                                        c.comparison,
+                                        c.quantity,
+                                        c.amount_modifier,
+                                        c.location,
+                                        t.condition_holds(&w, human, c),
+                                    )
+                                })
+                                .collect();
+                            let en: Vec<usize> = (0..28).filter(|&i| sr.enabled[i]).collect();
+                            eprintln!("  switch {sw} set by T{j} {en:?}: {c:?}");
+                            want.extend(
+                                sr.conditions
+                                    .iter()
+                                    .filter(|c| {
+                                        c.kind == 11
+                                            && c.comparison == 2
+                                            && !t.condition_holds(&w, human, c)
+                                    })
+                                    .map(|c| c.amount_modifier),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        let mut on = Vec::new();
+        for i in 0..256 {
+            if t.switches.get(i).copied().unwrap_or(false) {
+                on.push(i);
+            }
+        }
+        eprintln!(
+            "switches {on:?} human P{} forces {:?}",
+            human + 1,
+            scenario.forces
+        );
     }
     if std::env::var_os("SOLVE_DEBUG").is_some() {
         for (c, _) in &bring {
@@ -332,6 +509,87 @@ fn matches(w: &World, type_id: u16, selector: u16) -> bool {
     }
 }
 
+/// "Brings at most / exactly N": units past N inside the location walk
+/// out, to where one of the player's units outside it stands.
+fn trim_location(w: &mut World, mover: u8, c: &TriggerCondition) {
+    let Some((l, t, r, b)) = w.triggers.as_ref().and_then(|tr| {
+        tr.locations
+            .get((c.location as usize).wrapping_sub(1))
+            .copied()
+    }) else {
+        return;
+    };
+    let inside = |x: i32, y: i32| (l..r).contains(&(x / 256)) && (t..b).contains(&(y / 256));
+    let Some((ox, oy)) = w
+        .units
+        .iter()
+        .find(|u| u.alive && u.owner == mover && !u.is_resource() && !inside(u.x, u.y))
+        .map(|u| (u.x, u.y))
+    else {
+        return;
+    };
+    let mut keep = c.quantity as usize;
+    for i in 0..w.units.len() {
+        let u = &w.units[i];
+        if u.alive
+            && u.owner == mover
+            && !u.is_resource()
+            && !w.data.unit(u.type_id).is_building()
+            && matches(w, u.type_id, c.unit_id)
+            && inside(u.x, u.y)
+        {
+            if keep > 0 {
+                keep -= 1;
+                continue;
+            }
+            w.units[i].x = ox;
+            w.units[i].y = oy;
+            w.units[i].path.clear();
+        }
+    }
+}
+
+/// Whether `(x, y)` (fixed point) is inside trigger location `loc`.
+fn in_location(w: &World, loc: u32, x: i32, y: i32) -> bool {
+    if loc == 0 || loc == 64 {
+        return true;
+    }
+    w.triggers
+        .as_ref()
+        .and_then(|t| t.locations.get(loc as usize - 1).copied())
+        .is_some_and(|(l, t, r, b)| (l..r).contains(&(x / 256)) && (t..b).contains(&(y / 256)))
+}
+
+/// Whether the trigger with exactly these conditions has run for good.
+fn fired(w: &World, conds: &[TriggerCondition]) -> bool {
+    let same = |a: &TriggerCondition, b: &TriggerCondition| {
+        (
+            a.kind,
+            a.group,
+            a.unit_id,
+            a.quantity,
+            a.location,
+            a.comparison,
+            a.amount_modifier,
+        ) == (
+            b.kind,
+            b.group,
+            b.unit_id,
+            b.quantity,
+            b.location,
+            b.comparison,
+            b.amount_modifier,
+        )
+    };
+    w.triggers.as_ref().is_some_and(|t| {
+        t.triggers.iter().enumerate().any(|(ti, tr)| {
+            tr.conditions.len() == conds.len()
+                && tr.conditions.iter().zip(conds).all(|(a, b)| same(a, b))
+                && t.has_fired_for_good(ti)
+        })
+    })
+}
+
 fn step_solver(
     seen: &std::collections::HashMap<u32, u64>,
     w: &mut World,
@@ -362,20 +620,38 @@ fn step_solver(
     // gets its own units); Command: train the missing ones; Accumulate:
     // hand over the resources.
     let mut used: Vec<u32> = Vec::new();
+    // Heroes a goal names are kept for it, not spent on "any unit" goals.
+    let named: Vec<u16> = bring
+        .iter()
+        .map(|(c, _)| c.unit_id)
+        .filter(|&t| t < 229)
+        .collect();
     // The active stage first: conditions whose trigger needs a switch that
     // is now set get the units before older stages gated only by cleared
     // switches.
-    let mut order: Vec<&(TriggerCondition, Vec<TriggerCondition>)> = bring.iter().collect();
+    // Goals whose trigger has run for good are done and free their units
+    // (one Zeratul for four beacons in turn).
+    let mut order: Vec<(usize, &(TriggerCondition, Vec<TriggerCondition>))> = bring
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, rest))| !fired(w, rest))
+        .collect();
     if let Some(t) = w.triggers.as_ref() {
-        order.sort_by_key(|(_, rest)| {
-            std::cmp::Reverse(
-                rest.iter()
-                    .filter(|r| r.kind == 11 && r.comparison == 2 && t.condition_holds(w, human, r))
-                    .count(),
+        order.sort_by_key(|(_, (c, rest))| {
+            (
+                std::cmp::Reverse(
+                    rest.iter()
+                        .filter(|r| {
+                            r.kind == 11 && r.comparison == 2 && t.condition_holds(w, human, r)
+                        })
+                        .count(),
+                ),
+                t.condition_holds(w, human, c),
+                c.unit_id >= 229,
             )
         });
     }
-    for (c, rest) in order {
+    for (_, (c, rest)) in order {
         // A stage at a time: only once the trigger's gates (switches,
         // timers...) hold, so units go where the mission is now.
         let gated = w.triggers.as_ref().is_some_and(|t| {
@@ -389,7 +665,9 @@ fn step_solver(
         // Whose units: the player's, or a friendly seat a condition names.
         let mover = if c.group == 13 || (c.group != 14 && in_group(c.group, me)) {
             me
-        } else if c.kind == 3 && (c.group as usize) < 8 && !w.hostile(me, c.group as u8) {
+        } else if c.kind == 3 && (c.group as usize) < 8 {
+            // A friendly seat, or a computer the player's own objective
+            // waits on (Protoss BW 7: the enemy hero reaching a location).
             c.group as u8
         } else {
             continue;
@@ -435,18 +713,30 @@ fn step_solver(
         // A specific unit the player does not have enough of is built first
         // (dropships for Norad II).
         if c.unit_id < 229 {
+            // Built for the player; a hero goes to the seat the objective
+            // names (Protoss BW 3 and 7 wait on another player's hero).
+            let owner = if w.data.unit(c.unit_id).is_hero() {
+                mover
+            } else {
+                me
+            };
             let have = w
                 .units
                 .iter()
-                .filter(|u| u.alive && u.owner == me && u.type_id == c.unit_id)
+                .filter(|u| u.alive && u.owner == owner && u.type_id == c.unit_id)
                 .count() as u32;
             if have < c.quantity && !w.data.unit(c.unit_id).is_building() {
                 for _ in have..c.quantity {
-                    let _ = w.spawn_px(human, c.unit_id, x, y);
+                    let _ = w.spawn_px(owner as usize, c.unit_id, x, y);
                 }
             }
         }
-        let mut left = c.quantity.max(1) as usize;
+        // At least N / exactly N / at most N (then only the extras leave).
+        let mut left = match c.comparison {
+            0 => c.quantity.max(1) as usize,
+            10 => c.quantity as usize,
+            _ => 0,
+        };
         for i in 0..w.units.len() {
             if left == 0 {
                 break;
@@ -458,7 +748,9 @@ fn step_solver(
                 && !used.contains(&u.id)
                 && matches(w, u.type_id, c.unit_id)
             {
-                if w.data.unit(u.type_id).is_building() && c.unit_id >= 229 {
+                if c.unit_id >= 229
+                    && (w.data.unit(u.type_id).is_building() || named.contains(&u.type_id))
+                {
                     continue;
                 }
                 used.push(u.id);
@@ -467,6 +759,9 @@ fn step_solver(
                 w.units[i].path.clear();
                 left -= 1;
             }
+        }
+        if c.kind == 3 && matches!(c.comparison, 1 | 10) {
+            trim_location(w, mover, c);
         }
     }
     if w.tick < WARMUP {
@@ -497,7 +792,9 @@ fn step_solver(
                 && u.owner != me
                 && (w.hostile(me, u.owner)
                     || eliminate.iter().any(|c| {
-                        in_group(c.group, u.owner) && c.unit_id < 229 && c.unit_id == u.type_id
+                        in_group(c.group, u.owner)
+                            && matches(w, u.type_id, c.unit_id)
+                            && (c.kind == 2 || in_location(w, c.location, u.x, u.y))
                     }))
                 && !spared(w, u.owner, u.type_id)
                 && seen.get(&u.id).is_some_and(|&t| w.tick >= t + 600)

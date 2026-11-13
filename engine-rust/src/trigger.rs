@@ -21,9 +21,9 @@ pub const TRIGGER_INTERVAL: u64 = 30;
 /// gave 8.75 s).
 pub const GAME_SECOND_TICKS: u64 = 16;
 
-/// `(player, four-byte script id, optional centre)` queued by trigger action
-/// 15/16.
+/// `(player, four-byte script id, optional centre)` queued by actions 15/16.
 pub type PendingAiScript = (usize, [u8; 4], Option<(i32, i32)>);
+mod queries;
 
 #[derive(Clone, Debug, Default)]
 pub struct TriggerCondition {
@@ -395,6 +395,10 @@ impl TriggerSystem {
                         self.state.resume[player] = None;
                         if let Some(trigger) = self.triggers.get(ti).cloned() {
                             self.run_actions(world, player, ti, &trigger, start);
+                            // Finished: the next cycle's pass goes on after it.
+                            if self.state.resume[player].is_none() {
+                                self.state.resume[player] = Some((ti, trigger.actions.len()));
+                            }
                         }
                     }
                 }
@@ -428,20 +432,27 @@ impl TriggerSystem {
             if world.tick < self.state.wait_until[player] {
                 continue;
             }
-            // A previous Wait action resumes the rest of that trigger first.
+            // A previous Wait action resumes the rest of that trigger first,
+            // then the pass goes on after it (a preserved trigger with a Wait
+            // must not starve the later ones: Brood War Zerg 1's ending).
+            let mut first = 0;
             if let Some((ti, start)) = self.state.resume[player] {
-                if !self.paused || self.state.pause_source == Some((player, ti)) {
-                    self.state.resume[player] = None;
-                    if let Some(trigger) = self.triggers.get(ti).cloned() {
-                        self.run_actions(world, player, ti, &trigger, start);
-                    }
+                if self.paused && self.state.pause_source != Some((player, ti)) {
+                    continue;
                 }
-                continue;
+                self.state.resume[player] = None;
+                if let Some(trigger) = self.triggers.get(ti).cloned() {
+                    self.run_actions(world, player, ti, &trigger, start);
+                }
+                if self.state.resume[player].is_some() || self.paused {
+                    continue;
+                }
+                first = ti + 1;
             }
             if self.paused {
                 continue;
             }
-            for ti in 0..self.triggers.len() {
+            for ti in first..self.triggers.len() {
                 let trigger = self.triggers[ti].clone();
                 if !self.runs_for(&trigger, player) {
                     continue;
@@ -756,7 +767,7 @@ impl TriggerSystem {
                     && Self::unit_matches(world, u.type_id, c.unit_id)
                     && owners
                         .as_ref()
-                        .is_none_or(|o| o.contains(&(u.owner as usize)))
+                        .is_none_or(|o| o.contains(&crate::sim::trigger_owner(u)))
             })
             .count() as i32
     }
@@ -796,7 +807,7 @@ impl TriggerSystem {
                 }
                 if owners
                     .as_ref()
-                    .is_some_and(|o| !o.contains(&(u.owner as usize)))
+                    .is_some_and(|o| !o.contains(&crate::sim::trigger_owner(u)))
                 {
                     return false;
                 }
@@ -888,37 +899,6 @@ impl TriggerSystem {
             .map(|l| ((l.0 + l.2) / 2, (l.1 + l.3) / 2))
     }
 
-    /// Centre (world px) of location `location` (1-based, as actions name
-    /// it); `None` for "Anywhere" (64), 0 or an unknown index.
-    pub fn location_center(&self, location: u32) -> Option<(i32, i32)> {
-        if location == 0 || location == 64 {
-            return None;
-        }
-        let l = self.locations.get(location as usize - 1)?;
-        Some(((l.0 + l.2) / 2, (l.1 + l.3) / 2))
-    }
-
-    /// The location of `player`'s last Transmission.
-    pub fn last_transmission(&self, player: usize) -> Option<(i32, i32)> {
-        self.transmission_locations
-            .iter()
-            .rev()
-            .filter(|(p, _)| *p == player)
-            .find_map(|(_, l)| self.location_center(*l))
-    }
-
-    fn unit_in_location(&self, x_px: i32, y_px: i32, location: u32) -> bool {
-        if location == 0 || location == 64 {
-            return true;
-        }
-        let Some(l) = self.locations.get(location as usize - 1) else {
-            return false;
-        };
-        let x = x_px / 256;
-        let y = y_px / 256;
-        x >= l.0 && x < l.2 && y >= l.1 && y < l.3
-    }
-
     /// Apply an enable/disable/toggle state byte (4/5/6).
     fn next_state(current: bool, state: u8) -> bool {
         match state {
@@ -945,7 +925,7 @@ impl TriggerSystem {
         };
         let mut out = Vec::new();
         for (i, u) in world.units.iter().enumerate() {
-            if !u.alive || !owners.contains(&(u.owner as usize)) {
+            if !u.alive || !owners.contains(&crate::sim::trigger_owner(u)) {
                 continue;
             }
             if !Self::unit_matches(world, u.type_id, unit) {
@@ -1038,7 +1018,7 @@ impl TriggerSystem {
                 for i in 0..world.units.len() {
                     let type_id = world.units[i].type_id;
                     if world.units[i].alive
-                        && owners.contains(&(world.units[i].owner as usize))
+                        && owners.contains(&crate::sim::trigger_owner(&world.units[i]))
                         && Self::unit_matches(world, type_id, action.extra)
                     {
                         world.units[i].alive = false;
@@ -1349,7 +1329,7 @@ impl TriggerSystem {
                 let amount = (action.group2 as u16) as i32;
                 for u in &mut world.units {
                     if u.alive
-                        && owners.contains(&(u.owner as usize))
+                        && owners.contains(&crate::sim::trigger_owner(u))
                         && u.is_resource()
                         && self.unit_in_location(u.x, u.y, action.location)
                     {
