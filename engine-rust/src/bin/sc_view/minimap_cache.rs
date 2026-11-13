@@ -3,6 +3,16 @@
 use super::*;
 
 impl App {
+    /// Whether unit `i` is one of the local player's cloaked units drawn
+    /// see-through: retail draws them so whether or not they are
+    /// detected, except detectors (an Observer is drawn as usual).
+    pub(super) fn own_see_through(&self, i: usize) -> bool {
+        let u = &self.world.units[i];
+        u.status.cloaked
+            && u.owner as usize == self.local_player
+            && !self.data.unit(u.type_id).is_detector()
+    }
+
     /// Per-frame HD bookkeeping: open the sprite bake budget and, once per
     /// map and tile size, decode all of the map's terrain megatiles, so a
     /// scroll into unseen ground does not decode them on the spot (5 ms

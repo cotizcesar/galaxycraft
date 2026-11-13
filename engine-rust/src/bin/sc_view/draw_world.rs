@@ -421,7 +421,8 @@ impl App {
                 }
             }
             let u = &self.world.units[i];
-            // A cloaked unit we can see is drawn faded.
+            // Own cloaked units see-through (measured); a detected enemy's warps the ground.
+            let see_through = self.own_see_through(i);
             let cloak = u
                 .status
                 .cloaked
@@ -467,11 +468,12 @@ impl App {
                 );
             }
             if let Some(saved) = &cloak {
-                fb.refract_rect(
-                    saved,
-                    galaxycraft::render::CLOAK_KEEP,
-                    (self.world.tick / 3) as u32,
-                );
+                if see_through {
+                    fb.fade_rect(saved, galaxycraft::render::CLOAK_SD_KEEP);
+                } else if u.owner as usize != self.local_player {
+                    let phase = (self.world.tick / 3) as u32;
+                    fb.refract_rect(saved, galaxycraft::render::CLOAK_KEEP, phase);
+                }
             }
             if let Some(saved) = &fogged {
                 fb.dim_changed(saved, 110);
@@ -528,12 +530,11 @@ impl App {
             marks.push(("lights", Instant::now()));
             self.begin_hd_frame(scale);
             for &i in &hd_units {
-                // Retail HD (measured): an own cloaked unit no detector of
-                // ours reaches is drawn see-through, about half opacity, with
-                // no distortion; one we detect is drawn as usual.
+                // Retail (measured): an own cloaked unit is see-through and
+                // undistorted, detected or not; an Observer (a detector) is
+                // drawn as usual.
                 let u = &self.world.units[i];
-                let seen = self.world.can_see_unit(self.local_player as u8, i);
-                let cloak = (u.status.cloaked && !seen).then(|| {
+                let cloak = self.own_see_through(i).then(|| {
                     let sx = cx + ((u.x / 256 - self.camera.0) as f32 * scale) as i32;
                     let sy = cy + ((u.y / 256 - self.camera.1) as f32 * scale) as i32;
                     let half = (56.0 * scale) as i32;

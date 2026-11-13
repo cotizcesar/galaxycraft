@@ -47,11 +47,11 @@ pub struct SavedRect {
     pixels: Vec<u32>,
 }
 
-/// SD cloak: unit colour kept over the displaced ground (`refract_rect`, tuned by eye).
+/// SD cloak of an enemy unit we detect: colour kept over the displaced ground (by eye).
 pub const CLOAK_KEEP: u8 = 70;
-/// HD: opacity of an own cloaked unit no own detector reaches; retail HD shows it
-/// see-through and undistorted (screenshots 2026-11-13; ~half is estimated).
+/// Own cloaked non-detectors: see-through (retail: alpha 0.46-0.52 HD, 0.35-0.45 SD).
 pub const CLOAK_HD_KEEP: u8 = 128;
+pub const CLOAK_SD_KEEP: u8 = 102;
 
 /// Colour `owner`'s units, buildings and minimap blips are drawn in: its
 /// lobby colour, else the classic slot colour.
