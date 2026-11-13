@@ -229,3 +229,21 @@ working animations, cursors, cloak, fog memory.
 | add-ons | abandoned | neutral: not auto-attacked | **fixed** (enemies attacked it) |
 | cursor | scroll arrows | eight edge cursors with edge hotspots | checked on screen in HD and SD (`edge:x:y` script step) |
 | Bunker | boarding | within 1 px of the box (`order_EnterTransport`) | **fixed** (8 px): the walker closes the last pixels straight to the box; tested from 8 sides |
+
+## Controls measured in the live retail client (2026-11-13)
+
+StarCraft: Remastered 1.23.10.13515 (Battle.net, Wine/Proton) at
+3440x1440, driven with uinput virtual mouse and keyboard devices, read with
+screenshots and the game audio (PipeWire monitor).  Results now in the
+engine:
+
+| item | method | result | where |
+|---|---|---|---|
+| Edge / key scroll speed | pointer at an edge or an arrow key held; the minimap view box timed every 0.06-0.2 s; view 853 game px wide, 3244 px of travel = 303 minimap px | 16, 24, 24, 32, 40, 48, 64 game px per 1/60 s for slider notches 1-7 (default 32), mouse and keys alike; real time (Slowest and Fastest game speed agree); no acceleration, starts ~0.1 s after reaching the edge | `sc_view/cursor.rs::scroll_rate` |
+| Annoyed lines | an SCV and a Probe clicked 7-18 times 2-4.5 s apart; each recorded line matched (envelope correlation 0.9-1.0) against the unit's `wht` / `pss` files | after selecting the unit: clicks 1-4 "what?", then every annoyed line in order, then 4 "what?" again; a click while the unit is still talking plays nothing and does not count; a 100 s pause keeps the count, selecting another unit resets it | `voice::WHAT_CLICKS`, `sc_view/sounds.rs::play_selected` |
+| "What?" take | same recordings | random, never the previous take in ~30 lines (INFERENCE that it is excluded) | `voice::pick_what` |
+| Cloak (HD) | a Dark Templar and an Observer of the player's, full-resolution screenshots | an undetected own cloaked unit is drawn see-through (~half), undistorted, the same every frame; the Observer (a detector) is drawn opaque | `render::CLOAK_HD_KEEP`, `sim` permanent cloak (`units.dat` 0x400000) |
+
+Finding on the way: the simulation did not cloak Observers and Dark
+Templar at all (the `units.dat` permanent-cloak flag was not applied), so
+enemies could attack them without a detector.

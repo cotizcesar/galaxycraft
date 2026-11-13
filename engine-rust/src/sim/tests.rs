@@ -1,4 +1,5 @@
 use super::*;
+mod cloak;
 
 #[test]
 fn the_psi_field_is_wide_rounded_and_only_the_owners() {
@@ -536,9 +537,8 @@ fn cloak_requires_a_detector() {
 
 #[test]
 fn detector_radius_is_seven_tiles_in_fixed_point_space() {
-    // The cloaked unit's position is in 1/256 pixels while the detector
-    // radius is in pixels; comparing them directly made the radius less
-    // than one pixel.  The recovered building radius is seven tiles.
+    // Unit positions are 1/256 px, the detector radius px (comparing them
+    // raw made it under a pixel).  The recovered building radius is 7 tiles.
     let mut w = open_world();
     let ghost = w.spawn(0, uid::GHOST, 320, 320).unwrap();
     w.players[0].techs[tech_id::PERSONNEL_CLOAKING as usize] = true;

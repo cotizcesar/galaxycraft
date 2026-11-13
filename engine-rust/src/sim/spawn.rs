@@ -467,7 +467,11 @@ impl World {
             addon: None,
             cargo: Vec::new(),
             in_transport: None,
-            status: Status::default(),
+            // Observers and Dark Templar exist cloaked (`units.dat` 0x400000).
+            status: Status {
+                cloaked: self.data.unit(type_id).is_permanently_cloaked(),
+                ..Status::default()
+            },
             larva_timer: 0,
             resource_amount: 0,
             morph_to: None,
@@ -601,7 +605,11 @@ impl World {
             addon: None,
             cargo: Vec::new(),
             in_transport: None,
-            status: Status::default(),
+            // Observers and Dark Templar exist cloaked (`units.dat` 0x400000).
+            status: Status {
+                cloaked: self.data.unit(type_id).is_permanently_cloaked(),
+                ..Status::default()
+            },
             larva_timer: 0,
             resource_amount: 0,
             morph_to: None,

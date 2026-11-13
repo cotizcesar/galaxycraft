@@ -123,6 +123,17 @@ pub(super) struct CursorArt {
 
 /// Edge-scroll direction for a pointer at the border of a `size` surface:
 /// 0 = up, then clockwise; `None` away from the edges.
+/// Camera scroll per 60 Hz frame (game px) for a Key / Mouse Scroll Speed
+/// slider value (0..=1, seven notches).  FACT (retail 1.23.10.13515,
+/// measured 2026-11-13 in the live client: edge and arrow-key scrolling
+/// timed against the minimap box, both sliders, every notch): 16, 24, 24,
+/// 32, 40, 48, 64; the default middle notch is 32 (1920 px/s).  Real time,
+/// the same at Slowest and Fastest game speed.
+pub(super) fn scroll_rate(slider: f32) -> f32 {
+    const NOTCH_PX: [f32; 7] = [16.0, 24.0, 24.0, 32.0, 40.0, 48.0, 64.0];
+    NOTCH_PX[(slider.clamp(0.0, 1.0) * 6.0).round() as usize]
+}
+
 pub(super) fn edge_scroll_dir(pointer: (i32, i32), size: (i32, i32)) -> Option<u8> {
     let (x, y) = pointer;
     let l = x <= 1;
@@ -516,6 +527,15 @@ pub(super) fn drag_box(start: Option<(i32, i32)>, now: (i32, i32)) -> Option<(i3
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scroll_rate_follows_the_measured_retail_notches() {
+        let notches: Vec<f32> = (0..7).map(|i| scroll_rate(i as f32 / 6.0)).collect();
+        assert_eq!(notches, [16.0, 24.0, 24.0, 32.0, 40.0, 48.0, 64.0]);
+        assert_eq!(scroll_rate(0.5), 32.0, "default notch");
+        assert_eq!(scroll_rate(-1.0), 16.0);
+        assert_eq!(scroll_rate(2.0), 64.0);
+    }
 
     fn solid_cursor(w: usize, h: usize, argb: u32) -> galaxycraft::dds::DdsGrp {
         galaxycraft::dds::DdsGrp {

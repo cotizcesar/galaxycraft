@@ -47,11 +47,11 @@ pub struct SavedRect {
     pixels: Vec<u32>,
 }
 
-/// How much of a cloaked unit's own colour shows over the displaced
-/// background ([`Framebuffer::refract_rect`]) for players who can see it.
-/// INFERENCE: retail distorts through palette tables; the shift and this
-/// tint are tuned by eye.
+/// SD cloak: unit colour kept over the displaced ground (`refract_rect`, tuned by eye).
 pub const CLOAK_KEEP: u8 = 70;
+/// HD: opacity of an own cloaked unit no own detector reaches; retail HD shows it
+/// see-through and undistorted (screenshots 2026-11-13; ~half is estimated).
+pub const CLOAK_HD_KEEP: u8 = 128;
 
 /// Colour `owner`'s units, buildings and minimap blips are drawn in: its
 /// lobby colour, else the classic slot colour.

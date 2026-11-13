@@ -175,9 +175,10 @@ impl App {
     }
 
     /// Retail "ready" line when a unit is first selected.
-    /// A selection click: "what?" lines, then the annoyed ones when the
-    /// same unit is clicked again and again (gaps under 3 s), as retail
-    /// (`voice::selection_cue`).  It played the "ready" line before.
+    /// A selection click: four "what?" lines, then the annoyed ones, while
+    /// the same unit stays selected (`voice::WHAT_CLICKS`, measured).  A
+    /// click while its line is still playing says nothing and does not
+    /// count.  It played the "ready" line before.
     pub(super) fn play_selected(&mut self) {
         if !self.game_options.unit_speech {
             return;
@@ -191,25 +192,37 @@ impl App {
         if !building_sound_allowed(&self.game_options, self.data.unit(unit_type).is_building()) {
             return;
         }
-        let streak = match self.select_streak {
-            Some((last, n, at)) if last == id && at.elapsed() < Duration::from_secs(3) => n + 1,
-            _ => 1,
+        let now = Instant::now();
+        let (streak, last_what) = match self.select_streak {
+            Some((last, _, busy, _)) if last == id && now < busy => return,
+            Some((last, n, _, what)) if last == id => (n + 1, what),
+            _ => (1, None),
         };
         let pissed = self.voices.takes(unit_type, VoiceCue::Pissed);
         let (cue, take, reset) = galaxycraft::voice::selection_cue(streak, pissed);
-        // The "what?" line is a random one; the annoyed lines keep their
-        // order.
+        // The "what?" line is a random one (not the last one again); the
+        // annoyed lines keep their order.
         let take = if cue == VoiceCue::What {
             self.ack_variant = random_take(self.ack_variant);
-            self.ack_variant
+            let takes = self.voices.takes(unit_type, VoiceCue::What);
+            galaxycraft::voice::pick_what(last_what, takes, self.ack_variant)
         } else {
             take
         };
-        self.select_streak = Some((id, if reset { 0 } else { streak }, Instant::now()));
+        let what = if cue == VoiceCue::What {
+            Some(take)
+        } else {
+            last_what
+        };
+        // After the last annoyed line this "what?" opens the next cycle.
+        let streak = if reset { 1 } else { streak };
+        let mut busy = now;
         if let Some(samples) = self.voices.cue(unit_type, cue, take) {
+            busy = now + Duration::from_secs_f64(samples.len() as f64 / 44_100.0);
             self.audio.play(Some(&samples));
             self.start_portrait_talk(unit_type, samples.len());
         }
+        self.select_streak = Some((id, streak, busy, what));
     }
 
     /// Voices and sounds that follow the world: a unit of the player's that
