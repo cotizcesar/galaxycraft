@@ -83,7 +83,7 @@ of the player's units (2026-11-13, 30 000-tick cap, ~21 min at Fastest):
 | 3 Desperate Alliance | attack 56 s | 2 | attack 27 s |
 | 5 | loss 529 s | 3 | loss at once (scripted) |
 | 6 Norad II | none (scripts wait for the player) | 4 | attack 120 s |
-| 7 | attack 395 s | 5a / 5b | attack 49 s / 28 s |
+| 7 | attack 161 s | 5a / 5b | attack 49 s / 28 s |
 | 8 | attack 38 s | 6 | loss at once (scripted) |
 | 9 | attack 146 s | 7 | none (no town script) |
 | 10 | attack 147 s | 8 | attack 1 s |
@@ -120,6 +120,13 @@ a `build` the town could not afford at that tick was forgotten, so a later
 `wait_build` for it waited forever and lost buildings were never rebuilt.
 The idle table does not change (the towns start rich); it matters once the
 player hurts the town.
+
+0.1.43: a stall check (an AI script on the same instruction for 5000
+ticks, not in a `wait`, all six episodes) found `defensebuild_*` holding
+the script until the defender could be trained: Biting the Bullet's two
+towns (first hit 395 s, now 161 s), the Protoss tutorial and Brood War
+Protoss 3.  It is a town request now; no script stalls left with the
+player idle.
 
 ## Zerg and Protoss campaigns
 
