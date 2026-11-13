@@ -64,3 +64,13 @@ on screen.
   cursors the same frame time, 10, the arrow's measured 6 fps.)
 - **Wireframe damage**: the order in which sections turn yellow / red is a
   seeded permutation per unit (INFERENCE); retail picks them at random.
+
+## Campaign, 2026-11-13
+
+- **Alliances are one team per player** (transitive); retail keeps them
+  per pair.  No Terran mission puts the human in an allied force with a
+  computer.  See `engine-rust/docs/CAMPAIGN-TERRAN.md`.
+- **Terran missions were run with the player idle**, not played through;
+  objectives reached by play are not checked.
+- **Campaign AI defence response** (`CampaignAi::defend`) timing is an
+  inference.

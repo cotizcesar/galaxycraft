@@ -14,7 +14,9 @@ Sizes are lines.  Find a function with `rg -n 'fn name' engine-rust/src`.
 | `ai_recovered/translated/a87.rs` | 1523 |  |
 | `ai_recovered/translated/a88.rs` | 1441 |  |
 | `ai_recovered/translated/mod.rs` | 15 |  |
-| `aiscript.rs` | 2877 | `scripts\aiscript.bin` / `scripts\bwscript.bin` reader. |
+| `aiscript/defend.rs` | 47 | The campaign AI's defence response. |
+| `aiscript/tests.rs` | 575 |  |
+| `aiscript.rs` | 2304 | `scripts\aiscript.bin` / `scripts\bwscript.bin` reader. |
 | `audio.rs` | 3042 | Retail sound effects and a small software mixer. |
 | `bin/sc_animsheet.rs` | 126 | Dump frame contact sheets from Remastered HD animation containers. |
 | `bin/sc_assets.rs` | 561 | Verify and materialise the retail installation without redistributing it. |

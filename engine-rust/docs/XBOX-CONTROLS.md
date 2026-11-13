@@ -93,6 +93,11 @@ captured headlessly with `shot:NAME`.
   `App::pad_cursor`;
 - moving the physical mouse takes control back (`App::pad_suppressed`), and
   the next controller input after the pad goes neutral takes over again.
+- the cursor and the camera move by real time (rates are per 60 Hz frame,
+  scaled by the frame time, the sub-pixel rest carried over), so they feel
+  the same at any frame rate;
+- aim assist: over a unit the cursor keeps `gamepad::AIM_FRICTION` (45 %) of
+  its speed, so a sweep of the stick stops on the unit.
 
 ## Integrated translation batches
 
