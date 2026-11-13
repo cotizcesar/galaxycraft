@@ -310,6 +310,8 @@ pub struct CampaignAi {
     pub defense_requests: [Option<(u8, u16)>; 4],
     pub defense_units: [Option<(u8, u16)>; 4],
     pub attack_prepared: bool,
+    /// Queued `upgrade` / `tech` requests not started yet (research.rs).
+    pub pending_research: Vec<research::Research>,
     pub killable: bool,
     pub scout_unit: Option<u16>,
     pub bunkers: u8,
@@ -359,6 +361,7 @@ impl CampaignAi {
             defense_requests: [None; 4],
             defense_units: [None; 4],
             attack_prepared: false,
+            pending_research: Vec::new(),
             killable: false,
             scout_unit: None,
             bunkers: 0,
@@ -389,6 +392,7 @@ impl CampaignAi {
         self.update_subthreads(world, enemy_base);
         self.defend(world);
         self.gather_attack(world, enemy_base);
+        self.start_pending_research(world);
     }
 
     /// `default_build`: the race's standard army when the town has spare resources.
@@ -629,27 +633,10 @@ impl CampaignAi {
                 // continues; it does not block the script thread.
                 self.pc += 1;
             }
-            7 => {
-                let level = ins.byte(0).unwrap_or(1);
-                let upgrade = ins.word(1).unwrap_or(0) as u8;
-                if world.players[self.player as usize].upgrade_level(upgrade) >= level
-                    || self.try_upgrade(world, upgrade)
-                {
-                    self.pc += 1;
-                } else {
-                    self.wait_until = world.tick + 24;
-                    return false;
-                }
-            }
-            8 => {
-                let tech = ins.word(0).unwrap_or(0) as u8;
-                if world.players[self.player as usize].has_tech(tech) || self.try_tech(world, tech)
-                {
-                    self.pc += 1;
-                } else {
-                    self.wait_until = world.tick + 24;
-                    return false;
-                }
+            7 | 8 => {
+                // Queued as a town request; the script goes on (research.rs).
+                self.request_research(world, ins);
+                self.pc += 1;
             }
             1 => {
                 // notowns_jump <unit> <address>
@@ -1259,9 +1246,11 @@ impl CampaignAi {
                 self.pc += 1;
             }
             71 => {
-                // wait_upgrades: this reconstruction starts upgrade
-                // requests immediately, so there is never a queued request
-                // left to wait for.
+                // wait_upgrades: until every queued research has started.
+                if !self.pending_research.is_empty() {
+                    self.wait_until = world.tick + 24;
+                    return false;
+                }
                 self.pc += 1;
             }
             72 => {
@@ -1923,7 +1912,9 @@ impl CampaignAi {
             .units
             .iter()
             .filter(|u| {
-                u.alive && u.owner != self.player && !world.data.unit(u.type_id).is_building()
+                u.alive
+                    && world.hostile(self.player, u.owner)
+                    && !world.data.unit(u.type_id).is_building()
             })
             .min_by_key(|u| {
                 let dx = u.x / 256 - bx;
@@ -2300,5 +2291,6 @@ pub const OPCODE_ARGS: &[&[u8]] = &[
 
 mod attack_prep;
 mod defend;
+mod research;
 #[cfg(test)]
 mod tests;

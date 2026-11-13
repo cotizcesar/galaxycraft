@@ -79,28 +79,41 @@ of the player's units (2026-11-13, 30 000-tick cap, ~21 min at Fastest):
 
 | Episode I | first hit | Episode V | first hit |
 |---|---|---|---|
-| tutorial, 1, 2, 4, 6, 12 | none | 1 | attack 104 s |
-| 3 Desperate Alliance | attack 69 s | 2 | attack 27 s |
+| tutorial, 1, 2, 4 | none (no enemy script) | 1 | attack 103 s |
+| 3 Desperate Alliance | attack 56 s | 2 | attack 27 s |
 | 5 | loss 529 s | 3 | loss at once (scripted) |
-| 7 | loss 750 s | 4 | attack 120 s |
-| 8 | attack 38 s | 5a / 5b | attack 49 s / 28 s |
-| 9 | loss 364 s | 6 | loss at once (scripted) |
-| 10 | loss 924 s | 7 | none |
-| 11 | loss 475 s | 8 | attack 1 s |
+| 6 Norad II | none (scripts wait for the player) | 4 | attack 120 s |
+| 7 | attack 395 s | 5a / 5b | attack 49 s / 28 s |
+| 8 | attack 38 s | 6 | loss at once (scripted) |
+| 9 | attack 146 s | 7 | none (no town script) |
+| 10 | attack 147 s | 8 | attack 1 s |
+| 11 | attack 285 s | | |
+| 12 The Hammer Falls | attack 372 s | | |
 
 Missions with no hit start no AI script for an enemy (Backwater Station's
 15 triggers have no Run AI Script action), so its units only hold their
 ground, as in retail, where a campaign computer runs only the scripts its
-triggers start (checked in retail: five idle minutes, no attack).
+triggers start (checked in retail: five idle minutes, no attack).  Norad
+II starts its two Zerg scripts only from switch 10, which the player's
+own progress sets (bringing the Command Center, the first deaths);
+Patriot's Blood runs only `Enmy` and `Rscu`.
 
 Desperate Alliance compared with retail (live client, 2026-11-13, player
 idle, frames): retail's two Zerglings of `attack_add 2` were at the
-player's ramp at ~1170 and hit at ~1280.  Ours, once `attack_prepare`
-walks the party out (`src/aiscript/attack_prep.rs`), leave the gathering
-point at the `attack_do` (1250) and reach the defenders at ~1330 (before:
-2010, the party left from the town).  The 69 s above is the second wave:
-the first two Zerglings die to the defenders without doing damage.  The
-other missions are not compared with retail yet.
+player's ramp at ~1170 and hit at ~1280.  Ours hit at 1344: the party
+walks out after `attack_prepare` (`src/aiscript/attack_prep.rs`) and
+leaves at the `attack_do` (1250).  The other missions are not compared
+with retail yet.
+
+Two script bugs this table found (0.1.41): `upgrade` / `tech` held the
+script thread until the research could start, so a town with one busy
+Engineering Bay never reached its attacks (The Hammer Falls never
+attacked; Silent Scream's first hit came at 924 s, now 147 s); they are
+queued town requests now (`src/aiscript/research.rs`).  With no enemy
+town hall, the attack target was the nearest unit of any other owner
+(allies and neutrals too); it is the nearest hostile one now.  `sc_solve`
+also passes the human's town hall as the target, as `sc_view` does (it
+passed none).
 
 ## Zerg and Protoss campaigns
 

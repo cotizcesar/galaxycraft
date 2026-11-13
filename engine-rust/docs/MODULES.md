@@ -16,8 +16,9 @@ Sizes are lines.  Find a function with `rg -n 'fn name' engine-rust/src`.
 | `ai_recovered/translated/mod.rs` | 15 |  |
 | `aiscript/attack_prep.rs` | 148 | `attack_prepare`: build the attack party and gather it towards the target. |
 | `aiscript/defend.rs` | 47 | The campaign AI's defence response. |
+| `aiscript/research.rs` | 116 | `upgrade` / `tech`: queued town requests. |
 | `aiscript/tests.rs` | 575 |  |
-| `aiscript.rs` | 2304 | `scripts\aiscript.bin` / `scripts\bwscript.bin` reader. |
+| `aiscript.rs` | 2296 | `scripts\aiscript.bin` / `scripts\bwscript.bin` reader. |
 | `audio.rs` | 3042 | Retail sound effects and a small software mixer. |
 | `bin/sc_animsheet.rs` | 126 | Dump frame contact sheets from Remastered HD animation containers. |
 | `bin/sc_assets.rs` | 561 | Verify and materialise the retail installation without redistributing it. |
@@ -35,7 +36,7 @@ Sizes are lines.  Find a function with `rg -n 'fn name' engine-rust/src`.
 | `bin/sc_retailrep.rs` | 762 | Play a retail Remastered `.rep` through the engine and report where it |
 | `bin/sc_shot.rs` | 226 | Headless graphics smoke test: render one real map frame to a BMP. |
 | `bin/sc_sim.rs` | 187 | Small command-line demonstration of the reconstructed rules. |
-| `bin/sc_solve.rs` | 890 | Drive campaign missions to their end through their own triggers. |
+| `bin/sc_solve.rs` | 892 | Drive campaign missions to their end through their own triggers. |
 | `bin/sc_view/bench.rs` | 99 | `GC_BENCH=N`: run N frames of the live loop (update + draw) on the |
 | `bin/sc_view/briefing.rs` | 958 | `impl App`: briefing (moved out of `sc_view.rs` by scripts/split_impl.py). |
 | `bin/sc_view/collections.rs` | 667 | `impl App`: collections (moved out of `sc_view.rs` by scripts/split_impl.py). |
