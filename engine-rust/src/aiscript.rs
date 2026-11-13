@@ -924,13 +924,12 @@ impl CampaignAi {
                 let idx = (ins.opcode - 19) as usize;
                 let qty = ins.byte(0).unwrap_or(1);
                 let unit = ins.word(1).unwrap_or(0);
+                // A town request, filled in requests.rs; the script goes on.
                 self.defense_requests[idx] = Some((qty, unit));
-                if self.count(world, unit) >= qty as i32 || self.try_train(world, unit) {
-                    self.pc += 1;
-                } else {
-                    self.wait_until = world.tick + 24;
-                    return false;
+                if self.count(world, unit) < qty as i32 {
+                    let _ = self.try_train(world, unit);
                 }
+                self.pc += 1;
             }
             23..=26 => {
                 let idx = (ins.opcode - 23) as usize;

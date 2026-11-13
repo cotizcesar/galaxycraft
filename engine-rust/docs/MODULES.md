@@ -16,9 +16,9 @@ Sizes are lines.  Find a function with `rg -n 'fn name' engine-rust/src`.
 | `ai_recovered/translated/mod.rs` | 15 |  |
 | `aiscript/attack_prep.rs` | 148 | `attack_prepare`: build the attack party and gather it towards the target. |
 | `aiscript/defend.rs` | 47 | The campaign AI's defence response. |
-| `aiscript/requests.rs` | 190 | `build`, `upgrade` / `tech`: queued town requests. |
+| `aiscript/requests.rs` | 223 | `build`, `upgrade` / `tech`, `defensebuild_*`: queued town requests. |
 | `aiscript/tests.rs` | 575 |  |
-| `aiscript.rs` | 2288 | `scripts\aiscript.bin` / `scripts\bwscript.bin` reader. |
+| `aiscript.rs` | 2287 | `scripts\aiscript.bin` / `scripts\bwscript.bin` reader. |
 | `audio.rs` | 3042 | Retail sound effects and a small software mixer. |
 | `bin/sc_animsheet.rs` | 126 | Dump frame contact sheets from Remastered HD animation containers. |
 | `bin/sc_assets.rs` | 561 | Verify and materialise the retail installation without redistributing it. |

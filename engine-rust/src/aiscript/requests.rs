@@ -1,10 +1,13 @@
-//! `build`, `upgrade` / `tech`: queued town requests.
+//! `build`, `upgrade` / `tech`, `defensebuild_*`: queued town requests.
 //!
 //! `build N type` is a lasting request: the town builds or trains until it
 //! has N (counting those in production and workers on their way to the
 //! site) and rebuilds what is lost.  Before, a `build` the town could not
 //! afford at that very tick was forgotten, and a later `wait_build` for it
-//! waited forever.  INFERENCE: the rebuild of lost units and buildings
+//! waited forever.  `defensebuild_*` held the script until the defender
+//! could be trained (Biting the Bullet's two towns, the Protoss tutorial
+//! and Brood War Protoss 3 never got past it with the player idle); it is a
+//! request the town keeps filled now.  INFERENCE: the rebuild of lost units and buildings
 //! (retail campaign towns rebuild; the exact rule is not read).
 //!
 //! Retail campaign scripts list a dozen upgrades in a row (The Hammer
@@ -87,6 +90,12 @@ impl CampaignAi {
             for (unit, qty) in self.build_requests.clone() {
                 self.fill_build_request(world, unit, qty);
             }
+            // `defensebuild_*`: keep the defenders asked for.
+            for (qty, unit) in self.defense_requests.into_iter().flatten() {
+                if self.count(world, unit) + self.training_count(world, unit) < qty as i32 {
+                    let _ = self.try_train(world, unit);
+                }
+            }
         }
         for t in &mut self.subthreads {
             t.start_pending_research(world);
@@ -155,6 +164,30 @@ mod tests {
             world.step();
         }
         assert!(ai.finished, "the Barracks got built once the money came");
+    }
+
+    #[test]
+    fn defensebuild_does_not_hold_the_script() {
+        let mut world = World::new(
+            Arc::new(GameData::bundled().unwrap()),
+            Terrain::open(64, 64),
+            2,
+        );
+        world.players[0].race = Race::Terran;
+        world.players[0].minerals = 0;
+        world.spawn_px(0, uid::COMMAND_CENTER, 320, 320).unwrap();
+        // defensebuild_gg 1 Marine with no Barracks; stop.
+        let script = AiScript {
+            id: *b"Def1",
+            label: 1,
+            flags: 0,
+            code: vec![19, 1, 0, 0, 36],
+            external: false,
+        };
+        let mut ai = CampaignAi::new(0, &script);
+        ai.update(&mut world, None);
+        assert!(ai.finished, "the script ran past the defence request");
+        assert_eq!(ai.defense_requests[0], Some((1, uid::MARINE)));
     }
 
     #[test]
