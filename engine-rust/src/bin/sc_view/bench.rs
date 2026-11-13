@@ -73,3 +73,27 @@ pub(super) fn run(app: &mut App, fb: &mut Framebuffer, screen: &str, n: u32) {
         app.world.tick
     );
 }
+
+/// `GC_FRAME_LOG=path`: the live window loop appends one line per frame
+/// (`ms camera_x camera_y edge`), to measure real scrolling.
+pub(super) fn log_frame(app: &App) {
+    thread_local! {
+        static LOG: std::cell::RefCell<Option<std::fs::File>> = std::cell::RefCell::new(
+            std::env::var_os("GC_FRAME_LOG").and_then(|p| std::fs::File::create(p).ok()),
+        );
+    }
+    LOG.with(|l| {
+        if let (Some(f), Some(dt)) = (l.borrow_mut().as_mut(), app.frame_dt) {
+            use std::io::Write;
+            let _ = writeln!(
+                f,
+                "{:.2} {} {} {:?} {}",
+                dt * 1000.0,
+                app.camera.0,
+                app.camera.1,
+                app.edge_scroll,
+                app.menu
+            );
+        }
+    });
+}

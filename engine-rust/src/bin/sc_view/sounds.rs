@@ -268,7 +268,12 @@ impl App {
         if self.music_track == name {
             return;
         }
-        if let Some(track) = self.music.track(name) {
+        // A track decoded ahead on a worker thread (`prefetch_music`);
+        // otherwise the whole OGG decodes here (~400 ms frozen frame).
+        let ready = PREFETCH
+            .with(|p| p.borrow_mut().remove(name))
+            .and_then(|rx| rx.recv().ok().flatten());
+        if let Some(track) = ready.or_else(|| self.music.track(name)) {
             self.audio.play_music(Some(track));
             self.music_track = name.to_string();
             self.music_started = Instant::now();
@@ -324,17 +329,40 @@ impl App {
         if self.music_track.ends_with("vict") || self.music_track.ends_with("defeat") {
             return;
         }
-        if self.music_started.elapsed() < Duration::from_secs(32) {
-            return;
-        }
         let race = match self.local_race() {
             Race::Zerg => "zerg",
             Race::Protoss => "protoss",
             _ => "terran",
         };
+        let name = format!("{}{}", race, self.music_phase % 4 + 1);
+        if self.music_started.elapsed() < Duration::from_secs(32) {
+            self.prefetch_music(&name);
+            return;
+        }
         self.music_phase = self.music_phase % 4 + 1;
-        let name = format!("{}{}", race, self.music_phase);
         self.play_music(&name);
+    }
+
+    /// Start decoding `name` on a worker thread, once, so the switch to it
+    /// does not stall a frame.
+    fn prefetch_music(&self, name: &str) {
+        let path = self.music.root().join(format!("{name}.ogg"));
+        PREFETCH.with(|p| {
+            let mut p = p.borrow_mut();
+            if p.contains_key(name) {
+                return;
+            }
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let decoded = std::fs::read(path)
+                    .ok()
+                    .and_then(|b| galaxycraft::audio::decode_ogg(&b))
+                    .filter(|s| !s.is_empty())
+                    .map(std::sync::Arc::new);
+                let _ = tx.send(decoded);
+            });
+            p.insert(name.to_string(), rx);
+        });
     }
 
     pub(super) fn play_result_music(&mut self, won: bool) {
@@ -343,4 +371,13 @@ impl App {
         self.music_phase = 0;
         self.play_music(&name);
     }
+}
+
+/// A music track decoded on a worker thread (`None`: missing or empty).
+type PendingTrack = std::sync::mpsc::Receiver<Option<std::sync::Arc<Vec<i16>>>>;
+
+thread_local! {
+    /// Music tracks being decoded ahead, by name.
+    static PREFETCH: std::cell::RefCell<std::collections::HashMap<String, PendingTrack>> =
+        Default::default();
 }
