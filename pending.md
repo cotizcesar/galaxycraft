@@ -14,11 +14,6 @@ energy, Medic heal rules and search square, Ghost paint range, the nuke's
 - **Cloak of enemy units we detect** is not measured: HD draws them as
   usual, SD still displaces the ground (`refract_rect`, tuned by eye).
   Own units are settled (see `engine-rust/docs/FIDELITY.md`).
-- **"What?" take choice.**  Retail never repeated a take back to back in ~30
-  recorded lines; `voice::pick_what` excludes the previous take (INFERENCE:
-  the sample is small).  The click count itself is measured
-  (`voice::WHAT_CLICKS`).
-
 ## Vehicles and air units, 2026-11-12
 
 Rules read from the OpenBW source; these parts are simplified or not checked

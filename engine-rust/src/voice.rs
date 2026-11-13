@@ -192,9 +192,11 @@ pub fn selection_cue(streak: u32, pissed_takes: usize) -> (VoiceCue, usize, bool
 }
 
 /// The "what?" take for a selection click: random (`roll`), never the take
-/// played just before (`prev`) when there is a choice.  Retail never
-/// repeated a take back to back in ~30 recorded lines (INFERENCE that it
-/// excludes the previous one; plain random repeats a quarter of the time).
+/// played just before (`prev`) when there is a choice.  FACT (retail
+/// 2026-11-13, 80 recorded clicks alternating two SCVs): 0 back-to-back
+/// repeats of the line heard, while each SCV's own sequence repeated ~25%
+/// (11 and 8 of 39), so the take avoided is the last one played, whichever
+/// unit said it.
 pub fn pick_what(prev: Option<usize>, takes: usize, roll: usize) -> usize {
     if takes <= 1 {
         return 0;
