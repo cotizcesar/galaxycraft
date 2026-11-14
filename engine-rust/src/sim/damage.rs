@@ -634,9 +634,8 @@ impl World {
         if self.units[i].type_id == uid::NUCLEAR_SILO {
             self.units[i].nuke_ready = false;
         }
-        // `0x005cc810` returns 0x546 for Broodlings and dying units;
-        // `0x005b6810` stores it in CUnit+0x110.
-        self.units[i].set_death_timer_min(BROODLING_LIFETIME_TICKS as u16);
+        // `0x005b6810` stores a 0x546 removal timer in CUnit+0x110.
+        self.units[i].set_death_timer_min(HALLUCINATION_LIFETIME_TICKS as u16);
         let owner = self.units[i].owner as usize;
         // `0x005b6160`/`0x005da2e0`: a producer destroyed while upgrading
         // refunds 75% of the current level's mineral and gas cost.  An

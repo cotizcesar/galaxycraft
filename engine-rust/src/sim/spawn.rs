@@ -853,12 +853,13 @@ impl World {
 
     pub(super) fn spawn_dark_swarm(&mut self, owner: u8, pos: (i32, i32)) {
         // Translation batch 37 (`0x005dc1e0`): clamp with the `0xca` margin
-        // row, set the hidden status bit and the removal timer, then keep the
-        // sim's 360-tick temporary-unit expiry.
+        // row, set the hidden status bit and the removal timer: 900 frames
+        // (OpenBW `dark_swarm` `set_remove_timer(u, 900)`; 360 is the
+        // Disruption Web's).
         if let Ok(id) = self.a37_spawn_dark_swarm(owner as usize, (pos.0 / fp(1), pos.1 / fp(1)))
             && let Some(idx) = self.index_of(id)
         {
-            let expiry = self.tick as i64 + 360;
+            let expiry = self.tick as i64 + 900;
             self.units[idx].expires_at = if self.units[idx].expires_at > 0 {
                 self.units[idx].expires_at.min(expiry)
             } else {

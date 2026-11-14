@@ -1,0 +1,237 @@
+//! Spell effects against OpenBW (`bwgame.h`) and the retail executable: each
+//! spell is cast in the simulation and the timer, hit points or lifetime it
+//! leaves are compared with the number OpenBW applies.  Status timers count
+//! 8-frame updates in both engines.
+
+use galaxycraft::data::GameData;
+use galaxycraft::ids::unit as uid;
+use galaxycraft::map::Terrain;
+use galaxycraft::sim::{
+    BROODLING_LIFETIME_TICKS, ENERGY_SCALE, HALLUCINATION_LIFETIME_TICKS, Spell, SpellTarget, World,
+};
+use std::sync::Arc;
+
+fn world() -> World {
+    let mut w = World::new(
+        Arc::new(GameData::bundled().unwrap()),
+        Terrain::open(64, 64),
+        2,
+    );
+    for p in 0..2 {
+        for t in 0..44 {
+            w.players[p].techs[t] = true;
+        }
+    }
+    w
+}
+
+/// Cast `spell` from a fresh `caster` (player 0, full energy) on a `target`
+/// unit of `target_owner`; step up to 200 frames, returning the world and the
+/// target's index.
+fn cast_on(caster: u16, spell: Spell, target: u16, target_owner: usize) -> (World, usize, usize) {
+    let mut w = world();
+    let c = w.spawn_px(0, caster, 400, 400).unwrap();
+    let t = w.spawn_px(target_owner, target, 470, 400).unwrap();
+    w.units[c].set_energy_fixed(250 * ENERGY_SCALE);
+    let tid = w.units[t].id;
+    w.cast(w.units[c].id, spell, SpellTarget::Unit(tid))
+        .unwrap_or_else(|e| panic!("{spell:?}: {e:?}"));
+    (w, c, t)
+}
+
+/// Largest value `read` takes on the target while stepping 200 frames.
+fn peak(w: &mut World, t: usize, read: impl Fn(&World, usize) -> i32) -> i32 {
+    let mut best = read(w, t);
+    for _ in 0..200 {
+        w.step();
+        best = best.max(read(w, t));
+    }
+    best
+}
+
+#[test]
+fn status_spell_durations_match_openbw() {
+    // (caster, spell, target, owner, OpenBW timer, field)
+    let lockdown = |w: &World, t: usize| w.units[t].status.lockdown_ticks;
+    let stasis = |w: &World, t: usize| w.units[t].status.stasis_ticks;
+    let ensnare = |w: &World, t: usize| w.units[t].status.ensnare_ticks;
+    let plague = |w: &World, t: usize| w.units[t].status.plague_ticks;
+    let maelstrom = |w: &World, t: usize| w.units[t].status.maelstrom_ticks;
+    // OpenBW: lockdown_timer 131, stasis_timer 131, ensnare_timer 75,
+    // plague_timer 75, maelstrom_timer 22.
+    let (mut w, _, t) = cast_on(uid::GHOST, Spell::Lockdown, uid::SIEGE_TANK, 1);
+    assert_eq!(peak(&mut w, t, lockdown), 131, "Lockdown");
+    let mut w = world();
+    let c = w.spawn_px(0, uid::ARBITER, 400, 400).unwrap();
+    let t = w.spawn_px(1, uid::MARINE, 470, 400).unwrap();
+    w.units[c].set_energy_fixed(250 * ENERGY_SCALE);
+    w.cast(
+        w.units[c].id,
+        Spell::StasisField,
+        SpellTarget::Point(470, 400),
+    )
+    .unwrap();
+    assert_eq!(peak(&mut w, t, stasis), 131, "Stasis Field");
+    let mut w = world();
+    let c = w.spawn_px(0, uid::QUEEN, 400, 400).unwrap();
+    let t = w.spawn_px(1, uid::MARINE, 470, 400).unwrap();
+    w.units[c].set_energy_fixed(250 * ENERGY_SCALE);
+    w.cast(w.units[c].id, Spell::Ensnare, SpellTarget::Point(470, 400))
+        .unwrap();
+    assert_eq!(peak(&mut w, t, ensnare), 75, "Ensnare");
+    let mut w = world();
+    let c = w.spawn_px(0, uid::DEFILER, 400, 400).unwrap();
+    let t = w.spawn_px(1, uid::MARINE, 470, 400).unwrap();
+    w.units[c].set_energy_fixed(250 * ENERGY_SCALE);
+    w.cast(w.units[c].id, Spell::Plague, SpellTarget::Point(470, 400))
+        .unwrap();
+    assert_eq!(peak(&mut w, t, plague), 75, "Plague");
+    let (mut w, _, t) = cast_on(uid::DARK_ARCHON, Spell::Maelstrom, uid::ZERGLING, 1);
+    assert_eq!(peak(&mut w, t, maelstrom), 22, "Maelstrom");
+}
+
+#[test]
+fn defensive_matrix_and_irradiate_match_openbw() {
+    // OpenBW `order_DefensiveMatrix`: 250 hit points, timer 168.
+    let (mut w, _, t) = cast_on(uid::SCIENCE_VESSEL, Spell::DefensiveMatrix, uid::MARINE, 0);
+    let hp = peak(&mut w, t, |w, t| w.units[t].status.matrix);
+    assert_eq!(hp, 250 << 8, "matrix hit points");
+    let (mut w, _, t) = cast_on(uid::SCIENCE_VESSEL, Spell::DefensiveMatrix, uid::MARINE, 0);
+    let ticks = peak(&mut w, t, |w, t| w.units[t].status.matrix_ticks as i32);
+    assert_eq!(ticks, 168, "matrix timer");
+    // OpenBW `irradiate_unit`: the timer is the Irradiate weapon's cooldown.
+    let (mut w, _, t) = cast_on(uid::SCIENCE_VESSEL, Spell::Irradiate, uid::ZERGLING, 1);
+    let want = w
+        .data
+        .weapon(galaxycraft::ids::weapon::IRRADIATE)
+        .unwrap()
+        .cooldown as i32;
+    assert_eq!(
+        peak(&mut w, t, |w, t| w.units[t].status.irradiate_ticks),
+        want,
+        "Irradiate"
+    );
+}
+
+#[test]
+fn hallucinations_and_broodlings_live_as_long_as_in_retail() {
+    // OpenBW `order_CastHallucination`: two copies owned by the caster,
+    // `default_remove_timer` 1350; retail `0x005cc810` returns 0x546.
+    let (w, _, t) = cast_on(uid::HIGH_TEMPLAR, Spell::Hallucination, uid::ZERGLING, 1);
+    let copies: Vec<_> = w
+        .units
+        .iter()
+        .filter(|u| u.alive && u.status.hallucination)
+        .collect();
+    assert_eq!(copies.len(), 2, "two hallucinations");
+    assert!(
+        copies
+            .iter()
+            .all(|u| u.owner == 0 && u.type_id == w.units[t].type_id)
+    );
+    assert!(
+        copies
+            .iter()
+            .all(|u| u.expires_at == w.tick as i64 + HALLUCINATION_LIFETIME_TICKS)
+    );
+    assert_eq!(HALLUCINATION_LIFETIME_TICKS, 1350);
+    // Broodlings: 0x708 = 1800 frames (OpenBW `default_remove_timer`).
+    assert_eq!(BROODLING_LIFETIME_TICKS, 1800);
+    let (mut w, _, _) = cast_on(uid::QUEEN, Spell::SpawnBroodlings, uid::MARINE, 1);
+    let mut lifetime = None;
+    for _ in 0..200 {
+        w.step();
+        if let Some(b) = w
+            .units
+            .iter()
+            .find(|u| u.alive && u.type_id == uid::BROODLING)
+        {
+            lifetime = Some(b.expires_at - w.tick as i64);
+            break;
+        }
+    }
+    let l = lifetime.expect("broodlings spawned");
+    assert!((1790..=1800).contains(&l), "broodling lifetime {l}");
+}
+
+#[test]
+fn dark_swarm_and_disruption_web_last_as_in_openbw() {
+    // OpenBW `dark_swarm`: set_remove_timer 900; `disruption_web`: 360.
+    for (caster, spell, unit, want) in [
+        (uid::DEFILER, Spell::DarkSwarm, uid::DARK_SWARM, 900),
+        (uid::CORSAIR, Spell::DisruptionWeb, uid::DISRUPTION_WEB, 360),
+    ] {
+        let mut w = world();
+        let c = w.spawn_px(0, caster, 400, 400).unwrap();
+        w.units[c].set_energy_fixed(250 * ENERGY_SCALE);
+        w.cast(w.units[c].id, spell, SpellTarget::Point(470, 400))
+            .unwrap();
+        let mut left = None;
+        for _ in 0..200 {
+            w.step();
+            if let Some(s) = w.units.iter().find(|u| u.alive && u.type_id == unit) {
+                left = Some(s.expires_at - w.tick as i64);
+                break;
+            }
+        }
+        let l = left.unwrap_or_else(|| panic!("{spell:?} spawned nothing"));
+        assert!(
+            (want - 10..=want).contains(&l),
+            "{spell:?}: {l} frames left, want {want}"
+        );
+    }
+}
+
+#[test]
+fn plague_and_emp_change_hit_points_shields_and_energy_as_in_openbw() {
+    // OpenBW: each 8-frame update Plague deals the weapon's damage / 76 and
+    // never kills (`if (u->hp > damage)`).
+    let mut w = world();
+    let c = w.spawn_px(0, uid::DEFILER, 400, 400).unwrap();
+    // A target that does not regenerate (Zerg units heal between hits).
+    let t = w.spawn_px(1, uid::SIEGE_TANK, 470, 400).unwrap();
+    w.units[c].set_energy_fixed(250 * ENERGY_SCALE);
+    w.cast(w.units[c].id, Spell::Plague, SpellTarget::Point(470, 400))
+        .unwrap();
+    let dmg = (w
+        .data
+        .weapon(galaxycraft::ids::weapon::PLAGUE)
+        .unwrap()
+        .damage as i32)
+        * 256
+        / 76;
+    let mut drops = Vec::new();
+    let mut hp = w.units[t].hp;
+    for _ in 0..200 {
+        w.step();
+        if w.units[t].hp < hp {
+            drops.push(hp - w.units[t].hp);
+        }
+        hp = w.units[t].hp;
+    }
+    assert!(
+        drops.len() > 10 && drops.iter().all(|&d| d == dmg),
+        "plague hits {drops:?}, want {dmg}"
+    );
+    // OpenBW `emp_shockwave`: energy and shields to 0 (hallucinations die).
+    let mut w = world();
+    let c = w.spawn_px(0, uid::SCIENCE_VESSEL, 400, 400).unwrap();
+    let t = w.spawn_px(1, uid::HIGH_TEMPLAR, 470, 400).unwrap();
+    w.units[c].set_energy_fixed(250 * ENERGY_SCALE);
+    w.units[t].set_energy_fixed(200 * ENERGY_SCALE);
+    w.cast(
+        w.units[c].id,
+        Spell::EmpShockwave,
+        SpellTarget::Point(470, 400),
+    )
+    .unwrap();
+    // Both recharge afterwards: look at the lowest values reached.
+    let (mut energy, mut shields) = (i32::MAX, i32::MAX);
+    for _ in 0..200 {
+        w.step();
+        energy = energy.min(w.units[t].energy_fixed());
+        shields = shields.min(w.units[t].shields);
+    }
+    assert_eq!(energy, 0, "EMP energy");
+    assert_eq!(shields, 0, "EMP shields");
+}

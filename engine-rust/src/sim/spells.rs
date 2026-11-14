@@ -525,17 +525,21 @@ impl World {
                 }
             }
             Spell::Hallucination => {
+                // OpenBW `order_CastHallucination`: two copies, owned by the
+                // caster, each living 1350 frames (`default_remove_timer`,
+                // retail `0x005cc810` returns 0x546 for a hallucination).
                 if let Some(t) = target_idx {
                     let ty = self.units[t].type_id;
-                    let owner = self.units[t].owner;
-                    if let Ok(new) = self.spawn_px(
-                        owner as usize,
-                        ty,
-                        self.units[t].x / fp(1),
-                        self.units[t].y / fp(1),
-                    ) {
+                    let owner = self.units[caster].owner;
+                    let (x, y) = (self.units[t].x / fp(1), self.units[t].y / fp(1));
+                    for _ in 0..2 {
+                        let Ok(new) = self.spawn_px(owner as usize, ty, x, y) else {
+                            break;
+                        };
                         self.units[new].status.hallucination = true;
                         self.units[new].status.revealed_ticks = 600;
+                        self.units[new].expires_at =
+                            self.tick as i64 + HALLUCINATION_LIFETIME_TICKS;
                     }
                 }
             }
