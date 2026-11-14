@@ -224,6 +224,34 @@ fn main() {
                 rof = format!("{p:.1}/{want} (air) {}", if ok { "ok" } else { "**DIFF**" });
             }
         }
+        // Why a cell is not measured here, and where it is.
+        if rof == "-" || hit == "-" {
+            let why = if matches!(ty, 72 | 83) {
+                "hangar: see Special attackers"
+            } else if ty == 14 {
+                "nuke: the Ghost-guided strike, see Spell effects"
+            } else if gw.is_none() && aw.is_none() {
+                "unarmed"
+            } else if matches!(ty, 4 | 6 | 18 | 24 | 26 | 31) {
+                "turret: fires via its base"
+            } else if matches!(ty, 5 | 3 | 72 | 83 | 103 | 47 | 50 | 30 | 25) {
+                "see Special attackers"
+            } else if matches!(ty, 13 | 14 | 73 | 85) {
+                "launched unit: see Spell effects / Special attackers"
+            } else if matches!(ty, 32 | 10 | 210..=213) || u.is_resource_container() {
+                "flame splash: tests/rate_of_fire_retail.rs"
+            } else if gw.is_none() {
+                "air-only: no ground hit"
+            } else {
+                "not attackable in the open-ground harness"
+            };
+            if rof == "-" {
+                rof = format!("- ({why})");
+            }
+            if hit == "-" {
+                hit = format!("- ({why})");
+            }
+        }
         let shields = if u.has_shields {
             u.shield_points.to_string()
         } else {

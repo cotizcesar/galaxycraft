@@ -92,3 +92,18 @@ AI attack wave (every 1200 ticks): each unit of the wave searched its own
 
 Now 12-14 ticks over 30 ms in a 14-minute game, the worst ~52 ms; the game
 simulates in 38 s.
+
+### The 8-player game through the client (2026-11-14)
+
+`GC_BENCH=2000 GC_BENCH_TICKS=10 sc_view --install "$SC_INSTALL" --races
+terran,protoss,zerg,terran,protoss,zerg,terran,protoss --start-screen game
+--shot-map 375` plays Homeworld (melee list index 375 = 68 campaign
+missions + `(8)Homeworld` at 307 of the 323 melee maps sorted by name; the
+list grew with the ladder folders, so older notes' index 104 is now
+`(2)Heartbreak Ridge 2.1`) with eight players through the client loop:
+`GC_BENCH_TICKS=10` runs ten AI ticks before each drawn frame.  21 067
+ticks (~15 minutes at Fastest) in 49 s: per frame 15 ms of update (ten
+ticks, ~1.5 ms each) and 7.5 ms of drawing.  At the end the idle local seat
+and one AI were defeated, six AIs were still playing with 35-68 units each.
+At Fastest's one tick per 42 ms the client has ~25 ms of headroom per tick
+on average; the worst tick measured headless was 47 ms.

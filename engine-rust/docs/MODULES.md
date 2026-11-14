@@ -37,7 +37,7 @@ Sizes are lines.  Find a function with `rg -n 'fn name' engine-rust/src`.
 | `bin/sc_shot.rs` | 226 | Headless graphics smoke test: render one real map frame to a BMP. |
 | `bin/sc_sim.rs` | 187 | Small command-line demonstration of the reconstructed rules. |
 | `bin/sc_solve.rs` | 902 | Drive campaign missions to their end through their own triggers. |
-| `bin/sc_view/bench.rs` | 99 | `GC_BENCH=N`: run N frames of the live loop (update + draw) on the |
+| `bin/sc_view/bench.rs` | 128 | `GC_BENCH=N`: run N frames of the live loop (update + draw) on the |
 | `bin/sc_view/briefing.rs` | 958 | `impl App`: briefing (moved out of `sc_view.rs` by scripts/split_impl.py). |
 | `bin/sc_view/collections.rs` | 667 | `impl App`: collections (moved out of `sc_view.rs` by scripts/split_impl.py). |
 | `bin/sc_view/commands.rs` | 1106 | `impl App`: commands (moved out of `sc_view.rs` by scripts/split_impl.py). |

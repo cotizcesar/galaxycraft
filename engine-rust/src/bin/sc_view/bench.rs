@@ -5,6 +5,8 @@
 //! reversed every 120 frames, 60 Hz frame time) so every frame scrolls,
 //! `GC_BENCH_SCROLL=pad` the controller's right stick instead;
 //! `GC_BENCH_SLOW=1` lists the frames over 16.7 ms.
+//! `GC_BENCH_TICKS=k` runs k simulation ticks (with the AIs) before each
+//! frame, so a whole game plays through the client loop quickly.
 
 use super::*;
 
@@ -15,6 +17,10 @@ pub(super) fn run(app: &mut App, fb: &mut Framebuffer, screen: &str, n: u32) {
     // `GC_BENCH_SCROLL=pad`: the right stick held on the diagonal instead.
     let pad = std::env::var("GC_BENCH_SCROLL").is_ok_and(|v| v == "pad");
     let list_slow = std::env::var_os("GC_BENCH_SLOW").is_some();
+    let extra_ticks: u32 = std::env::var("GC_BENCH_TICKS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
     let (mut upd, mut drw, mut worst, mut worst_warm) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
     let (cam0, mut moved, mut slow) = (app.camera, 0i64, 0u32);
     for f in 0..n {
@@ -32,6 +38,9 @@ pub(super) fn run(app: &mut App, fb: &mut Framebuffer, screen: &str, n: u32) {
                 ..GameInput::default()
             };
             app.handle_game_input(&input);
+        }
+        for _ in 0..extra_ticks {
+            app.step_once();
         }
         app.update();
         let t1 = Instant::now();
@@ -63,6 +72,26 @@ pub(super) fn run(app: &mut App, fb: &mut Framebuffer, screen: &str, n: u32) {
         );
     }
     eprintln!("bench after 10 frames: worst {worst_warm:.2} ms; {slow} frames over 16.7 ms");
+    if extra_ticks > 0 {
+        let w = &app.world;
+        if let Some(m) = app.maps.get(app.map_index) {
+            eprintln!("  map {} ({} players)", m.path.display(), w.players.len());
+        }
+        for p in 0..w.players.len().min(8) {
+            let units = w.units.iter().filter(|u| u.alive && u.owner as usize == p);
+            let (n, mobile) = units.fold((0, 0), |(n, m), u| {
+                (
+                    n + 1,
+                    m + usize::from(!w.data.unit(u.type_id).is_building()),
+                )
+            });
+            eprintln!(
+                "  p{p}: {n} units ({mobile} mobile), {} minerals, {} gas, defeated {}",
+                w.players[p].minerals, w.players[p].gas, w.players[p].defeated
+            );
+        }
+        eprintln!("  result {:?}", app.game_result.is_some());
+    }
     eprintln!(
         "bench {screen} {}x{}: {n} frames, update {:.2} ms, draw {:.2} ms, worst {:.2} ms, tick {}",
         fb.width,
