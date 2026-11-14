@@ -124,7 +124,9 @@ fn solve(data: &Arc<GameData>, tiles: &[Option<TileTables>], raw: &[u8], ticks: 
     let health = |w: &World| -> i64 {
         w.units
             .iter()
-            .filter(|u| u.alive && u.owner as usize == human)
+            .filter(|u| {
+                u.alive && u.owner as usize == human && !u.is_resource() && u.type_id != 101
+            })
             .map(|u| (u.hp + u.shields) as i64)
             .sum()
     };
@@ -132,7 +134,7 @@ fn solve(data: &Arc<GameData>, tiles: &[Option<TileTables>], raw: &[u8], ticks: 
     let mut last_count = w
         .units
         .iter()
-        .filter(|u| u.alive && u.owner as usize == human)
+        .filter(|u| u.alive && u.owner as usize == human && !u.is_resource())
         .count();
     if std::env::var_os("SOLVE_DUMP").is_some()
         && let Some(t) = w.triggers.as_ref()
@@ -327,12 +329,15 @@ fn solve(data: &Arc<GameData>, tiles: &[Option<TileTables>], raw: &[u8], ticks: 
             seen.entry(u.id).or_insert(w.tick);
         }
         if idle {
+            // Units and buildings only: resources the player owns are mined
+            // out, and triggers remove units (Map Revealers, scripted
+            // departures) without any attack.
+            let mine = |u: &galaxycraft::sim::SimUnit| {
+                u.owner as usize == human && !u.is_resource() && u.type_id != 101
+            };
             let (now, count) = (
                 health(&w),
-                w.units
-                    .iter()
-                    .filter(|u| u.alive && u.owner as usize == human)
-                    .count(),
+                w.units.iter().filter(|u| u.alive && mine(u)).count(),
             );
             // Losing health with no fewer units (a new unit adds health,
             // a finished construction too): an attack.
@@ -343,7 +348,12 @@ fn solve(data: &Arc<GameData>, tiles: &[Option<TileTables>], raw: &[u8], ticks: 
                     w.tick as f64 / 23.81
                 );
             }
-            if count < last_count {
+            // A loss is a unit killed (no hit points left), not removed.
+            if count < last_count
+                && w.units
+                    .iter()
+                    .any(|u| !u.alive && mine(u) && u.hp <= 0 && u.last_damaged + 2 >= w.tick)
+            {
                 return format!(
                     "FIRST LOSS at tick {} ({:.0} s at Fastest)",
                     w.tick,

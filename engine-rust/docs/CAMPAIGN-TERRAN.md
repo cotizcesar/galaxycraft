@@ -81,14 +81,19 @@ of the player's units (2026-11-13, 30 000-tick cap, ~21 min at Fastest):
 |---|---|---|---|
 | tutorial, 1, 2, 4 | none (no enemy script) | 1 | attack 103 s |
 | 3 Desperate Alliance | attack 56 s | 2 | none (Beacons are not targets) |
-| 5 | loss 529 s | 3 | loss at once (scripted) |
+| 5 Revolution | none | 3 | none |
 | 6 Norad II | none (scripts wait for the player) | 4 | attack 120 s |
 | 7 | attack 161 s | 5a / 5b | attack 49 s / 28 s |
-| 8 The Trump Card | attack 15 s | 6 | loss at once (scripted) |
-| 9 | attack 146 s | 7 | none (no town script) |
-| 10 | attack 147 s | 8 | loss at once (scripted) |
+| 8 The Trump Card | attack 15 s | 6 | attack 24 s |
+| 9 | attack 146 s | 7 | none (the breach is fought by an ally) |
+| 10 | attack 147 s | 8 | loss 3 s |
 | 11 | attack 285 s | | |
 | 12 The Hammer Falls | attack 372 s | | |
+
+The idle report counts only the player's units and buildings: owned
+mineral fields (Revolution's player owns some, mined out by the computer
+at 529 s), Map Revealers and units a trigger removes were counted as
+losses before 0.1.47.
 
 Missions with no hit start no AI script for an enemy (Backwater Station's
 15 triggers have no Run AI Script action), so its units only hold their
@@ -153,6 +158,8 @@ Fastest; the retail hit is the first combat seen or heard at the player.
 | mission (retail #) | retail first hit | ours |
 |---|---|---|
 | 2 Backwater Station | none in 5 min | none |
+| 5 Revolution | none in 590 s | none |
+| 6 Norad II | none in 290 s | none |
 | 3 Desperate Alliance | ~54 s (frame ~1280) | 56 s (frame 1344) |
 | 7 The Trump Card | ~11 s (Control Tower) | 15 s |
 | 8 The Big Push | ~155 s | 146 s |
@@ -160,7 +167,7 @@ Fastest; the retail hit is the first combat seen or heard at the player.
 | 10 The Hammer Falls | ~400 s | 372 s |
 
 All within ~10 % except The Trump Card's first seconds (see
-`pending.md`).  Revolution and Norad II are not compared yet.
+`pending.md`).  
 
 Episode V, same method (2026-11-13):
 
@@ -168,8 +175,11 @@ Episode V, same method (2026-11-13):
 |---|---|---|
 | 1 First Strike | ~97 s off screen (audio), ~146 s at the camera | 103 s (a Barracks) |
 | 2 The Dylarian Shipyards | none in the first 60 s | none (was 27 s) |
+| 3 Ruins of Tarsonis | none in 177 s | none |
 | 4 Assault on Korhal | ~128 s | 120 s |
 | 5 Emperor's Fall (Ground Zero) | "Nuclear launch detected" ~18 s, combat ~38 s | 49 s |
+| 5b Emperor's Fall (Birds of War) | scripted battle with the player's Valkyries ~12 s | 28 s (a Missile Turret) |
+| 7 Patriot's Blood | the allied Marines' breach ~9-13 s | ally hit at 10 s |
 
 The Dylarian Shipyards found a bug: enemy Bunkers shot the player's
 Terran Beacons.  `units.dat` flag 0x20000000 (Beacons, markers, resources)
