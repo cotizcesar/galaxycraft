@@ -915,6 +915,21 @@ fn astar_cells(
     let mut closed = vec![false; n];
     let index = |c: (i32, i32)| (c.1 * w + c.0) as usize;
 
+    // Each cell's footprint test (terrain plus every nearby building box) is
+    // asked up to eight times per search; remember the answer (0 unknown,
+    // 1 free, 2 blocked).
+    let mut free_cache = vec![0u8; n];
+    let mut free = |x: i32, y: i32| -> bool {
+        let k = (y * w + x) as usize;
+        if free_cache[k] == 0 {
+            free_cache[k] = if cell_free(terrain, obstacles, x, y, hw, hh) {
+                1
+            } else {
+                2
+            };
+        }
+        free_cache[k] == 1
+    };
     let mut open = RetailOpen::new(n);
     let si = index(start);
     g[si] = 0;
@@ -960,15 +975,11 @@ fn astar_cells(
             if nx < 0 || ny < 0 || nx >= w || ny >= h {
                 continue;
             }
-            if !cell_free(terrain, obstacles, nx, ny, hw, hh) {
+            if !free(nx, ny) {
                 continue;
             }
             // The recovered A* forbids cutting a diagonal corner.
-            if dx != 0
-                && dy != 0
-                && (!cell_free(terrain, obstacles, cur.0 + dx, cur.1, hw, hh)
-                    || !cell_free(terrain, obstacles, cur.0, cur.1 + dy, hw, hh))
-            {
+            if dx != 0 && dy != 0 && (!free(cur.0 + dx, cur.1) || !free(cur.0, cur.1 + dy)) {
                 continue;
             }
             let ni = index((nx, ny));

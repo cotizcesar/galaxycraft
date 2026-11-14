@@ -12,6 +12,7 @@ impl World {
         // behind the end dialog (Wasteland recording 302.5-307.5 s) until
         // the player leaves for the score screen.
         self.tick += 1;
+        self.routes = Default::default();
         for u in &mut self.units {
             if !u.alive && u.death_timer > 0 {
                 u.death_timer -= 1;

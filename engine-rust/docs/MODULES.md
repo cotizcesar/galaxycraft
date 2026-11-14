@@ -28,7 +28,7 @@ Sizes are lines.  Find a function with `rg -n 'fn name' engine-rust/src`.
 | `bin/sc_handlers.rs` | 100 | Print and validate the 137 transcribed order-handler routines. |
 | `bin/sc_lan.rs` | 364 | sc_lan — lockstep LAN match over TCP (2..=8 peers, headless). |
 | `bin/sc_list.rs` | 57 | List CASC paths in a retail StarCraft installation. |
-| `bin/sc_match.rs` | 308 | Headless match runner. |
+| `bin/sc_match.rs` | 321 | Headless match runner. |
 | `bin/sc_orders.rs` | 94 | Print and validate the recovered `orders.dat` dispatch table. |
 | `bin/sc_regions.rs` | 88 | Print the recovered region graph for a scenario. |
 | `bin/sc_replay.rs` | 83 | Inspect retail `.rep` files: container, embedded map and action stream. |
@@ -130,7 +130,7 @@ Sizes are lines.  Find a function with `rg -n 'fn name' engine-rust/src`.
 | `net.rs` | 2315 | LAN lockstep networking (TCP first, UDP later behind the same API). |
 | `orders.rs` | 1526 | Explicit per-row `orders.dat` dispatch specification. |
 | `path/obstacles.rs` | 74 | Building and resource footprints that block ground paths, with a |
-| `path.rs` | 4097 | Deterministic grid pathfinding. |
+| `path.rs` | 4108 | Deterministic grid pathfinding. |
 | `portrait.rs` | 358 | In-game unit portraits: which `portrait/<stem><n>.webm` clip plays. |
 | `profile.rs` | 1089 | Player profiles: the Registry IDs, the global settings, per-profile |
 | `projectile.rs` | 165 | Travelling bullets and missiles. |
@@ -172,14 +172,14 @@ Sizes are lines.  Find a function with `rg -n 'fn name' engine-rust/src`.
 | `sim/damage.rs` | 752 | `impl World`: damage (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/lift.rs` | 223 | `impl World`: lifting and landing Terran buildings, and their add-ons |
 | `sim/mod.rs` | 2568 | Deterministic StarCraft rules simulation. |
-| `sim/movement.rs` | 686 | `impl World`: movement (moved out of `mod.rs` by scripts/split_impl.py). |
+| `sim/movement.rs` | 734 | `impl World`: movement (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/nuke.rs` | 291 | `impl World`: nuke (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/orders.rs` | 660 | `impl World`: orders (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/production.rs` | 1343 | `impl World`: production (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/projectiles.rs` | 363 | `impl World`: projectiles (moved out of `mod.rs` by scripts/split_impl.py). |
-| `sim/spawn.rs` | 892 | `impl World`: spawn (moved out of `mod.rs` by scripts/split_impl.py). |
+| `sim/spawn.rs` | 893 | `impl World`: spawn (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/spells.rs` | 1052 | `impl World`: spells (moved out of `mod.rs` by scripts/split_impl.py). |
-| `sim/step.rs` | 825 | `impl World`: step (moved out of `mod.rs` by scripts/split_impl.py). |
+| `sim/step.rs` | 826 | `impl World`: step (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/tests/cloak.rs` | 41 | `units.dat` flags: permanent cloak (0x400000) and invincible types |
 | `sim/tests.rs` | 3739 |  |
 | `sim/translated/mod.rs` | 18 |  |
