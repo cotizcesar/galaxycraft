@@ -38,14 +38,14 @@ pub fn wave_size(waves: u32) -> usize {
     (6 + 4 * waves as usize).min(24)
 }
 
-/// One tick of every computer player, in slot order: each attacks an enemy
-/// town hall (`prefer`'s when it is an enemy, see
-/// [`World::enemy_town_hall`]).  Shared by the local game loop and the LAN
-/// lockstep so every peer runs the same computers identically; `prefer`
-/// must therefore be the same on every peer in a LAN game.
+/// One tick of every computer player, in slot order: each attacks the enemy
+/// town hall nearest its own ([`World::nearest_enemy_town_hall`]).  Shared
+/// by the local game loop and the LAN lockstep so every peer runs the same
+/// computers identically.  `prefer` is kept for the callers' signature.
 pub fn run_computers(world: &mut World, ais: &mut [SimpleAi], prefer: u8) {
+    let _ = prefer;
     for ai in ais.iter_mut() {
-        let enemy_base = world.enemy_town_hall(ai.player, prefer);
+        let enemy_base = world.nearest_enemy_town_hall(ai.player);
         ai.update(world, enemy_base);
     }
 }

@@ -353,6 +353,22 @@ impl World {
         if owners.len() < 2 {
             return;
         }
+        // Retail `melee.trg`: "current player commands at most 0 Buildings"
+        // -> Defeat.  Applied to a player who has lost buildings and has
+        // none left (sandboxes without buildings are left alone).
+        for p in 0..self.players.len() {
+            if !self.players[p].defeated
+                && self.players[p].buildings_lost > 0
+                && !self.units.iter().any(|u| {
+                    u.alive
+                        && u.owner as usize == p
+                        && !is_resource_type(u.type_id)
+                        && self.data.unit(u.type_id).is_building()
+                })
+            {
+                self.players[p].defeated = true;
+            }
+        }
         let alive_players: Vec<u8> = (0..self.players.len() as u8)
             .filter(|&p| {
                 !self.players[p as usize].defeated
@@ -403,6 +419,51 @@ impl World {
         (0..self.players.len() as u8)
             .filter(|&p| self.is_enemy(player, p) && !self.players[p as usize].defeated)
             .find_map(hall)
+    }
+
+    /// INFERENCE (the retail melee AI's target rule is not traced): the
+    /// skirmish AI attacks the enemy town hall nearest its own, so in a
+    /// free-for-all every computer fights its neighbours instead of all
+    /// converging on one seat.  Without a town hall of its own it measures
+    /// from any of its units; with no enemy hall left, any enemy building.
+    pub fn nearest_enemy_town_hall(&self, player: u8) -> Option<(i32, i32)> {
+        let is_hall = |t: u16| {
+            matches!(
+                t,
+                uid::COMMAND_CENTER | uid::NEXUS | uid::HATCHERY | uid::LAIR | uid::HIVE
+            )
+        };
+        let own = |u: &&SimUnit| u.alive && u.owner == player;
+        let home = self
+            .units
+            .iter()
+            .filter(own)
+            .find(|u| is_hall(u.type_id))
+            .or_else(|| self.units.iter().find(own))
+            .map(|u| (u.x as i64, u.y as i64))?;
+        let enemy = |u: &&SimUnit| {
+            u.alive
+                && self.is_enemy(player, u.owner)
+                && !self
+                    .players
+                    .get(u.owner as usize)
+                    .is_some_and(|p| p.defeated)
+                && !is_resource_type(u.type_id)
+        };
+        let dist = |u: &&SimUnit| (u.x as i64 - home.0).pow(2) + (u.y as i64 - home.1).pow(2);
+        self.units
+            .iter()
+            .filter(enemy)
+            .filter(|u| is_hall(u.type_id))
+            .min_by_key(dist)
+            .or_else(|| {
+                self.units
+                    .iter()
+                    .filter(enemy)
+                    .filter(|u| self.data.unit(u.type_id).is_building())
+                    .min_by_key(dist)
+            })
+            .map(|u| (u.x / 256, u.y / 256))
     }
 
     /// Engine score bookkeeping (OpenBW `add_completed_unit` and the kill

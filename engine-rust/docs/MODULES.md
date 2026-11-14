@@ -37,7 +37,7 @@ Sizes are lines.  Find a function with `rg -n 'fn name' engine-rust/src`.
 | `bin/sc_shot.rs` | 226 | Headless graphics smoke test: render one real map frame to a BMP. |
 | `bin/sc_sim.rs` | 187 | Small command-line demonstration of the reconstructed rules. |
 | `bin/sc_solve.rs` | 902 | Drive campaign missions to their end through their own triggers. |
-| `bin/sc_view/bench.rs` | 128 | `GC_BENCH=N`: run N frames of the live loop (update + draw) on the |
+| `bin/sc_view/bench.rs` | 171 | `GC_BENCH=N`: run N frames of the live loop (update + draw) on the |
 | `bin/sc_view/briefing.rs` | 958 | `impl App`: briefing (moved out of `sc_view.rs` by scripts/split_impl.py). |
 | `bin/sc_view/collections.rs` | 667 | `impl App`: collections (moved out of `sc_view.rs` by scripts/split_impl.py). |
 | `bin/sc_view/commands.rs` | 1106 | `impl App`: commands (moved out of `sc_view.rs` by scripts/split_impl.py). |
@@ -46,7 +46,7 @@ Sizes are lines.  Find a function with `rg -n 'fn name' engine-rust/src`.
 | `bin/sc_view/fog_memory.rs` | 121 | Fog of war memory: enemy buildings the local player has scouted stay |
 | `bin/sc_view/game_dialog.rs` | 1091 | `impl App`: game dialog (moved out of `sc_view.rs` by scripts/split_impl.py). |
 | `bin/sc_view/game_input.rs` | 1181 | `impl App`: game input (moved out of `sc_view.rs` by scripts/split_impl.py). |
-| `bin/sc_view/game_loop.rs` | 442 | `impl App`: game loop (moved out of `sc_view.rs` by scripts/split_impl.py). |
+| `bin/sc_view/game_loop.rs` | 443 | `impl App`: game loop (moved out of `sc_view.rs` by scripts/split_impl.py). |
 | `bin/sc_view/gamepad.rs` | 842 | Gamepad support: one optional `gilrs` backend that turns a standard |
 | `bin/sc_view/hotkeys.rs` | 868 | `impl App`: hotkeys (moved out of `sc_view.rs` by scripts/split_impl.py). |
 | `bin/sc_view/hud.rs` | 1791 | `impl App`: hud (moved out of `sc_view.rs` by scripts/split_impl.py). |
@@ -179,7 +179,7 @@ Sizes are lines.  Find a function with `rg -n 'fn name' engine-rust/src`.
 | `sim/projectiles.rs` | 402 | `impl World`: projectiles (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/spawn.rs` | 895 | `impl World`: spawn (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/spells.rs` | 1152 | `impl World`: spells (moved out of `mod.rs` by scripts/split_impl.py). |
-| `sim/step.rs` | 878 | `impl World`: step (moved out of `mod.rs` by scripts/split_impl.py). |
+| `sim/step.rs` | 939 | `impl World`: step (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/tests/cloak.rs` | 41 | `units.dat` flags: permanent cloak (0x400000) and invincible types |
 | `sim/tests.rs` | 3739 |  |
 | `sim/translated/mod.rs` | 18 |  |
