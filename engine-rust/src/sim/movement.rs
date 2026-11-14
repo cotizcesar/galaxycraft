@@ -4,6 +4,23 @@ use super::*;
 
 /// A goal this close is approached in a straight line once the route ends.
 const DIRECT_APPROACH_PX: i32 = 96;
+/// Routes longer than this are shared within a tick (see `World::path_cache`).
+const LONG_ROUTE_PX: i32 = 512;
+/// `(start x / 128, start y / 128, goal x, goal y, half width, half height)`
+/// of a long ground route: units of one size leaving the same 128 px square
+/// for the same goal share it within a tick (an attack wave asked for a dozen
+/// ~8 ms cross-map searches on one frame).
+pub(super) type PathKey = (i32, i32, i32, i32, i32, i32);
+
+/// Long routes searched this tick and how many were started (`World::routes`,
+/// reset every tick).
+#[derive(Default)]
+pub(super) struct RouteCache {
+    map: std::collections::HashMap<PathKey, Option<Vec<(i32, i32)>>>,
+    searches: u32,
+}
+/// New long route searches allowed per tick.
+const LONG_SEARCHES_PER_TICK: u32 = 6;
 
 impl World {
     /// OpenBW `find_unit_placement`: the spot nearest to `center` (1/256
@@ -389,15 +406,46 @@ impl World {
                 half_height: half_h.max(4),
                 flying: ty.is_flyer() || self.units[i].lifted || speed <= 0,
             };
+            let (dx, dy) = (req.goal.0 - req.start.0, req.goal.1 - req.start.1);
+            let key = (dx.abs().max(dy.abs()) > LONG_ROUTE_PX && !req.flying).then_some((
+                req.start.0.div_euclid(128),
+                req.start.1.div_euclid(128),
+                req.goal.0,
+                req.goal.1,
+                req.half_width,
+                req.half_height,
+            ));
+            let cached = key.and_then(|k| self.routes.map.get(&k).cloned());
+            if key.is_some() && cached.is_none() && self.routes.searches >= LONG_SEARCHES_PER_TICK {
+                // Too many new long routes this frame: this unit asks again
+                // next frame (INFERENCE: spreading searches over frames, so
+                // an attack wave does not stall one frame for ~100 ms).
+                return false;
+            }
             let path = if speed <= 0 {
                 None
+            } else if let Some(cached) = cached {
+                cached
             } else {
-                find_path_with_regions(&self.terrain, &self.obstacles, &req, Some(&self.regions))
+                if key.is_some() {
+                    self.routes.searches += 1;
+                }
+                let found = find_path_with_regions(
+                    &self.terrain,
+                    &self.obstacles,
+                    &req,
+                    Some(&self.regions),
+                )
+                .map(|p| p.waypoints);
+                if let Some(k) = key {
+                    self.routes.map.insert(k, found.clone());
+                }
+                found
             };
             self.units[i].path.clear();
             self.units[i].path_goal = Some(goal_fp);
             if let Some(p) = path {
-                for w in p.waypoints {
+                for w in p {
                     // find_path works in pixels; convert to fp.
                     self.units[i].path.push_back((w.0 * fp(1), w.1 * fp(1)));
                 }

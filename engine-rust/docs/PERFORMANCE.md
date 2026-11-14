@@ -74,3 +74,21 @@ the workers' `Gather` order walking to their mineral field:
 After: the first 3000 ticks in 5 s (the economy identical tick for tick), a
 20 000-tick game with up to ~540 units in 90 s: ~220 ticks/s on average and
 ~166 ticks/s at the busiest stretch, 7x the speed Fastest needs.
+
+### Frame spikes in the 8-player game (2026-11-14)
+
+`sc_match --verbose` now lists the ticks over 30 ms.  After the fixes above
+the same game had 182 of them, the worst 481 ms, mostly on the ticks after an
+AI attack wave (every 1200 ticks): each unit of the wave searched its own
+~8 ms cross-map route on one frame.  Three changes:
+
+- a path search remembers each grid cell's footprint test (each cell was
+  tested up to eight times against terrain and nearby buildings): the whole
+  20 000-tick game went from 90 s to 40 s, economy unchanged;
+- routes longer than 512 px are shared within a tick by units of one size
+  leaving the same 128 px square for the same goal;
+- at most 6 new long searches start per tick; a unit over the limit asks again
+  next tick (INFERENCE: spreading the work, not a retail rule).
+
+Now 12-14 ticks over 30 ms in a 14-minute game, the worst ~52 ms; the game
+simulates in 38 s.

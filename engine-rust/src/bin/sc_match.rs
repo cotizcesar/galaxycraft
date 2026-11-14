@@ -196,6 +196,7 @@ fn main() {
     let mut last_report = 0u64;
     let started = std::time::Instant::now();
     let (mut t_ai, mut t_step) = (0f64, 0f64);
+    let mut worst: Vec<(f64, u64)> = Vec::new();
     while world.tick < max_ticks && world.winner.is_none() {
         let enemy_base = |world: &World| {
             world
@@ -226,7 +227,11 @@ fn main() {
         let a1 = std::time::Instant::now();
         world.step();
         t_ai += (a1 - a0).as_secs_f64();
-        t_step += a1.elapsed().as_secs_f64();
+        let dt = a1.elapsed().as_secs_f64();
+        t_step += dt;
+        if dt > 0.03 {
+            worst.push((dt * 1000.0, world.tick));
+        }
         // Trigger action 15/16 (`Run AI Script`) queues a script id; start it
         // for the requested player.
         if let Some(t) = world.triggers.as_mut() {
@@ -258,6 +263,14 @@ fn main() {
         }
     }
 
+    if verbose {
+        worst.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+        println!(
+            "ticks over 30 ms: {} {:?}",
+            worst.len(),
+            &worst[..worst.len().min(10)]
+        );
+    }
     println!(
         "match over at tick {} ({}s): winner {:?}",
         world.tick,

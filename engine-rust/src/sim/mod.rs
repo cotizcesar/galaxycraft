@@ -1932,9 +1932,9 @@ pub struct World {
     next_projectile_id: u32,
     /// Scratch obstacle list rebuilt when a path is requested.
     obstacles: Obstacles,
+    routes: movement::RouteCache,
     index: HashMap<u32, usize>,
-    /// How many times each recovered order handler routine was entered.
-    /// The 137 fixed targets are ordered by VA in `crate::handlers`.
+    /// Entries per recovered order handler routine (137, VA order, `crate::handlers`).
     pub handler_hits: [u64; crate::handlers::HANDLER_COUNT],
     /// Optional command recorder (save games / replays / LAN). Pushed by
     /// [`World::issue`] only; zero cost when `None`.

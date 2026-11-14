@@ -47,6 +47,7 @@ impl World {
             next_projectile_id: 1,
             rng: 0x1234_5678_9abc_def0,
             obstacles: Obstacles::new(),
+            routes: Default::default(),
             index: HashMap::new(),
             handler_hits: [0; crate::handlers::HANDLER_COUNT],
             recorder: None,
