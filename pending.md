@@ -72,10 +72,6 @@ on screen.
   retail (player idle); in ours nothing hits it in the first 50 s.  The
   shooter is not identified (the nearby tank lacks Siege Mode at start;
   the Bunker beside it is empty).
-- **Emperor's Fall (Ground Zero)**: the nuke now launches (create_nuke
-  arms a silo, as retail `0x6421ff`), but ours lands ~9 s early (30 s
-  vs ~39 s).  The Ghost already walks into sight range before painting,
-  so the cause is open (the request time or the Ghost's start point).
 - **Emperor's Fall (Birds of War)**: the retail recording's minimap shows
   red attack pings at the player's base at ~30 s and ~40 s (off screen,
   no loud audio); ours: Battlecruisers (trigger T10) hit a Missile Turret

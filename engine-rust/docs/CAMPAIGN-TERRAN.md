@@ -177,7 +177,7 @@ Episode V, same method (2026-11-13):
 | 2 The Dylarian Shipyards | none in the first 60 s | none (was 27 s) |
 | 3 Ruins of Tarsonis | none in 177 s | none |
 | 4 Assault on Korhal | ~128 s | 120 s |
-| 5 Emperor's Fall (Ground Zero) | "Nuclear launch detected" ~18 s, nukes land ~39 s | 30 s (nuke; was 49 s) |
+| 5 Emperor's Fall (Ground Zero) | "Nuclear launch detected" between 14.2 and 18.2 s | warning at 14.8 s, first loss 30 s (was 49 s) |
 | 5b Emperor's Fall (Birds of War) | minimap attack pings at the player's base ~30 s and ~40 s (off screen) | 28 s (a Missile Turret) |
 | 6 Emperor's Flight | Valkyrie battle with the Zerg from ~10-12 s | battle from 9 s (allies; the player's Valkyries hit at 24 s) |
 | 7 Patriot's Blood | the allied Marines' breach ~9-13 s | ally hit at 10 s |
@@ -191,9 +191,11 @@ arms the first of the player's silos without a missile (creates unit 14
 and links it, `0x005b4950`); ours only counted it, so TB2A's
 create_nuke calls left the 19 silos empty and NuHe's `nuke_location`
 (case 0x59: an idle Ghost, an armed silo, order 0x7e at the location or
-a unit in it) failed.  Our strike lands ~9 s before retail's (30 s vs
-~39 s); the Ghost already walks until the point is within its sight
-(OpenBW `order_CastNuclearStrike`), so the gap is not explained.
+a unit in it) failed.  The first "Nuclear launch detected" comes at 14.8 s
+in ours and between 14.2 s and 18.2 s in the retail recording (the
+message is absent from the 14.2 s screenshot and shown in the 18.2 s
+one).  Ours first kills a player unit at 30 s (a later strike); the
+retail audio peaks at ~39-46 s do not say which strike they are.
 
 ## Zerg and Protoss campaigns
 
