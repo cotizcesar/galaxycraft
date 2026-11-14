@@ -7,6 +7,8 @@
 //! `GC_BENCH_SLOW=1` lists the frames over 16.7 ms.
 //! `GC_BENCH_TICKS=k` runs k simulation ticks (with the AIs) before each
 //! frame, so a whole game plays through the client loop quickly.
+//! `GC_BENCH_AUTOPLAY=1` hands the local seat to the skirmish AI too and
+//! stops when the game ends.
 
 use super::*;
 
@@ -21,6 +23,17 @@ pub(super) fn run(app: &mut App, fb: &mut Framebuffer, screen: &str, n: u32) {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(0);
+    let autoplay = std::env::var_os("GC_BENCH_AUTOPLAY").is_some();
+    if autoplay {
+        let local = app.local_player;
+        if let Some(p) = app.world.players.get_mut(local) {
+            // The local seat's defeat ends the client's game screen, but the
+            // bench keeps stepping the world until one side is left.
+            p.is_computer = true;
+        }
+        app.ais.push(SimpleAi::new(local as u8));
+    }
+    let mut frames_run = 0;
     let (mut upd, mut drw, mut worst, mut worst_warm) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
     let (cam0, mut moved, mut slow) = (app.camera, 0i64, 0u32);
     for f in 0..n {
@@ -39,6 +52,23 @@ pub(super) fn run(app: &mut App, fb: &mut Framebuffer, screen: &str, n: u32) {
             };
             app.handle_game_input(&input);
         }
+        if autoplay {
+            let w = &app.world;
+            let standing = (0..w.players.len())
+                .filter(|&p| {
+                    w.units.iter().any(|u| {
+                        u.alive
+                            && u.owner as usize == p
+                            && !galaxycraft::sim::is_resource_type(u.type_id)
+                            && w.data.unit(u.type_id).is_building()
+                    })
+                })
+                .count();
+            if standing <= 1 || w.winner.is_some() {
+                break;
+            }
+        }
+        frames_run += 1;
         for _ in 0..extra_ticks {
             app.step_once();
         }
@@ -85,12 +115,25 @@ pub(super) fn run(app: &mut App, fb: &mut Framebuffer, screen: &str, n: u32) {
                     m + usize::from(!w.data.unit(u.type_id).is_building()),
                 )
             });
+            let buildings = w
+                .units
+                .iter()
+                .filter(|u| {
+                    u.alive
+                        && u.owner as usize == p
+                        && !galaxycraft::sim::is_resource_type(u.type_id)
+                        && w.data.unit(u.type_id).is_building()
+                })
+                .count();
             eprintln!(
-                "  p{p}: {n} units ({mobile} mobile), {} minerals, {} gas, defeated {}",
+                "  p{p}: {n} units ({mobile} mobile, {buildings} buildings), {} minerals, {} gas, defeated {}",
                 w.players[p].minerals, w.players[p].gas, w.players[p].defeated
             );
         }
-        eprintln!("  result {:?}", app.game_result.is_some());
+        eprintln!(
+            "  winner {:?} at tick {} after {frames_run} frames",
+            app.world.winner, app.world.tick
+        );
     }
     eprintln!(
         "bench {screen} {}x{}: {n} frames, update {:.2} ms, draw {:.2} ms, worst {:.2} ms, tick {}",

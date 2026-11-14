@@ -107,3 +107,20 @@ ticks, ~1.5 ms each) and 7.5 ms of drawing.  At the end the idle local seat
 and one AI were defeated, six AIs were still playing with 35-68 units each.
 At Fastest's one tick per 42 ms the client has ~25 ms of headroom per tick
 on average; the worst tick measured headless was 47 ms.
+
+### Played to the end (2026-11-14)
+
+`GC_BENCH_AUTOPLAY=1` (with `GC_BENCH_TICKS=10`) gives the local seat to the
+skirmish AI as well and steps until one side is left.  Two rules were missing
+for a free-for-all:
+
+- the retail melee trigger (`fixtures/melee.trg`: Command at most 0
+  Buildings -> Defeat) was not applied; a player who has lost buildings and
+  has none left is now defeated;
+- every skirmish AI attacked the local player first (then the lowest slot),
+  so seven computers converged on one seat; each now attacks the enemy town
+  hall nearest its own (INFERENCE: the retail target rule is not traced).
+
+Homeworld with eight players now ends in the client with one winner (Zerg,
+slot 5) at tick 30 556 (~21 minutes at Fastest) in 69 s; the headless
+`sc_match --ticks 60000` game ends with a winner at tick 33 129.

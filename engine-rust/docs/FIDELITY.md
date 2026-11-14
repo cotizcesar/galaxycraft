@@ -57,6 +57,18 @@ the Command Center panel reads 1500/1500 hp and 10 supplies provided; the SCV
 60/60 hp, Terran Infantry Armor 0, Fusion Cutter damage 5; four SCVs sent to
 the minerals raise the bank 50, 58, 66, 74, 82, 90, 98, 114, 130, 138, i.e. 8
 per trip.  All equal the table's rows 106 and 7 and the resources section.
+Second retail session (same day), one game per race: Protoss Nexus 750/750
+hp and shields, Psi Provided 9; Probe 20/20 hp, 20/20 shields, Protoss Armor
+0, Plasma Shields 0, Particle Beam 5.  Zerg Hatchery 1250/1250, Control
+Provided 1; Overlord 200/200, Detector, Control Provided 8; Drone 40/40,
+Zerg Carapace 0, Spines 5.  Probes and Drones bank 8 per trip (50, 58, 74,
+82, 90, 98, 106, 114 and 50, 66, 74, 90, 98, 106, 114).  All equal rows 154,
+64, 131, 42 and 41 and the resources section.
+
+The 8-player skirmish was then played to the end through the client
+(`GC_BENCH_AUTOPLAY=1`, PERFORMANCE.md): the retail melee defeat rule
+(`melee.trg`: a player with no buildings is defeated) was missing, and every
+skirmish AI attacked the local seat first; both fixed.
 
 ## What matches
 

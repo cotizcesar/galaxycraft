@@ -291,7 +291,8 @@ impl App {
                 if self.campaign_ais.iter().any(|c| c.player == ai.player) {
                     continue;
                 }
-                let enemy_base = self.world.enemy_town_hall(ai.player, local);
+                // Skirmish computers fight their nearest enemy.
+                let enemy_base = self.world.nearest_enemy_town_hall(ai.player);
                 ai.update(&mut self.world, enemy_base);
             }
             self.world.step();

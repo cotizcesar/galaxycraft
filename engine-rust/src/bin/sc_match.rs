@@ -221,7 +221,7 @@ fn main() {
             if campaign_ais.iter().any(|c| c.player == ai.player) {
                 continue;
             }
-            let target = enemy_base(&world);
+            let target = world.nearest_enemy_town_hall(ai.player);
             ai.update(&mut world, target);
         }
         let a1 = std::time::Instant::now();
