@@ -191,8 +191,9 @@ arms the first of the player's silos without a missile (creates unit 14
 and links it, `0x005b4950`); ours only counted it, so TB2A's
 create_nuke calls left the 19 silos empty and NuHe's `nuke_location`
 (case 0x59: an idle Ghost, an armed silo, order 0x7e at the location or
-a unit in it) failed.  Our Ghost launches where it stands, so the strike
-lands ~9 s before retail's, whose Ghost walks to the target first.
+a unit in it) failed.  Our strike lands ~9 s before retail's (30 s vs
+~39 s); the Ghost already walks until the point is within its sight
+(OpenBW `order_CastNuclearStrike`), so the gap is not explained.
 
 ## Zerg and Protoss campaigns
 

@@ -73,9 +73,9 @@ on screen.
   shooter is not identified (the nearby tank lacks Siege Mode at start;
   the Bunker beside it is empty).
 - **Emperor's Fall (Ground Zero)**: the nuke now launches (create_nuke
-  arms a silo, as retail `0x6421ff`), but our Ghost strikes from where it
-  stands; retail's walks to the target first (order 0x7e), so ours lands
-  ~9 s early (30 s vs ~39 s).
+  arms a silo, as retail `0x6421ff`), but ours lands ~9 s early (30 s
+  vs ~39 s).  The Ghost already walks into sight range before painting,
+  so the cause is open (the request time or the Ghost's start point).
 - **Emperor's Fall (Birds of War)**: retail shows no attack at the player
   in the first 80 s (player idle); ours has trigger T10 (15 game seconds)
   send player 1's Battlecruisers to locations 28-30, next to the player's
