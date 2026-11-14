@@ -77,6 +77,10 @@ on screen.
   ours hits first at 49 s.  Ours requests the strike at 11 s (NuHe) and
   fails: the 19 silos the map places hold no missile (map hangar 0), so
   how retail arms them is not known.
-- **Emperor's Fall (Birds of War)** opens in retail with the player's
-  Valkyries fighting Zerg at ~12 s; ours first hits a player Missile Turret
-  at 28 s.  Emperor's Flight is not compared.
+- **Emperor's Fall (Birds of War)**: retail shows no attack at the player
+  in the first 80 s (player idle); ours has trigger T10 (15 game seconds)
+  send player 1's Battlecruisers to locations 28-30, next to the player's
+  base, and they hit a Missile Turret at 27 s.  The alliance triggers
+  (P3 allies the player, P1 and P2 ally P3, nobody allies P1 with the
+  player) leave P1 an enemy in both models, so where retail sends them is
+  the open question.
