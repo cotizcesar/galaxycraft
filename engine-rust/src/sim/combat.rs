@@ -83,6 +83,15 @@ impl World {
         if self.units[i].status.disruption_ticks > 0 {
             return false;
         }
+        // Retail `unit_target_in_attack_angle`: a Lurker turns to its target
+        // at once, and its spines follow that heading.
+        if self.units[i].type_id == uid::LURKER {
+            let (dx, dy) = (
+                self.units[tidx].x - self.units[i].x,
+                self.units[tidx].y - self.units[i].y,
+            );
+            self.units[i].facing = direction_byte(dx, dy) as _;
+        }
         // The attack animation supplies the release timing: the weapon fires
         // on its `attack`/`attackwith`/`attackmelee` opcode, not on the tick
         // the order is issued.
@@ -157,6 +166,10 @@ impl World {
 
     pub(super) fn weapon_for(&self, attacker: usize, target: usize) -> Option<(u8, WeaponType)> {
         let a_ty = self.data.unit(self.units[attacker].type_id);
+        // OpenBW `unit_ground_weapon`: none for an unburrowed Lurker.
+        if self.units[attacker].type_id == uid::LURKER && !self.units[attacker].status.burrowed {
+            return None;
+        }
         if self.is_air_unit(target) {
             let id = self.data.air_weapon_id(a_ty);
             self.data.air_weapon(a_ty).cloned().map(|w| (id, w))
@@ -168,6 +181,11 @@ impl World {
 
     pub(super) fn acquire_target(&self, i: usize) -> Option<u32> {
         let u = &self.units[i];
+        // OpenBW `unit_can_attack_target`: an unburrowed Lurker has no
+        // weapon, so it picks no target (and walks to none).
+        if u.type_id == uid::LURKER && !u.status.burrowed {
+            return None;
+        }
         let ty = self.data.unit(u.type_id);
         let mut acq_range = self.data.target_acquisition_px(ty);
         if is_carrier_reaver_family(u.type_id) {
@@ -347,6 +365,12 @@ impl World {
             return;
         }
         if weapon.bullet_type == behavior::SELF_DESTRUCT {
+            // OpenBW `bullet_state_init`: the self-destruct bullet dies at
+            // once, so its hit (Scourge: normal, 110) lands on the target;
+            // then the owner is killed.
+            let target_id = self.units[target].id;
+            let pos = (self.units[target].x, self.units[target].y);
+            self.instant_hit(owner, Some(target_id), attacker, weapon_id, weapon, pos);
             self.kill_unit(attacker);
             return;
         }
@@ -537,8 +561,11 @@ impl World {
         let can_hit = |w: &World, i: usize| {
             let ty = w.data.unit(w.units[i].type_id);
             // (Spider Mines run their own state machine.)
+            // OpenBW `on_hit_change_target` needs `unit_can_attack_target`:
+            // an unburrowed Lurker has no weapon.
             if ty.is_worker()
                 || w.units[i].type_id == uid::SPIDER_MINE
+                || (w.units[i].type_id == uid::LURKER && !w.units[i].status.burrowed)
                 || !matches!(w.units[i].order, Order::Idle | Order::Stop)
             {
                 return false;

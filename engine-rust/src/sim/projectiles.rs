@@ -112,6 +112,7 @@ impl World {
             hit_flags,
             previous_target: None,
             last_dot_tick: self.tick as i64,
+            struck: Vec::new(),
         });
         self.next_projectile_id = self.next_projectile_id.wrapping_add(1).max(1);
     }
@@ -153,6 +154,7 @@ impl World {
             hit_flags: 0,
             previous_target: None,
             last_dot_tick: self.tick as i64,
+            struck: Vec::new(),
         });
         self.next_projectile_id = self.next_projectile_id.wrapping_add(1).max(1);
     }
@@ -274,6 +276,9 @@ impl World {
             b.target_pos = (t.x, t.y);
         }
         b.remaining_time -= 1;
+        if b.weapon == wid::SUBTERRANEAN_SPINES {
+            self.spines_strike(b, &weapon);
+        }
         let dx = b.target_pos.0 - b.x;
         let dy = b.target_pos.1 - b.y;
         let dist = isqrt((dx as i64) * (dx as i64) + (dy as i64) * (dy as i64)) as i32;
@@ -287,7 +292,41 @@ impl World {
         true
     }
 
+    /// OpenBW `hit_type_enemy_splash` for Subterranean Spines: the spines
+    /// hit every enemy within the inner radius of their path, once each.
+    fn spines_strike(&mut self, b: &mut Projectile, weapon: &WeaponType) {
+        if b.hit_flags & 3 != 0 {
+            return;
+        }
+        let source = self.index_of(b.source).unwrap_or(usize::MAX);
+        let (bx, by) = (b.x / fp(1), b.y / fp(1));
+        let inner = weapon.inner_splash as i32;
+        for j in 0..self.units.len() {
+            let u = &self.units[j];
+            if !u.alive || j == source || u.owner == b.owner || b.struck.contains(&u.id) {
+                continue;
+            }
+            let air = self.is_air_unit(j);
+            let ty = self.data.unit(u.type_id);
+            if !weapon_can_target_unit(weapon, ty, air) {
+                continue;
+            }
+            let r = ty.dimensions.rect_at((u.x / fp(1), u.y / fp(1)));
+            let dx = (r.0 - bx).max(bx - r.2).max(0);
+            let dy = (r.1 - by).max(by - r.3).max(0);
+            if dx * dx + dy * dy > inner * inner {
+                continue;
+            }
+            b.struck.push(u.id);
+            self.apply_hit_from(b.owner, source, j, weapon, 1);
+        }
+    }
+
     pub(super) fn projectile_impact(&mut self, b: &mut Projectile, weapon: &WeaponType) -> bool {
+        if b.weapon == wid::SUBTERRANEAN_SPINES {
+            self.spines_strike(b, weapon);
+            return false;
+        }
         // A missed shot still produces its hit animation in the retail game
         // but deals no damage.  Hallucinated attackers likewise produce a fake
         // impact with no damage.

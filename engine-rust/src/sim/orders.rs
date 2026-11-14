@@ -379,8 +379,31 @@ impl World {
         if self.units[i].status.stasis_ticks > 0
             || self.units[i].status.lockdown_ticks > 0
             || self.units[i].status.maelstrom_ticks > 0
-            || (self.units[i].status.burrowed && !matches!(order, Order::Unburrow))
         {
+            return;
+        }
+        // OpenBW `unit_is_immovable_attacker`: a burrowed Lurker attacks
+        // in place (its target if in range, else whatever it acquires).
+        if self.units[i].status.burrowed
+            && self.units[i].type_id == uid::LURKER
+            && !matches!(order, Order::Unburrow)
+        {
+            let target = match order {
+                Order::AttackUnit { target } => Some(target),
+                _ => None,
+            };
+            let hit = target.is_some_and(|t| self.attack_target_no_move(i, t));
+            if !hit {
+                if target.is_some() {
+                    self.units[i].order = Order::Idle;
+                }
+                if let Some(t) = self.acquire_target(i) {
+                    self.attack_target_no_move(i, t);
+                }
+            }
+            return;
+        }
+        if self.units[i].status.burrowed && !matches!(order, Order::Unburrow) {
             return;
         }
         match order {

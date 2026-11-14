@@ -17,7 +17,13 @@ impl World {
     /// `status.burrowed`.
     pub(super) fn order_burrow(&mut self, i: usize, burrow: bool) {
         if burrow {
-            if !self.players[self.units[i].owner as usize].has_tech(tech_id::BURROWING) {
+            // OpenBW (`unit_can_use_tech` for Burrowing): the Lurker and
+            // heroes burrow without the research.
+            let ty = self.units[i].type_id;
+            if ty != uid::LURKER
+                && !self.data.unit(ty).is_hero()
+                && !self.players[self.units[i].owner as usize].has_tech(tech_id::BURROWING)
+            {
                 self.order_done(i);
                 return;
             }

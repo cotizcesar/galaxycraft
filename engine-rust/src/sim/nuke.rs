@@ -271,6 +271,7 @@ impl World {
             hit_flags: 0,
             previous_target: None,
             last_dot_tick: self.tick as i64,
+            struck: Vec::new(),
         });
         self.next_projectile_id = self.next_projectile_id.wrapping_add(1).max(1);
     }

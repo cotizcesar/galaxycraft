@@ -20,9 +20,12 @@ checked in `tests/effects_openbw.rs`; training, research and upgrade times in
 | unit + weapon data vs executable | 228 / 228 |
 | measured rate of fire vs cooldown | 69 / 69 |
 | measured damage per hit vs matrix | 59 / 59 |
-
-Buildings (construction time, supply), resources (load per trip) and spell
-effects are measured in their own sections below, each closing with its count.
+| buildings | 39 / 39 |
+| add-ons and morphs | 11 / 11 |
+| special attackers | 7 / 7 |
+| resource trips | 11 / 11 |
+| spell effects | 13 / 13 |
+| other spells | 15 / 15 |
 
 Weapons read `damage+bonus cd<cooldown> r<range px> xN bullets`; rate of fire
 `measured/expected frames`; hit `measured/expected hp (x256)`; `-` means not
@@ -310,21 +313,59 @@ Each worker-built building is placed by a fresh worker on open ground (Zerg on c
 
 Buildings matching: 39 / 39.  Buildings trained by other buildings (add-ons) and units trained in buildings are timed in `tests/build_times_retail.rs`.
 
+## Add-ons and Zerg building morphs
+
+Built by a completed producer (Command Center, Factory, Starport, Science Facility, Hatchery, Lair, Spire, Creep Colony): frames from the order to the finished building, against `units.dat`.
+
+| id | building | producer | time measured/units.dat |
+|---|---|---|---|
+| 107 | Terran Comsat Station | Terran Command Center | 600/600 ok |
+| 108 | Terran Nuclear Silo | Terran Command Center | 1200/1200 ok |
+| 115 | Terran Control Tower | Terran Starport | 600/600 ok |
+| 117 | Terran Covert Ops | Terran Science Facility | 600/600 ok |
+| 118 | Terran Physics Lab | Terran Science Facility | 600/600 ok |
+| 120 | Terran Machine Shop | Terran Factory | 600/600 ok |
+| 132 | Zerg Lair | Zerg Hatchery | 1500/1500 ok |
+| 133 | Zerg Hive | Zerg Lair | 1800/1800 ok |
+| 137 | Zerg Greater Spire | Zerg Spire | 1800/1800 ok |
+| 144 | Zerg Spore Colony | Zerg Creep Colony | 300/300 ok |
+| 146 | Zerg Sunken Colony | Zerg Creep Colony | 300/300 ok |
+
+Add-ons and morphs matching: 11 / 11.
+
+## Special attackers
+
+Units whose damage does not come from one swing of their own weapon (turret bases, Siege Mode, hangars, suicide units, burrowed Lurkers): the first hit they land is compared with the executable's damage matrix for the weapon that actually fires.  Turret subunits (4, 6, 18, 24) fire through these rows.
+
+| id | unit | target | weapon | first hit measured/matrix (x256) |
+|---|---|---|---|---|
+| 5 | Terran Siege Tank | Terran Supply Depot | 27 | 17664/17664 ok |
+| 3 | Terran Goliath | Zerg Overlord | 8 | 5120/2560 ok |
+| 72 | Protoss Carrier | Terran Supply Depot | 79 | 1280/1280 ok |
+| 83 | Protoss Reaver | Terran Supply Depot | 82 | 25344/25344 ok |
+| 103 | Zerg Lurker | Terran Supply Depot | 109 | 4864/4864 ok |
+| 47 | Zerg Scourge | Zerg Overlord | 55 | 28160/28160 ok |
+| 50 | Infested Terran | Terran Supply Depot | 54 | 127744/127744 ok |
+
+Special attackers matching: 7 / 7.  Flame weapons (Firebat, Gui Montag, flame traps) release three splash flames per attack and are checked against OpenBW `attkshiftproj` in `tests/rate_of_fire_retail.rs`.
+
 ## Resources
 
-One worker of each race mines a Mineral Field and a refinery; the amount banked on each of the first two trips is compared with OpenBW `gather_resource` (8 minerals, 8 gas, 2 gas once the geyser is depleted).
+One worker of each race mines a Mineral Field (unit 176) and a refinery, and an SCV the other two field types (177, 178); the amount banked on each of the first two trips is compared with OpenBW `gather_resource` (8 minerals, 8 gas, 2 gas once the geyser is depleted).
 
 | worker | minerals/trip | gas/trip | depleted gas/trip |
 |---|---|---|---|
 | Terran SCV | [8, 8]/8 ok | [8, 8]/8 ok | [2, 2]/2 ok |
 | Protoss Probe | [8, 8]/8 ok | [8, 8]/8 ok | [2, 2]/2 ok |
 | Zerg Drone | [8, 8]/8 ok | [8, 8]/8 ok | [2, 2]/2 ok |
+| Mineral Field 177 (SCV) | [8, 8]/8 ok | | |
+| Mineral Field 178 (SCV) | [8, 8]/8 ok | | |
 
-Trips matching: 9 / 9.  A Mineral Field placed without a map value holds 0 minerals (maps set their own amounts in the `UNIT` section).
+Resource trips matching: 11 / 11.  A Mineral Field placed without a map value holds 0 minerals (maps set their own amounts in the `UNIT` section).
 
 ## Spell effects
 
-Each spell is cast in the simulation on a fresh target and the value it leaves is compared with the number OpenBW (`bwgame.h`) applies; status timers count 8-frame updates in both engines.  Hallucination, Broodling, Swarm, Web, Feedback, Consume, Restoration, Mind Control, Optical Flare, Parasite, Recall, Scanner Sweep and Spider Mines are asserted the same way in `tests/effects_openbw.rs`.
+Each spell is cast in the simulation on a fresh target and the value it leaves is compared with the number OpenBW (`bwgame.h`) applies; status timers count 8-frame updates in both engines.  Hallucination, Broodling, Swarm, Web, Feedback, Consume, Restoration, Mind Control, Optical Flare, Parasite, Recall, Scanner Sweep and Spider Mines follow under *Other spells*; all are also asserted in `tests/effects_openbw.rs`.
 
 | effect | measured | OpenBW | rule |
 |---|---|---|---|
@@ -342,5 +383,27 @@ Each spell is cast in the simulation on a fresh target and the value it leaves i
 | EMP: shields left | 0 | 0 ok | `emp_shockwave` |
 | Yamato Gun hp on a Supply Depot | 259 | 259 ok | `damage matrix` |
 
-Effects matching: 13 / 13.
+Spell effects matching: 13 / 13.
+
+### Other spells
+
+| effect | measured | OpenBW | rule |
+|---|---|---|---|
+| Hallucination copies | 2 | 2 ok | `order_CastHallucination` |
+| Hallucination lifetime | 1350 | 1350 ok | `default_remove_timer` |
+| Broodling lifetime | 1800 | 1800 ok | `default_remove_timer` |
+| Dark Swarm lifetime | 900 | 900 ok | `dark_swarm` |
+| Disruption Web lifetime | 360 | 360 ok | `disruption_web` |
+| Scanner Sweep lifetime | 156 | 156 ok | `iscript` |
+| Feedback damage (100 energy) | 100 | 100 ok | `order_Feedback` |
+| Consume energy gained | 50 | 50 ok | `consume` |
+| Restoration: effects left of 5 | 0 | 0 ok | `restore_unit` |
+| Mind Control: new owner | 0 | 0 ok | `order_MindControl` |
+| Mind Control: caster shields (lowest) | 0 | 0 ok | `order_MindControl` |
+| Optical Flare blinds (1 = yes) | 1 | 1 ok | `blind_unit` |
+| Parasite marks (1 = yes) | 1 | 1 ok | `parasite_flags` |
+| Recall brings the unit (1 = yes) | 1 | 1 ok | `order_Recall` |
+| Spider Mines per Vulture | 3 | 3 ok | `hangar` |
+
+Other spells matching: 15 / 15.  Lifetimes of spawned effects are read the frame they appear (up to 10 frames after the cast, the casting swing).
 
