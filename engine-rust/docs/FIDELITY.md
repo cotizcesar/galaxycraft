@@ -308,9 +308,23 @@ target, Restoration clears every effect.  Two more were wrong and are fixed:
   `unit_tech_target_valid` only refuses buildings.  Players could not
   restore a Marine.
 
-Open: OpenBW lets Consume take any of the caster's own non-Terran units
-(a mind-controlled Protoss unit); ours follows the Consume weapon's
-organic-only flags.
+Second pass (0.1.57), also in `tests/effects_openbw.rs`:
+
+- Recall was reversed: it sent the units around the Arbiter to the point.
+  OpenBW `order_Recall` brings the caster's own units inside a 64 px square
+  of the point to the Arbiter (not buildings, larvae, eggs, hallucinations,
+  burrowed or invincible units).  INFERENCE: instant, retail waits 22
+  frames;
+- Mind Control left the Dark Archon's shields; OpenBW empties them, zeroes a
+  Dark Archon target's energy and kills a hallucination;
+- Consume now takes any own unit that is not a building, Terran or a Larva
+  (OpenBW `unit_tech_target_valid`), not the weapon's organic-only flags.
+
+Checked and matching: Optical Flare blinds, Parasite marks, hallucinations
+take double damage before armour, Yamato deals the executable's 259 to a
+large armour-1 target.  `tests/build_times_retail.rs` also checks every
+research (`techdata.dat` time) and the first level of every upgrade
+(`upgrades.dat` base time).
 
 `tests/build_times_retail.rs`: every unit trained in a building appears
 after its `units.dat` build time (within 2 frames).
