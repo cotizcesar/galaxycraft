@@ -53,8 +53,10 @@ on screen.
   computer.  See `engine-rust/docs/CAMPAIGN-TERRAN.md`.
 - **The 68 campaign missions (all six episodes) reach victory only through
   `sc_solve`**, which moves or spawns the units a goal asks for and gives
-  the player invincibility.  A normal play-through (difficulty, attack
-  timing) is not checked.
+  the player invincibility.  The first attack with the player idle is
+  compared with retail for five Episode I missions (within ~10 %, see
+  `engine-rust/docs/CAMPAIGN-TERRAN.md`); a normal play-through
+  (difficulty under player pressure) and Brood War are not checked.
 - **Rescue range** (`RESCUE_RANGE_PX` = 36, per-axis box gap) is fitted to
   the Wasteland recording and to two Brood War missions that require an
   immediate rescue; any value 33-40 fits.  Falsifier: a retail recording

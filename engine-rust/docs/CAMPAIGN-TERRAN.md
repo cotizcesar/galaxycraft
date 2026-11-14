@@ -143,6 +143,25 @@ indices as player numbers.  Ours now hits first at 15 s (Bunkers filled
 when the 22-second trigger runs `EnBk`).  What hits the retail Control
 Tower at 11 s is not identified; ours is not hit in the first 50 s.
 
+## Episode I compared with retail (player idle)
+
+Live retail client, 2026-11-13, LinKa profile advanced with the victory
+cheat, player idle from the Start click; screenshots every 2-4 s and the
+game audio (combat stands out of the music).  Seconds of wall time at
+Fastest; the retail hit is the first combat seen or heard at the player.
+
+| mission (retail #) | retail first hit | ours |
+|---|---|---|
+| 2 Backwater Station | none in 5 min | none |
+| 3 Desperate Alliance | ~54 s (frame ~1280) | 56 s (frame 1344) |
+| 7 The Trump Card | ~11 s (Control Tower) | 15 s |
+| 8 The Big Push | ~155 s | 146 s |
+| 9 New Gettysburg | ~271 s | 285 s |
+| 10 The Hammer Falls | ~400 s | 372 s |
+
+All within ~10 % except The Trump Card's first seconds (see
+`pending.md`).  Revolution, Norad II and Brood War are not compared yet.
+
 ## Zerg and Protoss campaigns
 
 The same solver runs the other four episodes (`--episode zerg`,
