@@ -2,6 +2,9 @@
 
 use super::*;
 
+/// Gas a worker brings from a depleted geyser (OpenBW `gather_resource`).
+const DEPLETED_GAS_PER_TRIP: i32 = 2;
+
 impl World {
     /// Place one Spider Mine from a Vulture.  Rows 18/19/131 use this path;
     /// the Vulture carries three mines (`hangar`).
@@ -93,7 +96,13 @@ impl World {
             self.order_done(i);
             return;
         };
-        let mined_out = !self.units[ridx].alive || self.units[ridx].resource_amount <= 0;
+        // A geyser at 0 still yields 2 per trip (OpenBW `gather_resource`);
+        // only a mineral field runs out.
+        let gas_source = is_gas_resource(self.units[ridx].type_id)
+            || is_gas_building(self.units[ridx].type_id)
+            || self.units[ridx].type_id == uid::VESPENE_GEYSER;
+        let mined_out =
+            !self.units[ridx].alive || (self.units[ridx].resource_amount <= 0 && !gas_source);
         if mined_out {
             // Retail `order_MoveToMinerals`: a worker whose field is gone
             // takes the nearest other field within 8 tiles (FACT, Backwater
@@ -210,8 +219,16 @@ impl World {
         } else {
             MINERALS_PER_TRIP
         };
-        let taken = amount.min(self.units[ridx].resource_amount);
-        self.units[ridx].resource_amount -= taken;
+        // OpenBW `gather_resource`: under 8 left, minerals give the rest
+        // (and the field dies below); a depleted geyser gives 2 per trip
+        // from then on (it gave nothing).
+        let left = self.units[ridx].resource_amount;
+        let taken = if gas && left < amount {
+            DEPLETED_GAS_PER_TRIP
+        } else {
+            amount.min(left)
+        };
+        self.units[ridx].resource_amount = (left - amount).max(0);
         // A mineral field mined out disappears (retail removes the sprite and
         // its footprint); geysers / refineries stay and yield less gas.
         if !gas && self.units[ridx].resource_amount <= 0 {

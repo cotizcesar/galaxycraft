@@ -1902,8 +1902,7 @@ pub struct World {
     /// which ones it has not seen yet.  Presentation only.
     pub spell_cues: std::collections::VecDeque<SpellCue>,
     pub spell_cue_seq: u64,
-    /// Hits of instant weapons waiting for their bullet image to reach
-    /// `domissiledmg` (see [`World::instant_hit`]).
+    /// Instant-weapon hits waiting for `domissiledmg` ([`World::instant_hit`]).
     pub pending_hits: Vec<PendingHit>,
     /// Staged nuclear launches.
     pub nuke_strikes: Vec<NukeStrike>,
@@ -1930,9 +1929,10 @@ pub struct World {
     creep_supported: Vec<bool>,
     creep_dirty: bool,
     next_projectile_id: u32,
-    /// Scratch obstacle list rebuilt when a path is requested.
+    /// Path obstacles, this tick's long routes, Recalls `(due, Arbiter, point)`.
     obstacles: Obstacles,
     routes: movement::RouteCache,
+    pending_recalls: Vec<(u64, u32, (i32, i32))>,
     index: HashMap<u32, usize>,
     /// Entries per recovered order handler routine (137, VA order, `crate::handlers`).
     pub handler_hits: [u64; crate::handlers::HANDLER_COUNT],

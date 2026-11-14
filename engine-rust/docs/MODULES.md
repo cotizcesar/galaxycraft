@@ -177,15 +177,15 @@ Sizes are lines.  Find a function with `rg -n 'fn name' engine-rust/src`.
 | `sim/orders.rs` | 660 | `impl World`: orders (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/production.rs` | 1343 | `impl World`: production (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/projectiles.rs` | 363 | `impl World`: projectiles (moved out of `mod.rs` by scripts/split_impl.py). |
-| `sim/spawn.rs` | 894 | `impl World`: spawn (moved out of `mod.rs` by scripts/split_impl.py). |
-| `sim/spells.rs` | 1108 | `impl World`: spells (moved out of `mod.rs` by scripts/split_impl.py). |
-| `sim/step.rs` | 826 | `impl World`: step (moved out of `mod.rs` by scripts/split_impl.py). |
+| `sim/spawn.rs` | 895 | `impl World`: spawn (moved out of `mod.rs` by scripts/split_impl.py). |
+| `sim/spells.rs` | 1146 | `impl World`: spells (moved out of `mod.rs` by scripts/split_impl.py). |
+| `sim/step.rs` | 827 | `impl World`: step (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/tests/cloak.rs` | 41 | `units.dat` flags: permanent cloak (0x400000) and invincible types |
 | `sim/tests.rs` | 3739 |  |
 | `sim/translated/mod.rs` | 18 |  |
 | `sim/transport.rs` | 226 | `impl World`: transport (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/unit_queries.rs` | 593 | `impl World`: unit queries (moved out of `mod.rs` by scripts/split_impl.py). |
-| `sim/workers.rs` | 549 | `impl World`: workers (moved out of `mod.rs` by scripts/split_impl.py). |
+| `sim/workers.rs` | 566 | `impl World`: workers (moved out of `mod.rs` by scripts/split_impl.py). |
 | `tables.rs` | 600 | Additional column-major tables recovered from the shipped CASC data. |
 | `team_colors.rs` | 87 | Retail team colours: the eight shades of each slot colour, read from |
 | `tech.rs` | 301 | The hard-coded build/research tree. |

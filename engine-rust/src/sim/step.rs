@@ -63,6 +63,7 @@ impl World {
             self.grow_creep();
         }
         self.update_specials();
+        self.advance_recalls();
         self.update_pending_hits();
         self.update_projectiles();
         self.advance_nuke_strikes();

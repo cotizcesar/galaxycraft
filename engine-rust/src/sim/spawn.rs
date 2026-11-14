@@ -48,6 +48,7 @@ impl World {
             rng: 0x1234_5678_9abc_def0,
             obstacles: Obstacles::new(),
             routes: Default::default(),
+            pending_recalls: Vec::new(),
             index: HashMap::new(),
             handler_hits: [0; crate::handlers::HANDLER_COUNT],
             recorder: None,

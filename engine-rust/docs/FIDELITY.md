@@ -313,8 +313,8 @@ Second pass (0.1.57), also in `tests/effects_openbw.rs`:
 - Recall was reversed: it sent the units around the Arbiter to the point.
   OpenBW `order_Recall` brings the caster's own units inside a 64 px square
   of the point to the Arbiter (not buildings, larvae, eggs, hallucinations,
-  burrowed or invincible units).  INFERENCE: instant, retail waits 22
-  frames;
+  burrowed or invincible units), 22 frames after the cast, and they arrive
+  idle with no unit still targeting them (0.1.58);
 - Mind Control left the Dark Archon's shields; OpenBW empties them, zeroes a
   Dark Archon target's energy and kills a hallucination;
 - Consume now takes any own unit that is not a building, Terran or a Larva
@@ -333,3 +333,15 @@ Mining: 8 minerals and 8 gas per trip and 37 frames inside a refinery, as
 OpenBW.  The mineral dwell is 93 frames, not OpenBW's 75: it is fitted to
 the user's retail recordings (Wasteland income within -1.7 %, see
 `MINING_FRAMES`).
+
+Third pass (0.1.58):
+
+- Scanner Sweep is now the retail unit (33: sight 10, detector, invincible
+  here) that its iscript removes after 156 frames; it revealed a 96 px circle
+  for 400 frames.  Tested: a cloaked Ghost is detected during the sweep and
+  not after.
+- Spider Mines: 3 per Vulture, one laid per order, the blast deals the
+  executable's 124 to a large armour-1 target (tested).
+- A depleted geyser gives 2 gas per trip forever (OpenBW
+  `gather_resource`); ours gave the rest and then nothing, and the workers
+  stopped as if a mineral field had run out (tested).

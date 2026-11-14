@@ -479,3 +479,105 @@ fn yamato_deals_the_executable_damage() {
     }
     assert!(hits.contains(&259), "Yamato damage among hits {hits:?}");
 }
+
+#[test]
+fn scanner_sweep_detects_for_156_frames() {
+    // OpenBW: a Scanner Sweep unit (sight 10, detector) that its iscript
+    // removes after 156 frames.
+    let mut w = world();
+    let cc = w.spawn_px(0, uid::COMMAND_CENTER, 300, 300).unwrap();
+    let cs = w.spawn_px(0, uid::COMSAT_STATION, 380, 320).unwrap();
+    w.units[cc].completed = true;
+    w.units[cs].completed = true;
+    w.units[cs].addon_attached = true;
+    w.units[cs].set_energy_fixed(200 * ENERGY_SCALE);
+    let ghost = w.spawn_px(1, uid::GHOST, 1500, 1500).unwrap();
+    w.units[ghost].status.cloaked = true;
+    assert!(!w.can_see_unit(0, ghost));
+    w.cast(
+        w.units[cs].id,
+        Spell::ScannerSweep,
+        SpellTarget::Point(1560, 1500),
+    )
+    .unwrap();
+    w.step();
+    assert!(
+        w.can_see_unit(0, ghost),
+        "the sweep detects a cloaked Ghost 60 px away"
+    );
+    for _ in 0..170 {
+        w.step();
+    }
+    assert!(
+        !w.units
+            .iter()
+            .any(|u| u.alive && u.type_id == uid::SCANNER_SWEEP),
+        "gone after 156 frames"
+    );
+    assert!(!w.can_see_unit(0, ghost), "no detection once it is gone");
+}
+
+#[test]
+fn spider_mines_three_per_vulture_and_the_executable_damage() {
+    // OpenBW: a Vulture carries 3 mines; the blast is the Spider Mines
+    // weapon (6): 124 hp against a large armour-1 target
+    // (fixtures/oracle_damage.tsv).
+    let mut w = world();
+    let v = w.spawn_px(0, uid::VULTURE, 400, 400).unwrap();
+    assert_eq!(w.units[v].hangar, 3);
+    w.cast(
+        w.units[v].id,
+        Spell::SpiderMines,
+        SpellTarget::Point(420, 400),
+    )
+    .unwrap();
+    for _ in 0..40 {
+        w.step();
+    }
+    assert_eq!(w.units[v].hangar, 2, "one mine laid");
+    w.units[v].x = 100 << 8;
+    for _ in 0..200 {
+        w.step();
+    }
+    let t = w.spawn_px(1, uid::ULTRALISK, 470, 400).unwrap();
+    w.units[t].order = galaxycraft::sim::Order::HoldPosition;
+    let hp = w.units[t].hp;
+    let mut hit = 0;
+    for _ in 0..400 {
+        w.step();
+        if w.units[t].hp < hp {
+            hit = hp - w.units[t].hp;
+            break;
+        }
+    }
+    assert_eq!(hit, 124 << 8, "mine blast damage");
+}
+
+#[test]
+fn a_depleted_refinery_still_gives_two_gas_per_trip() {
+    // OpenBW `gather_resource`: fewer than 8 left, the geyser is emptied and
+    // the worker brings 2; from then on every trip brings 2.
+    let mut w = world();
+    let cc = w.spawn_px(0, uid::COMMAND_CENTER, 300, 300).unwrap();
+    w.units[cc].completed = true;
+    let geyser = w.spawn_px(0, uid::REFINERY, 300, 520).unwrap();
+    w.units[geyser].completed = true;
+    w.units[geyser].resource_amount = 5;
+    let scv = w.spawn_px(0, uid::SCV, 300, 450).unwrap();
+    let gid = w.units[geyser].id;
+    w.issue(
+        w.units[scv].id,
+        galaxycraft::sim::Order::Gather { resource: gid },
+    )
+    .unwrap();
+    let gas0 = w.players[0].gas;
+    for _ in 0..1500 {
+        w.step();
+    }
+    let got = w.players[0].gas - gas0;
+    assert!(
+        got >= 6 && got % 2 == 0,
+        "depleted refinery trips bring 2 each: {got}"
+    );
+    assert_eq!(w.units[geyser].resource_amount, 0);
+}
