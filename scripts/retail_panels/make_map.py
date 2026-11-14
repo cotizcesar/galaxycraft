@@ -105,6 +105,10 @@ for k, t in enumerate(types):
     block, kk = divmod(k, 120)
     x = 96 + 160 * (kk % 5) + 1024 * block
     y = 112 + 160 * (kk // 5)
+    pos = dict((int(a), (int(b), int(c))) for a, b, c in
+               (q.split(':') for q in os.environ.get('POS', '').split(',') if q))
+    if t in pos:
+        x, y = pos[t]
     serial = 1000 + k
     units += struct.pack('<IHHHHHHBBBBIHHII', serial, x, y, t, 0, 0x1f, 0x1f, 0, 100, 100, 100, 0, 0, 0, 0, 0)
     layout.append((t, x, y, names.get(t, '?')))

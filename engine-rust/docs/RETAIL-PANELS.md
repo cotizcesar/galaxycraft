@@ -17,10 +17,13 @@ Indestructible resources and doodads show no health line.
 Tools: `scripts/retail_panels/` (`make_map.py` writes the map as an MPQ,
 `read_units.py` drives the retail client, `compare.py` reads the captures).
 
-**Result: 173 of 190 types match; 17 could not be selected: 15 doodad
+**Result: 174 of 190 types match; 16 could not be selected: 15 doodad
 buildings the retail game does not let you select (Cave, Cantina, Markers,
-Doors...), the Kakaru (a flying critter that leaves at once) and a Larva
-placed without a Hatchery (it does not stay on the map).  None differs.**
+Doors...) and the Kakaru (a flying critter that leaves at once).  None
+differs.**  A fourth pass read a Larva of a placed Hatchery (25/25, armor 10).
+In Use-Map-Settings games the retail client seats the human in either slot,
+so a map whose units all belong to slot 1 loads "empty" half the time; the
+mission is restarted until the human gets slot 1.
 A third pass caged the Rhynadon and the Ragnasaur in rings of Pylons
 (`CAGE=1`) and read them.  A second pass
 placed only the unread types and read the Broodling (before its timer ran
@@ -55,7 +58,7 @@ out), the Scantid and the Ursadon.
 | 30 | Terran Siege Tank | 150 | - | 1 | 70 | match (OCR) |
 | 32 | Terran Firebat | 50 | - | 1 | 8 | match (checked by eye) |
 | 34 | Terran Medic | 60 | - | 1 | - | match (OCR) |
-| 35 | Zerg Larva | 25 | - | 10 | - | not readable: a Larva placed without a Hatchery does not stay |
+| 35 | Zerg Larva | 25 | - | 10 | - | match (fourth pass, Larva of a placed Hatchery: 25/25, armor 10) |
 | 36 | Zerg Egg | 200 | - | 10 | - | match (checked by eye) |
 | 37 | Zerg Zergling | 35 | - | 0 | 5 | match (OCR) |
 | 38 | Zerg Hydralisk | 80 | - | 0 | 10, 10 | match (OCR) |
