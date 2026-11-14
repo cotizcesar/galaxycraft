@@ -425,6 +425,35 @@ pub fn effects(data: &Arc<GameData>) -> String {
         last = w.units[t].hp;
     }
     rows.push(("Yamato Gun hp on a Supply Depot", big, 259, "damage matrix"));
+    // Nuclear strike: max(2/3 of max hp + shields, 500), then armour
+    // (OpenBW `hit_type_nuclear_missile`): 999 on a Command Center.
+    let mut w = fresh(data);
+    let silo = w.spawn_px(0, uid::NUCLEAR_SILO, 420, 320).unwrap();
+    w.units[silo].completed = true;
+    w.units[silo].addon_attached = true;
+    w.units[silo].nuke_ready = true;
+    let ghost = w.spawn_px(0, uid::GHOST, 300, 900).unwrap();
+    let cc = w.spawn_px(1, uid::COMMAND_CENTER, 1500, 900).unwrap();
+    w.units[cc].completed = true;
+    let hp = w.units[cc].hp;
+    let gid = w.units[ghost].id;
+    let mut nuke = -1;
+    if w.launch_nuke(gid, (1500, 900)).is_ok() {
+        // The painting Ghost's own rifle chips the target too: keep the
+        // largest single drop.
+        let mut last = hp;
+        for _ in 0..1500 {
+            w.step();
+            nuke = nuke.max((last - w.units[cc].hp) >> 8);
+            last = w.units[cc].hp;
+        }
+    }
+    rows.push((
+        "Nuclear strike hp on a Command Center",
+        nuke,
+        999,
+        "hit_type_nuclear_missile",
+    ));
     let (mut n, mut good) = (0, 0);
     let mut s = String::from(
         "## Spell effects\n\nEach spell is cast in the simulation on a fresh target and the \

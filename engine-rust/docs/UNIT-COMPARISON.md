@@ -24,7 +24,7 @@ checked in `tests/effects_openbw.rs`; training, research and upgrade times in
 | add-ons and morphs | 11 / 11 |
 | special attackers | 7 / 7 |
 | resource trips | 11 / 11 |
-| spell effects | 13 / 13 |
+| spell effects | 14 / 14 |
 | other spells | 15 / 15 |
 
 Weapons read `damage+bonus cd<cooldown> r<range px> xN bullets`; rate of fire
@@ -40,76 +40,76 @@ those are covered per case in the tests above).
 | 1 | Terran Ghost | 45 | - | 0 small | 25/75 | 750 | 1 | 9 | 10+1 cd22 r224 | 10+1 cd22 r224 | 22.7/22.5 ok | 576/576 ok |  | ok |
 | 2 | Terran Vulture | 80 | - | 0 medium | 75/0 | 450 | 2 | 8 | 20+2 cd30 r160 | - | 30.4/30.5 ok | 1216/1216 ok |  | ok |
 | 3 | Terran Goliath | 125 | - | 1 large | 100/50 | 600 | 2 | 8 | 12+1 cd22 r192 | 10+2 cd22 r160 x2 | 22.4/22.5 ok | 2816/2816 ok |  | ok |
-| 4 | Goliath Turret | 0 | - | 0 - | 1/1 | 1 | 0 | 8 | 12+1 cd22 r192 | 10+2 cd22 r160 x2 | - | - |  | ok |
+| 4 | Goliath Turret | 0 | - | 0 - | 1/1 | 1 | 0 | 8 | 12+1 cd22 r192 | 10+2 cd22 r160 x2 | - (turret: fires via its base) | - (turret: fires via its base) |  | ok |
 | 5 | Terran Siege Tank | 150 | - | 1 large | 150/100 | 750 | 2 | 10 | 30+3 cd37 r224 | - | 37.3/37.5 ok | 7424/7424 ok |  | ok |
-| 6 | Tank Turret | 0 | - | 0 - | 1/1 | 1 | 0 | 10 | 30+3 cd37 r224 | - | - | - |  | ok |
+| 6 | Tank Turret | 0 | - | 0 - | 1/1 | 1 | 0 | 10 | 30+3 cd37 r224 | - | - (turret: fires via its base) | - (turret: fires via its base) |  | ok |
 | 7 | Terran SCV | 60 | - | 0 small | 50/0 | 300 | 1 | 7 | 5+1 cd15 r10 | - | 15.4/15.5 ok | 1024/1024 ok |  | ok |
 | 8 | Terran Wraith | 120 | - | 0 large | 150/100 | 900 | 2 | 7 | 8+1 cd30 r160 | 20+2 cd22 r160 | 30.7/30.5 ok | 1792/1792 ok |  | ok |
-| 9 | Terran Science Vessel | 200 | - | 1 large | 100/225 | 1200 | 2 | 10 | - | - | - | - | detector | ok |
-| 10 | Gui Montag | 160 | - | 3 small | 100/50 | 720 | 0 | 7 | 16+1 cd22 r32 | - | 22.7/22.5 ok | - | hero | ok |
-| 11 | Terran Dropship | 150 | - | 1 large | 100/100 | 750 | 2 | 8 | - | - | - | - |  | ok |
+| 9 | Terran Science Vessel | 200 | - | 1 large | 100/225 | 1200 | 2 | 10 | - | - | - (unarmed) | - (unarmed) | detector | ok |
+| 10 | Gui Montag | 160 | - | 3 small | 100/50 | 720 | 0 | 7 | 16+1 cd22 r32 | - | 22.7/22.5 ok | - (flame splash: tests/rate_of_fire_retail.rs) | hero | ok |
+| 11 | Terran Dropship | 150 | - | 1 large | 100/100 | 750 | 2 | 8 | - | - | - (unarmed) | - (unarmed) |  | ok |
 | 12 | Terran Battlecruiser | 500 | - | 3 large | 400/300 | 2000 | 6 | 11 | 25+3 cd30 r192 | 25+3 cd30 r192 | 30.4/30.5 ok | 6144/6144 ok |  | ok |
-| 13 | Vulture Spider Mine | 20 | - | 0 small | 1/0 | 1 | 0 | 3 | 125+0 cd22 r10 | - | - | - |  | ok |
-| 14 | Nuclear Missile | 100 | - | 0 - | 200/200 | 1500 | 8 | 3 | - | - | - | - |  | ok |
-| 15 | Terran Civilian | 40 | - | 0 small | 0/0 | 1 | 0 | 7 | - | - | - | - |  | ok |
+| 13 | Vulture Spider Mine | 20 | - | 0 small | 1/0 | 1 | 0 | 3 | 125+0 cd22 r10 | - | - (launched unit: see Spell effects / Special attackers) | - (launched unit: see Spell effects / Special attackers) |  | ok |
+| 14 | Nuclear Missile | 100 | - | 0 - | 200/200 | 1500 | 8 | 3 | - | - | - (nuke: the Ghost-guided strike, see Spell effects) | - (nuke: the Ghost-guided strike, see Spell effects) |  | ok |
+| 15 | Terran Civilian | 40 | - | 0 small | 0/0 | 1 | 0 | 7 | - | - | - (unarmed) | - (unarmed) |  | ok |
 | 16 | Sarah Kerrigan | 250 | - | 3 small | 50/150 | 1500 | 0 | 11 | 30+1 cd22 r192 | 30+1 cd22 r192 | 22.7/22.5 ok | 1856/1856 ok | hero | ok |
 | 17 | Alan Schezar | 300 | - | 3 large | 200/100 | 1200 | 0 | 8 | 24+1 cd22 r160 | 20+1 cd22 r160 x2 | 22.4/22.5 ok | 5888/5888 ok | hero | ok |
-| 18 | Alan Turret | 0 | - | 0 - | 1/1 | 1 | 0 | 8 | 24+1 cd22 r160 | 20+1 cd22 r160 x2 | - | - |  | ok |
+| 18 | Alan Turret | 0 | - | 0 - | 1/1 | 1 | 0 | 8 | 24+1 cd22 r160 | 20+1 cd22 r160 x2 | - (turret: fires via its base) | - (turret: fires via its base) |  | ok |
 | 19 | Jim Raynor | 300 | - | 3 medium | 150/0 | 900 | 0 | 8 | 30+2 cd22 r160 | - | 22.4/22.5 ok | 1856/1856 ok | hero | ok |
 | 20 | Jim Raynor | 200 | - | 3 small | 50/0 | 1 | 0 | 7 | 18+1 cd15 r160 | 18+1 cd15 r160 | 15.6/15.5 ok | 4352/4352 ok | hero | ok |
 | 21 | Tom Kazansky | 500 | - | 4 large | 400/200 | 1800 | 0 | 7 | 16+1 cd30 r160 | 40+2 cd22 r160 | 30.7/30.5 ok | 3840/3840 ok | hero | ok |
-| 22 | Magellan | 800 | - | 4 large | 50/600 | 2400 | 0 | 10 | - | - | - | - | detector hero | ok |
+| 22 | Magellan | 800 | - | 4 large | 50/600 | 2400 | 0 | 10 | - | - | - (unarmed) | - (unarmed) | detector hero | ok |
 | 23 | Edmund Duke | 400 | - | 3 large | 300/200 | 1500 | 0 | 10 | 70+3 cd37 r224 | - | 37.3/37.5 ok | 17664/17664 ok | hero | ok |
-| 24 | Duke Turret | 0 | - | 0 - | 1/1 | 1 | 0 | 10 | 70+3 cd37 r224 | - | - | - |  | ok |
-| 25 | Edmund Duke | 400 | - | 3 large | 300/200 | 1500 | 0 | 10 | 150+5 cd75 r384 | - | - | - | hero | ok |
-| 26 | Duke Turret | 0 | - | 0 - | 1/1 | 1 | 0 | 10 | 150+5 cd75 r384 | - | - | - |  | ok |
+| 24 | Duke Turret | 0 | - | 0 - | 1/1 | 1 | 0 | 10 | 70+3 cd37 r224 | - | - (turret: fires via its base) | - (turret: fires via its base) |  | ok |
+| 25 | Edmund Duke | 400 | - | 3 large | 300/200 | 1500 | 0 | 10 | 150+5 cd75 r384 | - | - (see Special attackers) | - (see Special attackers) | hero | ok |
+| 26 | Duke Turret | 0 | - | 0 - | 1/1 | 1 | 0 | 10 | 150+5 cd75 r384 | - | - (turret: fires via its base) | - (turret: fires via its base) |  | ok |
 | 27 | Arcturus Mengsk | 1000 | - | 4 large | 800/600 | 4800 | 0 | 8 | 50+3 cd30 r192 | 50+3 cd30 r192 | 30.4/30.5 ok | 12544/12544 ok | hero | ok |
 | 28 | Hyperion | 850 | - | 4 large | 800/600 | 2400 | 0 | 11 | 30+3 cd22 r192 | 30+3 cd22 r192 | 22.4/22.5 ok | 7424/7424 ok | hero | ok |
 | 29 | Norad II | 700 | - | 4 large | 800/600 | 4800 | 0 | 11 | 50+3 cd30 r192 | 50+3 cd30 r192 | 30.4/30.5 ok | 12544/12544 ok | hero | ok |
-| 30 | Terran Siege Tank | 150 | - | 1 large | 150/100 | 750 | 2 | 10 | 70+5 cd75 r384 | - | - | - |  | ok |
-| 31 | Tank Turret | 0 | - | 0 - | 1/1 | 1 | 0 | 10 | 70+5 cd75 r384 | - | - | - |  | ok |
-| 32 | Terran Firebat | 50 | - | 1 small | 50/25 | 360 | 1 | 7 | 8+1 cd22 r32 | - | 22.7/22.5 ok | - |  | ok |
-| 33 | Scanner Sweep | 0 | - | 0 - | 0/0 | 1 | 0 | 10 | - | - | - | - | detector | ok |
-| 34 | Terran Medic | 60 | - | 1 small | 50/25 | 450 | 1 | 9 | - | - | - | - |  | ok |
-| 35 | Zerg Larva | 25 | - | 10 small | 1/1 | 1 | 0 | 4 | - | - | - | - |  | ok |
-| 36 | Zerg Egg | 200 | - | 10 medium | 1/1 | 1 | 0 | 4 | - | - | - | - |  | ok |
+| 30 | Terran Siege Tank | 150 | - | 1 large | 150/100 | 750 | 2 | 10 | 70+5 cd75 r384 | - | - (see Special attackers) | - (see Special attackers) |  | ok |
+| 31 | Tank Turret | 0 | - | 0 - | 1/1 | 1 | 0 | 10 | 70+5 cd75 r384 | - | - (turret: fires via its base) | - (turret: fires via its base) |  | ok |
+| 32 | Terran Firebat | 50 | - | 1 small | 50/25 | 360 | 1 | 7 | 8+1 cd22 r32 | - | 22.7/22.5 ok | - (flame splash: tests/rate_of_fire_retail.rs) |  | ok |
+| 33 | Scanner Sweep | 0 | - | 0 - | 0/0 | 1 | 0 | 10 | - | - | - (unarmed) | - (unarmed) | detector | ok |
+| 34 | Terran Medic | 60 | - | 1 small | 50/25 | 450 | 1 | 9 | - | - | - (unarmed) | - (unarmed) |  | ok |
+| 35 | Zerg Larva | 25 | - | 10 small | 1/1 | 1 | 0 | 4 | - | - | - (unarmed) | - (unarmed) |  | ok |
+| 36 | Zerg Egg | 200 | - | 10 medium | 1/1 | 1 | 0 | 4 | - | - | - (unarmed) | - (unarmed) |  | ok |
 | 37 | Zerg Zergling | 35 | - | 0 small | 50/0 | 420 | 0.5 | 5 | 5+1 cd8 r15 | - | 8.4/8.5 ok | 1024/1024 ok |  | ok |
 | 38 | Zerg Hydralisk | 80 | - | 0 medium | 75/25 | 420 | 1 | 6 | 10+1 cd15 r128 | 10+1 cd15 r128 | 15.6/15.5 ok | 2304/2304 ok |  | ok |
 | 39 | Zerg Ultralisk | 400 | - | 1 large | 200/200 | 900 | 4 | 7 | 20+3 cd15 r25 | - | 15.3/15.5 ok | 4864/4864 ok |  | ok |
 | 40 | Zerg Broodling | 30 | - | 0 small | 1/1 | 1 | 0 | 5 | 4+1 cd15 r2 | - | 15.5/15.5 ok | 768/768 ok |  | ok |
 | 41 | Zerg Drone | 40 | - | 0 small | 50/0 | 300 | 1 | 7 | 5+0 cd22 r32 | - | 22.4/22.5 ok | 1024/1024 ok |  | ok |
-| 42 | Zerg Overlord | 200 | - | 0 large | 100/0 | 600 | +8 | 9 | - | - | - | - | detector | ok |
+| 42 | Zerg Overlord | 200 | - | 0 large | 100/0 | 600 | +8 | 9 | - | - | - (unarmed) | - (unarmed) | detector | ok |
 | 43 | Zerg Mutalisk | 120 | - | 0 small | 100/100 | 600 | 2 | 7 | 9+1 cd30 r96 | 9+1 cd30 r96 | 30.7/30.5 ok | 2048/2048 ok |  | ok |
 | 44 | Zerg Guardian | 150 | - | 2 large | 50/100 | 600 | 2 | 11 | 20+2 cd30 r256 | - | 30.5/30.5 ok | 4864/4864 ok |  | ok |
-| 45 | Zerg Queen | 120 | - | 0 medium | 100/100 | 750 | 2 | 10 | - | - | - | - |  | ok |
-| 46 | Zerg Defiler | 80 | - | 1 medium | 50/150 | 750 | 2 | 10 | - | - | - | - |  | ok |
-| 47 | Zerg Scourge | 25 | - | 0 small | 25/75 | 450 | 0.5 | 5 | - | 110+0 cd1 r3 | - | - |  | ok |
+| 45 | Zerg Queen | 120 | - | 0 medium | 100/100 | 750 | 2 | 10 | - | - | - (unarmed) | - (unarmed) |  | ok |
+| 46 | Zerg Defiler | 80 | - | 1 medium | 50/150 | 750 | 2 | 10 | - | - | - (unarmed) | - (unarmed) |  | ok |
+| 47 | Zerg Scourge | 25 | - | 0 small | 25/75 | 450 | 0.5 | 5 | - | 110+0 cd1 r3 | - (see Special attackers) | - (see Special attackers) |  | ok |
 | 48 | Torrasque | 800 | - | 4 large | 400/400 | 1800 | 0 | 7 | 50+3 cd15 r25 | - | 15.3/15.5 ok | 12544/12544 ok | hero | ok |
-| 49 | Matriarch | 300 | - | 3 medium | 200/300 | 1500 | 0 | 10 | - | - | - | - | hero | ok |
-| 50 | Infested Terran | 60 | - | 0 small | 100/50 | 600 | 1 | 5 | 500+0 cd1 r3 | - | - | - |  | ok |
+| 49 | Matriarch | 300 | - | 3 medium | 200/300 | 1500 | 0 | 10 | - | - | - (unarmed) | - (unarmed) | hero | ok |
+| 50 | Infested Terran | 60 | - | 0 small | 100/50 | 600 | 1 | 5 | 500+0 cd1 r3 | - | - (see Special attackers) | - (see Special attackers) |  | ok |
 | 51 | Infested Kerrigan | 400 | - | 2 small | 200/300 | 1500 | 0 | 9 | 50+1 cd15 r15 | - | 15.7/15.5 ok | 12544/12544 ok | hero | ok |
-| 52 | Unclean One | 250 | - | 3 medium | 50/200 | 1500 | 0 | 10 | - | - | - | - | hero | ok |
+| 52 | Unclean One | 250 | - | 3 medium | 50/200 | 1500 | 0 | 10 | - | - | - (unarmed) | - (unarmed) | hero | ok |
 | 53 | Hunter Killer | 160 | - | 2 medium | 150/50 | 780 | 0 | 8 | 20+1 cd15 r160 | 20+1 cd15 r160 | 15.6/15.5 ok | 4864/4864 ok | hero | ok |
 | 54 | Devouring One | 120 | - | 3 small | 100/0 | 840 | 0 | 5 | 10+1 cd8 r15 | - | 5.5/5.5 ok | 2304/2304 ok | hero | ok |
 | 55 | Kukulza | 300 | - | 3 small | 200/200 | 1200 | 0 | 7 | 18+1 cd30 r96 | 18+1 cd30 r96 | 30.7/30.5 ok | 4352/4352 ok | hero | ok |
 | 56 | Kukulza | 400 | - | 4 large | 100/200 | 1200 | 0 | 11 | 40+2 cd30 r256 | - | 30.5/30.5 ok | 9984/9984 ok | hero | ok |
-| 57 | Yggdrasill | 1000 | - | 4 large | 200/0 | 1200 | +30 | 11 | - | - | - | - | detector hero | ok |
-| 58 | Terran Valkyrie | 200 | - | 2 large | 250/125 | 750 | 3 | 8 | - | 6+1 cd64 r192 x2 | 64.0/64.5 (air) ok | - |  | ok |
-| 59 | Cocoon | 200 | - | 0 large | 1/1 | 1 | 0 | 4 | - | - | - | - |  | ok |
-| 60 | Protoss Corsair | 100 | 80 | 1 medium | 150/100 | 600 | 2 | 9 | - | 5+1 cd8 r160 | 8.7/8.5 (air) ok | - |  | ok |
+| 57 | Yggdrasill | 1000 | - | 4 large | 200/0 | 1200 | +30 | 11 | - | - | - (unarmed) | - (unarmed) | detector hero | ok |
+| 58 | Terran Valkyrie | 200 | - | 2 large | 250/125 | 750 | 3 | 8 | - | 6+1 cd64 r192 x2 | 64.0/64.5 (air) ok | - (air-only: no ground hit) |  | ok |
+| 59 | Cocoon | 200 | - | 0 large | 1/1 | 1 | 0 | 4 | - | - | - (unarmed) | - (unarmed) |  | ok |
+| 60 | Protoss Corsair | 100 | 80 | 1 medium | 150/100 | 600 | 2 | 9 | - | 5+1 cd8 r160 | 8.7/8.5 (air) ok | - (air-only: no ground hit) |  | ok |
 | 61 | Protoss Dark Templar | 80 | 40 | 1 small | 125/100 | 750 | 2 | 7 | 40+3 cd30 r15 | - | 30.6/30.5 ok | 9984/9984 ok |  | ok |
-| 62 | Zerg Devourer | 250 | - | 2 large | 150/50 | 600 | 2 | 10 | - | 25+2 cd100 r192 | 100.7/100.5 (air) ok | - |  | ok |
-| 63 | Protoss Dark Archon | 25 | 200 | 1 large | 0/0 | 300 | 4 | 10 | - | - | - | - |  | ok |
+| 62 | Zerg Devourer | 250 | - | 2 large | 150/50 | 600 | 2 | 10 | - | 25+2 cd100 r192 | 100.7/100.5 (air) ok | - (air-only: no ground hit) |  | ok |
+| 63 | Protoss Dark Archon | 25 | 200 | 1 large | 0/0 | 300 | 4 | 10 | - | - | - (unarmed) | - (unarmed) |  | ok |
 | 64 | Protoss Probe | 20 | 20 | 0 small | 50/0 | 300 | 1 | 8 | 5+0 cd22 r32 | - | 22.4/22.5 ok | 1024/1024 ok |  | ok |
 | 65 | Protoss Zealot | 100 | 60 | 1 small | 100/0 | 600 | 2 | 7 | 8+1 cd22 r15 | - | 22.4/22.5 ok | 1792/1792 ok |  | ok |
 | 66 | Protoss Dragoon | 100 | 80 | 1 large | 125/50 | 750 | 2 | 8 | 20+2 cd30 r128 | 20+2 cd30 r128 | 30.6/30.5 ok | 4864/4864 ok |  | ok |
-| 67 | Protoss High Templar | 40 | 40 | 0 small | 50/150 | 750 | 2 | 7 | - | - | - | - |  | ok |
+| 67 | Protoss High Templar | 40 | 40 | 0 small | 50/150 | 750 | 2 | 7 | - | - | - (unarmed) | - (unarmed) |  | ok |
 | 68 | Protoss Archon | 10 | 350 | 0 large | 0/0 | 300 | 4 | 8 | 30+3 cd20 r64 | 30+3 cd20 r64 | 20.4/20.5 ok | 7424/7424 ok |  | ok |
-| 69 | Protoss Shuttle | 80 | 60 | 1 large | 200/0 | 900 | 2 | 8 | - | - | - | - |  | ok |
+| 69 | Protoss Shuttle | 80 | 60 | 1 large | 200/0 | 900 | 2 | 8 | - | - | - (unarmed) | - (unarmed) |  | ok |
 | 70 | Protoss Scout | 150 | 100 | 0 large | 275/125 | 1200 | 3 | 8 | 8+1 cd30 r128 | 14+1 cd22 r128 x2 | 30.7/30.5 ok | 1792/1792 ok |  | ok |
 | 71 | Protoss Arbiter | 200 | 150 | 1 large | 100/350 | 2400 | 4 | 9 | 10+1 cd45 r160 | 10+1 cd45 r160 | 45.7/45.5 ok | 2304/2304 ok |  | ok |
-| 72 | Protoss Carrier | 300 | 150 | 4 large | 350/250 | 2100 | 6 | 11 | - | - | - | - |  | ok |
-| 73 | Protoss Interceptor | 40 | 40 | 0 small | 25/0 | 300 | 0 | 6 | 6+1 cd1 r128 | 6+1 cd1 r128 | - | - |  | ok |
+| 72 | Protoss Carrier | 300 | 150 | 4 large | 350/250 | 2100 | 6 | 11 | - | - | - (hangar: see Special attackers) | - (hangar: see Special attackers) |  | ok |
+| 73 | Protoss Interceptor | 40 | 40 | 0 small | 25/0 | 300 | 0 | 6 | 6+1 cd1 r128 | 6+1 cd1 r128 | - (launched unit: see Spell effects / Special attackers) | - (launched unit: see Spell effects / Special attackers) |  | ok |
 | 74 | Dark Templar | 40 | 80 | 0 small | 150/150 | 750 | 1 | 7 | 45+1 cd30 r15 | - | 30.6/30.5 ok | 11264/11264 ok |  | ok |
 | 75 | Zeratul | 60 | 400 | 0 small | 100/300 | 1500 | 0 | 7 | 100+1 cd22 r15 | - | 22.5/22.5 ok | 25344/25344 ok | hero | ok |
 | 76 | Tassadar/Zeratul | 100 | 800 | 3 large | 0/0 | 600 | 0 | 8 | 60+3 cd20 r64 | 60+3 cd20 r64 | 20.4/20.5 ok | 15104/15104 ok | hero | ok |
@@ -117,153 +117,153 @@ those are covered per case in the tests above).
 | 78 | Fenix | 240 | 240 | 3 large | 300/100 | 1500 | 0 | 8 | 45+2 cd22 r128 | 45+2 cd22 r128 | 22.6/22.5 ok | 11264/11264 ok | hero | ok |
 | 79 | Tassadar | 80 | 300 | 2 small | 100/300 | 1500 | 0 | 7 | 20+1 cd22 r96 | - | 22.7/22.5 ok | 4864/4864 ok | hero | ok |
 | 80 | Mojo | 400 | 400 | 3 large | 600/300 | 2400 | 0 | 10 | 20+1 cd30 r128 | 28+1 cd22 r128 x2 | 30.7/30.5 ok | 4864/4864 ok | hero | ok |
-| 81 | Warbringer | 200 | 400 | 3 large | 400/200 | 1800 | 0 | 10 | - | - | - | - | hero | ok |
-| 82 | Gantrithor | 800 | 500 | 4 large | 700/600 | 4200 | 0 | 9 | - | - | - | - | hero | ok |
-| 83 | Protoss Reaver | 100 | 80 | 0 large | 200/100 | 1050 | 4 | 10 | - | - | - | - |  | ok |
-| 84 | Protoss Observer | 40 | 20 | 0 small | 25/75 | 600 | 1 | 9 | - | - | - | - | detector | ok |
-| 85 | Protoss Scarab | 20 | 10 | 0 small | 15/0 | 105 | 0 | 5 | 100+25 cd1 r128 | - | - | - |  | ok |
+| 81 | Warbringer | 200 | 400 | 3 large | 400/200 | 1800 | 0 | 10 | - | - | - (unarmed) | - (unarmed) | hero | ok |
+| 82 | Gantrithor | 800 | 500 | 4 large | 700/600 | 4200 | 0 | 9 | - | - | - (unarmed) | - (unarmed) | hero | ok |
+| 83 | Protoss Reaver | 100 | 80 | 0 large | 200/100 | 1050 | 4 | 10 | - | - | - (hangar: see Special attackers) | - (hangar: see Special attackers) |  | ok |
+| 84 | Protoss Observer | 40 | 20 | 0 small | 25/75 | 600 | 1 | 9 | - | - | - (unarmed) | - (unarmed) | detector | ok |
+| 85 | Protoss Scarab | 20 | 10 | 0 small | 15/0 | 105 | 0 | 5 | 100+25 cd1 r128 | - | - (launched unit: see Spell effects / Special attackers) | - (launched unit: see Spell effects / Special attackers) |  | ok |
 | 86 | Danimoth | 600 | 500 | 3 large | 50/1000 | 4800 | 0 | 9 | 20+1 cd45 r160 | 20+1 cd45 r160 | 45.7/45.5 ok | 4864/4864 ok | hero | ok |
 | 87 | Aldaris | 80 | 300 | 2 small | 100/300 | 1500 | 0 | 7 | 20+1 cd22 r96 | - | 22.7/22.5 ok | 4864/4864 ok | hero | ok |
 | 88 | Artanis | 250 | 250 | 3 large | 600/300 | 2400 | 0 | 10 | 20+1 cd30 r128 | 28+1 cd22 r128 x2 | 30.7/30.5 ok | 4864/4864 ok | hero | ok |
-| 89 | Rhynadon | 60 | - | 0 small | 1/1 | 1 | 0 | 7 | - | - | - | - |  | ok |
-| 90 | Bengalaas | 60 | - | 0 small | 1/1 | 1 | 0 | 7 | - | - | - | - |  | ok |
-| 91 | Unused | 125 | - | 1 medium | 100/100 | 600 | 0 | 8 | - | - | - | - |  | ok |
-| 92 | Unused | 125 | - | 1 medium | 100/100 | 600 | 0 | 7 | - | - | - | - |  | ok |
-| 93 | Scantid | 60 | - | 0 small | 1/1 | 1 | 0 | 7 | - | - | - | - |  | ok |
-| 94 | Kakaru | 60 | - | 0 small | 1/1 | 1 | 0 | 7 | - | - | - | - |  | ok |
-| 95 | Ragnasaur | 60 | - | 0 small | 1/1 | 1 | 0 | 7 | - | - | - | - |  | ok |
-| 96 | Ursadon | 60 | - | 0 small | 1/1 | 1 | 0 | 7 | - | - | - | - |  | ok |
-| 97 | Zerg Lurker Egg | 200 | - | 10 medium | 1/1 | 1 | 0 | 4 | - | - | - | - |  | ok |
-| 98 | Raszagal | 100 | 60 | 0 medium | 150/100 | 750 | 0 | 9 | - | 5+1 cd8 r160 | 8.7/8.5 (air) ok | - | hero | ok |
+| 89 | Rhynadon | 60 | - | 0 small | 1/1 | 1 | 0 | 7 | - | - | - (unarmed) | - (unarmed) |  | ok |
+| 90 | Bengalaas | 60 | - | 0 small | 1/1 | 1 | 0 | 7 | - | - | - (unarmed) | - (unarmed) |  | ok |
+| 91 | Unused | 125 | - | 1 medium | 100/100 | 600 | 0 | 8 | - | - | - (unarmed) | - (unarmed) |  | ok |
+| 92 | Unused | 125 | - | 1 medium | 100/100 | 600 | 0 | 7 | - | - | - (unarmed) | - (unarmed) |  | ok |
+| 93 | Scantid | 60 | - | 0 small | 1/1 | 1 | 0 | 7 | - | - | - (unarmed) | - (unarmed) |  | ok |
+| 94 | Kakaru | 60 | - | 0 small | 1/1 | 1 | 0 | 7 | - | - | - (unarmed) | - (unarmed) |  | ok |
+| 95 | Ragnasaur | 60 | - | 0 small | 1/1 | 1 | 0 | 7 | - | - | - (unarmed) | - (unarmed) |  | ok |
+| 96 | Ursadon | 60 | - | 0 small | 1/1 | 1 | 0 | 7 | - | - | - (unarmed) | - (unarmed) |  | ok |
+| 97 | Zerg Lurker Egg | 200 | - | 10 medium | 1/1 | 1 | 0 | 4 | - | - | - (unarmed) | - (unarmed) |  | ok |
+| 98 | Raszagal | 100 | 60 | 0 medium | 150/100 | 750 | 0 | 9 | - | 5+1 cd8 r160 | 8.7/8.5 (air) ok | - (air-only: no ground hit) | hero | ok |
 | 99 | Samir Duran | 200 | - | 2 small | 200/75 | 1500 | 0 | 10 | 25+1 cd22 r192 | 25+1 cd22 r192 | 22.7/22.5 ok | 1536/1536 ok | hero | ok |
 | 100 | Alexei Stukov | 250 | - | 3 small | 200/75 | 1500 | 0 | 11 | 30+1 cd22 r192 | 30+1 cd22 r192 | 22.7/22.5 ok | 1856/1856 ok | hero | ok |
-| 101 | Map Revealer | 1 | - | 0 - | 0/0 | 1 | 0 | 10 | - | - | - | - |  | ok |
+| 101 | Map Revealer | 1 | - | 0 - | 0/0 | 1 | 0 | 10 | - | - | - (unarmed) | - (unarmed) |  | ok |
 | 102 | Gerard DuGalle | 700 | - | 4 large | 800/600 | 4800 | 0 | 11 | 50+3 cd30 r192 | 50+3 cd30 r192 | 30.4/30.5 ok | 12544/12544 ok | hero | ok |
-| 103 | Zerg Lurker | 125 | - | 1 medium | 50/100 | 600 | 2 | 8 | 20+2 cd37 r192 | - | - | - |  | ok |
+| 103 | Zerg Lurker | 125 | - | 1 medium | 50/100 | 600 | 2 | 8 | 20+2 cd37 r192 | - | - (see Special attackers) | - (see Special attackers) |  | ok |
 | 104 | Infested Duran | 300 | - | 3 small | 200/75 | 1500 | 0 | 11 | 25+1 cd22 r192 | 25+1 cd22 r192 | 22.7/22.5 ok | 1536/1536 ok | hero | ok |
-| 105 | Disruption Field | 800 | - | 0 - | 250/250 | 2400 | 0 | 8 | - | - | - | - |  | ok |
-| 106 | Terran Command Center | 1500 | - | 1 large | 400/0 | 1800 | +10 | 10 | - | - | - | - | building | ok |
-| 107 | Terran Comsat Station | 500 | - | 1 large | 50/50 | 600 | 0 | 10 | - | - | - | - | building | ok |
-| 108 | Terran Nuclear Silo | 600 | - | 1 large | 100/100 | 1200 | 0 | 8 | - | - | - | - | building | ok |
-| 109 | Terran Supply Depot | 500 | - | 1 large | 100/0 | 600 | +8 | 8 | - | - | - | - | building | ok |
-| 110 | Terran Refinery | 750 | - | 1 large | 100/0 | 600 | 0 | 8 | - | - | - | - | building resource | ok |
-| 111 | Terran Barracks | 1000 | - | 1 large | 150/0 | 1200 | 0 | 8 | - | - | - | - | building | ok |
-| 112 | Terran Academy | 600 | - | 1 large | 150/0 | 1200 | 0 | 8 | - | - | - | - | building | ok |
-| 113 | Terran Factory | 1250 | - | 1 large | 200/100 | 1200 | 0 | 8 | - | - | - | - | building | ok |
-| 114 | Terran Starport | 1300 | - | 1 large | 150/100 | 1050 | 0 | 10 | - | - | - | - | building | ok |
-| 115 | Terran Control Tower | 500 | - | 1 large | 50/50 | 600 | 0 | 8 | - | - | - | - | building | ok |
-| 116 | Terran Science Facility | 850 | - | 1 large | 100/150 | 900 | 0 | 10 | - | - | - | - | building | ok |
-| 117 | Terran Covert Ops | 750 | - | 1 large | 50/50 | 600 | 0 | 8 | - | - | - | - | building | ok |
-| 118 | Terran Physics Lab | 600 | - | 1 large | 50/50 | 600 | 0 | 8 | - | - | - | - | building | ok |
-| 119 | Unused Terran Bldg | 0 | - | 1 - | 1/1 | 1 | 0 | 8 | - | - | - | - | building | ok |
-| 120 | Terran Machine Shop | 750 | - | 1 large | 50/50 | 600 | 0 | 8 | - | - | - | - | building | ok |
-| 121 | Unused Terran Bldg | 0 | - | 1 large | 1/1 | 1 | 0 | 8 | - | - | - | - | building | ok |
-| 122 | Terran Engineering Bay | 850 | - | 1 large | 125/0 | 900 | 0 | 8 | - | - | - | - | building | ok |
-| 123 | Terran Armory | 750 | - | 1 large | 100/50 | 1200 | 0 | 8 | - | - | - | - | building | ok |
-| 124 | Terran Missile Turret | 200 | - | 0 large | 75/0 | 450 | 0 | 11 | - | 20+0 cd15 r224 | 15.4/15.5 (air) ok | - | building detector | ok |
-| 125 | Terran Bunker | 350 | - | 1 large | 100/0 | 450 | 0 | 10 | - | - | - | - | building | ok |
-| 126 | Norad II | 700 | - | 1 large | 800/600 | 4800 | 0 | 10 | - | - | - | - | building | ok |
-| 127 | Ion Cannon | 2000 | - | 1 large | 200/0 | 900 | 0 | 8 | - | - | - | - | building | ok |
-| 128 | Uraj Crystal | 10000 | - | 0 - | 1/1 | 1 | 0 | 5 | - | - | - | - |  | ok |
-| 129 | Khalis Crystal | 10000 | - | 0 - | 1/1 | 1 | 0 | 5 | - | - | - | - |  | ok |
-| 130 | Infested Command Center | 1500 | - | 1 large | 1/1 | 1800 | 0 | 10 | - | - | - | - | building | ok |
-| 131 | Zerg Hatchery | 1250 | - | 1 large | 300/0 | 1800 | +1 | 9 | - | - | - | - | building | ok |
-| 132 | Zerg Lair | 1800 | - | 1 large | 150/100 | 1500 | +1 | 10 | - | - | - | - | building | ok |
-| 133 | Zerg Hive | 2500 | - | 1 large | 200/150 | 1800 | +1 | 11 | - | - | - | - | building | ok |
-| 134 | Zerg Nydus Canal | 250 | - | 1 large | 150/0 | 600 | 0 | 8 | - | - | - | - | building | ok |
-| 135 | Zerg Hydralisk Den | 850 | - | 1 large | 100/50 | 600 | 0 | 8 | - | - | - | - | building | ok |
-| 136 | Zerg Defiler Mound | 850 | - | 1 large | 100/100 | 900 | 0 | 8 | - | - | - | - | building | ok |
-| 137 | Zerg Greater Spire | 1000 | - | 1 large | 100/150 | 1800 | 0 | 8 | - | - | - | - | building | ok |
-| 138 | Zerg Queen's Nest | 850 | - | 1 large | 150/100 | 900 | 0 | 8 | - | - | - | - | building | ok |
-| 139 | Zerg Evolution Chamber | 750 | - | 1 large | 75/0 | 600 | 0 | 8 | - | - | - | - | building | ok |
-| 140 | Zerg Ultralisk Cavern | 600 | - | 1 large | 150/200 | 1200 | 0 | 8 | - | - | - | - | building | ok |
-| 141 | Zerg Spire | 600 | - | 1 large | 200/150 | 1800 | 0 | 8 | - | - | - | - | building | ok |
-| 142 | Zerg Spawning Pool | 750 | - | 1 large | 200/0 | 1200 | 0 | 8 | - | - | - | - | building | ok |
-| 143 | Zerg Creep Colony | 400 | - | 0 large | 75/0 | 300 | 0 | 10 | - | - | - | - | building | ok |
-| 144 | Zerg Spore Colony | 400 | - | 0 large | 50/0 | 300 | 0 | 10 | - | 15+0 cd15 r224 | 15.4/15.5 (air) ok | - | building detector | ok |
-| 145 | Unused Zerg Bldg | 0 | - | 1 - | 1/1 | 1 | 0 | 7 | - | - | - | - | building resource | ok |
+| 105 | Disruption Field | 800 | - | 0 - | 250/250 | 2400 | 0 | 8 | - | - | - (unarmed) | - (unarmed) |  | ok |
+| 106 | Terran Command Center | 1500 | - | 1 large | 400/0 | 1800 | +10 | 10 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 107 | Terran Comsat Station | 500 | - | 1 large | 50/50 | 600 | 0 | 10 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 108 | Terran Nuclear Silo | 600 | - | 1 large | 100/100 | 1200 | 0 | 8 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 109 | Terran Supply Depot | 500 | - | 1 large | 100/0 | 600 | +8 | 8 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 110 | Terran Refinery | 750 | - | 1 large | 100/0 | 600 | 0 | 8 | - | - | - (unarmed) | - (unarmed) | building resource | ok |
+| 111 | Terran Barracks | 1000 | - | 1 large | 150/0 | 1200 | 0 | 8 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 112 | Terran Academy | 600 | - | 1 large | 150/0 | 1200 | 0 | 8 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 113 | Terran Factory | 1250 | - | 1 large | 200/100 | 1200 | 0 | 8 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 114 | Terran Starport | 1300 | - | 1 large | 150/100 | 1050 | 0 | 10 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 115 | Terran Control Tower | 500 | - | 1 large | 50/50 | 600 | 0 | 8 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 116 | Terran Science Facility | 850 | - | 1 large | 100/150 | 900 | 0 | 10 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 117 | Terran Covert Ops | 750 | - | 1 large | 50/50 | 600 | 0 | 8 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 118 | Terran Physics Lab | 600 | - | 1 large | 50/50 | 600 | 0 | 8 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 119 | Unused Terran Bldg | 0 | - | 1 - | 1/1 | 1 | 0 | 8 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 120 | Terran Machine Shop | 750 | - | 1 large | 50/50 | 600 | 0 | 8 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 121 | Unused Terran Bldg | 0 | - | 1 large | 1/1 | 1 | 0 | 8 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 122 | Terran Engineering Bay | 850 | - | 1 large | 125/0 | 900 | 0 | 8 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 123 | Terran Armory | 750 | - | 1 large | 100/50 | 1200 | 0 | 8 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 124 | Terran Missile Turret | 200 | - | 0 large | 75/0 | 450 | 0 | 11 | - | 20+0 cd15 r224 | 15.4/15.5 (air) ok | - (air-only: no ground hit) | building detector | ok |
+| 125 | Terran Bunker | 350 | - | 1 large | 100/0 | 450 | 0 | 10 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 126 | Norad II | 700 | - | 1 large | 800/600 | 4800 | 0 | 10 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 127 | Ion Cannon | 2000 | - | 1 large | 200/0 | 900 | 0 | 8 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 128 | Uraj Crystal | 10000 | - | 0 - | 1/1 | 1 | 0 | 5 | - | - | - (unarmed) | - (unarmed) |  | ok |
+| 129 | Khalis Crystal | 10000 | - | 0 - | 1/1 | 1 | 0 | 5 | - | - | - (unarmed) | - (unarmed) |  | ok |
+| 130 | Infested Command Center | 1500 | - | 1 large | 1/1 | 1800 | 0 | 10 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 131 | Zerg Hatchery | 1250 | - | 1 large | 300/0 | 1800 | +1 | 9 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 132 | Zerg Lair | 1800 | - | 1 large | 150/100 | 1500 | +1 | 10 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 133 | Zerg Hive | 2500 | - | 1 large | 200/150 | 1800 | +1 | 11 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 134 | Zerg Nydus Canal | 250 | - | 1 large | 150/0 | 600 | 0 | 8 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 135 | Zerg Hydralisk Den | 850 | - | 1 large | 100/50 | 600 | 0 | 8 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 136 | Zerg Defiler Mound | 850 | - | 1 large | 100/100 | 900 | 0 | 8 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 137 | Zerg Greater Spire | 1000 | - | 1 large | 100/150 | 1800 | 0 | 8 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 138 | Zerg Queen's Nest | 850 | - | 1 large | 150/100 | 900 | 0 | 8 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 139 | Zerg Evolution Chamber | 750 | - | 1 large | 75/0 | 600 | 0 | 8 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 140 | Zerg Ultralisk Cavern | 600 | - | 1 large | 150/200 | 1200 | 0 | 8 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 141 | Zerg Spire | 600 | - | 1 large | 200/150 | 1800 | 0 | 8 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 142 | Zerg Spawning Pool | 750 | - | 1 large | 200/0 | 1200 | 0 | 8 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 143 | Zerg Creep Colony | 400 | - | 0 large | 75/0 | 300 | 0 | 10 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 144 | Zerg Spore Colony | 400 | - | 0 large | 50/0 | 300 | 0 | 10 | - | 15+0 cd15 r224 | 15.4/15.5 (air) ok | - (air-only: no ground hit) | building detector | ok |
+| 145 | Unused Zerg Bldg | 0 | - | 1 - | 1/1 | 1 | 0 | 7 | - | - | - (unarmed) | - (unarmed) | building resource | ok |
 | 146 | Zerg Sunken Colony | 300 | - | 2 large | 50/0 | 300 | 0 | 10 | 40+0 cd32 r224 | - | 32.5/32.5 ok | 9984/9984 ok | building | ok |
-| 147 | Zerg Overmind | 5000 | - | 1 large | 1/1 | 1 | 0 | 8 | - | - | - | - | building detector | ok |
-| 148 | Zerg Overmind | 2500 | - | 1 large | 1/1 | 1 | 0 | 8 | - | - | - | - | building detector | ok |
-| 149 | Zerg Extractor | 750 | - | 1 large | 50/0 | 600 | 0 | 7 | - | - | - | - | building resource | ok |
-| 150 | Mature Crysalis | 250 | - | 1 large | 0/0 | 0 | 0 | 8 | - | - | - | - | building | ok |
-| 151 | Zerg Cerebrate | 1500 | - | 1 large | 0/0 | 0 | 0 | 8 | - | - | - | - | building detector | ok |
-| 152 | Zerg Cerebrate Daggoth | 1500 | - | 1 large | 0/0 | 0 | 0 | 8 | - | - | - | - | building detector | ok |
-| 153 | Unused Zerg Bldg 5 | 0 | - | 1 - | 1/1 | 1 | 0 | 7 | - | - | - | - | building | ok |
-| 154 | Protoss Nexus | 750 | 750 | 1 large | 400/0 | 1800 | +9 | 11 | - | - | - | - | building | ok |
-| 155 | Protoss Robotics Facility | 500 | 500 | 1 large | 200/200 | 1200 | 0 | 10 | - | - | - | - | building | ok |
-| 156 | Protoss Pylon | 300 | 300 | 0 large | 100/0 | 450 | +8 | 8 | - | - | - | - | building | ok |
-| 157 | Protoss Assimilator | 450 | 450 | 1 large | 100/0 | 600 | 0 | 10 | - | - | - | - | building resource | ok |
-| 158 | Protoss Unused | 300 | 300 | 1 - | 1/1 | 1 | 0 | 7 | - | - | - | - | building | ok |
-| 159 | Protoss Observatory | 250 | 250 | 1 large | 50/100 | 450 | 0 | 10 | - | - | - | - | building | ok |
-| 160 | Protoss Gateway | 500 | 500 | 1 large | 150/0 | 900 | 0 | 10 | - | - | - | - | building | ok |
-| 161 | Protoss Unused | 0 | 1 | 1 large | 1/1 | 1 | 0 | 10 | - | - | - | - | building | ok |
+| 147 | Zerg Overmind | 5000 | - | 1 large | 1/1 | 1 | 0 | 8 | - | - | - (unarmed) | - (unarmed) | building detector | ok |
+| 148 | Zerg Overmind | 2500 | - | 1 large | 1/1 | 1 | 0 | 8 | - | - | - (unarmed) | - (unarmed) | building detector | ok |
+| 149 | Zerg Extractor | 750 | - | 1 large | 50/0 | 600 | 0 | 7 | - | - | - (unarmed) | - (unarmed) | building resource | ok |
+| 150 | Mature Crysalis | 250 | - | 1 large | 0/0 | 0 | 0 | 8 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 151 | Zerg Cerebrate | 1500 | - | 1 large | 0/0 | 0 | 0 | 8 | - | - | - (unarmed) | - (unarmed) | building detector | ok |
+| 152 | Zerg Cerebrate Daggoth | 1500 | - | 1 large | 0/0 | 0 | 0 | 8 | - | - | - (unarmed) | - (unarmed) | building detector | ok |
+| 153 | Unused Zerg Bldg 5 | 0 | - | 1 - | 1/1 | 1 | 0 | 7 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 154 | Protoss Nexus | 750 | 750 | 1 large | 400/0 | 1800 | +9 | 11 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 155 | Protoss Robotics Facility | 500 | 500 | 1 large | 200/200 | 1200 | 0 | 10 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 156 | Protoss Pylon | 300 | 300 | 0 large | 100/0 | 450 | +8 | 8 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 157 | Protoss Assimilator | 450 | 450 | 1 large | 100/0 | 600 | 0 | 10 | - | - | - (unarmed) | - (unarmed) | building resource | ok |
+| 158 | Protoss Unused | 300 | 300 | 1 - | 1/1 | 1 | 0 | 7 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 159 | Protoss Observatory | 250 | 250 | 1 large | 50/100 | 450 | 0 | 10 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 160 | Protoss Gateway | 500 | 500 | 1 large | 150/0 | 900 | 0 | 10 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 161 | Protoss Unused | 0 | 1 | 1 large | 1/1 | 1 | 0 | 10 | - | - | - (unarmed) | - (unarmed) | building | ok |
 | 162 | Protoss Photon Cannon | 100 | 100 | 0 large | 150/0 | 750 | 0 | 11 | 20+0 cd22 r224 | 20+0 cd22 r224 | 22.3/22.5 ok | 4864/4864 ok | building detector | ok |
-| 163 | Protoss Citadel of Adun | 450 | 450 | 1 large | 150/100 | 900 | 0 | 10 | - | - | - | - | building | ok |
-| 164 | Protoss Cybernetics Core | 500 | 500 | 1 large | 200/0 | 900 | 0 | 10 | - | - | - | - | building | ok |
-| 165 | Protoss Templar Archives | 500 | 500 | 1 large | 150/200 | 900 | 0 | 10 | - | - | - | - | building | ok |
-| 166 | Protoss Forge | 550 | 550 | 1 large | 150/0 | 600 | 0 | 10 | - | - | - | - | building | ok |
-| 167 | Protoss Stargate | 600 | 600 | 1 large | 150/150 | 1050 | 0 | 10 | - | - | - | - | building | ok |
-| 168 | Stasis Cell/Prison | 2000 | - | 1 large | 150/0 | 1 | 0 | 8 | - | - | - | - | building | ok |
-| 169 | Protoss Fleet Beacon | 500 | 500 | 1 large | 300/200 | 900 | 0 | 10 | - | - | - | - | building | ok |
-| 170 | Protoss Arbiter Tribunal | 500 | 500 | 1 large | 200/150 | 900 | 0 | 10 | - | - | - | - | building | ok |
-| 171 | Protoss Robotics Support Bay | 450 | 450 | 1 large | 150/100 | 450 | 0 | 10 | - | - | - | - | building | ok |
-| 172 | Protoss Shield Battery | 200 | 200 | 1 large | 100/0 | 450 | 0 | 10 | - | - | - | - | building | ok |
-| 173 | Khaydarin Crystal Formation | 100000 | - | 1 large | 250/0 | 1 | 0 | 10 | - | - | - | - | building | ok |
-| 174 | Protoss Temple | 1500 | - | 1 large | 250/0 | 1 | 0 | 10 | - | - | - | - | building | ok |
-| 175 | Xel'Naga Temple | 5000 | - | 1 large | 1500/500 | 4800 | 0 | 10 | - | - | - | - | building | ok |
-| 176 | Mineral Field | 100000 | - | 0 - | 1/1 | 1 | 0 | 9 | - | - | - | - | building resource | ok |
-| 177 | Mineral Field | 100000 | - | 0 - | 1/1 | 1 | 0 | 9 | - | - | - | - | building resource | ok |
-| 178 | Mineral Field | 100000 | - | 0 - | 1/1 | 1 | 0 | 9 | - | - | - | - | building resource | ok |
-| 179 | Cave | 800 | - | 0 - | 1/1 | 1 | 0 | 9 | - | - | - | - | building resource | ok |
-| 180 | Cave-in | 800 | - | 0 - | 1/1 | 1 | 0 | 9 | - | - | - | - | building resource | ok |
-| 181 | Cantina | 800 | - | 0 - | 1/1 | 1 | 0 | 9 | - | - | - | - | building | ok |
+| 163 | Protoss Citadel of Adun | 450 | 450 | 1 large | 150/100 | 900 | 0 | 10 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 164 | Protoss Cybernetics Core | 500 | 500 | 1 large | 200/0 | 900 | 0 | 10 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 165 | Protoss Templar Archives | 500 | 500 | 1 large | 150/200 | 900 | 0 | 10 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 166 | Protoss Forge | 550 | 550 | 1 large | 150/0 | 600 | 0 | 10 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 167 | Protoss Stargate | 600 | 600 | 1 large | 150/150 | 1050 | 0 | 10 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 168 | Stasis Cell/Prison | 2000 | - | 1 large | 150/0 | 1 | 0 | 8 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 169 | Protoss Fleet Beacon | 500 | 500 | 1 large | 300/200 | 900 | 0 | 10 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 170 | Protoss Arbiter Tribunal | 500 | 500 | 1 large | 200/150 | 900 | 0 | 10 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 171 | Protoss Robotics Support Bay | 450 | 450 | 1 large | 150/100 | 450 | 0 | 10 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 172 | Protoss Shield Battery | 200 | 200 | 1 large | 100/0 | 450 | 0 | 10 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 173 | Khaydarin Crystal Formation | 100000 | - | 1 large | 250/0 | 1 | 0 | 10 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 174 | Protoss Temple | 1500 | - | 1 large | 250/0 | 1 | 0 | 10 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 175 | Xel'Naga Temple | 5000 | - | 1 large | 1500/500 | 4800 | 0 | 10 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 176 | Mineral Field | 100000 | - | 0 - | 1/1 | 1 | 0 | 9 | - | - | - (unarmed) | - (unarmed) | building resource | ok |
+| 177 | Mineral Field | 100000 | - | 0 - | 1/1 | 1 | 0 | 9 | - | - | - (unarmed) | - (unarmed) | building resource | ok |
+| 178 | Mineral Field | 100000 | - | 0 - | 1/1 | 1 | 0 | 9 | - | - | - (unarmed) | - (unarmed) | building resource | ok |
+| 179 | Cave | 800 | - | 0 - | 1/1 | 1 | 0 | 9 | - | - | - (unarmed) | - (unarmed) | building resource | ok |
+| 180 | Cave-in | 800 | - | 0 - | 1/1 | 1 | 0 | 9 | - | - | - (unarmed) | - (unarmed) | building resource | ok |
+| 181 | Cantina | 800 | - | 0 - | 1/1 | 1 | 0 | 9 | - | - | - (unarmed) | - (unarmed) | building | ok |
 | 182 | Mining Platform | 800 | - | 0 - | 1/1 | 1 | 0 | 9 | 7+1 cd22 r224 | - | 22.7/22.5 ok | 1536/1536 ok | building | ok |
-| 183 | Independent Command Center | 800 | - | 0 - | 1/1 | 1 | 0 | 9 | - | - | - | - | building | ok |
+| 183 | Independent Command Center | 800 | - | 0 - | 1/1 | 1 | 0 | 9 | - | - | - (unarmed) | - (unarmed) | building | ok |
 | 184 | Independent Starport | 800 | - | 0 - | 1/1 | 1 | 0 | 9 | 7+1 cd22 r128 | - | 22.4/22.5 ok | 1536/1536 ok | building | ok |
-| 185 | Jump Gate | 800 | - | 0 - | 1/1 | 1 | 0 | 9 | - | - | - | - | building | ok |
-| 186 | Ruins | 800 | - | 0 - | 1/1 | 1 | 0 | 9 | - | - | - | - | building | ok |
-| 187 | Kyadarin Crystal Formation | 800 | - | 0 - | 1/1 | 1 | 0 | 9 | - | - | - | - | building | ok |
-| 188 | Vespene Geyser | 100000 | - | 0 - | 1/1 | 1 | 0 | 9 | - | - | - | - | building resource | ok |
-| 189 | Warp Gate | 700 | - | 1 large | 600/200 | 2400 | 0 | 8 | - | - | - | - | building | ok |
-| 190 | Psi Disrupter | 2000 | - | 1 large | 1000/400 | 4800 | 0 | 10 | - | - | - | - | building | ok |
-| 191 | Zerg Marker | 100000 | - | 0 - | 250/0 | 1 | 0 | 8 | - | - | - | - | building | ok |
-| 192 | Terran Marker | 100000 | - | 0 - | 50/50 | 1 | 0 | 8 | - | - | - | - | building | ok |
-| 193 | Protoss Marker | 100000 | - | 0 - | 100/100 | 1 | 0 | 8 | - | - | - | - | building | ok |
-| 194 | Zerg Beacon | 100000 | - | 0 - | 250/0 | 1 | 0 | 8 | - | - | - | - | building | ok |
-| 195 | Terran Beacon | 100000 | - | 0 - | 50/50 | 1 | 0 | 8 | - | - | - | - | building | ok |
-| 196 | Protoss Beacon | 100000 | - | 0 - | 100/100 | 1 | 0 | 8 | - | - | - | - | building | ok |
-| 197 | Zerg Flag Beacon | 100000 | - | 0 - | 250/0 | 1 | 0 | 8 | - | - | - | - | building | ok |
-| 198 | Terran Flag Beacon | 100000 | - | 0 - | 50/50 | 1 | 0 | 8 | - | - | - | - | building | ok |
-| 199 | Protoss Flag Beacon | 100000 | - | 0 - | 100/100 | 1 | 0 | 8 | - | - | - | - | building | ok |
-| 200 | Power Generator | 800 | - | 1 large | 200/50 | 2400 | 0 | 8 | - | - | - | - | building | ok |
-| 201 | Overmind Cocoon | 2500 | - | 1 large | 1000/500 | 2400 | 0 | 10 | - | - | - | - | building detector | ok |
-| 202 | Dark Swarm | 800 | - | 0 - | 250/200 | 2400 | 0 | 8 | - | - | - | - |  | ok |
+| 185 | Jump Gate | 800 | - | 0 - | 1/1 | 1 | 0 | 9 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 186 | Ruins | 800 | - | 0 - | 1/1 | 1 | 0 | 9 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 187 | Kyadarin Crystal Formation | 800 | - | 0 - | 1/1 | 1 | 0 | 9 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 188 | Vespene Geyser | 100000 | - | 0 - | 1/1 | 1 | 0 | 9 | - | - | - (unarmed) | - (unarmed) | building resource | ok |
+| 189 | Warp Gate | 700 | - | 1 large | 600/200 | 2400 | 0 | 8 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 190 | Psi Disrupter | 2000 | - | 1 large | 1000/400 | 4800 | 0 | 10 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 191 | Zerg Marker | 100000 | - | 0 - | 250/0 | 1 | 0 | 8 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 192 | Terran Marker | 100000 | - | 0 - | 50/50 | 1 | 0 | 8 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 193 | Protoss Marker | 100000 | - | 0 - | 100/100 | 1 | 0 | 8 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 194 | Zerg Beacon | 100000 | - | 0 - | 250/0 | 1 | 0 | 8 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 195 | Terran Beacon | 100000 | - | 0 - | 50/50 | 1 | 0 | 8 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 196 | Protoss Beacon | 100000 | - | 0 - | 100/100 | 1 | 0 | 8 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 197 | Zerg Flag Beacon | 100000 | - | 0 - | 250/0 | 1 | 0 | 8 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 198 | Terran Flag Beacon | 100000 | - | 0 - | 50/50 | 1 | 0 | 8 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 199 | Protoss Flag Beacon | 100000 | - | 0 - | 100/100 | 1 | 0 | 8 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 200 | Power Generator | 800 | - | 1 large | 200/50 | 2400 | 0 | 8 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 201 | Overmind Cocoon | 2500 | - | 1 large | 1000/500 | 2400 | 0 | 10 | - | - | - (unarmed) | - (unarmed) | building detector | ok |
+| 202 | Dark Swarm | 800 | - | 0 - | 250/200 | 2400 | 0 | 8 | - | - | - (unarmed) | - (unarmed) |  | ok |
 | 203 | Floor Missile Trap | 50 | - | 0 large | 1/1 | 1 | 0 | 6 | 10+1 cd22 r160 x2 | - | 22.4/22.5 ok | 4608/2304 ok | detector | ok |
-| 204 | Floor Hatch (UNUSED) | 100000 | - | 0 - | 1/1 | 1 | 0 | 7 | - | - | - | - |  | ok |
-| 205 | Left Upper Level Door | 100000 | - | 0 - | 1/1 | 1 | 0 | 1 | - | - | - | - |  | ok |
-| 206 | Right Upper Level Door | 100000 | - | 0 - | 1/1 | 1 | 0 | 1 | - | - | - | - |  | ok |
-| 207 | Left Pit Door | 100000 | - | 0 - | 1/1 | 1 | 0 | 1 | - | - | - | - |  | ok |
-| 208 | Right Pit Door | 100000 | - | 0 - | 1/1 | 1 | 0 | 1 | - | - | - | - |  | ok |
+| 204 | Floor Hatch (UNUSED) | 100000 | - | 0 - | 1/1 | 1 | 0 | 7 | - | - | - (unarmed) | - (unarmed) |  | ok |
+| 205 | Left Upper Level Door | 100000 | - | 0 - | 1/1 | 1 | 0 | 1 | - | - | - (unarmed) | - (unarmed) |  | ok |
+| 206 | Right Upper Level Door | 100000 | - | 0 - | 1/1 | 1 | 0 | 1 | - | - | - (unarmed) | - (unarmed) |  | ok |
+| 207 | Left Pit Door | 100000 | - | 0 - | 1/1 | 1 | 0 | 1 | - | - | - (unarmed) | - (unarmed) |  | ok |
+| 208 | Right Pit Door | 100000 | - | 0 - | 1/1 | 1 | 0 | 1 | - | - | - (unarmed) | - (unarmed) |  | ok |
 | 209 | Floor Gun Trap | 50 | - | 0 large | 1/1 | 1 | 0 | 6 | 10+1 cd22 r160 | - | 22.4/22.5 ok | 2304/2304 ok | detector | ok |
 | 210 | Left Wall Missile Trap | 50 | - | 0 large | 1/1 | 1 | 0 | 6 | 10+1 cd22 r160 x2 | - | 22.4/22.5 ok | 4608/2304 ok | detector | ok |
-| 211 | Left Wall Flame Trap | 50 | - | 0 large | 1/1 | 1 | 0 | 3 | 8+1 cd22 r64 | - | 22.5/22.5 ok | - | detector | ok |
+| 211 | Left Wall Flame Trap | 50 | - | 0 large | 1/1 | 1 | 0 | 3 | 8+1 cd22 r64 | - | 22.5/22.5 ok | - (flame splash: tests/rate_of_fire_retail.rs) | detector | ok |
 | 212 | Right Wall Missile Trap | 50 | - | 0 large | 1/1 | 1 | 0 | 6 | 10+1 cd22 r160 x2 | - | 22.4/22.5 ok | 4608/2304 ok | detector | ok |
-| 213 | Right Wall Flame Trap | 50 | - | 0 large | 1/1 | 1 | 0 | 3 | 8+1 cd22 r64 | - | 22.5/22.5 ok | - | detector | ok |
-| 214 | Start Location | 800 | - | 0 - | 0/0 | 0 | 0 | 1 | - | - | - | - | building | ok |
-| 215 | Flag | 100000 | - | 0 - | 1/1 | 1 | 0 | 5 | - | - | - | - |  | ok |
-| 216 | Young Chrysalis | 800 | - | 0 - | 1/1 | 1 | 0 | 5 | - | - | - | - |  | ok |
-| 217 | Psi Emitter | 800 | - | 0 - | 1/1 | 1 | 0 | 5 | - | - | - | - |  | ok |
-| 218 | Data Disc | 800 | - | 0 - | 1/1 | 1 | 0 | 5 | - | - | - | - |  | ok |
-| 219 | Khaydarin Crystal | 800 | - | 0 - | 1/1 | 1 | 0 | 5 | - | - | - | - |  | ok |
-| 220 | Mineral Chunk | 800 | - | 0 - | 1/1 | 1 | 0 | 5 | - | - | - | - |  | ok |
-| 221 | Mineral Chunk | 800 | - | 0 - | 1/1 | 1 | 0 | 5 | - | - | - | - |  | ok |
-| 222 | Vespene Orb | 800 | - | 0 - | 1/1 | 1 | 0 | 5 | - | - | - | - |  | ok |
-| 223 | Vespene Orb | 800 | - | 0 - | 1/1 | 1 | 0 | 5 | - | - | - | - |  | ok |
-| 224 | Vespene Sac | 800 | - | 0 - | 1/1 | 1 | 0 | 5 | - | - | - | - |  | ok |
-| 225 | Vespene Sac | 800 | - | 0 - | 1/1 | 1 | 0 | 5 | - | - | - | - |  | ok |
-| 226 | Vespene Tank | 800 | - | 0 - | 1/1 | 1 | 0 | 5 | - | - | - | - |  | ok |
-| 227 | Vespene Tank | 800 | - | 0 - | 1/1 | 1 | 0 | 5 | - | - | - | - |  | ok |
+| 213 | Right Wall Flame Trap | 50 | - | 0 large | 1/1 | 1 | 0 | 3 | 8+1 cd22 r64 | - | 22.5/22.5 ok | - (flame splash: tests/rate_of_fire_retail.rs) | detector | ok |
+| 214 | Start Location | 800 | - | 0 - | 0/0 | 0 | 0 | 1 | - | - | - (unarmed) | - (unarmed) | building | ok |
+| 215 | Flag | 100000 | - | 0 - | 1/1 | 1 | 0 | 5 | - | - | - (unarmed) | - (unarmed) |  | ok |
+| 216 | Young Chrysalis | 800 | - | 0 - | 1/1 | 1 | 0 | 5 | - | - | - (unarmed) | - (unarmed) |  | ok |
+| 217 | Psi Emitter | 800 | - | 0 - | 1/1 | 1 | 0 | 5 | - | - | - (unarmed) | - (unarmed) |  | ok |
+| 218 | Data Disc | 800 | - | 0 - | 1/1 | 1 | 0 | 5 | - | - | - (unarmed) | - (unarmed) |  | ok |
+| 219 | Khaydarin Crystal | 800 | - | 0 - | 1/1 | 1 | 0 | 5 | - | - | - (unarmed) | - (unarmed) |  | ok |
+| 220 | Mineral Chunk | 800 | - | 0 - | 1/1 | 1 | 0 | 5 | - | - | - (unarmed) | - (unarmed) |  | ok |
+| 221 | Mineral Chunk | 800 | - | 0 - | 1/1 | 1 | 0 | 5 | - | - | - (unarmed) | - (unarmed) |  | ok |
+| 222 | Vespene Orb | 800 | - | 0 - | 1/1 | 1 | 0 | 5 | - | - | - (unarmed) | - (unarmed) |  | ok |
+| 223 | Vespene Orb | 800 | - | 0 - | 1/1 | 1 | 0 | 5 | - | - | - (unarmed) | - (unarmed) |  | ok |
+| 224 | Vespene Sac | 800 | - | 0 - | 1/1 | 1 | 0 | 5 | - | - | - (unarmed) | - (unarmed) |  | ok |
+| 225 | Vespene Sac | 800 | - | 0 - | 1/1 | 1 | 0 | 5 | - | - | - (unarmed) | - (unarmed) |  | ok |
+| 226 | Vespene Tank | 800 | - | 0 - | 1/1 | 1 | 0 | 5 | - | - | - (unarmed) | - (unarmed) |  | ok |
+| 227 | Vespene Tank | 800 | - | 0 - | 1/1 | 1 | 0 | 5 | - | - | - (unarmed) | - (unarmed) |  | ok |
 
 ## Buildings
 
@@ -382,8 +382,9 @@ Each spell is cast in the simulation on a fresh target and the value it leaves i
 | EMP: energy left | 0 | 0 ok | `emp_shockwave` |
 | EMP: shields left | 0 | 0 ok | `emp_shockwave` |
 | Yamato Gun hp on a Supply Depot | 259 | 259 ok | `damage matrix` |
+| Nuclear strike hp on a Command Center | 999 | 999 ok | `hit_type_nuclear_missile` |
 
-Spell effects matching: 13 / 13.
+Spell effects matching: 14 / 14.
 
 ### Other spells
 

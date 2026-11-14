@@ -27,7 +27,9 @@ special attackers' first hit (7/7: Siege Mode, Goliath missiles, Carrier,
 Reaver, burrowed Lurker, Scourge, Infested Terran), the other two mineral
 field types and 15 more spell effects (Hallucination, Broodlings, Swarm,
 Web, Scanner, Feedback, Consume, Restoration, Mind Control, Optical Flare,
-Parasite, Recall, Spider Mines), all matching.
+Parasite, Recall, Spider Mines) and the nuclear strike (999 on a Command
+Center), all matching.  Every unmeasured cell in the main table says why
+(unarmed, turret, hangar, launched unit, flame splash) and where it is covered.
 
 Measuring every special attacker for the table found four real bugs, fixed
 against OpenBW (2026-11-14):
