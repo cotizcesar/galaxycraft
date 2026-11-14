@@ -65,10 +65,10 @@ pub const BUNKER_GUARD_RETRY_TICKS: u8 = 15;
 /// stands at the Bunker's centre, so from the Bunker's edge this is the
 /// familiar "+1 range".
 pub const BUNKER_GUARD_RANGE_BONUS_PX: i32 = 64;
-/// `0x005cc810`: Broodlings (and dying units) receive `0x546` = 1350
-/// frames from `0x005b5e20`.  Earlier revisions used 1800 from a secondary
-/// source; the retail constant is 1350.
-pub const BROODLING_LIFETIME_TICKS: i64 = 1350;
+/// `0x005cc810` (disassembled): a hallucination gets 0x546 = 1350 frames,
+/// a Broodling (type 0x28) 0x708 = 1800 (OpenBW `default_remove_timer`).
+pub const BROODLING_LIFETIME_TICKS: i64 = 1800;
+pub const HALLUCINATION_LIFETIME_TICKS: i64 = 1350;
 
 pub const MINING_TIMER_FRAMES: u16 = 75;
 /// This engine starts at box contact and does not model the facing/entry and

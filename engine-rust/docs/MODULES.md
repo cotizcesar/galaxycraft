@@ -169,7 +169,7 @@ Sizes are lines.  Find a function with `rg -n 'fn name' engine-rust/src`.
 | `sim/animation.rs` | 245 | `impl World`: animation (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/combat.rs` | 784 | `impl World`: combat (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/creep_power.rs` | 224 | `impl World`: creep power (moved out of `mod.rs` by scripts/split_impl.py). |
-| `sim/damage.rs` | 752 | `impl World`: damage (moved out of `mod.rs` by scripts/split_impl.py). |
+| `sim/damage.rs` | 751 | `impl World`: damage (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/lift.rs` | 223 | `impl World`: lifting and landing Terran buildings, and their add-ons |
 | `sim/mod.rs` | 2568 | Deterministic StarCraft rules simulation. |
 | `sim/movement.rs` | 734 | `impl World`: movement (moved out of `mod.rs` by scripts/split_impl.py). |
@@ -177,8 +177,8 @@ Sizes are lines.  Find a function with `rg -n 'fn name' engine-rust/src`.
 | `sim/orders.rs` | 660 | `impl World`: orders (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/production.rs` | 1343 | `impl World`: production (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/projectiles.rs` | 363 | `impl World`: projectiles (moved out of `mod.rs` by scripts/split_impl.py). |
-| `sim/spawn.rs` | 893 | `impl World`: spawn (moved out of `mod.rs` by scripts/split_impl.py). |
-| `sim/spells.rs` | 1052 | `impl World`: spells (moved out of `mod.rs` by scripts/split_impl.py). |
+| `sim/spawn.rs` | 894 | `impl World`: spawn (moved out of `mod.rs` by scripts/split_impl.py). |
+| `sim/spells.rs` | 1056 | `impl World`: spells (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/step.rs` | 826 | `impl World`: step (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/tests/cloak.rs` | 41 | `units.dat` flags: permanent cloak (0x400000) and invincible types |
 | `sim/tests.rs` | 3739 |  |

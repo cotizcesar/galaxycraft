@@ -276,3 +276,30 @@ in the 50 % ring of a Supply Depot.
 
 A consequence that matches retail: a full-health Zergling now beats a Marine
 one on one.
+
+## Spell effects, production times and mining (2026-11-14)
+
+`tests/effects_openbw.rs` casts each spell in the simulation and compares
+what it leaves with OpenBW's numbers (status timers count 8-frame updates in
+both): Lockdown 131, Stasis Field 131, Ensnare 75, Plague 75 with the weapon
+damage / 76 per update (never killing), Maelstrom 22, Defensive Matrix 250
+hit points for 168, Irradiate the Irradiate weapon's cooldown, EMP energy and
+shields to 0, Hallucination two copies owned by the caster for 1350 frames,
+Broodlings 1800 frames, Dark Swarm 900 frames, Disruption Web 360 frames.
+Three were wrong and are fixed:
+
+- Broodlings lived 1350 frames: the disassembled retail `0x005cc810` returns
+  0x546 (1350) for a hallucination and 0x708 (1800) for a Broodling
+  (type 0x28), as OpenBW's `default_remove_timer`;
+- Hallucination made one copy, owned by the target's player, that never
+  expired (OpenBW `order_CastHallucination`: two, the caster's, 1350 frames);
+- Dark Swarm lasted 360 frames, the Disruption Web's time (OpenBW
+  `dark_swarm`: 900).
+
+`tests/build_times_retail.rs`: every unit trained in a building appears
+after its `units.dat` build time (within 2 frames).
+
+Mining: 8 minerals and 8 gas per trip and 37 frames inside a refinery, as
+OpenBW.  The mineral dwell is 93 frames, not OpenBW's 75: it is fitted to
+the user's retail recordings (Wasteland income within -1.7 %, see
+`MINING_FRAMES`).
