@@ -32,6 +32,18 @@ pub enum Research {
 }
 
 impl CampaignAi {
+    /// Opcode 107 `create_nuke` (retail `0x6421ff`): the first of the
+    /// player's silos without a missile gets one, ready to launch.
+    pub(super) fn create_nuke(&mut self, world: &mut World) {
+        let me = self.player;
+        if let Some(silo) = world.units.iter_mut().find(|u| {
+            u.alive && u.owner == me && u.type_id == crate::ids::unit::NUCLEAR_SILO && !u.nuke_ready
+        }) {
+            silo.nuke_ready = true;
+        }
+        self.nukes = self.nukes.saturating_add(1);
+    }
+
     /// Opcode 6 (`build`): keep the largest count asked for each type and
     /// try at once.
     pub(super) fn request_build(&mut self, world: &mut World, ins: &Instruction) {
