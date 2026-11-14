@@ -292,7 +292,15 @@ impl World {
             if matches!(spell, Spell::SpawnBroodlings | Spell::Consume) && id == caster_id {
                 return Err(SimError::InvalidTarget);
             }
-            if spell == Spell::Restoration && !self.restoration_worthwhile(caster_id, id) {
+            // OpenBW `unit_tech_target_valid`: Restoration takes any unit but
+            // a building.  `FUN_005c7460` (same owner, 61+ hit points and
+            // shields, a removable effect) is the computer's choice of
+            // target, so it only gates computer casters.
+            if spell == Spell::Restoration
+                && (self.data.unit(self.units[t].type_id).is_building()
+                    || (self.players[owner].is_computer
+                        && !self.restoration_worthwhile(caster_id, id)))
+            {
                 return Err(SimError::InvalidTarget);
             }
             if spell == Spell::Healing {
@@ -667,9 +675,11 @@ impl World {
                 if let Some(t) = target_idx
                     && t != caster
                 {
-                    let gained =
-                        self.data.unit(self.units[t].type_id).hit_points_raw as i32 / fp(1) * 2;
-                    self.units[caster].add_energy_points(gained);
+                    // OpenBW `consume_unit`: a flat 50 energy (none from a
+                    // hallucination), up to the caster's maximum.
+                    if !self.units[t].status.hallucination {
+                        self.units[caster].add_energy_points(50);
+                    }
                     self.kill_unit(t);
                 }
             }

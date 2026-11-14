@@ -296,6 +296,22 @@ Three were wrong and are fixed:
 - Dark Swarm lasted 360 frames, the Disruption Web's time (OpenBW
   `dark_swarm`: 900).
 
+Also checked: Psionic Storm deals eight hits of its weapon (112), Feedback
+damage equal to the target's energy and empties it, Consume kills its
+target, Restoration clears every effect.  Two more were wrong and are fixed:
+
+- Consume gave twice the victim's hit points in energy (OpenBW
+  `consume_unit`: a flat 50, none from a hallucination);
+- Restoration refused targets under 61 hit points plus shields, other
+  players' units and units with nothing to remove, for players too: that is
+  the computer's target choice (`FUN_005c7460`); OpenBW
+  `unit_tech_target_valid` only refuses buildings.  Players could not
+  restore a Marine.
+
+Open: OpenBW lets Consume take any of the caster's own non-Terran units
+(a mind-controlled Protoss unit); ours follows the Consume weapon's
+organic-only flags.
+
 `tests/build_times_retail.rs`: every unit trained in a building appears
 after its `units.dat` build time (within 2 frames).
 

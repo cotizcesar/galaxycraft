@@ -32,7 +32,10 @@ fn every_building_trained_unit_takes_its_units_dat_build_time() {
         // measured here.
         w.players[0].cheats.build_anything = true;
         // Supply, power and the producer's requirements, all complete.
-        for (k, depot) in [uid::SUPPLY_DEPOT, uid::PYLON, uid::OVERLORD].iter().enumerate() {
+        for (k, depot) in [uid::SUPPLY_DEPOT, uid::PYLON, uid::OVERLORD]
+            .iter()
+            .enumerate()
+        {
             for j in 0..6 {
                 if let Ok(d) = w.spawn_px(0, *depot, 1200 + 80 * j, 200 + 120 * k as i32) {
                     w.units[d].completed = true;
@@ -50,7 +53,11 @@ fn every_building_trained_unit_takes_its_units_dat_build_time() {
                 w.units[r].completed = true;
             }
         }
-        let before = w.units.iter().filter(|u| u.alive && u.type_id == ty).count();
+        let before = w
+            .units
+            .iter()
+            .filter(|u| u.alive && u.type_id == ty)
+            .count();
         if let Err(e) = w.train(w.units[p].id, ty) {
             eprintln!("skip {ty}: {e:?}");
             continue;
@@ -59,7 +66,12 @@ fn every_building_trained_unit_takes_its_units_dat_build_time() {
         let mut done = None;
         for _ in 0..3000 {
             w.step();
-            if w.units.iter().filter(|u| u.alive && u.type_id == ty).count() > before {
+            if w.units
+                .iter()
+                .filter(|u| u.alive && u.type_id == ty)
+                .count()
+                > before
+            {
                 done = Some(w.tick - start);
                 break;
             }
