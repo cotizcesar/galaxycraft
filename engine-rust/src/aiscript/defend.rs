@@ -45,3 +45,56 @@ impl CampaignAi {
         }
     }
 }
+
+impl CampaignAi {
+    /// `enter_bunker` (the `EnBk` script a trigger starts at a location):
+    /// the infantry near the Bunker closest to that location go in, up to
+    /// its four seats.  The Trump Card starts it at four locations.
+    /// Before, the first Bunker on the map was used whatever the location,
+    /// the search square was 8 pixels (not tiles) and vehicles were sent
+    /// too.  INFERENCE: the 8-tile gathering square.
+    pub(super) fn enter_bunker(&self, world: &mut World) {
+        use crate::ids::unit as uid;
+        let (lx, ly) = self.location_center(world);
+        let me = self.player;
+        let Some(bunker) = world
+            .units
+            .iter()
+            .filter(|u| u.alive && u.completed && u.owner == me && u.type_id == uid::BUNKER)
+            .min_by_key(|u| {
+                let (dx, dy) = ((u.x / 256 - lx) as i64, (u.y / 256 - ly) as i64);
+                dx * dx + dy * dy
+            })
+        else {
+            return;
+        };
+        let (bid, bx, by, seats) = (
+            bunker.id,
+            bunker.x,
+            bunker.y,
+            4usize.saturating_sub(bunker.cargo.len()),
+        );
+        let mut near: Vec<(i64, u32)> = world
+            .units
+            .iter()
+            .filter(|u| {
+                u.alive
+                    && u.owner == me
+                    && matches!(
+                        u.type_id,
+                        uid::MARINE | uid::FIREBAT | uid::GHOST | uid::MEDIC
+                    )
+                    && (u.x - bx).abs() < 8 * 32 * 256
+                    && (u.y - by).abs() < 8 * 32 * 256
+            })
+            .map(|u| {
+                let (dx, dy) = (((u.x - bx) / 256) as i64, ((u.y - by) / 256) as i64);
+                (dx * dx + dy * dy, u.id)
+            })
+            .collect();
+        near.sort();
+        for (_, id) in near.into_iter().take(seats) {
+            let _ = world.issue(id, crate::sim::Order::EnterTransport { transport: bid });
+        }
+    }
+}

@@ -963,28 +963,32 @@ impl CampaignAi {
             }
             32 => {
                 let target = self.location_center(world);
-                for (i, u) in world.units.iter().enumerate() {
+                // The owners of units at the location (INFERENCE: 3 tiles).
+                for u in &world.units {
                     if u.alive
-                        && (u.x / 256 - target.0).abs() < 12
-                        && (u.y / 256 - target.1).abs() < 12
-                        && i as u8 != self.player
-                        && !self.enemies.contains(&(i as u8))
+                        && (u.x / 256 - target.0).abs() < 96
+                        && (u.y / 256 - target.1).abs() < 96
+                        && u.owner != self.player
+                        && (u.owner as usize) < world.players.len()
+                        && !self.enemies.contains(&u.owner)
                     {
-                        self.enemies.push(i as u8);
+                        self.enemies.push(u.owner);
                     }
                 }
                 self.pc += 1;
             }
             33 => {
                 let target = self.location_center(world);
-                for (i, u) in world.units.iter().enumerate() {
+                // The owners of units at the location (INFERENCE: 3 tiles).
+                for u in &world.units {
                     if u.alive
-                        && (u.x / 256 - target.0).abs() < 12
-                        && (u.y / 256 - target.1).abs() < 12
-                        && i as u8 != self.player
-                        && !self.allies.contains(&(i as u8))
+                        && (u.x / 256 - target.0).abs() < 96
+                        && (u.y / 256 - target.1).abs() < 96
+                        && u.owner != self.player
+                        && (u.owner as usize) < world.players.len()
+                        && !self.allies.contains(&u.owner)
                     {
-                        self.allies.push(i as u8);
+                        self.allies.push(u.owner);
                     }
                 }
                 self.pc += 1;
@@ -1030,32 +1034,7 @@ impl CampaignAi {
                 return false;
             }
             41 => {
-                // enter_bunker: load eligible infantry into the nearest bunker.
-                if let Some(bunker) = world.units.iter().find(|u| {
-                    u.alive && u.owner == self.player && u.type_id == crate::ids::unit::BUNKER
-                }) {
-                    let bid = bunker.id;
-                    let (bx, by) = (bunker.x, bunker.y);
-                    let ids: Vec<u32> = world
-                        .units
-                        .iter()
-                        .filter(|u| {
-                            u.alive
-                                && u.owner == self.player
-                                && !world.data.unit(u.type_id).is_building()
-                                && u.type_id != crate::ids::unit::SCV
-                                && u.type_id != crate::ids::unit::PROBE
-                                && u.type_id != crate::ids::unit::DRONE
-                                && (u.x - bx).abs() < 8 * 256
-                                && (u.y - by).abs() < 8 * 256
-                        })
-                        .map(|u| u.id)
-                        .collect();
-                    for id in ids {
-                        let _ =
-                            world.issue(id, crate::sim::Order::EnterTransport { transport: bid });
-                    }
-                }
+                self.enter_bunker(world);
                 self.pc += 1;
             }
             42 => {
@@ -1930,12 +1909,10 @@ impl CampaignAi {
     }
 
     fn location_center(&self, world: &World) -> (i32, i32) {
-        // Trigger locations are stored in map pixels; orders and nuke/recall
-        // targets use whole tiles.
-        self.location
-            .map(|(x, y)| (x / 256, y / 256))
-            .or_else(|| self.base(world))
-            .unwrap_or((0, 0))
+        // Trigger locations, orders and nuke/recall targets are all map
+        // pixels (dividing by 256 put every "at location" script near the
+        // map's top-left corner).
+        self.location.or_else(|| self.base(world)).unwrap_or((0, 0))
     }
 
     fn spawn_thread(&mut self, target: u16) {
@@ -1957,8 +1934,12 @@ impl CampaignAi {
     }
 
     /// Retail region containing a tile, as an index into the state array.
-    fn region_at_tile(&self, world: &World, tile: (i32, i32)) -> Option<usize> {
-        world.regions.region_at_tile(tile).map(|id| id as usize)
+    /// The region under a map pixel (every caller has pixels).
+    fn region_at_tile(&self, world: &World, px: (i32, i32)) -> Option<usize> {
+        world
+            .regions
+            .region_at_tile((px.0.div_euclid(32), px.1.div_euclid(32)))
+            .map(|id| id as usize)
     }
 
     fn region_state(&self, world: &World, id: usize) -> u8 {

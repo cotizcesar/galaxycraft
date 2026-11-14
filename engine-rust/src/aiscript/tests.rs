@@ -277,7 +277,7 @@ fn move_dt_sends_dark_templar_to_the_trigger_location() {
     let mut ai = CampaignAi::new(0, &script);
     ai.location = Some((768, 512));
     ai.update(&mut world, None);
-    assert_eq!(world.units[dt].order, Order::Move { pos: (3, 2) });
+    assert_eq!(world.units[dt].order, Order::Move { pos: (768, 512) });
 }
 
 #[test]
@@ -390,7 +390,7 @@ fn region_state_commands_mark_the_retail_region_graph() {
             external: false,
         },
     );
-    ai.location = Some((20 * 256, 20 * 256));
+    ai.location = Some((20 * 32, 20 * 32));
     ai.update(&mut world, None);
     assert!(
         world.ai_region_states[0].contains(&5),

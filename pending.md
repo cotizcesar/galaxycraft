@@ -66,3 +66,7 @@ on screen.
   inference, as is the `attack_prepare` gathering point (three quarters of
   the way to the target); only Desperate Alliance's first wave is matched
   to retail.
+- **The Trump Card's Control Tower** is hit from the east at ~11 s in
+  retail (player idle); in ours nothing hits it in the first 50 s.  The
+  shooter is not identified (the nearby tank lacks Siege Mode at start;
+  the Bunker beside it is empty).
