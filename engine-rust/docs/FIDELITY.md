@@ -70,6 +70,12 @@ The 8-player skirmish was then played to the end through the client
 (`melee.trg`: a player with no buildings is defeated) was missing, and every
 skirmish AI attacked the local seat first; both fixed.
 
+In the retail game itself, `docs/RETAIL-PANELS.md` reads the selection panel
+of every placeable unit and building (190 types on a generated map): 168 show
+exactly the executable's health, shields, armor and weapon damage, 22 cannot
+be selected (critters, doodad buildings, a wandering Larva, an expired
+Broodling), none differs.
+
 ## What matches
 
 - **Container and log decoding.**  Header (633 B), map and action log decode
