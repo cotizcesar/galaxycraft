@@ -72,15 +72,15 @@ on screen.
   retail (player idle); in ours nothing hits it in the first 50 s.  The
   shooter is not identified (the nearby tank lacks Siege Mode at start;
   the Bunker beside it is empty).
-- **Emperor's Fall (Ground Zero)**: retail shows "Nuclear launch
-  detected" at ~18 s and combat at the player at ~38 s (player idle);
-  ours hits first at 49 s.  Ours requests the strike at 11 s (NuHe) and
-  fails: the 19 silos the map places hold no missile (map hangar 0), so
-  how retail arms them is not known.
+- **Emperor's Fall (Ground Zero)**: the nuke now launches (create_nuke
+  arms a silo, as retail `0x6421ff`), but our Ghost strikes from where it
+  stands; retail's walks to the target first (order 0x7e), so ours lands
+  ~9 s early (30 s vs ~39 s).
 - **Emperor's Fall (Birds of War)**: retail shows no attack at the player
   in the first 80 s (player idle); ours has trigger T10 (15 game seconds)
   send player 1's Battlecruisers to locations 28-30, next to the player's
   base, and they hit a Missile Turret at 27 s.  The alliance triggers
   (P3 allies the player, P1 and P2 ally P3, nobody allies P1 with the
-  player) leave P1 an enemy in both models, so where retail sends them is
-  the open question.
+  player) leave P1 an enemy in both models.  The retail check was the
+  camera and the audio level only, so a small fight off screen could
+  have been missed.

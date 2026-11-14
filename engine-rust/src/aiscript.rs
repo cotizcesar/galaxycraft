@@ -1518,6 +1518,17 @@ impl CampaignAi {
                 self.pc += 1;
             }
             107 => {
+                // create_nuke (`0x6421ff`): the first of the player's silos
+                // without a missile gets one, ready to launch.
+                let me = self.player;
+                if let Some(silo) = world.units.iter_mut().find(|u| {
+                    u.alive
+                        && u.owner == me
+                        && u.type_id == crate::ids::unit::NUCLEAR_SILO
+                        && !u.nuke_ready
+                }) {
+                    silo.nuke_ready = true;
+                }
                 self.nukes = self.nukes.saturating_add(1);
                 self.pc += 1;
             }
