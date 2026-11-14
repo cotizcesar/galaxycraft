@@ -74,4 +74,9 @@ on screen.
   the Bunker beside it is empty).
 - **Emperor's Fall (Ground Zero)**: retail shows "Nuclear launch
   detected" at ~18 s and combat at the player at ~38 s (player idle);
-  ours hits first at 49 s and the early nuke is not traced.
+  ours hits first at 49 s.  Ours requests the strike at 11 s (NuHe) and
+  fails: the 19 silos the map places hold no missile (map hangar 0), so
+  how retail arms them is not known.
+- **Emperor's Fall (Birds of War)** opens in retail with the player's
+  Valkyries fighting Zerg at ~12 s; ours first hits a player Missile Turret
+  at 28 s.  Emperor's Flight is not compared.
