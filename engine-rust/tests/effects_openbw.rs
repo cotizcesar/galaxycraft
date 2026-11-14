@@ -342,3 +342,140 @@ fn psionic_storm_deals_eight_hits_of_its_weapon() {
         .damage as i32;
     assert_eq!(hp - w.units[t].hp, (8 * per_hit) << 8, "storm total");
 }
+
+#[test]
+fn mind_control_optical_flare_and_parasite_match_openbw() {
+    // OpenBW `order_MindControl`: the target changes owner, the Dark
+    // Archon's shields go to 0.
+    let (mut w, c, t) = cast_on(uid::DARK_ARCHON, Spell::MindControl, uid::MARINE, 1);
+    for _ in 0..60 {
+        w.step();
+    }
+    assert_eq!(w.units[t].owner, 0, "mind-controlled unit changes owner");
+    assert!(
+        w.units[c].shields < 2 << 8,
+        "caster shields emptied: {}",
+        w.units[c].shields
+    );
+    // OpenBW `blind_unit`: the target is blinded.
+    let (mut w, _, t) = cast_on(uid::MEDIC, Spell::OpticalFlare, uid::MARINE, 1);
+    for _ in 0..60 {
+        w.step();
+    }
+    assert!(
+        w.units[t].status.optical_flare_ticks > 0,
+        "Optical Flare blinds"
+    );
+    // OpenBW `parasite_flags |= 1 << owner`.
+    let (mut w, _, t) = cast_on(uid::QUEEN, Spell::Parasite, uid::MARINE, 1);
+    for _ in 0..120 {
+        w.step();
+    }
+    assert!(w.units[t].status.parasite, "Parasite marks the target");
+}
+
+#[test]
+fn recall_brings_own_units_within_64_px_of_the_point() {
+    // OpenBW `order_Recall`: after 22 frames, the caster's own units within
+    // a 64 px square of the point (not buildings, hallucinations or burrowed
+    // units) move to the Arbiter.
+    let mut w = world();
+    let a = w.spawn_px(0, uid::ARBITER, 300, 300).unwrap();
+    let near = w.spawn_px(0, uid::MARINE, 1200, 1200).unwrap();
+    let far = w.spawn_px(0, uid::MARINE, 1200, 1400).unwrap();
+    let enemy = w.spawn_px(1, uid::MARINE, 1230, 1200).unwrap();
+    w.units[a].set_energy_fixed(250 * ENERGY_SCALE);
+    w.cast(w.units[a].id, Spell::Recall, SpellTarget::Point(1200, 1200))
+        .unwrap();
+    for _ in 0..60 {
+        w.step();
+    }
+    let d = |w: &World, i: usize| {
+        ((w.units[i].x - w.units[a].x).abs() + (w.units[i].y - w.units[a].y).abs()) / 256
+    };
+    assert!(
+        d(&w, near) < 120,
+        "own unit in the field is recalled ({} px)",
+        d(&w, near)
+    );
+    assert!(d(&w, far) > 800, "a unit outside the 64 px square stays");
+    assert!(d(&w, enemy) > 800, "enemy units are not recalled");
+}
+
+#[test]
+fn hallucinations_take_double_damage() {
+    // OpenBW `weapon_deal_damage`: `if (u_hallucination(target)) damage *= 2`.
+    let hit = |halluc: bool| {
+        let mut w = world();
+        let m = w.spawn_px(0, uid::MARINE, 400, 400).unwrap();
+        let t = w.spawn_px(1, uid::ULTRALISK, 470, 400).unwrap();
+        w.units[t].status.hallucination = halluc;
+        w.units[t].order = galaxycraft::sim::Order::HoldPosition;
+        let (mid, tid) = (w.units[m].id, w.units[t].id);
+        w.issue(mid, galaxycraft::sim::Order::AttackUnit { target: tid })
+            .unwrap();
+        let hp = w.units[t].hp;
+        for _ in 0..60 {
+            w.step();
+            if w.units[t].hp < hp {
+                return hp - w.units[t].hp;
+            }
+        }
+        0
+    };
+    let (real, fake) = (hit(false), hit(true));
+    // Doubled before the armour comes off: Gauss Rifle 6 against the
+    // Ultralisk's 1 armour is 5 real, (2 * 6) - 1 = 11 on a hallucination.
+    assert!(
+        real > 0 && fake == 2 * real + 256,
+        "hallucination took {fake}, real unit {real}"
+    );
+}
+
+#[test]
+fn consume_takes_own_non_terran_units() {
+    // OpenBW `unit_tech_target_valid`: own, not a building, not Terran, not
+    // a Larva: a Zerg unit or a mind-controlled Protoss one, never a Marine.
+    for (target, ok) in [(uid::ZERGLING, true), (65u16, true), (uid::MARINE, false)] {
+        let mut w = world();
+        let c = w.spawn_px(0, uid::DEFILER, 400, 400).unwrap();
+        let t = w.spawn_px(0, target, 410, 400).unwrap();
+        w.units[c].set_energy_fixed(100 * ENERGY_SCALE);
+        let r = w.cast(
+            w.units[c].id,
+            Spell::Consume,
+            SpellTarget::Unit(w.units[t].id),
+        );
+        assert_eq!(r.is_ok(), ok, "Consume on type {target}: {r:?}");
+    }
+}
+
+#[test]
+fn yamato_deals_the_executable_damage() {
+    // Yamato Gun (weapon 30) against a large, armour-1 Supply Depot: the
+    // executable's damage matrix (fixtures/oracle_damage.tsv) says 259 hp.
+    let mut w = world();
+    let c = w.spawn_px(0, uid::BATTLECRUISER, 300, 400).unwrap();
+    let t = w.spawn_px(1, uid::SUPPLY_DEPOT, 500, 400).unwrap();
+    w.units[t].completed = true;
+    w.units[c].set_energy_fixed(250 * ENERGY_SCALE);
+    let hp = w.units[t].hp;
+    w.issue(
+        w.units[c].id,
+        galaxycraft::sim::Order::Cast {
+            spell: Spell::YamatoGun,
+            target: SpellTarget::Unit(w.units[t].id),
+        },
+    )
+    .unwrap();
+    // The Battlecruiser's lasers hit too; one hit must be the Yamato shot.
+    let (mut hits, mut last) = (Vec::new(), hp);
+    for _ in 0..300 {
+        w.step();
+        if w.units[t].hp < last {
+            hits.push((last - w.units[t].hp) / 256);
+        }
+        last = w.units[t].hp;
+    }
+    assert!(hits.contains(&259), "Yamato damage among hits {hits:?}");
+}

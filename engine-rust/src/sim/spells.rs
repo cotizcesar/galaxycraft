@@ -320,8 +320,24 @@ impl World {
             if spell == Spell::OpticalFlare && self.data.unit(self.units[t].type_id).is_building() {
                 return Err(SimError::InvalidTarget);
             }
+            // OpenBW `unit_tech_target_valid`: Consume takes any of the
+            // caster's own units that is not a building, Terran or a Larva
+            // (a mind-controlled Protoss unit too), not the weapon's
+            // organic-only flags.
+            if spell == Spell::Consume {
+                let ty = self.data.unit(self.units[t].type_id);
+                if self.units[t].owner != self.units[i].owner
+                    || ty.is_building()
+                    || self.unit_race_class(self.units[t].type_id) == 1
+                    || self.units[t].type_id == uid::LARVA
+                    || self.units[t].status.stasis_ticks > 0
+                {
+                    return Err(SimError::InvalidTarget);
+                }
+            }
             if let Some(weapon) = spell.weapon_id()
                 && spell != Spell::OpticalFlare
+                && spell != Spell::Consume
             {
                 let info = WeaponTarget {
                     unit: self.data.unit(self.units[t].type_id),
@@ -622,8 +638,19 @@ impl World {
                 }
             }
             Spell::MindControl => {
+                // OpenBW `order_MindControl`: a hallucination dies, a Dark
+                // Archon target loses its energy, and the caster's shields
+                // drop to 0.
                 if let Some(t) = target_idx {
-                    self.units[t].owner = c_owner;
+                    if self.units[t].status.hallucination {
+                        self.kill_unit(t);
+                    } else {
+                        self.units[t].owner = c_owner;
+                        if self.units[t].type_id == uid::DARK_ARCHON {
+                            self.units[t].set_energy_fixed(0);
+                        }
+                    }
+                    self.units[caster].shields = 0;
                 }
             }
             Spell::SpawnBroodlings => {
@@ -700,15 +727,30 @@ impl World {
                 }
             }
             Spell::Recall => {
+                // OpenBW `order_Recall`: the caster's own units inside a
+                // 64 px square of the target point (not buildings, larvae,
+                // eggs, hallucinations, burrowed or invincible units) come to
+                // the Arbiter.  It sent the units around the Arbiter to the
+                // point instead.  INFERENCE: instant, where retail waits 22
+                // frames after the cast.
                 if let Some((tx, ty)) = point {
                     for j in 0..self.units.len() {
-                        if self.units[j].alive
-                            && self.units[j].owner == c_owner
+                        let u = &self.units[j];
+                        let ty_data = self.data.unit(u.type_id);
+                        if u.alive
+                            && u.owner == c_owner
                             && j != caster
-                            && self.distance_to_point(j, (cx, cy)) <= fp(96)
+                            && (u.x - tx).abs() <= fp(64)
+                            && (u.y - ty).abs() <= fp(64)
+                            && !ty_data.is_building()
+                            && !u.status.hallucination
+                            && !u.status.burrowed
+                            && !u.invincible
+                            && !matches!(u.type_id, uid::LARVA | uid::EGG | uid::LURKER_EGG)
+                            && u.in_transport.is_none()
                         {
-                            self.units[j].x = tx;
-                            self.units[j].y = ty;
+                            self.units[j].x = cx;
+                            self.units[j].y = cy;
                         }
                     }
                 }
