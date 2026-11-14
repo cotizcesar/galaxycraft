@@ -90,7 +90,10 @@ types = [t for t in range(228)
          if t not in skip and not flags[t] & 0x10 and not flags[t] & 0x800
          and 'Unused' not in names.get(t, '')]
 import os
-if os.environ.get('ONLY'):
+if os.environ.get('IDS'):
+    order = [int(x) for x in os.environ['IDS'].split(',')]
+    types = [t for t in order if t in types]
+elif os.environ.get('ONLY'):
     lo, hi = map(int, os.environ['ONLY'].split('-'))
     types = [t for t in types if lo <= t <= hi]
 # Keep the start location record(s) of the source map for slot 0.
