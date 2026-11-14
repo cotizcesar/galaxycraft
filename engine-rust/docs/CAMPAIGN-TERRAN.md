@@ -84,9 +84,9 @@ of the player's units (2026-11-13, 30 000-tick cap, ~21 min at Fastest):
 | 5 | loss 529 s | 3 | loss at once (scripted) |
 | 6 Norad II | none (scripts wait for the player) | 4 | attack 120 s |
 | 7 | attack 161 s | 5a / 5b | attack 49 s / 28 s |
-| 8 | attack 38 s | 6 | loss at once (scripted) |
+| 8 The Trump Card | attack 15 s | 6 | loss at once (scripted) |
 | 9 | attack 146 s | 7 | none (no town script) |
-| 10 | attack 147 s | 8 | attack 1 s |
+| 10 | attack 147 s | 8 | loss at once (scripted) |
 | 11 | attack 285 s | | |
 | 12 The Hammer Falls | attack 372 s | | |
 
@@ -127,6 +127,21 @@ the script until the defender could be trained: Biting the Bullet's two
 towns (first hit 395 s, now 161 s), the Protoss tutorial and Brood War
 Protoss 3.  It is a town request now; no script stalls left with the
 player idle.
+
+0.1.44, The Trump Card against retail (live client, 2026-11-13, player
+idle, screenshots every 2 s): the player's Control Tower is hit from the
+east at ~11 s and burns at 13 s; supply drops 22 -> 21 at ~21 s and to 19
+at ~45 s.  Ours hit first at 38 s.  The cause was a unit mix-up: trigger
+locations are map pixels, but `location_center` divided them by 256, so
+every script started "at location" (`EnBk`, `move_dt`, `value_area`,
+`player_enemy` / `player_ally`, nukes, Disruption Web) aimed near the
+map's top-left corner; `region_at_tile` also got pixels where it wants
+tiles.  `enter_bunker` used the first Bunker on the map and an 8-pixel
+search square; it now fills the Bunker nearest its location with the
+infantry within 8 tiles.  `player_enemy` / `player_ally` pushed unit
+indices as player numbers.  Ours now hits first at 15 s (Bunkers filled
+when the 22-second trigger runs `EnBk`).  What hits the retail Control
+Tower at 11 s is not identified; ours is not hit in the first 50 s.
 
 ## Zerg and Protoss campaigns
 
