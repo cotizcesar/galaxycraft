@@ -739,8 +739,8 @@ fn instant_bullets_deal_their_damage_when_their_script_says() {
     assert_eq!(w.instant_hit_delay(d.weapon(13).unwrap()), 2);
     assert_eq!(w.instant_hit_delay(d.weapon(25).unwrap()), 7);
 
-    // A Marine's shot: the cooldown starts when it fires, the damage lands
-    // two frames later.
+    // A Marine's shot: the damage lands two frames after the release (the
+    // cooldown starts earlier, with the attack animation).
     let mut w = world();
     let marine = w.spawn_px(0, uid::MARINE, 400, 400).unwrap();
     let egg = w.spawn_px(1, uid::EGG, 480, 400).unwrap();
@@ -748,7 +748,7 @@ fn instant_bullets_deal_their_damage_when_their_script_says() {
     let (mut fired_at, mut hit_at) = (None, None);
     for t in 0..40 {
         w.step();
-        if fired_at.is_none() && w.units[marine].cooldown > 0 {
+        if fired_at.is_none() && w.units[marine].attacks_fired > 0 {
             fired_at = Some(t);
         }
         if hit_at.is_none() && w.units[egg].hp < hp {

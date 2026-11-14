@@ -98,7 +98,15 @@ impl World {
                         | ANIM_AIR_ATTACK_REPEAT
                 )
         });
-        if attacking {
+        // OpenBW `attack_unit_fire_weapon`: while the weapon reloads the
+        // order timer is cut to `cooldown - 1`, so the next shot comes on the
+        // frame the cooldown ends instead of the next 9-frame order pass
+        // (gaps were rounded up to 18 frames).
+        self.clamp_order_timer_to_cooldown(i);
+        // OpenBW `order_AttackUnit` fires as soon as the cooldown is over and
+        // `iscript_run_anim` restarts the attack animation even mid-swing, so
+        // a long swing (Zergling, Ultralisk) does not slow the rate of fire.
+        if attacking && self.units[i].cooldown > 0 {
             return true;
         }
         // A turret fires only once it points at the target, within the
@@ -121,11 +129,30 @@ impl World {
         }
         if self.units[i].cooldown == 0 {
             let flying = self.is_air_unit(tidx);
-            if !self.start_attack_animation(i, flying) {
+            if self.start_attack_animation(i, flying) {
+                // OpenBW `attack_unit_fire_weapon`: the cooldown starts with
+                // the attack animation; its `attackwith` only releases the
+                // shot.  Starting it at the release added the animation's
+                // lead-in to every shot (a Marine fired every 18 frames, not
+                // 15).
+                self.units[i].cooldown = self.fire_cooldown(i, &weapon);
+            } else {
                 self.fire(i, tidx, weapon_id, &weapon);
             }
+            self.clamp_order_timer_to_cooldown(i);
         }
         true
+    }
+
+    /// OpenBW `attack_unit_fire_weapon`: the order timer never outlasts the
+    /// weapon cooldown, so the next attack runs on the frame it ends.
+    fn clamp_order_timer_to_cooldown(&mut self, i: usize) {
+        if self.units[i].cooldown > 0 {
+            let cd = (self.units[i].cooldown - 1).min(u8::MAX as u32) as u8;
+            if self.units[i].order_carry > cd {
+                self.units[i].order_carry = cd;
+            }
+        }
     }
 
     pub(super) fn weapon_for(&self, attacker: usize, target: usize) -> Option<(u8, WeaponType)> {
@@ -314,7 +341,9 @@ impl World {
         if self.units[attacker].status.hallucination {
             // Hallucinations play the attack animation and cooldown, but do
             // no damage.
-            self.units[attacker].cooldown = self.modified_cooldown(attacker, weapon);
+            if self.units[attacker].cooldown == 0 {
+                self.units[attacker].cooldown = self.fire_cooldown(attacker, weapon);
+            }
             return;
         }
         if weapon.bullet_type == behavior::SELF_DESTRUCT {
@@ -336,7 +365,9 @@ impl World {
                 }
             }
         }
-        self.units[attacker].cooldown = self.modified_cooldown(attacker, weapon);
+        if self.units[attacker].cooldown == 0 {
+            self.units[attacker].cooldown = self.fire_cooldown(attacker, weapon);
+        }
     }
 
     /// Frames between an instant weapon firing and its damage: the bullet
@@ -447,6 +478,13 @@ impl World {
         cooldown as u32
     }
 
+    /// Cooldown after firing: OpenBW `attack_unit_fire_weapon` adds a
+    /// random -1..=+2 frames to the modified cooldown on every shot.
+    pub(super) fn fire_cooldown(&mut self, attacker: usize, weapon: &WeaponType) -> u32 {
+        let jitter = (self.world_rand() & 3) as i32 - 1;
+        (self.modified_cooldown(attacker, weapon) as i32 + jitter).max(1) as u32
+    }
+
     pub fn world_rand(&mut self) -> u32 {
         // 32-bit LCG used by the retail engine for miss rolls and scatter.
         self.rng = self
@@ -550,7 +588,9 @@ impl World {
         weapon: &WeaponType,
     ) {
         if self.units[attacker].status.hallucination {
-            self.units[attacker].cooldown = self.modified_cooldown(attacker, weapon);
+            if self.units[attacker].cooldown == 0 {
+                self.units[attacker].cooldown = self.fire_cooldown(attacker, weapon);
+            }
             return;
         }
         let owner = self.units[attacker].owner;
@@ -565,7 +605,9 @@ impl World {
             1,
             1,
         );
-        self.units[attacker].cooldown = self.modified_cooldown(attacker, weapon);
+        if self.units[attacker].cooldown == 0 {
+            self.units[attacker].cooldown = self.fire_cooldown(attacker, weapon);
+        }
     }
 
     pub(super) fn special_attack(&mut self, attacker: usize, target: usize) -> bool {

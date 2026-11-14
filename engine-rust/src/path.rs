@@ -223,10 +223,8 @@ pub struct Path {
     pub cost: i32,
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct Obstacles {
-    rects: Vec<Rect>,
-}
+mod obstacles;
+pub use obstacles::Obstacles;
 
 /// One pathfinding region from the retail builder.
 #[derive(Clone, Debug, Default)]
@@ -772,36 +770,6 @@ impl RegionMap {
     }
 }
 
-impl Obstacles {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn clear(&mut self) {
-        self.rects.clear();
-    }
-
-    pub fn push(&mut self, rect: Rect) {
-        self.rects.push(rect);
-    }
-
-    pub fn blocks_point(&self, x: i32, y: i32) -> bool {
-        self.rects.iter().any(|r| r.contains_point(x, y))
-    }
-
-    pub fn blocks_rect(&self, rect: &Rect) -> bool {
-        self.rects.iter().any(|r| r.intersects(rect))
-    }
-
-    pub fn len(&self) -> usize {
-        self.rects.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.rects.is_empty()
-    }
-}
-
 fn cell_of(px: i32) -> i32 {
     px.div_euclid(WALK_TILE_PX)
 }
@@ -952,6 +920,12 @@ fn astar_cells(
     g[si] = 0;
     open.push_or_decrease(si as u32, octile(start, goal));
     let mut expansions = 0usize;
+    // A short trip to an enclosed goal (the free cell beside a mineral field,
+    // walled in by the other fields and the town hall) flooded 120 000 cells
+    // before failing; the budget grows with the distance instead (8000 + 400
+    // per cell, at most 120 000), and a failed search falls back to a direct
+    // move as before.
+    let budget = (8_000 + 40 * octile(start, goal).max(0) as usize).min(120_000);
     let mut found = false;
     // Recovered `local_18` order from `FUN_7a304c10`.
     let dirs = [
@@ -977,7 +951,7 @@ fn astar_cells(
             break;
         }
         expansions += 1;
-        if expansions > 120_000 {
+        if expansions > budget {
             break;
         }
         for &(dx, dy, step) in &dirs {

@@ -28,7 +28,7 @@ Sizes are lines.  Find a function with `rg -n 'fn name' engine-rust/src`.
 | `bin/sc_handlers.rs` | 100 | Print and validate the 137 transcribed order-handler routines. |
 | `bin/sc_lan.rs` | 364 | sc_lan — lockstep LAN match over TCP (2..=8 peers, headless). |
 | `bin/sc_list.rs` | 57 | List CASC paths in a retail StarCraft installation. |
-| `bin/sc_match.rs` | 299 | Headless match runner. |
+| `bin/sc_match.rs` | 308 | Headless match runner. |
 | `bin/sc_orders.rs` | 94 | Print and validate the recovered `orders.dat` dispatch table. |
 | `bin/sc_regions.rs` | 88 | Print the recovered region graph for a scenario. |
 | `bin/sc_replay.rs` | 83 | Inspect retail `.rep` files: container, embedded map and action stream. |
@@ -129,7 +129,8 @@ Sizes are lines.  Find a function with `rg -n 'fn name' engine-rust/src`.
 | `multiplayer.rs` | 1484 | Multiplayer (LAN) front-end rules and the end-of-game score sheet, as the |
 | `net.rs` | 2315 | LAN lockstep networking (TCP first, UDP later behind the same API). |
 | `orders.rs` | 1526 | Explicit per-row `orders.dat` dispatch specification. |
-| `path.rs` | 4123 | Deterministic grid pathfinding. |
+| `path/obstacles.rs` | 74 | Building and resource footprints that block ground paths, with a |
+| `path.rs` | 4097 | Deterministic grid pathfinding. |
 | `portrait.rs` | 358 | In-game unit portraits: which `portrait/<stem><n>.webm` clip plays. |
 | `profile.rs` | 1089 | Player profiles: the Registry IDs, the global settings, per-profile |
 | `projectile.rs` | 165 | Travelling bullets and missiles. |
@@ -165,13 +166,13 @@ Sizes are lines.  Find a function with `rg -n 'fn name' engine-rust/src`.
 | `scene.rs` | 165 | Reference scenes: the unit layout the retail screenshots show. |
 | `sfx.rs` | 281 | `arr\sfxdata.tbl` — the shipped sound-file name table. |
 | `sim/alliances.rs` | 83 | `impl World`: starting alliances of a use-map-settings scenario. |
-| `sim/animation.rs` | 241 | `impl World`: animation (moved out of `mod.rs` by scripts/split_impl.py). |
-| `sim/combat.rs` | 742 | `impl World`: combat (moved out of `mod.rs` by scripts/split_impl.py). |
+| `sim/animation.rs` | 245 | `impl World`: animation (moved out of `mod.rs` by scripts/split_impl.py). |
+| `sim/combat.rs` | 784 | `impl World`: combat (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/creep_power.rs` | 224 | `impl World`: creep power (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/damage.rs` | 752 | `impl World`: damage (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/lift.rs` | 223 | `impl World`: lifting and landing Terran buildings, and their add-ons |
 | `sim/mod.rs` | 2568 | Deterministic StarCraft rules simulation. |
-| `sim/movement.rs` | 673 | `impl World`: movement (moved out of `mod.rs` by scripts/split_impl.py). |
+| `sim/movement.rs` | 686 | `impl World`: movement (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/nuke.rs` | 291 | `impl World`: nuke (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/orders.rs` | 660 | `impl World`: orders (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/production.rs` | 1343 | `impl World`: production (moved out of `mod.rs` by scripts/split_impl.py). |
