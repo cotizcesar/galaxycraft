@@ -32,6 +32,18 @@ pub enum Research {
 }
 
 impl CampaignAi {
+    /// Opcode 107 `create_nuke` (retail `0x6421ff`): the first of the
+    /// player's silos without a missile gets one, ready to launch.
+    pub(super) fn create_nuke(&mut self, world: &mut World) {
+        let me = self.player;
+        if let Some(silo) = world.units.iter_mut().find(|u| {
+            u.alive && u.owner == me && u.type_id == crate::ids::unit::NUCLEAR_SILO && !u.nuke_ready
+        }) {
+            silo.nuke_ready = true;
+        }
+        self.nukes = self.nukes.saturating_add(1);
+    }
+
     /// Opcode 6 (`build`): keep the largest count asked for each type and
     /// try at once.
     pub(super) fn request_build(&mut self, world: &mut World, ins: &Instruction) {
@@ -218,6 +230,42 @@ mod tests {
             ai.pending_research.len(),
             1,
             "the busy bay leaves one queued"
+        );
+    }
+}
+
+#[cfg(test)]
+mod nuke_tests {
+    use super::*;
+    use crate::data::GameData;
+    use crate::ids::unit as uid;
+    use crate::map::Terrain;
+    use std::sync::Arc;
+
+    #[test]
+    fn create_nuke_arms_one_silo() {
+        // Emperor's Fall (Ground Zero): TB2A calls create_nuke so that NuHe's
+        // nuke_location can launch at ~18 s; retail `0x6421ff` arms the
+        // first of the player's silos that has no missile.
+        let mut world = World::new(
+            Arc::new(GameData::bundled().unwrap()),
+            Terrain::open(32, 32),
+            2,
+        );
+        let a = world.spawn_px(0, uid::NUCLEAR_SILO, 200, 200).unwrap();
+        let b = world.spawn_px(0, uid::NUCLEAR_SILO, 400, 200).unwrap();
+        let script = AiScript {
+            id: *b"Nuk2",
+            label: 0,
+            flags: 0,
+            code: vec![107, 36],
+            external: false,
+        };
+        let mut ai = CampaignAi::new(0, &script);
+        ai.update(&mut world, None);
+        assert_eq!(
+            [world.units[a].nuke_ready, world.units[b].nuke_ready],
+            [true, false]
         );
     }
 }

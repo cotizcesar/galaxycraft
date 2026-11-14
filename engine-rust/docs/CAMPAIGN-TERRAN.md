@@ -83,7 +83,7 @@ of the player's units (2026-11-13, 30 000-tick cap, ~21 min at Fastest):
 | 3 Desperate Alliance | attack 56 s | 2 | none (Beacons are not targets) |
 | 5 Revolution | none | 3 | none |
 | 6 Norad II | none (scripts wait for the player) | 4 | attack 120 s |
-| 7 | attack 161 s | 5a / 5b | attack 49 s / 28 s |
+| 7 | attack 161 s | 5a / 5b | loss 30 s (nuke) / attack 28 s |
 | 8 The Trump Card | attack 15 s | 6 | attack 24 s |
 | 9 | attack 146 s | 7 | none (the breach is fought by an ally) |
 | 10 | attack 147 s | 8 | loss 3 s |
@@ -177,16 +177,22 @@ Episode V, same method (2026-11-13):
 | 2 The Dylarian Shipyards | none in the first 60 s | none (was 27 s) |
 | 3 Ruins of Tarsonis | none in 177 s | none |
 | 4 Assault on Korhal | ~128 s | 120 s |
-| 5 Emperor's Fall (Ground Zero) | "Nuclear launch detected" ~18 s, combat ~38 s | 49 s |
-| 5b Emperor's Fall (Birds of War) | none in 80 s | 28 s (a Missile Turret, open) |
+| 5 Emperor's Fall (Ground Zero) | "Nuclear launch detected" ~18 s, nukes land ~39 s | 30 s (nuke; was 49 s) |
+| 5b Emperor's Fall (Birds of War) | none seen or heard in 80 s | 28 s (a Missile Turret, open) |
 | 6 Emperor's Flight | Valkyrie battle with the Zerg from ~10-12 s | battle from 9 s (allies; the player's Valkyries hit at 24 s) |
 | 7 Patriot's Blood | the allied Marines' breach ~9-13 s | ally hit at 10 s |
 | 8 To Chain the Beast | minimap attack ping at the player ~4.6 s | loss at 3 s |
 
 The Dylarian Shipyards found a bug: enemy Bunkers shot the player's
 Terran Beacons.  `units.dat` flag 0x20000000 (Beacons, markers, resources)
-now makes a unit invincible from creation (0.1.46).  Emperor's Fall is
-~10 s late; the retail nuke at ~18 s is not traced in ours (`pending.md`).
+now makes a unit invincible from creation (0.1.46).  Ground Zero's nuke (0.1.49): retail opcode 107 `create_nuke` (case
+`0x6421ff` of the AI interpreter `0x00640b20`, jump table `0x642834`)
+arms the first of the player's silos without a missile (creates unit 14
+and links it, `0x005b4950`); ours only counted it, so TB2A's
+create_nuke calls left the 19 silos empty and NuHe's `nuke_location`
+(case 0x59: an idle Ghost, an armed silo, order 0x7e at the location or
+a unit in it) failed.  Our Ghost launches where it stands, so the strike
+lands ~9 s before retail's, whose Ghost walks to the target first.
 
 ## Zerg and Protoss campaigns
 

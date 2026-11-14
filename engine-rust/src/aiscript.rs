@@ -1518,7 +1518,7 @@ impl CampaignAi {
                 self.pc += 1;
             }
             107 => {
-                self.nukes = self.nukes.saturating_add(1);
+                self.create_nuke(world);
                 self.pc += 1;
             }
             110 => {
