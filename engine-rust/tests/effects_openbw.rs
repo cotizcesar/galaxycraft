@@ -235,3 +235,110 @@ fn plague_and_emp_change_hit_points_shields_and_energy_as_in_openbw() {
     assert_eq!(energy, 0, "EMP energy");
     assert_eq!(shields, 0, "EMP shields");
 }
+
+#[test]
+fn feedback_consume_and_restoration_match_openbw() {
+    // OpenBW `order_Feedback`: damage equal to the target's energy, then 0.
+    let mut w = world();
+    let c = w.spawn_px(0, uid::DARK_ARCHON, 400, 400).unwrap();
+    let t = w.spawn_px(1, uid::SCIENCE_VESSEL, 470, 400).unwrap();
+    w.units[c].set_energy_fixed(250 * ENERGY_SCALE);
+    w.units[t].set_energy_fixed(100 * ENERGY_SCALE);
+    let hp = w.units[t].hp;
+    w.cast(
+        w.units[c].id,
+        Spell::Feedback,
+        SpellTarget::Unit(w.units[t].id),
+    )
+    .unwrap();
+    let mut energy = i32::MAX;
+    for _ in 0..100 {
+        w.step();
+        energy = energy.min(w.units[t].energy_fixed());
+    }
+    assert_eq!(hp - w.units[t].hp, 100 << 8, "Feedback damage = energy");
+    // Emptied; one frame of recharge (8/256) can land in the same step.
+    assert!(energy <= 8, "Feedback empties the energy: {energy}");
+    // OpenBW `consume`: the own Zerg target dies, the Defiler gains 50.
+    let mut w = world();
+    let c = w.spawn_px(0, uid::DEFILER, 400, 400).unwrap();
+    // Within the Consume weapon's 16 px (`cast` does not walk).
+    let t = w.spawn_px(0, uid::ZERGLING, 410, 400).unwrap();
+    w.units[c].set_energy_fixed(100 * ENERGY_SCALE);
+    w.cast(
+        w.units[c].id,
+        Spell::Consume,
+        SpellTarget::Unit(w.units[t].id),
+    )
+    .unwrap();
+    for _ in 0..100 {
+        w.step();
+    }
+    assert!(!w.units[t].alive, "consumed Zergling dies");
+    let e = w.units[c].energy_fixed() / ENERGY_SCALE;
+    assert!(
+        (150..=154).contains(&e),
+        "Defiler energy {e}, want 100 + 50 (+ ~3 regenerated)"
+    );
+    // OpenBW `restore_unit`: Ensnare, Plague, Irradiate, Lockdown,
+    // Maelstrom, blindness and parasite are removed.
+    let mut w = world();
+    let c = w.spawn_px(0, uid::MEDIC, 400, 400).unwrap();
+    let t = w.spawn_px(0, uid::MARINE, 450, 400).unwrap();
+    w.units[c].set_energy_fixed(250 * ENERGY_SCALE);
+    {
+        let s = &mut w.units[t].status;
+        s.ensnare_ticks = 50;
+        s.plague_ticks = 50;
+        s.lockdown_ticks = 50;
+        s.maelstrom_ticks = 10;
+        s.optical_flare_ticks = 100;
+    }
+    w.cast(
+        w.units[c].id,
+        Spell::Restoration,
+        SpellTarget::Unit(w.units[t].id),
+    )
+    .unwrap();
+    for _ in 0..60 {
+        w.step();
+    }
+    let s = &w.units[t].status;
+    assert_eq!(
+        (
+            s.ensnare_ticks,
+            s.plague_ticks,
+            s.lockdown_ticks,
+            s.maelstrom_ticks,
+            s.optical_flare_ticks
+        ),
+        (0, 0, 0, 0, 0),
+        "Restoration clears every effect"
+    );
+}
+
+#[test]
+fn psionic_storm_deals_eight_hits_of_its_weapon() {
+    let mut w = world();
+    let c = w.spawn_px(0, uid::HIGH_TEMPLAR, 400, 400).unwrap();
+    let t = w.spawn_px(1, uid::SIEGE_TANK, 470, 400).unwrap();
+    w.units[c].set_energy_fixed(250 * ENERGY_SCALE);
+    let hp = w.units[t].hp;
+    w.cast(
+        w.units[c].id,
+        Spell::PsionicStorm,
+        SpellTarget::Point(470, 400),
+    )
+    .unwrap();
+    for _ in 0..300 {
+        w.step();
+    }
+    // Eight hits of the weapon's 14 (one storm at a time per unit, OpenBW
+    // `storm_timer`): 112.
+    let per_hit = w
+        .data
+        .weapon(galaxycraft::ids::weapon::PSIONIC_STORM)
+        .unwrap()
+        .damage as i32;
+    assert_eq!(hp - w.units[t].hp, (8 * per_hit) << 8, "storm total");
+}
