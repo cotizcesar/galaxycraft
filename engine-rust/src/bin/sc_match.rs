@@ -194,6 +194,8 @@ fn main() {
         .unwrap_or_default();
     let mut ais: Vec<SimpleAi> = (0..world.players.len() as u8).map(SimpleAi::new).collect();
     let mut last_report = 0u64;
+    let started = std::time::Instant::now();
+    let (mut t_ai, mut t_step) = (0f64, 0f64);
     while world.tick < max_ticks && world.winner.is_none() {
         let enemy_base = |world: &World| {
             world
@@ -209,6 +211,7 @@ fn main() {
                         .map(|u| (u.x / 256, u.y / 256))
                 })
         };
+        let a0 = std::time::Instant::now();
         for ai in &mut campaign_ais {
             let target = enemy_base(&world);
             ai.update(&mut world, target);
@@ -220,7 +223,10 @@ fn main() {
             let target = enemy_base(&world);
             ai.update(&mut world, target);
         }
+        let a1 = std::time::Instant::now();
         world.step();
+        t_ai += (a1 - a0).as_secs_f64();
+        t_step += a1.elapsed().as_secs_f64();
         // Trigger action 15/16 (`Run AI Script`) queues a script id; start it
         // for the requested player.
         if let Some(t) = world.triggers.as_mut() {
@@ -239,8 +245,11 @@ fn main() {
         if verbose && world.tick / 600 != last_report {
             last_report = world.tick / 600;
             println!(
-                "t={} units={} p0={} p1={} minerals={:?}",
+                "t={} {:.1}s ai {:.1}s step {:.1}s units={} p0={} p1={} minerals={:?}",
                 world.tick,
+                started.elapsed().as_secs_f64(),
+                t_ai,
+                t_step,
                 world.units.iter().filter(|u| u.alive).count(),
                 world.unit_ids(0).len(),
                 world.unit_ids(1).len(),

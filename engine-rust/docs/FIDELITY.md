@@ -247,3 +247,32 @@ engine:
 Finding on the way: the simulation did not cloak Observers and Dark
 Templar at all (the `units.dat` permanent-cloak flag was not applied), so
 enemies could attack them without a detector.
+
+## Rate of fire and damage per hit, every unit (2026-11-14)
+
+Stats, costs, weapons and the damage matrix were already checked against an
+independent oracle (`tests/original_parity.rs`: every `units.dat`,
+`weapons.dat`, `flingy.dat`, `orders.dat` row and the executable's damage
+table).  What the simulation does with them is now checked for every armed
+unit (`tests/rate_of_fire_retail.rs`): one unit attacks a held target for
+2000 frames.
+
+Three rules from OpenBW were missing, so units fired slower than retail:
+
+| OpenBW | rule | before |
+|---|---|---|
+| `attack_unit_fire_weapon` | the cooldown starts with the attack animation, not at the iscript's `attackwith` | the animation's lead-in was added to every shot |
+| `attack_unit_fire_weapon` | the order timer is cut to `cooldown - 1` while the weapon reloads | the next shot waited for the 9-frame order pass: a Marine fired every 18 frames, not 15 |
+| `order_AttackUnit` / `iscript_run_anim` | a ready weapon restarts the attack animation even mid-swing | a long swing set the pace (Ultralisk every 18 frames, Zergling 9.2) |
+| `attack_unit_fire_weapon` | each shot adds a random -1..=+2 frames to the cooldown | none |
+
+Now every armed ground and air unit fires every `weapons.dat` cooldown plus
+0.5 frames on average (gaps cooldown-1 to cooldown+2); the Valkyrie lands
+four rockets per cooldown, the Zealot and Firebat two hits per attack, and the
+Devouring One has Adrenal Glands (half cooldown, at least 5).  Every
+single-hit weapon deals the executable's damage per hit against a large,
+armour-1 target; the flame weapons release three splash flames, the first
+in the 50 % ring of a Supply Depot.
+
+A consequence that matches retail: a full-health Zergling now beats a Marine
+one on one.

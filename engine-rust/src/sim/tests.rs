@@ -235,9 +235,9 @@ fn marines_fight_and_damage_matches_the_pipeline() {
         }
     }
     assert!(w.units[b].hp < start_hp);
-    // The cooldown started when the Marine fired; its bullet (iscript
-    // 238) dealt the damage two frames later.
-    assert_eq!(w.units[a].cooldown, 15 - 2);
+    // Cooldown 15 (+ -1..=+2) starts with the animation; the hit lands 5 frames in.
+    let cd = w.units[a].cooldown;
+    assert!((9..=12).contains(&cd), "{cd}");
 }
 
 #[test]

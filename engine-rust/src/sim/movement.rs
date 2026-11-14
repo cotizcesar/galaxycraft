@@ -2,6 +2,9 @@
 
 use super::*;
 
+/// A goal this close is approached in a straight line once the route ends.
+const DIRECT_APPROACH_PX: i32 = 96;
+
 impl World {
     /// OpenBW `find_unit_placement`: the spot nearest to `center` (1/256
     /// px), within 128 px, where unit `j`'s box is on walkable ground and
@@ -515,7 +518,17 @@ impl World {
                 continue;
             }
             let Some(&(wx, wy)) = self.units[i].path.front() else {
-                if self.distance_to_point(i, goal_fp) > stop_distance {
+                let left = self.distance_to_point(i, goal_fp);
+                if left > stop_distance && left <= fp(DIRECT_APPROACH_PX) {
+                    // The route ended short of a goal inside an obstacle (a
+                    // worker's mineral field): close the last stretch in a
+                    // straight line, collisions keep it outside.  Replanning
+                    // every frame ran a failing search per waiting worker
+                    // and made an 8-player game run at 12 frames per second.
+                    self.units[i].path.push_back(goal_fp);
+                    continue;
+                }
+                if left > stop_distance {
                     // Replan next tick instead of freezing.
                     self.units[i].path_goal = None;
                 }

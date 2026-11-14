@@ -1137,6 +1137,9 @@ fn attack_move_resumes_toward_the_destination_after_a_kill() {
     let mut world = World::new(Arc::new(data()), Terrain::open(64, 64), 2);
     let marine = world.spawn_px(0, uid::MARINE, 6 * 32, 8 * 32).unwrap();
     let zergling = world.spawn_px(1, uid::ZERGLING, 9 * 32, 8 * 32).unwrap();
+    // A full-health Zergling beats a Marine one on one (as in retail, at
+    // their real rates of fire); this test is about the resume, so weaken it.
+    world.units[zergling].hp = 12 << 8;
     // Keep player 1 alive so `check_victory` does not freeze the world.
     let _far = world.spawn_px(1, uid::ZERGLING, 60 * 32, 60 * 32).unwrap();
     let m_id = world.units[marine].id;

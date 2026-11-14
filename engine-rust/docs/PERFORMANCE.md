@@ -51,3 +51,26 @@ ran at 51 fps (19.5 ms) and every game froze ~400 ms at 32 s.
 | HD terrain megatiles decoded on first sight | up to 5 ms a frame at 1440p | all of a map's megatiles decoded on its first frame |
 | Portrait clips / stills decoded on the frame | ~55 ms | worker thread in live games (`sc_view/portrait_panel.rs`) |
 | Next music track decoded on the frame | ~400 ms at 32 s, then every track | decoded ahead on a worker thread (`sc_view/sounds.rs`) |
+
+## 8-player skirmish simulation (2026-11-14)
+
+`sc_match --install "$SC_INSTALL" --map Homeworld --races
+terran,protoss,zerg,terran,protoss,zerg,terran,protoss --verbose` (eight
+computers, 128x128 map).  Before: 600 ticks took 11 s at the start (55
+ticks/s) and 51 s by tick 6000 (12 ticks/s), under the 24 ticks/s of
+Fastest; a 20 000-tick game did not finish in 20 minutes.  All of it was
+the workers' `Gather` order walking to their mineral field:
+
+- every path search scanned every building and mineral field for each grid
+  cell it tested (`Obstacles::blocks_rect`); a 128 px spatial index made a
+  search ~3x faster;
+- the free cell next to a field is often walled in by the other fields and
+  the town hall, so the search flooded 120 000 cells before failing; the
+  budget now grows with the distance (8000 + 400 per cell, at most 120 000)
+  and a failed search still falls back to a direct move;
+- a route that ends within 96 px of a goal inside an obstacle is finished in
+  a straight line instead of replanned every frame.
+
+After: the first 3000 ticks in 5 s (the economy identical tick for tick), a
+20 000-tick game with up to ~540 units in 90 s: ~220 ticks/s on average and
+~166 ticks/s at the busiest stretch, 7x the speed Fastest needs.

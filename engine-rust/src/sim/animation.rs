@@ -159,7 +159,11 @@ impl World {
             return;
         };
         let weapon_id = self.data.ground_weapon_id(&ty);
-        self.units[i].cooldown = self.modified_cooldown(i, &w);
+        // The cooldown started with the attack animation (OpenBW
+        // `attack_unit_fire_weapon`); each flame only releases damage.
+        if self.units[i].cooldown == 0 {
+            self.units[i].cooldown = self.fire_cooldown(i, &w);
+        }
         self.units[i].attacks_fired = self.units[i].attacks_fired.saturating_add(1);
         if self.units[i].status.hallucination {
             return;
