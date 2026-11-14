@@ -54,9 +54,9 @@ on screen.
 - **The 68 campaign missions (all six episodes) reach victory only through
   `sc_solve`**, which moves or spawns the units a goal asks for and gives
   the player invincibility.  The first attack with the player idle is
-  compared with retail for five Episode I missions (within ~10 %, see
-  `engine-rust/docs/CAMPAIGN-TERRAN.md`); a normal play-through
-  (difficulty under player pressure) and Brood War are not checked.
+  compared with retail for five Episode I and four Episode V missions
+  (see `engine-rust/docs/CAMPAIGN-TERRAN.md`); a normal play-through
+  (difficulty under player pressure) is not checked.
 - **Rescue range** (`RESCUE_RANGE_PX` = 36, per-axis box gap) is fitted to
   the Wasteland recording and to two Brood War missions that require an
   immediate rescue; any value 33-40 fits.  Falsifier: a retail recording
@@ -72,3 +72,6 @@ on screen.
   retail (player idle); in ours nothing hits it in the first 50 s.  The
   shooter is not identified (the nearby tank lacks Siege Mode at start;
   the Bunker beside it is empty).
+- **Emperor's Fall (Ground Zero)**: retail shows "Nuclear launch
+  detected" at ~18 s and combat at the player at ~38 s (player idle);
+  ours hits first at 49 s and the early nuke is not traced.

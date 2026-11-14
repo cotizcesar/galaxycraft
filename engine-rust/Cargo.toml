@@ -1,6 +1,6 @@
 [package]
 name = "galaxycraft"
-version = "0.1.45"
+version = "0.1.46"
 edition = "2024"
 rust-version = "1.98.0"
 description = "A Rust reconstruction of StarCraft 1.23 core gameplay logic, driven by data recovered from the shipped executable."

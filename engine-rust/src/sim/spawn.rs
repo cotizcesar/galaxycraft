@@ -476,7 +476,9 @@ impl World {
             resource_amount: 0,
             morph_to: None,
             last_damaged: 0,
-            invincible: false,
+            // `units.dat` 0x20000000 (Beacons, markers, resources):
+            // invincible from creation, never a target.
+            invincible: type_id < 0xe4 && self.data.unit(type_id).flags & 0x2000_0000 != 0,
             last_damage_source: 0,
             doodad_enabled: None,
             nuke_ready: false,
@@ -614,7 +616,9 @@ impl World {
             resource_amount: 0,
             morph_to: None,
             last_damaged: 0,
-            invincible: false,
+            // `units.dat` 0x20000000 (Beacons, markers, resources):
+            // invincible from creation, never a target.
+            invincible: type_id < 0xe4 && self.data.unit(type_id).flags & 0x2000_0000 != 0,
             last_damage_source: 0,
             doodad_enabled: None,
             nuke_ready: false,
