@@ -1,4 +1,5 @@
-//! Permanent cloak (`units.dat` 0x400000).
+//! `units.dat` flags: permanent cloak (0x400000) and invincible types
+//! (0x20000000: Beacons, markers, resources).
 
 use super::*;
 
@@ -20,4 +21,21 @@ fn observers_and_dark_templar_are_permanently_cloaked() {
     let obs = w.spawn(1, uid::OBSERVER, 12, 10).unwrap();
     w.units[obs].completed = true;
     assert!(w.can_see_unit(1, dt));
+}
+
+#[test]
+fn beacons_are_invincible_and_never_shot() {
+    // The Dylarian Shipyards: enemy Bunkers shot the player's Terran
+    // Beacons (195), the first "attack" at 27 s that retail never shows.
+    let mut w = open_world();
+    let beacon = w.spawn(0, 195, 10, 10).unwrap();
+    let marine = w.spawn(0, uid::MARINE, 20, 20).unwrap();
+    assert!(w.units[beacon].invincible);
+    assert!(!w.units[marine].invincible);
+    let hp = w.units[beacon].hp;
+    w.spawn(1, uid::MARINE, 11, 10).unwrap();
+    for _ in 0..200 {
+        w.step();
+    }
+    assert_eq!(w.units[beacon].hp, hp, "nothing damages a Beacon");
 }

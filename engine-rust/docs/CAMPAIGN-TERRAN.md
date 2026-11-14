@@ -80,7 +80,7 @@ of the player's units (2026-11-13, 30 000-tick cap, ~21 min at Fastest):
 | Episode I | first hit | Episode V | first hit |
 |---|---|---|---|
 | tutorial, 1, 2, 4 | none (no enemy script) | 1 | attack 103 s |
-| 3 Desperate Alliance | attack 56 s | 2 | attack 27 s |
+| 3 Desperate Alliance | attack 56 s | 2 | none (Beacons are not targets) |
 | 5 | loss 529 s | 3 | loss at once (scripted) |
 | 6 Norad II | none (scripts wait for the player) | 4 | attack 120 s |
 | 7 | attack 161 s | 5a / 5b | attack 49 s / 28 s |
@@ -160,7 +160,21 @@ Fastest; the retail hit is the first combat seen or heard at the player.
 | 10 The Hammer Falls | ~400 s | 372 s |
 
 All within ~10 % except The Trump Card's first seconds (see
-`pending.md`).  Revolution, Norad II and Brood War are not compared yet.
+`pending.md`).  Revolution and Norad II are not compared yet.
+
+Episode V, same method (2026-11-13):
+
+| mission | retail first hit | ours |
+|---|---|---|
+| 1 First Strike | ~97 s off screen (audio), ~146 s at the camera | 103 s (a Barracks) |
+| 2 The Dylarian Shipyards | none in the first 60 s | none (was 27 s) |
+| 4 Assault on Korhal | ~128 s | 120 s |
+| 5 Emperor's Fall (Ground Zero) | "Nuclear launch detected" ~18 s, combat ~38 s | 49 s |
+
+The Dylarian Shipyards found a bug: enemy Bunkers shot the player's
+Terran Beacons.  `units.dat` flag 0x20000000 (Beacons, markers, resources)
+now makes a unit invincible from creation (0.1.46).  Emperor's Fall is
+~10 s late; the retail nuke at ~18 s is not traced in ours (`pending.md`).
 
 ## Zerg and Protoss campaigns
 
