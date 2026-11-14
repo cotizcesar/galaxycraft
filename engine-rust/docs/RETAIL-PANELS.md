@@ -17,9 +17,12 @@ Indestructible resources and doodads show no health line.
 Tools: `scripts/retail_panels/` (`make_map.py` writes the map as an MPQ,
 `read_units.py` drives the retail client, `compare.py` reads the captures).
 
-**Result: 168 of 190 types match; 22 could not be selected (critters
-and doodad buildings that the game does not let you select, a wandering
-Larva and an expired Broodling); none differs.**
+**Result: 171 of 190 types match; 19 could not be selected: 15 doodad
+buildings the retail game does not let you select (Cave, Cantina, Markers,
+Doors...), and a Larva and three critters (Rhynadon, Kakaru, Ragnasaur) that
+wandered off before they could be clicked.  None differs.**  A second pass
+placed only the unread types and read the Broodling (before its timer ran
+out), the Scantid and the Ursadon.
 
 | id | unit | hp | shields | armor | damage | retail panel |
 |---|---|---|---|---|---|---|
@@ -55,7 +58,7 @@ Larva and an expired Broodling); none differs.**
 | 37 | Zerg Zergling | 35 | - | 0 | 5 | match (OCR) |
 | 38 | Zerg Hydralisk | 80 | - | 0 | 10, 10 | match (OCR) |
 | 39 | Zerg Ultralisk | 400 | - | 1 | 20 | match (checked by eye) |
-| 40 | Zerg Broodling | 30 | - | 0 | 4 | not readable: Broodling expired (timed life) |
+| 40 | Zerg Broodling | 30 | - | 0 | 4 | match (second pass: 30/30, armor 0, read at once) |
 | 41 | Zerg Drone | 40 | - | 0 | 5 | match (checked by eye) |
 | 42 | Zerg Overlord | 200 | - | 0 | - | match (OCR) |
 | 43 | Zerg Mutalisk | 120 | - | 0 | 9, 9 | match (OCR) |
@@ -104,10 +107,10 @@ Larva and an expired Broodling); none differs.**
 | 88 | Artanis | 250 | 250 | 3 | 20, 28 | match (checked by eye) |
 | 89 | Rhynadon | 60 | - | 0 | - | not readable: critter: wanders away |
 | 90 | Bengalaas | 60 | - | 0 | - | match (OCR) |
-| 93 | Scantid | 60 | - | 0 | - | not readable: critter: wanders away |
+| 93 | Scantid | 60 | - | 0 | - | match (second pass: 60/60) |
 | 94 | Kakaru | 60 | - | 0 | - | not readable: critter: wanders away |
 | 95 | Ragnasaur | 60 | - | 0 | - | not readable: critter: wanders away |
-| 96 | Ursadon | 60 | - | 0 | - | not readable: critter: wanders away |
+| 96 | Ursadon | 60 | - | 0 | - | match (second pass: 60/60) |
 | 97 | Zerg Lurker Egg | 200 | - | 10 | - | match (checked by eye) |
 | 98 | Raszagal | 100 | 60 | 0 | 5 | match (checked by eye) |
 | 99 | Samir Duran | 200 | - | 2 | 25, 25 | match (OCR) |
