@@ -581,3 +581,98 @@ fn a_depleted_refinery_still_gives_two_gas_per_trip() {
     );
     assert_eq!(w.units[geyser].resource_amount, 0);
 }
+
+#[test]
+fn scourge_hits_its_target_before_dying() {
+    // OpenBW `bullet_state_init`: a self-destruct bullet dies at once and
+    // its normal hit lands (Suicide Scourge 110 against an armour-0
+    // Overlord); then the Scourge is killed.
+    let mut w = world();
+    let s = w.spawn_px(0, uid::SCOURGE, 400, 400).unwrap();
+    let t = w.spawn_px(1, uid::OVERLORD, 520, 400).unwrap();
+    let hp = w.units[t].hp;
+    let (sid, tid) = (w.units[s].id, w.units[t].id);
+    w.issue(sid, galaxycraft::sim::Order::AttackUnit { target: tid })
+        .unwrap();
+    let mut lost = 0;
+    for _ in 0..200 {
+        w.step();
+        if w.units[t].hp < hp {
+            lost = hp - w.units[t].hp;
+            break;
+        }
+    }
+    assert_eq!(lost, 110 << 8, "Scourge damage");
+    assert!(!w.units[s].alive, "the Scourge dies");
+}
+
+#[test]
+fn burrowed_lurker_spines_hit_every_enemy_on_the_line_once() {
+    // OpenBW: `unit_ground_weapon` is none for an unburrowed Lurker; a
+    // burrowed one turns to its target and its spines hit each enemy within
+    // the inner radius of their path once (`recent_lurker_hits`).
+    let mut w = world();
+    let l = w.spawn_px(0, uid::LURKER, 400, 400).unwrap();
+    // Supply Depots (large, armour 1) do not shoot back.
+    let near = w.spawn_px(1, uid::SUPPLY_DEPOT, 480, 400).unwrap();
+    let far = w.spawn_px(1, uid::SUPPLY_DEPOT, 580, 400).unwrap();
+    let off = w.spawn_px(1, uid::SUPPLY_DEPOT, 480, 540).unwrap();
+    for d in [near, far, off] {
+        w.units[d].completed = true;
+    }
+    let hp = w.units[near].hp;
+    for _ in 0..60 {
+        w.step();
+    }
+    assert_eq!(w.units[near].hp, hp, "no attack while unburrowed");
+    let lid = w.units[l].id;
+    w.issue(lid, galaxycraft::sim::Order::Burrow).unwrap();
+    let tid = w.units[near].id;
+    let mut issued = false;
+    let mut hits = (0, 0, 0);
+    for _ in 0..300 {
+        w.step();
+        if w.units[l].status.burrowed && !issued {
+            w.issue(lid, galaxycraft::sim::Order::AttackUnit { target: tid })
+                .unwrap();
+            issued = true;
+        }
+        if w.units[near].hp < hp && hits.0 == 0 {
+            hits = (
+                hp - w.units[near].hp,
+                hp - w.units[far].hp,
+                hp - w.units[off].hp,
+            );
+        }
+    }
+    // Subterranean Spines 20 against armour 1: 19 hp, once per volley.
+    assert_eq!(hits.0, 19 << 8, "first victim");
+    assert!(
+        hits.1 == 0 || hits.1 == 19 << 8,
+        "second victim at most once"
+    );
+    assert!(w.units[far].hp < hp, "the spines reach the unit behind");
+    assert_eq!(w.units[off].hp, hp, "a unit off the line is not hit");
+}
+
+#[test]
+fn a_computer_lurker_burrows_to_attack_and_unburrows_after() {
+    // INFERENCE (see `computer_lurkers`): the AI's Lurkers burrow when an
+    // enemy is in range and come up when none is left.
+    let mut w = world();
+    w.players[0].is_computer = true;
+    let l = w.spawn_px(0, uid::LURKER, 400, 400).unwrap();
+    let d = w.spawn_px(1, uid::SUPPLY_DEPOT, 520, 400).unwrap();
+    w.units[d].completed = true;
+    let hp = w.units[d].hp;
+    for _ in 0..200 {
+        w.step();
+    }
+    assert!(w.units[l].status.burrowed, "burrowed next to an enemy");
+    assert!(w.units[d].hp < hp, "and attacking it");
+    w.units[d].alive = false;
+    for _ in 0..200 {
+        w.step();
+    }
+    assert!(!w.units[l].status.burrowed, "unburrowed once alone");
+}

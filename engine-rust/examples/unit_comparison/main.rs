@@ -285,9 +285,8 @@ checked in `tests/effects_openbw.rs`; training, research and upgrade times in\n\
 | check | matching |\n|---|---|\n\
 | unit + weapon data vs executable | {data_ok} / {n} |\n\
 | measured rate of fire vs cooldown | {rof_ok} / {rof_n} |\n\
-| measured damage per hit vs matrix | {hit_ok} / {hit_n} |\n\n\
-Buildings (construction time, supply), resources (load per trip) and spell\n\
-effects are measured in their own sections below, each closing with its count.\n\n\
+| measured damage per hit vs matrix | {hit_ok} / {hit_n} |\n\
+@SECTIONS@\n\
 Weapons read `damage+bonus cd<cooldown> r<range px> xN bullets`; rate of fire\n\
 `measured/expected frames`; hit `measured/expected hp (x256)`; `-` means not\n\
 measured (unarmed, turret subunit, hangar, suicide or splash-flame weapon:\n\
@@ -299,8 +298,22 @@ those are covered per case in the tests above).\n\n\
     out.push_str(&rows);
     out.push('\n');
     out.push_str(&extra::buildings(&data));
+    out.push_str(&extra::addons_and_morphs(&data));
+    out.push_str(&extra::special_attackers(&data));
     out.push_str(&extra::resources(&data));
     out.push_str(&extra::effects(&data));
+    out.push_str(&extra::effects_more(&data));
+    // Each measured section closes with "<name> matching: X / Y."; list
+    // them in the summary table.
+    let sections: String = out
+        .lines()
+        .filter_map(|l| {
+            let (name, rest) = l.split_once(" matching: ")?;
+            let count = rest.split('.').next()?;
+            Some(format!("| {} | {count} |\n", name.to_lowercase()))
+        })
+        .collect();
+    let out = out.replace("@SECTIONS@\n", &(sections + "\n"));
     std::fs::write(format!("{ROOT}/docs/UNIT-COMPARISON.md"), out).unwrap();
     println!("data {data_ok}/{n} rof {rof_ok}/{rof_n} hit {hit_ok}/{hit_n}");
 }

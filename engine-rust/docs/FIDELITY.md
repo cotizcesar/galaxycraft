@@ -22,7 +22,33 @@ executable's tables (228/228 match), measured rate of fire against the
 `weapons.dat` cooldown (69/69) and measured damage per hit against the damage
 matrix (59/59); then every worker-built building's construction time and
 supply (39/39), each race's load per mining trip (9/9) and 13 spell effects
-against OpenBW (13/13).
+against OpenBW (13/13), every add-on and Zerg building morph (11/11), the
+special attackers' first hit (7/7: Siege Mode, Goliath missiles, Carrier,
+Reaver, burrowed Lurker, Scourge, Infested Terran), the other two mineral
+field types and 15 more spell effects (Hallucination, Broodlings, Swarm,
+Web, Scanner, Feedback, Consume, Restoration, Mind Control, Optical Flare,
+Parasite, Recall, Spider Mines), all matching.
+
+Measuring every special attacker for the table found four real bugs, fixed
+against OpenBW (2026-11-14):
+
+- **Scourge did no damage.**  Its self-destruct weapon only killed the
+  Scourge; OpenBW's self-destruct bullet dies at once and its normal hit
+  lands first (110 on an armour-0 Overlord).
+- **A burrowed Lurker never attacked.**  Burrowed units ignored every order;
+  OpenBW lets the Lurker (an immovable attacker) fire in place, turned to its
+  target at once, and gives an unburrowed Lurker no weapon (it neither
+  acquires targets nor answers hits).
+- **Subterranean Spines hit only at the end of their reach.**  They now hit
+  every enemy within the inner radius along the path, once each per volley
+  (`recent_lurker_hits`): 19 hp per Lurker volley on a Supply Depot.
+- **Lurkers needed the Burrowing research.**  OpenBW exempts the Lurker and
+  heroes; BW Zerg mission 5's opening Lurkers now burrow and fight as scripted.
+
+INFERENCE: computer-owned Lurkers burrow once an enemy ground unit is in
+weapon range and come up when none is within acquisition range (a plain move
+order is obeyed).  The retail rule is not traced.  All 68 missions still end
+in VICTORY under `sc_solve`.
 
 Retail spot check (2026-11-14, StarCraft Remastered, Bottleneck vs a computer):
 the Command Center panel reads 1500/1500 hp and 10 supplies provided; the SCV

@@ -63,6 +63,7 @@ impl World {
             self.grow_creep();
         }
         self.update_specials();
+        self.computer_lurkers();
         self.advance_recalls();
         self.update_pending_hits();
         self.update_projectiles();
@@ -742,6 +743,56 @@ impl World {
     /// when their boxes are within 30 px (weapons.dat row 6: 125 explosive,
     /// radial splash 50 / 75 / 100).  A mine that loses its target digs in
     /// again.  `mine_armed_at` is the tick of the next state change.
+    /// INFERENCE (computer Lurkers burrow to fight in retail games against
+    /// the AI; the rule is not traced in the executable): a computer
+    /// player's Lurker burrows once an enemy ground unit is in weapon range
+    /// and unburrows when none is within acquisition range, so it can follow
+    /// the army's next order.  Checked on the 9-frame order cadence.
+    pub(super) fn computer_lurkers(&mut self) {
+        if !self.tick.is_multiple_of(9) {
+            return;
+        }
+        for i in 0..self.units.len() {
+            let u = &self.units[i];
+            if !u.alive
+                || u.type_id != uid::LURKER
+                || !self
+                    .players
+                    .get(u.owner as usize)
+                    .is_some_and(|p| p.is_computer)
+                || matches!(u.order, Order::Burrow | Order::Unburrow)
+                // A plain move (a trigger's "Order: move") is obeyed.
+                || matches!(u.order, Order::Move { .. })
+            {
+                continue;
+            }
+            let ty = self.data.unit(uid::LURKER);
+            let reach = if u.status.burrowed {
+                self.data.target_acquisition_px(ty)
+            } else {
+                self.data
+                    .ground_weapon(ty)
+                    .map_or(0, |w| w.max_range as i32)
+            };
+            let (owner, burrowed) = (u.owner, u.status.burrowed);
+            let enemy = (0..self.units.len()).any(|j| {
+                let v = &self.units[j];
+                v.alive
+                    && self.hostile(owner, v.owner)
+                    && !self.is_air_unit(j)
+                    && !is_resource_type(v.type_id)
+                    && self.can_see_unit(owner, j)
+                    && self.units_distance_px(i, j) <= reach
+            });
+            let id = self.units[i].id;
+            if enemy && !burrowed {
+                let _ = self.issue(id, Order::Burrow);
+            } else if !enemy && burrowed {
+                let _ = self.issue(id, Order::Unburrow);
+            }
+        }
+    }
+
     pub(super) fn update_specials(&mut self) {
         let now = self.tick as i64;
         let mut detonations: Vec<usize> = Vec::new();

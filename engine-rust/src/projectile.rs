@@ -109,6 +109,9 @@ pub struct Projectile {
     pub previous_target: Option<u32>,
     /// Tick when a persistent damage-over-time bullet last applied damage.
     pub last_dot_tick: i64,
+    /// Units already struck by Subterranean Spines (OpenBW
+    /// `recent_lurker_hits`: each victim once per volley).
+    pub struck: Vec<u32>,
 }
 
 impl Projectile {
@@ -152,6 +155,7 @@ impl Projectile {
             hit_flags: 0,
             previous_target: None,
             last_dot_tick: created_at,
+            struck: Vec::new(),
         }
     }
 
