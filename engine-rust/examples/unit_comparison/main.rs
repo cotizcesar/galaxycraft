@@ -6,6 +6,8 @@
 //!
 //! `cargo run --release --example unit_comparison`
 
+mod extra;
+
 use galaxycraft::data::{GameData, UnitType, WeaponType};
 use galaxycraft::ids::unit as uid;
 use galaxycraft::map::Terrain;
@@ -284,6 +286,8 @@ checked in `tests/effects_openbw.rs`; training, research and upgrade times in\n\
 | unit + weapon data vs executable | {data_ok} / {n} |\n\
 | measured rate of fire vs cooldown | {rof_ok} / {rof_n} |\n\
 | measured damage per hit vs matrix | {hit_ok} / {hit_n} |\n\n\
+Buildings (construction time, supply), resources (load per trip) and spell\n\
+effects are measured in their own sections below, each closing with its count.\n\n\
 Weapons read `damage+bonus cd<cooldown> r<range px> xN bullets`; rate of fire\n\
 `measured/expected frames`; hit `measured/expected hp (x256)`; `-` means not\n\
 measured (unarmed, turret subunit, hangar, suicide or splash-flame weapon:\n\
@@ -293,6 +297,10 @@ those are covered per case in the tests above).\n\n\
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"
     );
     out.push_str(&rows);
+    out.push('\n');
+    out.push_str(&extra::buildings(&data));
+    out.push_str(&extra::resources(&data));
+    out.push_str(&extra::effects(&data));
     std::fs::write(format!("{ROOT}/docs/UNIT-COMPARISON.md"), out).unwrap();
     println!("data {data_ok}/{n} rof {rof_ok}/{rof_n} hit {hit_ok}/{hit_n}");
 }

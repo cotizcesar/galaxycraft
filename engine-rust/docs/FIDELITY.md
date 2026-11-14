@@ -20,7 +20,15 @@ human) against a Zerg computer, 25 437 frames, 621 action blocks.
 unit_comparison`) lists all 228 `units.dat` rows: stats against the
 executable's tables (228/228 match), measured rate of fire against the
 `weapons.dat` cooldown (69/69) and measured damage per hit against the damage
-matrix (59/59).
+matrix (59/59); then every worker-built building's construction time and
+supply (39/39), each race's load per mining trip (9/9) and 13 spell effects
+against OpenBW (13/13).
+
+Retail spot check (2026-11-14, StarCraft Remastered, Bottleneck vs a computer):
+the Command Center panel reads 1500/1500 hp and 10 supplies provided; the SCV
+60/60 hp, Terran Infantry Armor 0, Fusion Cutter damage 5; four SCVs sent to
+the minerals raise the bank 50, 58, 66, 74, 82, 90, 98, 114, 130, 138, i.e. 8
+per trip.  All equal the table's rows 106 and 7 and the resources section.
 
 ## What matches
 

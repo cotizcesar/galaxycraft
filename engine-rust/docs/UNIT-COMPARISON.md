@@ -21,6 +21,9 @@ checked in `tests/effects_openbw.rs`; training, research and upgrade times in
 | measured rate of fire vs cooldown | 69 / 69 |
 | measured damage per hit vs matrix | 59 / 59 |
 
+Buildings (construction time, supply), resources (load per trip) and spell
+effects are measured in their own sections below, each closing with its count.
+
 Weapons read `damage+bonus cd<cooldown> r<range px> xN bullets`; rate of fire
 `measured/expected frames`; hit `measured/expected hp (x256)`; `-` means not
 measured (unarmed, turret subunit, hangar, suicide or splash-flame weapon:
@@ -258,3 +261,86 @@ those are covered per case in the tests above).
 | 225 | Vespene Sac | 800 | - | 0 - | 1/1 | 1 | 0 | 5 | - | - | - | - |  | ok |
 | 226 | Vespene Tank | 800 | - | 0 - | 1/1 | 1 | 0 | 5 | - | - | - | - |  | ok |
 | 227 | Vespene Tank | 800 | - | 0 - | 1/1 | 1 | 0 | 5 | - | - | - | - |  | ok |
+
+## Buildings
+
+Each worker-built building is placed by a fresh worker on open ground (Zerg on creep, Protoss beside a Pylon); construction time is measured from placement to completion and compared with `units.dat`.  Supply is the cap change when a completed building appears (half-points, as `units.dat`).
+
+| id | building | construction measured/units.dat | supply measured/units.dat | detector | sight |
+|---|---|---|---|---|---|
+| 106 | Terran Command Center | 1800/1800 ok | 20/20 ok | - | 10 |
+| 109 | Terran Supply Depot | 600/600 ok | 16/16 ok | - | 8 |
+| 110 | Terran Refinery | 600/600 ok | 0/0 ok | - | 8 |
+| 111 | Terran Barracks | 1200/1200 ok | 0/0 ok | - | 8 |
+| 112 | Terran Academy | 1200/1200 ok | 0/0 ok | - | 8 |
+| 113 | Terran Factory | 1200/1200 ok | 0/0 ok | - | 8 |
+| 114 | Terran Starport | 1050/1050 ok | 0/0 ok | - | 10 |
+| 116 | Terran Science Facility | 900/900 ok | 0/0 ok | - | 10 |
+| 122 | Terran Engineering Bay | 900/900 ok | 0/0 ok | - | 8 |
+| 123 | Terran Armory | 1200/1200 ok | 0/0 ok | - | 8 |
+| 124 | Terran Missile Turret | 450/450 ok | 0/0 ok | yes | 11 |
+| 125 | Terran Bunker | 450/450 ok | 0/0 ok | - | 10 |
+| 131 | Zerg Hatchery | 1800/1800 ok | 2/2 ok | - | 9 |
+| 134 | Zerg Nydus Canal | 600/600 ok | 0/0 ok | - | 8 |
+| 135 | Zerg Hydralisk Den | 600/600 ok | 0/0 ok | - | 8 |
+| 136 | Zerg Defiler Mound | 900/900 ok | 0/0 ok | - | 8 |
+| 138 | Zerg Queen's Nest | 900/900 ok | 0/0 ok | - | 8 |
+| 139 | Zerg Evolution Chamber | 600/600 ok | 0/0 ok | - | 8 |
+| 140 | Zerg Ultralisk Cavern | 1200/1200 ok | 0/0 ok | - | 8 |
+| 141 | Zerg Spire | 1800/1800 ok | 0/0 ok | - | 8 |
+| 142 | Zerg Spawning Pool | 1200/1200 ok | 0/0 ok | - | 8 |
+| 143 | Zerg Creep Colony | 300/300 ok | 0/0 ok | - | 10 |
+| 149 | Zerg Extractor | 600/600 ok | 0/0 ok | - | 7 |
+| 154 | Protoss Nexus | 1800/1800 ok | 18/18 ok | - | 11 |
+| 155 | Protoss Robotics Facility | 1200/1200 ok | 0/0 ok | - | 10 |
+| 156 | Protoss Pylon | 450/450 ok | 16/16 ok | - | 8 |
+| 157 | Protoss Assimilator | 600/600 ok | 0/0 ok | - | 10 |
+| 159 | Protoss Observatory | 450/450 ok | 0/0 ok | - | 10 |
+| 160 | Protoss Gateway | 900/900 ok | 0/0 ok | - | 10 |
+| 162 | Protoss Photon Cannon | 750/750 ok | 0/0 ok | yes | 11 |
+| 163 | Protoss Citadel of Adun | 900/900 ok | 0/0 ok | - | 10 |
+| 164 | Protoss Cybernetics Core | 900/900 ok | 0/0 ok | - | 10 |
+| 165 | Protoss Templar Archives | 900/900 ok | 0/0 ok | - | 10 |
+| 166 | Protoss Forge | 600/600 ok | 0/0 ok | - | 10 |
+| 167 | Protoss Stargate | 1050/1050 ok | 0/0 ok | - | 10 |
+| 169 | Protoss Fleet Beacon | 900/900 ok | 0/0 ok | - | 10 |
+| 170 | Protoss Arbiter Tribunal | 900/900 ok | 0/0 ok | - | 10 |
+| 171 | Protoss Robotics Support Bay | 450/450 ok | 0/0 ok | - | 10 |
+| 172 | Protoss Shield Battery | 450/450 ok | 0/0 ok | - | 10 |
+
+Buildings matching: 39 / 39.  Buildings trained by other buildings (add-ons) and units trained in buildings are timed in `tests/build_times_retail.rs`.
+
+## Resources
+
+One worker of each race mines a Mineral Field and a refinery; the amount banked on each of the first two trips is compared with OpenBW `gather_resource` (8 minerals, 8 gas, 2 gas once the geyser is depleted).
+
+| worker | minerals/trip | gas/trip | depleted gas/trip |
+|---|---|---|---|
+| Terran SCV | [8, 8]/8 ok | [8, 8]/8 ok | [2, 2]/2 ok |
+| Protoss Probe | [8, 8]/8 ok | [8, 8]/8 ok | [2, 2]/2 ok |
+| Zerg Drone | [8, 8]/8 ok | [8, 8]/8 ok | [2, 2]/2 ok |
+
+Trips matching: 9 / 9.  A Mineral Field placed without a map value holds 0 minerals (maps set their own amounts in the `UNIT` section).
+
+## Spell effects
+
+Each spell is cast in the simulation on a fresh target and the value it leaves is compared with the number OpenBW (`bwgame.h`) applies; status timers count 8-frame updates in both engines.  Hallucination, Broodling, Swarm, Web, Feedback, Consume, Restoration, Mind Control, Optical Flare, Parasite, Recall, Scanner Sweep and Spider Mines are asserted the same way in `tests/effects_openbw.rs`.
+
+| effect | measured | OpenBW | rule |
+|---|---|---|---|
+| Lockdown timer | 131 | 131 ok | `lockdown_timer` |
+| Stasis Field timer | 131 | 131 ok | `stasis_timer` |
+| Ensnare timer | 75 | 75 ok | `ensnare_timer` |
+| Plague timer | 75 | 75 ok | `plague_timer` |
+| Plague damage per 8 frames (x256) | 1010 | 1010 ok | `damage/76` |
+| Maelstrom timer | 22 | 22 ok | `maelstrom_timer` |
+| Defensive Matrix hp | 250 | 250 ok | `defensive_matrix_hp` |
+| Defensive Matrix timer | 168 | 168 ok | `defensive_matrix_timer` |
+| Irradiate timer | 75 | 75 ok | `weapon cooldown` |
+| Psionic Storm total hp | 112 | 112 ok | `8 hits` |
+| EMP: energy left | 0 | 0 ok | `emp_shockwave` |
+| EMP: shields left | 0 | 0 ok | `emp_shockwave` |
+| Yamato Gun hp on a Supply Depot | 259 | 259 ok | `damage matrix` |
+
+Effects matching: 13 / 13.
+
