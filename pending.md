@@ -76,11 +76,7 @@ on screen.
   arms a silo, as retail `0x6421ff`), but ours lands ~9 s early (30 s
   vs ~39 s).  The Ghost already walks into sight range before painting,
   so the cause is open (the request time or the Ghost's start point).
-- **Emperor's Fall (Birds of War)**: retail shows no attack at the player
-  in the first 80 s (player idle); ours has trigger T10 (15 game seconds)
-  send player 1's Battlecruisers to locations 28-30, next to the player's
-  base, and they hit a Missile Turret at 27 s.  The alliance triggers
-  (P3 allies the player, P1 and P2 ally P3, nobody allies P1 with the
-  player) leave P1 an enemy in both models.  The retail check was the
-  camera and the audio level only, so a small fight off screen could
-  have been missed.
+- **Emperor's Fall (Birds of War)**: the retail recording's minimap shows
+  red attack pings at the player's base at ~30 s and ~40 s (off screen,
+  no loud audio); ours: Battlecruisers (trigger T10) hit a Missile Turret
+  at 27 s.  Consistent, but the ping colour was read by eye.
