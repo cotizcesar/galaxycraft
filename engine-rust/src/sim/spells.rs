@@ -2,6 +2,11 @@
 
 use super::*;
 
+/// Scanner Sweep lifetime: its iscript's waits before `sigorder 4`.
+const SCANNER_FRAMES: i64 = 156;
+/// Frames between a Recall cast and the units' arrival.
+const RECALL_DELAY: u64 = 22;
+
 impl World {
     // ------------------------------------------------------------------
     // Spells and modes
@@ -727,32 +732,11 @@ impl World {
                 }
             }
             Spell::Recall => {
-                // OpenBW `order_Recall`: the caster's own units inside a
-                // 64 px square of the target point (not buildings, larvae,
-                // eggs, hallucinations, burrowed or invincible units) come to
-                // the Arbiter.  It sent the units around the Arbiter to the
-                // point instead.  INFERENCE: instant, where retail waits 22
-                // frames after the cast.
-                if let Some((tx, ty)) = point {
-                    for j in 0..self.units.len() {
-                        let u = &self.units[j];
-                        let ty_data = self.data.unit(u.type_id);
-                        if u.alive
-                            && u.owner == c_owner
-                            && j != caster
-                            && (u.x - tx).abs() <= fp(64)
-                            && (u.y - ty).abs() <= fp(64)
-                            && !ty_data.is_building()
-                            && !u.status.hallucination
-                            && !u.status.burrowed
-                            && !u.invincible
-                            && !matches!(u.type_id, uid::LARVA | uid::EGG | uid::LURKER_EGG)
-                            && u.in_transport.is_none()
-                        {
-                            self.units[j].x = cx;
-                            self.units[j].y = cy;
-                        }
-                    }
+                // OpenBW `order_Recall`: the units go 22 frames after the
+                // cast (`main_order_timer = 22`), see `advance_recalls`.
+                if let Some(p) = point {
+                    let id = self.units[caster].id;
+                    self.pending_recalls.push((self.tick + RECALL_DELAY, id, p));
                 }
             }
             Spell::Restoration => {
@@ -832,16 +816,16 @@ impl World {
                     SpellTarget::Point(x, y) => Some((x * fp(1), y * fp(1))),
                     SpellTarget::None => None,
                 };
-                if let Some((tx, ty)) = point {
-                    for j in 0..self.units.len() {
-                        if self.units[j].alive
-                            && self.is_enemy(c_owner, self.units[j].owner)
-                            && self.distance_to_point(j, (tx, ty)) <= fp(96)
-                        {
-                            self.units[j].status.revealed_ticks = 400;
-                        }
-                    }
-                    self.reveal_point(c_owner, tx / fp(1), ty / fp(1), 8);
+                // OpenBW `order_CastScannerSweep`: a Scanner Sweep unit (33,
+                // sight 10, detector) appears at the point; its iscript
+                // waits 156 frames and signals `order_Scanner`, which kills
+                // it.  It revealed a 96 px circle for 400 frames instead.
+                if let Some((tx, ty)) = point
+                    && let Some(scan) =
+                        self.spawn_temporary(c_owner, uid::SCANNER_SWEEP, (tx, ty), SCANNER_FRAMES)
+                {
+                    self.units[scan].invincible = true;
+                    self.reveal_point(c_owner, tx / fp(1), ty / fp(1), 10);
                 }
             }
             Spell::SpiderMines => {
@@ -1102,6 +1086,60 @@ impl World {
             let healed = MEDIC_HEAL_PER_TICK.min(max - self.units[target].hp);
             if healed > 0 && self.units[i].spend_energy_fixed(healed / 2) {
                 self.units[target].hp += healed;
+            }
+        }
+    }
+
+    /// OpenBW `order_Recall`: once due, the Arbiter's own units inside a
+    /// 64 px square of the point (not buildings, larvae, eggs,
+    /// hallucinations, burrowed or invincible units) come to it.  It sent the
+    /// units around the Arbiter to the point instead.
+    pub(super) fn advance_recalls(&mut self) {
+        let tick = self.tick;
+        let (due, wait): (Vec<_>, Vec<_>) = std::mem::take(&mut self.pending_recalls)
+            .into_iter()
+            .partition(|r| r.0 <= tick);
+        self.pending_recalls = wait;
+        for (_, arbiter, (tx, ty)) in due {
+            let Some(a) = self.index_of(arbiter).filter(|&a| self.units[a].alive) else {
+                continue;
+            };
+            let (owner, cx, cy) = (self.units[a].owner, self.units[a].x, self.units[a].y);
+            for j in 0..self.units.len() {
+                let u = &self.units[j];
+                if u.alive
+                    && u.owner == owner
+                    && j != a
+                    && (u.x - tx).abs() <= fp(64)
+                    && (u.y - ty).abs() <= fp(64)
+                    && !self.data.unit(u.type_id).is_building()
+                    && !u.status.hallucination
+                    && !u.status.burrowed
+                    && !u.invincible
+                    && !matches!(u.type_id, uid::LARVA | uid::EGG | uid::LURKER_EGG)
+                    && u.in_transport.is_none()
+                {
+                    // `set_unit_order(target, return_to_idle)` and
+                    // `remove_target_references`: it arrives idle and nobody
+                    // keeps it as a target.
+                    let id = self.units[j].id;
+                    let u = &mut self.units[j];
+                    u.x = cx;
+                    u.y = cy;
+                    u.order = Order::Idle;
+                    u.target = None;
+                    u.path.clear();
+                    u.path_goal = None;
+                    for k in 0..self.units.len() {
+                        if self.units[k].target == Some(id) {
+                            self.units[k].target = None;
+                            if matches!(self.units[k].order, Order::AttackUnit { target } if target == id)
+                            {
+                                self.units[k].order = Order::Idle;
+                            }
+                        }
+                    }
+                }
             }
         }
     }
