@@ -178,7 +178,7 @@ Episode V, same method (2026-11-13):
 | 3 Ruins of Tarsonis | none in 177 s | none |
 | 4 Assault on Korhal | ~128 s | 120 s |
 | 5 Emperor's Fall (Ground Zero) | "Nuclear launch detected" ~18 s, nukes land ~39 s | 30 s (nuke; was 49 s) |
-| 5b Emperor's Fall (Birds of War) | none seen or heard in 80 s | 28 s (a Missile Turret, open) |
+| 5b Emperor's Fall (Birds of War) | minimap attack pings at the player's base ~30 s and ~40 s (off screen) | 28 s (a Missile Turret) |
 | 6 Emperor's Flight | Valkyrie battle with the Zerg from ~10-12 s | battle from 9 s (allies; the player's Valkyries hit at 24 s) |
 | 7 Patriot's Blood | the allied Marines' breach ~9-13 s | ally hit at 10 s |
 | 8 To Chain the Beast | minimap attack ping at the player ~4.6 s | loss at 3 s |
