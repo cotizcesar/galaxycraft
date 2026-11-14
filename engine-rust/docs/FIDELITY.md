@@ -71,10 +71,10 @@ The 8-player skirmish was then played to the end through the client
 skirmish AI attacked the local seat first; both fixed.
 
 In the retail game itself, `docs/RETAIL-PANELS.md` reads the selection panel
-of every placeable unit and building (190 types on a generated map): 171 show
-exactly the executable's health, shields, armor and weapon damage, 19 cannot
-be selected (15 doodad buildings, a wandering Larva and three critters), none
-differs.
+of every placeable unit and building (190 types on a generated map): 173 show
+exactly the executable's health, shields, armor and weapon damage, 17 cannot
+be selected (15 doodad buildings, the flying Kakaru critter, a Larva without a
+Hatchery), none differs.
 
 ## What matches
 

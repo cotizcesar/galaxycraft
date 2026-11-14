@@ -17,10 +17,12 @@ Indestructible resources and doodads show no health line.
 Tools: `scripts/retail_panels/` (`make_map.py` writes the map as an MPQ,
 `read_units.py` drives the retail client, `compare.py` reads the captures).
 
-**Result: 171 of 190 types match; 19 could not be selected: 15 doodad
+**Result: 173 of 190 types match; 17 could not be selected: 15 doodad
 buildings the retail game does not let you select (Cave, Cantina, Markers,
-Doors...), and a Larva and three critters (Rhynadon, Kakaru, Ragnasaur) that
-wandered off before they could be clicked.  None differs.**  A second pass
+Doors...), the Kakaru (a flying critter that leaves at once) and a Larva
+placed without a Hatchery (it does not stay on the map).  None differs.**
+A third pass caged the Rhynadon and the Ragnasaur in rings of Pylons
+(`CAGE=1`) and read them.  A second pass
 placed only the unread types and read the Broodling (before its timer ran
 out), the Scantid and the Ursadon.
 
@@ -53,7 +55,7 @@ out), the Scantid and the Ursadon.
 | 30 | Terran Siege Tank | 150 | - | 1 | 70 | match (OCR) |
 | 32 | Terran Firebat | 50 | - | 1 | 8 | match (checked by eye) |
 | 34 | Terran Medic | 60 | - | 1 | - | match (OCR) |
-| 35 | Zerg Larva | 25 | - | 10 | - | not readable: Larva wandered off its spot |
+| 35 | Zerg Larva | 25 | - | 10 | - | not readable: a Larva placed without a Hatchery does not stay |
 | 36 | Zerg Egg | 200 | - | 10 | - | match (checked by eye) |
 | 37 | Zerg Zergling | 35 | - | 0 | 5 | match (OCR) |
 | 38 | Zerg Hydralisk | 80 | - | 0 | 10, 10 | match (OCR) |
@@ -105,11 +107,11 @@ out), the Scantid and the Ursadon.
 | 86 | Danimoth | 600 | 500 | 3 | 20, 20 | match (checked by eye) |
 | 87 | Aldaris | 80 | 300 | 2 | 20 | match (checked by eye) |
 | 88 | Artanis | 250 | 250 | 3 | 20, 28 | match (checked by eye) |
-| 89 | Rhynadon | 60 | - | 0 | - | not readable: critter: wanders away |
+| 89 | Rhynadon | 60 | - | 0 | - | match (third pass, caged in Pylons: 60/60) |
 | 90 | Bengalaas | 60 | - | 0 | - | match (OCR) |
 | 93 | Scantid | 60 | - | 0 | - | match (second pass: 60/60) |
-| 94 | Kakaru | 60 | - | 0 | - | not readable: critter: wanders away |
-| 95 | Ragnasaur | 60 | - | 0 | - | not readable: critter: wanders away |
+| 94 | Kakaru | 60 | - | 0 | - | not readable: flying critter, leaves at once |
+| 95 | Ragnasaur | 60 | - | 0 | - | match (third pass, caged in Pylons: 60/60) |
 | 96 | Ursadon | 60 | - | 0 | - | match (second pass: 60/60) |
 | 97 | Zerg Lurker Egg | 200 | - | 10 | - | match (checked by eye) |
 | 98 | Raszagal | 100 | 60 | 0 | 5 | match (checked by eye) |

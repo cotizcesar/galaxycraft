@@ -108,6 +108,13 @@ for k, t in enumerate(types):
     serial = 1000 + k
     units += struct.pack('<IHHHHHHBBBBIHHII', serial, x, y, t, 0, 0x1f, 0x1f, 0, 100, 100, 100, 0, 0, 0, 0, 0)
     layout.append((t, x, y, names.get(t, '?')))
+    if os.environ.get('CAGE'):
+        # A ring of Pylons (64 px) keeps a wandering critter in place.
+        for dx in (-64, 0, 64):
+            for dy in (-64, 0, 64):
+                if dx or dy:
+                    units += struct.pack('<IHHHHHHBBBBIHHII', 5000 + 10 * k + (dx // 64 + 1) * 3 + dy // 64 + 1,
+                                         x + dx, y + dy, 156, 0, 0x1f, 0x1f, 0, 100, 100, 100, 0, 0, 0, 0, 0)
 secs[b'UNIT'] = bytes(units)
 out = b''.join(n + struct.pack('<i', len(secs[n])) + secs[n] for n in secs)
 open(OUT, 'wb').write(mpq([('staredit\\scenario.chk', out)]))
