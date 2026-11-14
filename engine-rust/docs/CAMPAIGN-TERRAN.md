@@ -178,8 +178,10 @@ Episode V, same method (2026-11-13):
 | 3 Ruins of Tarsonis | none in 177 s | none |
 | 4 Assault on Korhal | ~128 s | 120 s |
 | 5 Emperor's Fall (Ground Zero) | "Nuclear launch detected" ~18 s, combat ~38 s | 49 s |
-| 5b Emperor's Fall (Birds of War) | scripted battle with the player's Valkyries ~12 s | 28 s (a Missile Turret) |
+| 5b Emperor's Fall (Birds of War) | none in 80 s | 28 s (a Missile Turret, open) |
+| 6 Emperor's Flight | Valkyrie battle with the Zerg from ~10-12 s | battle from 9 s (allies; the player's Valkyries hit at 24 s) |
 | 7 Patriot's Blood | the allied Marines' breach ~9-13 s | ally hit at 10 s |
+| 8 To Chain the Beast | minimap attack ping at the player ~4.6 s | loss at 3 s |
 
 The Dylarian Shipyards found a bug: enemy Bunkers shot the player's
 Terran Beacons.  `units.dat` flag 0x20000000 (Beacons, markers, resources)
