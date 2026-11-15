@@ -26,6 +26,7 @@ fn main() {
     let mut verbose = false;
     let mut ai_script: Option<String> = None;
     let mut fog = false;
+    let mut melee_ai = false;
     let mut install: Option<String> = None;
     let mut map_name: Option<String> = None;
     let mut i = 0;
@@ -59,6 +60,10 @@ fn main() {
             "--ai-script" => {
                 ai_script = args.get(i + 1).cloned();
                 i += 2;
+            }
+            "--melee-ai" => {
+                melee_ai = true;
+                i += 1;
             }
             "--fog" => {
                 fog = true;
@@ -192,6 +197,13 @@ fn main() {
         .as_ref()
         .map(|s| vec![CampaignAi::new(0, s)])
         .unwrap_or_default();
+    if melee_ai {
+        // Retail skirmish: every computer runs its race's Brood War melee
+        // script from aiscript.bin (TMCx / ZMCx / PMCx).
+        for p in 0..world.players.len() as u8 {
+            campaign_ais.extend(galaxycraft::aiscript::melee_ai(&world, p));
+        }
+    }
     let mut ais: Vec<SimpleAi> = (0..world.players.len() as u8).map(SimpleAi::new).collect();
     let mut last_report = 0u64;
     let started = std::time::Instant::now();
@@ -214,7 +226,11 @@ fn main() {
         };
         let a0 = std::time::Instant::now();
         for ai in &mut campaign_ais {
-            let target = enemy_base(&world);
+            let target = if melee_ai {
+                world.nearest_enemy_town_hall(ai.player)
+            } else {
+                enemy_base(&world)
+            };
             ai.update(&mut world, target);
         }
         for ai in &mut ais {
@@ -227,8 +243,8 @@ fn main() {
         let a1 = std::time::Instant::now();
         world.step();
         t_ai += (a1 - a0).as_secs_f64();
-        let dt = a1.elapsed().as_secs_f64();
-        t_step += dt;
+        let dt = a0.elapsed().as_secs_f64();
+        t_step += a1.elapsed().as_secs_f64();
         if dt > 0.03 {
             worst.push((dt * 1000.0, world.tick));
         }
@@ -245,6 +261,43 @@ fn main() {
                     ai.location = at;
                     campaign_ais.push(ai);
                 }
+            }
+        }
+        if std::env::var_os("GC_MELEE_TRACE").is_some() && world.tick % 6000 == 0 {
+            for p in 0..world.players.len() as u8 {
+                let mut c = std::collections::BTreeMap::new();
+                for u in world.units.iter().filter(|u| u.alive && u.owner == p) {
+                    *c.entry((u.type_id, u.completed)).or_insert(0) += 1;
+                }
+                let pl = &world.players[p as usize];
+                eprintln!(
+                    "types p{p}: {c:?} gathered {}/{}",
+                    pl.minerals_gathered, pl.gas_gathered
+                );
+            }
+        }
+        if std::env::var_os("GC_MELEE_TRACE").is_some() && world.tick % 1200 == 0 {
+            for ai in &campaign_ais {
+                let ins = ai.instructions.get(ai.pc);
+                eprintln!(
+                    "t={} p{} pc={} wait={} subs={} {:?} min={} gas={} units={}",
+                    world.tick,
+                    ai.player,
+                    ai.pc,
+                    ai.wait_until,
+                    ai.subthreads.len(),
+                    ins,
+                    world.players[ai.player as usize].minerals,
+                    world.players[ai.player as usize].gas,
+                    world.unit_ids(ai.player).len()
+                );
+                for t in &ai.subthreads {
+                    eprintln!("    sub pc={} {:?}", t.pc, t.instructions.get(t.pc));
+                }
+                eprintln!(
+                    "    attack group {:?} prepared {} finish {}",
+                    ai.attack_group, ai.attack_prepared, ai.attack_finish
+                );
             }
         }
         if verbose && world.tick / 600 != last_report {

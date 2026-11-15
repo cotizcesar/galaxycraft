@@ -66,7 +66,14 @@ impl CampaignAi {
                     && matches!(u.order, crate::sim::Order::Build { unit_type, .. } if unit_type == unit)
             })
             .count() as i32;
-        if self.count(world, unit) + self.training_count(world, unit) + en_route >= qty as i32 {
+        let have = match self.expansion_site {
+            // An expansion town counts its own hall and refinery.
+            Some(site) if super::melee::is_town_hall(unit) || crate::sim::is_gas_building(unit) => {
+                self.owned_near(world, site, unit)
+            }
+            _ => self.count(world, unit) + self.training_count(world, unit) + en_route,
+        };
+        if have >= qty as i32 {
             return;
         }
         if world.data.unit(unit).is_building() {
@@ -164,6 +171,7 @@ mod tests {
             flags: 0,
             code: vec![6, 1, 111, 0, 80, 9, 1, 111, 0, 36],
             external: false,
+            base: 0,
         };
         let mut ai = CampaignAi::new(0, &script);
         for _ in 0..48 {
@@ -195,6 +203,7 @@ mod tests {
             flags: 0,
             code: vec![19, 1, 0, 0, 36],
             external: false,
+            base: 0,
         };
         let mut ai = CampaignAi::new(0, &script);
         ai.update(&mut world, None);
@@ -222,6 +231,7 @@ mod tests {
             flags: 0,
             code: vec![7, 1, 7, 0, 30, 7, 1, 0, 0, 30, 36],
             external: false,
+            base: 0,
         };
         let mut ai = CampaignAi::new(0, &script);
         ai.update(&mut world, None);
@@ -260,6 +270,7 @@ mod nuke_tests {
             flags: 0,
             code: vec![107, 36],
             external: false,
+            base: 0,
         };
         let mut ai = CampaignAi::new(0, &script);
         ai.update(&mut world, None);

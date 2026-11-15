@@ -71,6 +71,8 @@ pub struct AiScript {
     /// Empty for an `aiscript.bin` entry whose code lives in `bwscript.bin`.
     pub code: Vec<u8>,
     pub external: bool,
+    /// File offset of `code[0]` (retail jumps are absolute file offsets).
+    pub base: u32,
 }
 
 impl AiScript {
@@ -85,7 +87,7 @@ impl AiScript {
         let mut out = Vec::new();
         let mut p = 0usize;
         while p < self.code.len() {
-            let offset = p;
+            let offset = self.base as usize + p;
             let opcode = self.code[p];
             p += 1;
             let Some(spec) = OPCODE_ARGS.get(opcode as usize) else {
@@ -250,6 +252,7 @@ fn parse_table(data: &[u8], entry_size: usize) -> AiScriptSet {
             flags,
             code,
             external,
+            base: if external { 0 } else { offset },
         };
         let idx = set.scripts.len();
         set.by_id.insert(id, idx);
@@ -304,6 +307,11 @@ pub struct CampaignAi {
     pub shared_vision: Vec<u8>,
     /// Current trigger location centre, when a scenario selected one.
     pub location: Option<(i32, i32)>,
+    /// Town site of a thread started by `expand` (pixels).
+    pub expansion_site: Option<(i32, i32)>,
+    /// Producer types kept idle for a pending add-on (all threads).
+    pub reserved: Vec<u16>,
+    child: bool,
     /// `set_gencmd` target used by `make_patrol`.
     pub gencmd: Option<(i32, i32)>,
     /// defensebuild/defenseuse requests for (gg, ag, ga, aa).
@@ -359,6 +367,9 @@ impl CampaignAi {
             transports_off: false,
             shared_vision: Vec::new(),
             location: None,
+            expansion_site: None,
+            reserved: Vec::new(),
+            child: false,
             gencmd: None,
             defense_requests: [None; 4],
             defense_units: [None; 4],
@@ -388,6 +399,7 @@ impl CampaignAi {
     }
 
     pub fn update(&mut self, world: &mut World, enemy_base: Option<(i32, i32)>) {
+        self.reserve_addon_parents(world);
         self.maintain_town(world);
         self.keep_workers_mining(world);
         self.maintain_army(world, enemy_base);
@@ -435,7 +447,7 @@ impl CampaignAi {
                 {
                     continue;
                 }
-                if self.try_train_or_morph(world, unit) {
+                if self.has_idle_producer(world, unit) && self.try_train_or_morph(world, unit) {
                     break;
                 }
             }
@@ -481,54 +493,14 @@ impl CampaignAi {
             crate::sim::Race::Zerg => crate::ids::unit::DRONE,
             crate::sim::Race::Neutral => return,
         };
-        let gas = world
-            .units
-            .iter()
-            .find(|u| {
-                u.alive
-                    && u.owner == self.player
-                    && u.completed
-                    && matches!(
-                        u.type_id,
-                        crate::ids::unit::REFINERY
-                            | crate::ids::unit::ASSIMILATOR
-                            | crate::ids::unit::EXTRACTOR
-                    )
-                    && u.resource_amount > 0
-            })
-            .map(|u| u.id);
-        let gas_workers = gas
-            .map(|g| {
-                world
-                    .units
-                    .iter()
-                    .filter(|u| {
-                        u.alive
-                            && u.owner == self.player
-                            && u.type_id == worker_type
-                            && (u.carry_kind == crate::sim::CarryKind::Gas
-                                || u.resource_target == Some(g)
-                                || matches!(u.order, crate::sim::Order::Gather { resource } if resource == g))
-                    })
-                    .count()
-            })
-            .unwrap_or(0);
+        self.staff_gas(world, worker_type);
         let mut workers: Vec<(bool, u32)> = world
             .units
             .iter()
             .filter(|u| u.alive && u.owner == self.player && u.type_id == worker_type)
-            .filter(|u| {
-                gas.is_none_or(|g| u.resource_target != Some(g))
-                    && u.carry_kind != crate::sim::CarryKind::Gas
-            })
             .map(|u| (u.order == crate::sim::Order::Idle, u.id))
             .collect();
         workers.sort_by_key(|&(idle, id)| (!idle, id));
-        if let Some(g) = gas {
-            for (_, id) in workers.iter().take(3usize.saturating_sub(gas_workers)) {
-                let _ = world.issue(*id, crate::sim::Order::Gather { resource: g });
-            }
-        }
         for (idle, id) in workers {
             if !idle {
                 break;
@@ -849,7 +821,7 @@ impl CampaignAi {
             5 => {
                 // expand <expansion> <block>
                 if let Some(block) = ins.word(1) {
-                    self.spawn_thread(block);
+                    self.spawn_expansion(world, ins.byte(0).unwrap_or(1), block);
                 }
                 self.pc += 1;
             }
@@ -1637,20 +1609,14 @@ impl CampaignAi {
         }) {
             return true;
         }
-        let Some(base) = self.base(world) else {
+        let Some(base) = self.expansion_site.or_else(|| self.base(world)) else {
             return false;
         };
-        let Some(spot) = world.find_build_spot(unit_type, base) else {
+        let Some(spot) = world.find_build_spot_for(Some(self.player), unit_type, base) else {
             return false;
         };
         let worker_type = info.producer;
-        let worker = world.units.iter().find(|u| {
-            u.alive
-                && u.owner == self.player
-                && u.type_id == worker_type
-                && matches!(u.order, crate::sim::Order::Idle)
-                && u.carry_kind == crate::sim::CarryKind::None
-        });
+        let worker = self.builder(world, worker_type);
         let Some(worker) = worker else {
             return false;
         };
@@ -1680,14 +1646,20 @@ impl CampaignAi {
         {
             return true;
         }
-        let producer = world.units.iter().find(|u| {
-            u.alive && u.completed && u.owner == self.player && u.type_id == info.producer
-        });
-        let Some(producer) = producer else {
-            return false;
-        };
-        let id = producer.id;
-        world.train(id, unit_type).is_ok()
+        // Shortest queue first; the next producer when one refuses (full
+        // queue, or a unit that needs the add-on this one lacks).
+        let mut producers: Vec<(usize, u32)> = world
+            .units
+            .iter()
+            .filter(|u| u.alive && u.completed && u.owner == self.player)
+            .filter(|u| u.type_id == info.producer)
+            .filter(|u| u.addon.is_some() || !self.reserved.contains(&u.type_id))
+            .map(|u| (u.production.len(), u.id))
+            .collect();
+        producers.sort_unstable();
+        producers
+            .iter()
+            .any(|&(_, id)| world.train(id, unit_type).is_ok())
     }
 
     fn try_tech(&self, world: &mut World, tech: u8) -> bool {
@@ -1926,6 +1898,7 @@ impl CampaignAi {
         child.campaign = self.campaign;
         child.default_build = self.default_build;
         child.location = self.location;
+        child.child = true;
         self.subthreads.push(Box::new(child));
     }
 
@@ -2263,6 +2236,8 @@ pub const OPCODE_ARGS: &[&[u8]] = &[
 
 mod attack_prep;
 mod defend;
+mod melee;
+pub use melee::{is_melee_script, melee_ai, melee_script_id};
 mod requests;
 #[cfg(test)]
 mod tests;

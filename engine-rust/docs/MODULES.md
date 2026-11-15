@@ -14,11 +14,12 @@ Sizes are lines.  Find a function with `rg -n 'fn name' engine-rust/src`.
 | `ai_recovered/translated/a87.rs` | 1523 |  |
 | `ai_recovered/translated/a88.rs` | 1441 |  |
 | `ai_recovered/translated/mod.rs` | 15 |  |
-| `aiscript/attack_prep.rs` | 148 | `attack_prepare`: build the attack party and gather it towards the target. |
+| `aiscript/attack_prep.rs` | 149 | `attack_prepare`: build the attack party and gather it towards the target. |
 | `aiscript/defend.rs` | 100 | The campaign AI's defence response. |
-| `aiscript/requests.rs` | 271 | `build`, `upgrade` / `tech`, `defensebuild_*`: queued town requests. |
-| `aiscript/tests.rs` | 575 |  |
-| `aiscript.rs` | 2268 | `scripts\aiscript.bin` / `scripts\bwscript.bin` reader. |
+| `aiscript/melee.rs` | 284 | Retail skirmish computers: each runs its race's Brood War melee script |
+| `aiscript/requests.rs` | 282 | `build`, `upgrade` / `tech`, `defensebuild_*`: queued town requests. |
+| `aiscript/tests.rs` | 590 |  |
+| `aiscript.rs` | 2243 | `scripts\aiscript.bin` / `scripts\bwscript.bin` reader. |
 | `audio.rs` | 3042 | Retail sound effects and a small software mixer. |
 | `bin/sc_animsheet.rs` | 126 | Dump frame contact sheets from Remastered HD animation containers. |
 | `bin/sc_assets.rs` | 561 | Verify and materialise the retail installation without redistributing it. |
@@ -28,7 +29,7 @@ Sizes are lines.  Find a function with `rg -n 'fn name' engine-rust/src`.
 | `bin/sc_handlers.rs` | 100 | Print and validate the 137 transcribed order-handler routines. |
 | `bin/sc_lan.rs` | 364 | sc_lan — lockstep LAN match over TCP (2..=8 peers, headless). |
 | `bin/sc_list.rs` | 57 | List CASC paths in a retail StarCraft installation. |
-| `bin/sc_match.rs` | 321 | Headless match runner. |
+| `bin/sc_match.rs` | 374 | Headless match runner. |
 | `bin/sc_orders.rs` | 94 | Print and validate the recovered `orders.dat` dispatch table. |
 | `bin/sc_regions.rs` | 88 | Print the recovered region graph for a scenario. |
 | `bin/sc_replay.rs` | 83 | Inspect retail `.rep` files: container, embedded map and action stream. |
@@ -37,7 +38,7 @@ Sizes are lines.  Find a function with `rg -n 'fn name' engine-rust/src`.
 | `bin/sc_shot.rs` | 226 | Headless graphics smoke test: render one real map frame to a BMP. |
 | `bin/sc_sim.rs` | 187 | Small command-line demonstration of the reconstructed rules. |
 | `bin/sc_solve.rs` | 902 | Drive campaign missions to their end through their own triggers. |
-| `bin/sc_view/bench.rs` | 171 | `GC_BENCH=N`: run N frames of the live loop (update + draw) on the |
+| `bin/sc_view/bench.rs` | 173 | `GC_BENCH=N`: run N frames of the live loop (update + draw) on the |
 | `bin/sc_view/briefing.rs` | 958 | `impl App`: briefing (moved out of `sc_view.rs` by scripts/split_impl.py). |
 | `bin/sc_view/collections.rs` | 667 | `impl App`: collections (moved out of `sc_view.rs` by scripts/split_impl.py). |
 | `bin/sc_view/commands.rs` | 1106 | `impl App`: commands (moved out of `sc_view.rs` by scripts/split_impl.py). |
@@ -46,7 +47,7 @@ Sizes are lines.  Find a function with `rg -n 'fn name' engine-rust/src`.
 | `bin/sc_view/fog_memory.rs` | 121 | Fog of war memory: enemy buildings the local player has scouted stay |
 | `bin/sc_view/game_dialog.rs` | 1091 | `impl App`: game dialog (moved out of `sc_view.rs` by scripts/split_impl.py). |
 | `bin/sc_view/game_input.rs` | 1181 | `impl App`: game input (moved out of `sc_view.rs` by scripts/split_impl.py). |
-| `bin/sc_view/game_loop.rs` | 463 | `impl App`: game loop (moved out of `sc_view.rs` by scripts/split_impl.py). |
+| `bin/sc_view/game_loop.rs` | 468 | `impl App`: game loop (moved out of `sc_view.rs` by scripts/split_impl.py). |
 | `bin/sc_view/gamepad.rs` | 842 | Gamepad support: one optional `gilrs` backend that turns a standard |
 | `bin/sc_view/hotkeys.rs` | 868 | `impl App`: hotkeys (moved out of `sc_view.rs` by scripts/split_impl.py). |
 | `bin/sc_view/hud.rs` | 1791 | `impl App`: hud (moved out of `sc_view.rs` by scripts/split_impl.py). |
@@ -67,7 +68,7 @@ Sizes are lines.  Find a function with `rg -n 'fn name' engine-rust/src`.
 | `bin/sc_view/session.rs` | 878 | `impl App`: session (moved out of `sc_view.rs` by scripts/split_impl.py). |
 | `bin/sc_view/sounds.rs` | 405 | `impl App`: sounds (moved out of `sc_view.rs` by scripts/split_impl.py). |
 | `bin/sc_view/turrets.rs` | 68 | Turret images of the Siege Tank and Goliath and the sieged tank's |
-| `bin/sc_view.rs` | 10611 | Playable graphical client for the reconstructed StarCraft rules engine. |
+| `bin/sc_view.rs` | 10619 | Playable graphical client for the reconstructed StarCraft rules engine. |
 | `button_sets.rs` | 258 | Retail command-card button sets. |
 | `buttons.rs` | 605 | Command card of a unit: the retail button set ([`crate::button_sets`]) |
 | `calibration.rs` | 173 | Deterministic capture correction layers. |
@@ -167,15 +168,15 @@ Sizes are lines.  Find a function with `rg -n 'fn name' engine-rust/src`.
 | `sfx.rs` | 281 | `arr\sfxdata.tbl` — the shipped sound-file name table. |
 | `sim/alliances.rs` | 83 | `impl World`: starting alliances of a use-map-settings scenario. |
 | `sim/animation.rs` | 245 | `impl World`: animation (moved out of `mod.rs` by scripts/split_impl.py). |
-| `sim/combat.rs` | 811 | `impl World`: combat (moved out of `mod.rs` by scripts/split_impl.py). |
-| `sim/creep_power.rs` | 224 | `impl World`: creep power (moved out of `mod.rs` by scripts/split_impl.py). |
+| `sim/combat.rs` | 823 | `impl World`: combat (moved out of `mod.rs` by scripts/split_impl.py). |
+| `sim/creep_power.rs` | 226 | `impl World`: creep power (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/damage.rs` | 751 | `impl World`: damage (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/lift.rs` | 223 | `impl World`: lifting and landing Terran buildings, and their add-ons |
 | `sim/mod.rs` | 2568 | Deterministic StarCraft rules simulation. |
-| `sim/movement.rs` | 734 | `impl World`: movement (moved out of `mod.rs` by scripts/split_impl.py). |
+| `sim/movement.rs` | 749 | `impl World`: movement (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/nuke.rs` | 292 | `impl World`: nuke (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/orders.rs` | 683 | `impl World`: orders (moved out of `mod.rs` by scripts/split_impl.py). |
-| `sim/production.rs` | 1343 | `impl World`: production (moved out of `mod.rs` by scripts/split_impl.py). |
+| `sim/production.rs` | 1365 | `impl World`: production (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/projectiles.rs` | 402 | `impl World`: projectiles (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/spawn.rs` | 897 | `impl World`: spawn (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/spells.rs` | 1152 | `impl World`: spells (moved out of `mod.rs` by scripts/split_impl.py). |
@@ -185,7 +186,7 @@ Sizes are lines.  Find a function with `rg -n 'fn name' engine-rust/src`.
 | `sim/translated/mod.rs` | 18 |  |
 | `sim/transport.rs` | 226 | `impl World`: transport (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/unit_queries.rs` | 593 | `impl World`: unit queries (moved out of `mod.rs` by scripts/split_impl.py). |
-| `sim/workers.rs` | 584 | `impl World`: workers (moved out of `mod.rs` by scripts/split_impl.py). |
+| `sim/workers.rs` | 596 | `impl World`: workers (moved out of `mod.rs` by scripts/split_impl.py). |
 | `tables.rs` | 600 | Additional column-major tables recovered from the shipped CASC data. |
 | `team_colors.rs` | 87 | Retail team colours: the eight shades of each slot colour, read from |
 | `tech.rs` | 301 | The hard-coded build/research tree. |

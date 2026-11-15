@@ -32,6 +32,8 @@ pub(super) fn run(app: &mut App, fb: &mut Framebuffer, screen: &str, n: u32) {
             p.is_computer = true;
         }
         app.ais.push(SimpleAi::new(local as u8));
+        app.campaign_ais
+            .extend(galaxycraft::aiscript::melee_ai(&app.world, local as u8));
     }
     let mut frames_run = 0;
     let (mut upd, mut drw, mut worst, mut worst_warm) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);

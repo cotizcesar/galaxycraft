@@ -303,7 +303,12 @@ impl App {
                 }
             }
             for ai in &mut self.campaign_ais {
-                let enemy_base = self.world.enemy_town_hall(ai.player, local);
+                // Skirmish melee scripts fight their nearest enemy.
+                let enemy_base = if galaxycraft::aiscript::is_melee_script(&ai.id) {
+                    self.world.nearest_enemy_town_hall(ai.player)
+                } else {
+                    self.world.enemy_town_hall(ai.player, local)
+                };
                 ai.update(&mut self.world, enemy_base);
             }
             for ai in &mut self.ais {

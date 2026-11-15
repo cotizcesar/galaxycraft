@@ -406,3 +406,42 @@ Third pass (0.1.58):
 - A depleted geyser gives 2 gas per trip forever (OpenBW
   `gather_resource`); ours gave the rest and then nothing, and the workers
   stopped as if a mineral field had run out (tested).
+
+## Skirmish computers: the retail melee scripts (2026-11-15)
+
+Skirmish computers now run their race's Brood War melee script from
+`aiscript.bin` (`TMCx`, `ZMCx`, `PMCx`; `aiscript::melee_ai`) instead of the
+engine's `SimpleAi`, in the client and in `sc_match --melee-ai`.  Making them
+play needed these fixes (`tests/melee_ai.rs`):
+
+- **Jumps were relative.**  Jump operands in `aiscript.bin` are absolute file
+  offsets; instruction offsets started at 0 per script, so every jump left the
+  program and a melee script stopped after `start_town`.  Offsets are now
+  `base + index` (`AiScript::base`).  Campaign scripts jump the same way;
+  sc_solve stays 68/68.
+- **Builders.**  A construction order needed an idle worker; melee towns have
+  none.  An idle worker is taken first, else a gatherer with empty hands, and
+  gas staffing never takes a worker on its way to build.
+- **Assimilator power.**  The Assimilator needs no psi field (retail); it was
+  treated as any Protoss structure.
+- **Placement.**  The AI's spot search used a 12 x 12 tile square around any
+  player's Pylon; `order_build` tests the real psi field of the builder's
+  own Pylons on arrival and refused.  The search now uses the same test
+  (`find_build_spot_for`).  Command Centers, Factories, Starports and
+  Science Facilities keep the 64 px add-on box free (INFERENCE).
+- **Towns.**  `expand <n> <block>` starts a new town while the player has
+  fewer than n, on the free mineral area nearest the main town (INFERENCE:
+  retail picks it from region data).  The town counts its own hall and
+  refinery, and takes its geyser (INFERENCE).  Every finished refinery gets
+  three workers, at most a third of the workers on gas (INFERENCE).
+- **Producers.**  `train` used the first producer even with a full queue or
+  without the add-on the unit needs; it now tries each, shortest queue first.
+  A building is kept idle while a thread asks for its add-on.  The engine's
+  roster army (`maintain_army`, not retail) is off for melee scripts.
+
+Result on Homeworld: every race builds its full tech tree, expands and sends
+`attack_do` waves.  AI-against-AI games run long: of the six 1v1 pairings
+on Homeworld one ended within 60 000 ticks (Protoss beat Zerg at tick
+46 146), and the eight-player game had no winner at tick 21 660 in the
+client; each wave is only the script's `attack_add` party.  Not yet
+compared with a retail AI-against-AI game.

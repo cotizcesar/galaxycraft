@@ -46,6 +46,18 @@ impl World {
     /// mining (OpenBW `find_mineral_field(.., 32 * 8, true)`).
     pub(super) fn free_mineral_near(&self, i: usize, current: usize) -> Option<u32> {
         let (x, y) = (self.units[i].x, self.units[i].y);
+        // The fields being mined, in one pass (`resource_busy` per field
+        // rescanned every unit for each candidate).
+        let busy: Vec<u32> = self
+            .units
+            .iter()
+            .enumerate()
+            .filter(|&(j, u)| j != i && u.alive && u.gather_timer > 0)
+            .filter_map(|(_, u)| match u.order {
+                Order::Gather { resource } => Some(resource),
+                _ => None,
+            })
+            .collect();
         self.units
             .iter()
             .enumerate()
@@ -58,7 +70,7 @@ impl World {
                     && u.resource_amount > 0
                     && (u.x - x).abs() <= fp(256)
                     && (u.y - y).abs() <= fp(256)
-                    && !self.resource_busy(i, u.id)
+                    && !busy.contains(&u.id)
             })
             .min_by_key(|(j, u)| {
                 let (dx, dy) = ((u.x - x) as i64 / 256, (u.y - y) as i64 / 256);
@@ -387,7 +399,7 @@ impl World {
             return;
         }
         if is_protoss_building(unit_type)
-            && !matches!(unit_type, uid::NEXUS | uid::PYLON)
+            && !matches!(unit_type, uid::NEXUS | uid::PYLON | uid::ASSIMILATOR)
             && !self.has_power_px(self.units[i].owner, pos.0, pos.1)
         {
             self.push_order_error(self.units[i].owner, SimError::Unpowered);

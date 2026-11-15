@@ -213,10 +213,12 @@ impl World {
     }
 
     /// A Protoss building functions only inside a power field.  Nexus and
-    /// Pylon are exempt (they are the field providers themselves).
+    /// Pylon (the field providers) and the Assimilator are exempt.
     pub fn building_powered(&self, i: usize) -> bool {
         let u = &self.units[i];
-        if !is_protoss_building(u.type_id) || matches!(u.type_id, uid::NEXUS | uid::PYLON) {
+        if !is_protoss_building(u.type_id)
+            || matches!(u.type_id, uid::NEXUS | uid::PYLON | uid::ASSIMILATOR)
+        {
             return true;
         }
         self.has_power_px(u.owner, u.x / fp(1), u.y / fp(1))

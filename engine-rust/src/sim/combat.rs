@@ -204,8 +204,20 @@ impl World {
             return None;
         }
         let max_fp = acq_range * fp(1);
+        // Cheap pre-filter, same result: no candidate whose centre is
+        // farther than the longest reach (acquisition, or a weapon's range
+        // with the largest upgrade bonus) plus 256 px for both unit boxes.
+        let reach = [self.data.ground_weapon(ty), self.data.air_weapon(ty)]
+            .into_iter()
+            .flatten()
+            .map(|w| w.max_range as i32 + 96)
+            .fold(acq_range, i32::max);
+        let bound = (reach + 256) * fp(1);
         let mut best: Option<(i32, u32)> = None;
         for (other_idx, other) in self.units.iter().enumerate() {
+            if (other.x - u.x).abs() > bound || (other.y - u.y).abs() > bound {
+                continue;
+            }
             // An abandoned add-on is neutral in retail: nobody picks it.
             if !other.alive || !self.hostile(u.owner, other.owner) || other.is_detached_addon() {
                 continue;
