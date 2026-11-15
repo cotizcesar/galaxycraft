@@ -69,3 +69,25 @@ fn an_eight_player_free_for_all_ends_with_the_last_player_standing() {
     }
     assert_eq!(w.winner, Some(0));
 }
+
+#[test]
+fn a_player_whose_last_building_changes_owner_is_defeated() {
+    // An infested Command Center changes owner without dying, so
+    // `buildings_lost` stays 0; the player must still fall (retail melee:
+    // "commands at most 0 buildings").
+    let mut w = world(2);
+    let a = w.spawn_px(0, uid::HATCHERY, 400, 400).unwrap();
+    let b = w.spawn_px(1, uid::COMMAND_CENTER, 3000, 3000).unwrap();
+    w.units[a].completed = true;
+    w.units[b].completed = true;
+    w.spawn_px(1, uid::MARINE, 2800, 3000).unwrap();
+    w.step();
+    w.units[b].owner = 0;
+    w.units[b].type_id = uid::INFESTED_COMMAND_CENTER;
+    for _ in 0..5 {
+        w.step();
+    }
+    assert_eq!(w.players[1].buildings_lost, 0);
+    assert!(w.players[1].defeated, "no building left: defeated");
+    assert_eq!(w.winner, Some(0));
+}

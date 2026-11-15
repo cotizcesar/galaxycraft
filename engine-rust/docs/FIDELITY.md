@@ -485,4 +485,11 @@ Follow-up (0.1.71):
   Templar, Lurker) with thousands of minerals banked.  Retail behaviour here
   has not been recorded: an AI-vs-AI game in the original is needed before
   changing more.
+- Melee defeat (0.1.75): a player whose last building changed owner (a
+  Command Center infested by the Zerg) was never defeated, because the rule
+  waited for `buildings_lost > 0`; a Terran computer with only infantry left
+  stayed in the game forever.  The rule now applies to any player who has
+  commanded a building.  8-player AI games still reach 150 000 ticks without
+  a winner on Homeworld, The Hunters and Killing Fields; a 300 000-tick run on
+  Homeworld also had none.
 

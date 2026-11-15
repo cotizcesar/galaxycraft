@@ -180,7 +180,7 @@ Sizes are lines.  Find a function with `rg -n 'fn name' engine-rust/src`.
 | `sim/projectiles.rs` | 402 | `impl World`: projectiles (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/spawn.rs` | 897 | `impl World`: spawn (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/spells.rs` | 1152 | `impl World`: spells (moved out of `mod.rs` by scripts/split_impl.py). |
-| `sim/step.rs` | 939 | `impl World`: step (moved out of `mod.rs` by scripts/split_impl.py). |
+| `sim/step.rs` | 946 | `impl World`: step (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/tests/cloak.rs` | 41 | `units.dat` flags: permanent cloak (0x400000) and invincible types |
 | `sim/tests.rs` | 3739 |  |
 | `sim/translated/mod.rs` | 18 |  |
