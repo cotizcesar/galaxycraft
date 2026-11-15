@@ -111,7 +111,10 @@ fn main() {
         }
     }
     let mut ais: Vec<SimpleAi> = (1..world.players.len() as u8).map(SimpleAi::new).collect();
-    let mut st = Driver::default();
+    let mut st = Driver {
+        static_ids,
+        ..Driver::default()
+    };
     let mut next_block = 0usize;
     let last = rep.actions.last().map(|b| b.frame).unwrap_or(0);
     while (world.tick as u32) <= last.max(header.frames) && world.winner.is_none() {
@@ -273,6 +276,10 @@ struct Driver {
     groups: HashMap<(u8, u8), Vec<Sel>>,
     /// Tags bound by context: retail tag -> engine unit id.
     bound: HashMap<u16, u32>,
+    /// Engine ids `1..=static_ids` have derivable tags and are never bound
+    /// by context (binding a new SCV's tag to a starting SCV left the new
+    /// one idle and halved the opening income).
+    static_ids: u32,
     applied: BTreeMap<u8, usize>,
     unsupported: BTreeMap<u8, usize>,
     failures: Vec<(u32, u8, String)>,
@@ -338,7 +345,7 @@ impl Driver {
     }
 
     fn is_bound(&self, id: u32) -> bool {
-        self.bound.values().any(|v| *v == id)
+        id <= self.static_ids || self.bound.values().any(|v| *v == id)
     }
 
     fn fits(w: &World, u: &galaxycraft::sim::SimUnit, class: Class) -> bool {
@@ -584,6 +591,9 @@ impl Driver {
                     .then(|| self.target_of(w, tags, p, tag, pos))
                     .flatten();
                 let order_id = (kind == 0x61).then(|| b[10]);
+                // Last byte: Shift-queued (frame 2235 of the reference replay
+                // queues a gather behind a Supply Depot build).
+                let queued = b.get(if kind == 0x61 { 11 } else { 10 }) == Some(&1);
                 let worker_job = target.and_then(|t| w.unit(t)).is_some_and(|t| {
                     t.is_resource() || t.type_id == galaxycraft::ids::unit::REFINERY
                 });
@@ -609,7 +619,11 @@ impl Driver {
                 }
                 for id in sel {
                     match classify(w, id, p, pos, target, order_id) {
-                        Some(o) => match w.issue(id, o) {
+                        Some(o) => match if queued {
+                            w.queue_order(id, o)
+                        } else {
+                            w.issue(id, o)
+                        } {
                             Ok(()) => self.ok(kind),
                             Err(e) => self.fail(frame, kind, format!("issue failed: {e:?}")),
                         },

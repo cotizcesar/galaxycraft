@@ -174,10 +174,15 @@ impl World {
         // contact by another one (it is inside the Refinery, or busy at its
         // field) restarted its 37 / 75 frames and the queue stalled.
         if self.units[i].gather_timer == 0 && self.box_gap_px(i, ridx) > HARVEST_CONTACT_PX {
-            let (rx, ry) = (self.units[ridx].x, self.units[ridx].y);
             // Walk on until the boxes touch (a 64 px stop left workers
-            // short of contact).
-            self.move_towards(i, (rx / fp(1), ry / fp(1)), fp(4));
+            // short of contact).  Aim at the side of the field's box that
+            // faces the worker: the centre is inside the unwalkable field,
+            // and the path search then picked a cell behind the mineral line
+            // (Challenger replay: a 120 px trip from the Command Center
+            // became a 280 px detour round the line, about 10 % of the
+            // opening income).
+            let goal = self.contact_goal(i, ridx);
+            self.move_towards(i, goal, fp(4));
             return;
         }
         // One worker at a time per patch / refinery, and mining takes time
@@ -461,6 +466,37 @@ impl World {
     /// SCV on a building it constructs: hold the order until the building
     /// completes or dies, then go idle (resume it by right-clicking the
     /// unfinished building).
+    /// Point just outside the box of unit `t` on the side facing unit `i`,
+    /// in pixels: the closest point of `t`'s units.dat box, pushed out by
+    /// `i`'s own half size.
+    pub(super) fn contact_goal(&self, i: usize, t: usize) -> (i32, i32) {
+        let (wx, wy) = (self.units[i].x / fp(1), self.units[i].y / fp(1));
+        let (tx, ty) = (self.units[t].x / fp(1), self.units[t].y / fp(1));
+        let d = self.data.unit(self.units[t].type_id).dimensions;
+        let w = self.data.unit(self.units[i].type_id).dimensions;
+        let (l, r) = (tx - d.left as i32, tx + d.right as i32);
+        let (u, b) = (ty - d.top as i32, ty + d.bottom as i32);
+        let gx = if wx < l {
+            l - w.right as i32 - 1
+        } else if wx > r {
+            r + w.left as i32 + 1
+        } else {
+            wx
+        };
+        let gy = if wy < u {
+            u - w.bottom as i32 - 1
+        } else if wy > b {
+            b + w.top as i32 + 1
+        } else {
+            wy
+        };
+        if (gx, gy) == (wx, wy) {
+            (tx, ty)
+        } else {
+            (gx, gy)
+        }
+    }
+
     pub(super) fn order_construct(&mut self, i: usize, building: u32) {
         let Some(b) = self.index_of(building) else {
             self.order_done(i);
@@ -469,6 +505,16 @@ impl World {
         if !self.units[b].alive || self.units[b].completed {
             if self.units[b].builder == self.units[i].id {
                 self.units[b].builder = 0;
+            }
+            // OpenBW `order_ConstructingBuilding`: the builder of a finished
+            // refinery starts harvesting it (`unit_can_gather_gas`).
+            if self.units[b].alive
+                && self.units[b].owner == self.units[i].owner
+                && super::is_gas_building(self.units[b].type_id)
+            {
+                self.units[i].order = Order::Gather { resource: building };
+                self.units[i].order_row = 79;
+                return;
             }
             self.order_done(i);
             return;
