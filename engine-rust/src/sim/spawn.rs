@@ -32,6 +32,8 @@ impl World {
             matrix_cues: Vec::new(),
             spell_cues: std::collections::VecDeque::new(),
             spell_cue_seq: 0,
+            order_errors: std::collections::VecDeque::new(),
+            order_error_seq: 0,
             pending_hits: Vec::new(),
             nuke_strikes: Vec::new(),
             nuke_warnings: Vec::new(),

@@ -113,11 +113,11 @@ fn measure(data: &Arc<GameData>, ty: u16, target: u16) -> Option<(f64, i32)> {
 }
 
 /// One hit's hp damage from the executable's matrix: upgrade 0, large,
-/// armor 1, no shields (a Supply Depot).
-fn oracle_hit(dmg: &str, weapon: u8) -> Option<i64> {
+/// no shields, armor 1 (a Supply Depot) or 0 (an Overlord).
+fn oracle_hit(dmg: &str, weapon: u8, armor: i64) -> Option<i64> {
     dmg.lines().skip(1).find_map(|l| {
         let f: Vec<i64> = l.split('\t').filter_map(|x| x.parse().ok()).collect();
-        (f.len() == 8 && f[0] == weapon as i64 && f[1..6] == [0, 3, 1, 0, 0]).then_some(f[7])
+        (f.len() == 8 && f[0] == weapon as i64 && f[1..6] == [0, 3, armor, 0, 0]).then_some(f[7])
     })
 }
 
@@ -203,7 +203,7 @@ fn main() {
                 rof = format!("{p:.1}/{want} {}", if ok { "ok" } else { "**DIFF**" });
                 let wid = data.ground_weapon_id(u);
                 if !matches!(wid, 25 | 26 | 98)
-                    && let Some(o) = oracle_hit(&dmg, wid)
+                    && let Some(o) = oracle_hit(&dmg, wid, 1)
                 {
                     let bc = w.bullet_count.max(1) as i64;
                     let ok = loss as i64 == o || loss as i64 == o * bc;
@@ -214,7 +214,7 @@ fn main() {
             }
             if gw.is_none()
                 && let Some(w) = aw
-                && let Some((p, _)) = measure(&data, ty, uid::OVERLORD)
+                && let Some((p, loss)) = measure(&data, ty, uid::OVERLORD)
             {
                 let p = if ty == 58 { p * 4.0 } else { p };
                 let want = w.cooldown as f64 + 0.5;
@@ -222,6 +222,13 @@ fn main() {
                 rof_n += 1;
                 rof_ok += ok as u32;
                 rof = format!("{p:.1}/{want} (air) {}", if ok { "ok" } else { "**DIFF**" });
+                if let Some(o) = oracle_hit(&dmg, data.air_weapon_id(u), 0) {
+                    let bc = w.bullet_count.max(1) as i64;
+                    let ok = loss as i64 == o || loss as i64 == o * bc;
+                    hit_n += 1;
+                    hit_ok += ok as u32;
+                    hit = format!("{loss}/{o} (air) {}", if ok { "ok" } else { "**DIFF**" });
+                }
             }
         }
         // Why a cell is not measured here, and where it is.

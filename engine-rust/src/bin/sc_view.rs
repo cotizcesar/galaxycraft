@@ -2273,6 +2273,8 @@ struct App {
     center_views_seen: usize,
     /// Rescues (`World::rescues`) already announced.
     rescues_seen: usize,
+    /// Build-order errors (`World::order_error_seq`) already shown.
+    order_errors_seen: u64,
     /// Trigger text above the console and its clock.
     trigger_text: galaxycraft::transmission::TextLog,
     trigger_text_epoch: Instant,
@@ -7586,6 +7588,7 @@ fn main() {
         trigger_cues_seen: 0,
         center_views_seen: 0,
         rescues_seen: 0,
+        order_errors_seen: 0,
         trigger_text: Default::default(),
         trigger_text_epoch: Instant::now(),
         portrait_epoch: Instant::now(),

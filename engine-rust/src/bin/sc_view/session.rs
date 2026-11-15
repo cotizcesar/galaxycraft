@@ -175,6 +175,7 @@ impl App {
         self.smooth_facing.clear();
         self.smooth_facing_tick = self.world.tick;
         self.rescues_seen = 0;
+        self.order_errors_seen = self.world.order_error_seq;
         self.trigger_text.clear();
         self.replay = None;
         self.save_sel = 0;
@@ -473,6 +474,7 @@ impl App {
         self.smooth_facing_tick = self.world.tick;
         // A restored game does not replay the rescues it already had.
         self.rescues_seen = self.world.rescues.len();
+        self.order_errors_seen = self.world.order_error_seq;
         self.trigger_text.clear();
         self.menu = false;
         self.briefing = false;
