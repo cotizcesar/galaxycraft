@@ -44,3 +44,28 @@ fn the_skirmish_ai_targets_the_nearest_enemy_town_hall() {
     assert_eq!(w.nearest_enemy_town_hall(2), Some((1200, 400)));
     assert_eq!(w.nearest_enemy_town_hall(0), Some((1200, 400)));
 }
+
+#[test]
+fn an_eight_player_free_for_all_ends_with_the_last_player_standing() {
+    let mut w = world(8);
+    let mut halls = Vec::new();
+    for p in 0..8u8 {
+        let x = 300 + (p as i32 % 4) * 900;
+        let y = 400 + (p as i32 / 4) * 2400;
+        let i = w.spawn_px(p as usize, uid::COMMAND_CENTER, x, y).unwrap();
+        w.units[i].completed = true;
+        halls.push(w.units[i].id);
+    }
+    // Players 1..=7 lose their only building one after the other.
+    for p in 1..8u8 {
+        assert_eq!(w.winner, None, "{} players left", 9 - p);
+        let id = halls[p as usize];
+        let hp = w.unit(id).unwrap().hp + 1;
+        w.damage_unit(id, hp).unwrap();
+        for _ in 0..5 {
+            w.step();
+        }
+        assert!(w.players[p as usize].defeated, "player {p} defeated");
+    }
+    assert_eq!(w.winner, Some(0));
+}

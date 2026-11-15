@@ -474,6 +474,11 @@ Follow-up (0.1.71):
   middle expansions.  Bias: part of their waves went to the invulnerable
   human base.  So an 8-player AI-only game on Homeworld that has no winner at
   60 000 ticks **matches the original**; it is not an engine defect.
+- Engine, same check on four more 8-player maps (The Hunters, Bridge to
+  Bridge '98, Killing Fields, Orbital Death; T/P/Z x 2 + T/P, 60 000 ticks):
+  no winner on any, as on Homeworld.  The end of a game itself is tested with
+  8 players (`tests/melee_rules.rs`: players fall one by one, the last one
+  standing wins).
 - Older note (before the measurement above): no AI-only game on Homeworld ends within 60 000 ticks (1v1 and
   8 players).  The nearest free expansions there have no geyser, so every
   computer lives on one geyser and stalls on gas units (Siege Tank, Dark
