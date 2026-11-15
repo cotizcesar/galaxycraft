@@ -356,16 +356,23 @@ impl World {
         // Retail `melee.trg`: "current player commands at most 0 Buildings"
         // -> Defeat.  Applied to a player who has lost buildings and has
         // none left (sandboxes without buildings are left alone).
+        // `had_building` instead of `buildings_lost`: a Command Center
+        // infested by the Zerg changes owner without dying, and a Terran
+        // left with infantry only stayed undefeated forever (Homeworld,
+        // 8 computers: 20 units and no building from tick ~40 000).
         for p in 0..self.players.len() {
-            if !self.players[p].defeated
-                && self.players[p].buildings_lost > 0
-                && !self.units.iter().any(|u| {
-                    u.alive
-                        && u.owner as usize == p
-                        && !is_resource_type(u.type_id)
-                        && self.data.unit(u.type_id).is_building()
-                })
-            {
+            if self.players[p].defeated {
+                continue;
+            }
+            let has = self.units.iter().any(|u| {
+                u.alive
+                    && u.owner as usize == p
+                    && !is_resource_type(u.type_id)
+                    && self.data.unit(u.type_id).is_building()
+            });
+            if has {
+                self.players[p].had_building = true;
+            } else if self.players[p].had_building || self.players[p].buildings_lost > 0 {
                 self.players[p].defeated = true;
             }
         }

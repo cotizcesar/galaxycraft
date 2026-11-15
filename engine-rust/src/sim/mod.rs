@@ -50,8 +50,7 @@ pub const MAX_ENERGY_UPGRADED: i32 = 250;
 /// Retail stores energy in 1/256 points (`CUnit+0xa2`), like shields and HP.
 /// Ability costs in `techdata.dat` are whole points and are scaled by this.
 pub const ENERGY_SCALE: i32 = 256;
-/// Stim Pack duration in frames: retail sets the stim timer to 37 and
-/// counts it down once every 8 frames.
+/// Stim Pack frames: retail's stim timer is 37, counted down every 8 frames.
 pub const STIM_FRAMES: i32 = 37 * 8;
 pub const MINERALS_PER_TRIP: i32 = 8;
 pub const GAS_PER_TRIP: i32 = 8;
@@ -60,10 +59,8 @@ pub const GAS_PER_TRIP: i32 = 8;
 /// `0x5a0520`: Bunker Guard reloads `CUnit+0x54` with 0xf when it has no
 /// target and only reacquires when the counter reaches zero.
 pub const BUNKER_GUARD_RETRY_TICKS: u8 = 15;
-/// Units firing from a Bunker get 64 px of weapon range (OpenBW
-/// `weapon_max_range`: `if (u_in_bunker(u)) r += 64`).  The occupant
-/// stands at the Bunker's centre, so from the Bunker's edge this is the
-/// familiar "+1 range".
+/// Bunker occupants get 64 px of range (OpenBW `weapon_max_range`); from the
+/// centre, so "+1 range" from the Bunker's edge.
 pub const BUNKER_GUARD_RANGE_BONUS_PX: i32 = 64;
 /// `0x005cc810` (disassembled): a hallucination gets 0x546 = 1350 frames,
 /// a Broodling (type 0x28) 0x708 = 1800 (OpenBW `default_remove_timer`).
@@ -1730,6 +1727,8 @@ pub struct Player {
     /// Score-screen tallies: units and structures lost, resources spent.
     pub units_lost: u32,
     pub buildings_lost: u32,
+    /// Has commanded a building: melee defeat applies from then on.
+    pub had_building: bool,
     pub minerals_spent: i32,
     pub gas_spent: i32,
     /// Resources the player started with; the score screen's Resources
@@ -1775,6 +1774,7 @@ impl Player {
             scores: [0; 8],
             units_lost: 0,
             buildings_lost: 0,
+            had_building: false,
             minerals_spent: 0,
             gas_spent: 0,
             start_minerals: minerals,
