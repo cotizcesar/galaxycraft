@@ -25,6 +25,7 @@
     <content_attribute id="violence-fantasy">moderate</content_attribute>
   </content_rating>
   <releases>
+    <release version="0.1.76" date="2026-11-15"/>
     <release version="0.1.75" date="2026-11-15"/>
     <release version="0.1.74" date="2026-11-15"/>
     <release version="0.1.73" date="2026-11-15"/>
