@@ -45,15 +45,17 @@ impl CampaignAi {
         world.command_attack_move(&idle, staging);
     }
 
-    /// Gathering point: three quarters of the way from the town to the
-    /// target (INFERENCE).
+    /// Gathering point: a third of the way from the town to the target
+    /// (INFERENCE).  At three quarters each new unit walked alone into the
+    /// enemy's defence and died, so a `train 16 Marine` never completed and
+    /// the script stalled for the rest of the game (Homeworld TvT).
     fn staging(&self, world: &World, enemy_base: Option<(i32, i32)>) -> Option<(i32, i32)> {
         let (bx, by) = self.base(world)?;
         let (tx, ty) = enemy_base.or_else(|| {
             self.nearest_enemy_unit(world)
                 .map(|(x, y)| (x / 256, y / 256))
         })?;
-        Some((bx + (tx - bx) * 3 / 4, by + (ty - by) * 3 / 4))
+        Some((bx + (tx - bx) / 3, by + (ty - by) / 3))
     }
 
     /// The attack party: per `attack_add` type, the fighters nearest the
@@ -139,7 +141,7 @@ mod tests {
         let out = world
             .units
             .iter()
-            .filter(|u| u.alive && u.type_id == uid::ZERGLING && u.x / 256 > 800)
+            .filter(|u| u.alive && u.type_id == uid::ZERGLING && u.x / 256 > 650)
             .count();
         assert_eq!(
             out, 2,

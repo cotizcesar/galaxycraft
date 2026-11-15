@@ -553,7 +553,11 @@ impl CampaignAi {
         let mut live = Vec::new();
         for mut th in std::mem::take(&mut self.subthreads) {
             th.update(world, enemy_base);
-            if !th.finished {
+            // An expansion thread is the town on its site: its block ends
+            // with `stop` long before the town hall and gas it asked for
+            // exist, so it keeps maintaining them (INFERENCE: the retail
+            // town manager outlives the script block).
+            if !th.finished || th.expansion_site.is_some() {
                 live.push(th);
             }
         }

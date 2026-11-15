@@ -14,12 +14,12 @@ Sizes are lines.  Find a function with `rg -n 'fn name' engine-rust/src`.
 | `ai_recovered/translated/a87.rs` | 1523 |  |
 | `ai_recovered/translated/a88.rs` | 1441 |  |
 | `ai_recovered/translated/mod.rs` | 15 |  |
-| `aiscript/attack_prep.rs` | 149 | `attack_prepare`: build the attack party and gather it towards the target. |
+| `aiscript/attack_prep.rs` | 151 | `attack_prepare`: build the attack party and gather it towards the target. |
 | `aiscript/defend.rs` | 100 | The campaign AI's defence response. |
 | `aiscript/melee.rs` | 284 | Retail skirmish computers: each runs its race's Brood War melee script |
 | `aiscript/requests.rs` | 282 | `build`, `upgrade` / `tech`, `defensebuild_*`: queued town requests. |
 | `aiscript/tests.rs` | 590 |  |
-| `aiscript.rs` | 2243 | `scripts\aiscript.bin` / `scripts\bwscript.bin` reader. |
+| `aiscript.rs` | 2247 | `scripts\aiscript.bin` / `scripts\bwscript.bin` reader. |
 | `audio.rs` | 3042 | Retail sound effects and a small software mixer. |
 | `bin/sc_animsheet.rs` | 126 | Dump frame contact sheets from Remastered HD animation containers. |
 | `bin/sc_assets.rs` | 561 | Verify and materialise the retail installation without redistributing it. |
