@@ -103,16 +103,25 @@ be selected (15 doodad buildings and the flying Kakaru critter), none differs.
 | 1 | `World::find_build_spot` (gas buildings) | Returned the *first* free geyser in the unit list, not the one at the cursor, so a refinery could only be placed on that one geyser; an under-construction refinery did not occupy its geyser. | **Fixed** (nearest free geyser; incomplete refinery occupies it), test `refinery_placement_tests`. |
 | 2 | `retail_replay` | The legacy container reader returned a map 2 747 bytes too long and no commands for container 0x8909. | **Fixed** (structured reader, PR #25). |
 | 3 | Unit tags after the first in-game creation | Retail allocates tags from one global slot list (recycled slots bump the generation) that the Zerg AI also consumes, so tags of units created after the start cannot be derived. Mitigation in `sc_retailrep`: **context binding** (an unknown tag in a selection is bound to the engine unit that fits the next command: producer for train, worker for build/gather, any mobile unit for a move; enemy targets by click position).  17 tags bound in this replay. | Mitigated; not exact (tags with generation 9 and 13 occur from frame ~17 400). |
-| 4 | Engine economy vs the recorded game | The recorded Barracks (frame 1974, 150 minerals) and Supply Depot cannot start in the engine: the SCV arrives with 114 minerals and `order_build` drops the order silently.  By the first builds the engine is behind by **118 minerals** in total (the driver tops up builds and counts the gap).  Mining is calibrated to recordings (Wasteland -1.7 %), so the gap may come from which SCV trains the player's spam got accepted (the log also holds rejected commands), not from the mining model. | Open; the replay alone cannot tell income from acceptance. |
-| 4b | Worker patch hopping | Traced SCV #68 from the opening mining order (frame 78): it retargets its mineral patch three times (62, 64, 63, 65) because the nearer patches are occupied and only starts mining at frame ~240; the engine has mined 40 minerals by frame 500 with four workers.  The rule in `sim.rs` (`free_mineral_near`) is OpenBW's `find_mineral_field(.., 32 * 8, true)`, so this is **probably faithful** and not the cause of #4; the retail order itself (`MoveToMinerals`, inside the non-decompilable range around `0x005ac85d`) has not been read. | Unresolved; do not change without evidence. |
+| 4 | Engine economy vs the recorded game | Was 118 minerals behind by the first builds.  Three causes, all fixed (0.1.70): (a) `sc_retailrep` bound the tag of each new SCV to a *starting* SCV (whose tag is known), so the new SCVs stood idle; (b) workers walked to the centre of the mineral field, which is unwalkable, and the path search picked a cell behind the mineral line (a 120 px trip became a 280 px detour); they now aim at the side of the box facing them; (c) a Shift-queued right-click (frame 2235: gather after placing a depot) replaced the build.  The SCV trains the engine accepts are the recorded ones (frames 125, 620, 946, 1298, 2090; the spam at 129-137 and 350 is refused in both, the new SCVs appear 15-46 frames before the player selects them). | **Fixed**: deficit 0, every recorded build affordable on its frame. |
+| 4b | Worker patch hopping | Traced SCV #68 from the opening mining order (frame 78): it retargets its mineral patch three times because the nearer patches are occupied.  The rule (`free_mineral_near`) is OpenBW's `find_mineral_field(.., 32 * 8, true)`, so this is **probably faithful**; it was not the cause of #4. | Unresolved; do not change without evidence. |
 | 5 | Silent build abort | Read from OpenBW `order_PlaceBuilding`: on arrival without the money (or power, or requirements) the worker drops the order (`order_done`, kept alive and idle) and the player sees the error line.  The engine already dropped the order; it now reports it (`World::order_errors`, shown by the client), `tests/build_errors.rs`. | **Fixed** (0.1.68). |
-| 6 | Requirements | After the topped-up builds, `train Firebat/Medic in Barracks` fails with `MissingRequirements` at frame ~7 900 and ~12 200 (Academy not finished or not built in the engine) and `research`/`upgrade` fail the same way (frames 6 485, 11 515). | Open: needs the build state at those frames. |
-| 7 | Supply | `train Marine` fails with `NotEnoughSupply` from frame 4 527: the recorded depots do not all exist in the engine. | Open (consequence of #4/#5). |
+| 6 | Requirements | The builder of a finished Refinery stood idle (OpenBW `order_ConstructingBuilding` sends it to `Harvest1`), so the replay had no gas and Firebat/Medic/research failed.  Fixed; `research`/`upgrade` at frame 6 485 still fail with `MissingRequirements` (4 commands). | Mostly fixed. |
+| 7 | Supply | `train Marine` failed with `NotEnoughSupply`: consequence of #4 and of the queued-gather bug, which cancelled the Supply Depot at frame 2221. | **Fixed** (no supply failures left). |
 | 8 | Computer opponent | `SimpleAi` is not the retail melee AI, so the Zerg side differs from the first creation on.  Nothing in the replay constrains it. | Open (out of reach with replays alone). |
 
-Result of the last run: 17 tags bound by context, 238 failed commands of ~1 000 executed or tried
-(most are cascades of #4-#7), the replay's last action at frame 25 387 and the
-header length 25 437 are reached, no winner.
+Result of the last run (0.1.70): 50 tags bound by context, 124 failed commands
+(was 238-266; the rest are unbound tags of units created late, a Factory and a
+Starport placement, and the research at frame 6 485), no mineral top-up
+needed, the replay's last action at frame 25 387 and the header length 25 437
+are reached, no winner.
+
+Also found on the way: `Order::order_id` used the wrong `orders.dat` row for
+19 orders (Attack Move 13 instead of 14, Harvest 78 instead of 79, Patrol 151
+instead of 152, Build 15 instead of 30, ...: the table's labels are 1-based
+`stat_txt.tbl` indices).  The rows decide which orders can be Shift-queued
+and their handler cadence; they now match the labels (`Harvest`, `Patrol`,
+`Hold Position`, ...).
 
 ## Not verified
 

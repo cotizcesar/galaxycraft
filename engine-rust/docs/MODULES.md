@@ -34,7 +34,7 @@ Sizes are lines.  Find a function with `rg -n 'fn name' engine-rust/src`.
 | `bin/sc_regions.rs` | 88 | Print the recovered region graph for a scenario. |
 | `bin/sc_replay.rs` | 83 | Inspect retail `.rep` files: container, embedded map and action stream. |
 | `bin/sc_replaytool.rs` | 248 | Create, inspect and verify GalaxyCraft replays (`.gcrep` / `.gcsave`). |
-| `bin/sc_retailrep.rs` | 762 | Play a retail Remastered `.rep` through the engine and report where it |
+| `bin/sc_retailrep.rs` | 776 | Play a retail Remastered `.rep` through the engine and report where it |
 | `bin/sc_shot.rs` | 226 | Headless graphics smoke test: render one real map frame to a BMP. |
 | `bin/sc_sim.rs` | 187 | Small command-line demonstration of the reconstructed rules. |
 | `bin/sc_solve.rs` | 902 | Drive campaign missions to their end through their own triggers. |
@@ -186,7 +186,7 @@ Sizes are lines.  Find a function with `rg -n 'fn name' engine-rust/src`.
 | `sim/translated/mod.rs` | 18 |  |
 | `sim/transport.rs` | 226 | `impl World`: transport (moved out of `mod.rs` by scripts/split_impl.py). |
 | `sim/unit_queries.rs` | 593 | `impl World`: unit queries (moved out of `mod.rs` by scripts/split_impl.py). |
-| `sim/workers.rs` | 596 | `impl World`: workers (moved out of `mod.rs` by scripts/split_impl.py). |
+| `sim/workers.rs` | 642 | `impl World`: workers (moved out of `mod.rs` by scripts/split_impl.py). |
 | `tables.rs` | 600 | Additional column-major tables recovered from the shipped CASC data. |
 | `team_colors.rs` | 87 | Retail team colours: the eight shades of each slot colour, read from |
 | `tech.rs` | 301 | The hard-coded build/research tree. |
@@ -208,4 +208,4 @@ Sizes are lines.  Find a function with `rg -n 'fn name' engine-rust/src`.
 | `ai_recovered/wNN/` | 5 | 2530 |
 | `client/wNN/` | 118 | 34119 |
 | `runtime/wNN/` | 532 | 73744 |
-| `sim/translated/wNN/` | 56 | 23850 |
+| `sim/translated/wNN/` | 56 | 23859 |

@@ -282,11 +282,13 @@ mod tests_agent06 {
         world.issue(id, Order::Move { pos: (400, 400) }).unwrap();
         world.queue_order(id, Order::Stop).unwrap();
         // A row with highlight -1 is linked but does not consume a slot.
-        assert_eq!(data.order(106).unwrap().highlight, -1);
-        world.units[index].queue.push_back(Order::HoldPosition);
+        assert_eq!(data.order(38).unwrap().highlight, -1);
+        world.units[index]
+            .queue
+            .push_back(Order::Train { unit_type: 0 });
 
         let removed = world.units[index].a06_clear_order_list(data.as_ref());
-        assert_eq!(removed, 2, "Move and Stop consume slots, Hold does not");
+        assert_eq!(removed, 2, "Move and Stop consume slots, Train does not");
         assert_eq!(world.units[index].order, Order::Idle);
         assert_eq!(world.units[index].order_row, 0);
         assert!(world.units[index].queue.is_empty());
@@ -301,7 +303,9 @@ mod tests_agent06 {
         let first = Order::Move { pos: (400, 400) };
         world.issue(id, first.clone()).unwrap();
         world.queue_order(id, Order::Stop).unwrap();
-        world.units[index].queue.push_back(Order::HoldPosition);
+        world.units[index]
+            .queue
+            .push_back(Order::Train { unit_type: 0 });
 
         let (removed, used_slot) = world.units[index]
             .a06_pop_order_head(data.as_ref())
@@ -316,14 +320,14 @@ mod tests_agent06 {
             .expect("Stop node");
         assert_eq!(removed, Order::Stop);
         assert!(used_slot);
-        assert_eq!(world.units[index].order, Order::HoldPosition);
-        assert_eq!(world.units[index].order_row, 106);
+        assert_eq!(world.units[index].order, Order::Train { unit_type: 0 });
+        assert_eq!(world.units[index].order_row, 38);
 
         let (removed, used_slot) = world.units[index]
             .a06_pop_order_head(data.as_ref())
-            .expect("Hold node");
-        assert_eq!(removed, Order::HoldPosition);
-        assert!(!used_slot, "row 106 has highlight -1");
+            .expect("Train node");
+        assert_eq!(removed, Order::Train { unit_type: 0 });
+        assert!(!used_slot, "row 38 has highlight -1");
         assert_eq!(world.units[index].order, Order::Idle);
         assert_eq!(world.units[index].order_row, 0);
 
@@ -345,7 +349,9 @@ mod tests_agent06 {
         world.issue(id, current.clone()).unwrap();
         world.queue_order(id, Order::Stop).unwrap();
         world.units[index].queue.push_back(queued.clone());
-        world.units[index].queue.push_back(Order::HoldPosition);
+        world.units[index]
+            .queue
+            .push_back(Order::Train { unit_type: 0 });
 
         assert_eq!(
             world.units[index].a06_remove_order_node(&Order::Stop, data.as_ref()),
@@ -353,9 +359,9 @@ mod tests_agent06 {
             "row 1 consumes a slot"
         );
         assert_eq!(
-            world.units[index].a06_remove_order_node(&Order::HoldPosition, data.as_ref()),
+            world.units[index].a06_remove_order_node(&Order::Train { unit_type: 0 }, data.as_ref()),
             Some(false),
-            "row 106 is linked without a slot"
+            "row 38 is linked without a slot"
         );
         assert_eq!(
             world.units[index].a06_remove_order_node(&current, data.as_ref()),
@@ -400,10 +406,13 @@ mod tests_agent06 {
         let other = a06_marine(&mut world);
         let other_index = world.index_of(other).unwrap();
         let used_slot = world.units[other_index]
-            .a06_insert_order_at_head(Order::HoldPosition, data.as_ref())
+            .a06_insert_order_at_head(Order::Train { unit_type: 0 }, data.as_ref())
             .unwrap();
-        assert!(!used_slot, "row 106 does not consume a slot");
-        assert_eq!(world.units[other_index].order, Order::HoldPosition);
+        assert!(!used_slot, "row 38 does not consume a slot");
+        assert_eq!(
+            world.units[other_index].order,
+            Order::Train { unit_type: 0 }
+        );
     }
 
     #[test]
