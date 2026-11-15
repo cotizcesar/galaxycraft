@@ -454,3 +454,22 @@ on Homeworld one ended within 60 000 ticks (Protoss beat Zerg at tick
 46 146), and the eight-player game had no winner at tick 21 660 in the
 client; each wave is only the script's `attack_add` party.  Not yet
 compared with a retail AI-against-AI game.
+
+Follow-up (0.1.71):
+
+- An expansion thread was dropped when its script block reached `stop`,
+  together with the town hall and gas it had asked for, so a Protoss computer
+  called `expand` three times and never built a second Nexus.  The thread now
+  stays as the town on its site (INFERENCE: the retail town manager outlives
+  the block).
+- The attack gathering point moved from three quarters to a third of the way
+  to the target (INFERENCE).  At three quarters every new Marine walked alone
+  into the enemy's defence, `train 16 Marine` never completed and the Terran
+  script stalled from tick 9 600 to the end of the game.
+- Still open: no AI-only game on Homeworld ends within 60 000 ticks (1v1 and
+  8 players).  The nearest free expansions there have no geyser, so every
+  computer lives on one geyser and stalls on gas units (Siege Tank, Dark
+  Templar, Lurker) with thousands of minerals banked.  Retail behaviour here
+  has not been recorded: an AI-vs-AI game in the original is needed before
+  changing more.
+
