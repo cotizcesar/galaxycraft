@@ -125,6 +125,7 @@ fn campaign_interpreter_runs_build_and_train_commands() {
         flags: 0,
         code,
         external: false,
+        base: 0,
     };
     let mut ai = CampaignAi::new(0, &script);
     let mut world = World::new(
@@ -185,6 +186,7 @@ fn attack_do_sends_the_requested_count_and_no_periodic_attack() {
         flags: 0,
         code: vec![3, 2, 0x58, 0x02, 36],
         external: false,
+        base: 0,
     };
     let mut ai = CampaignAi::new(0, &idle);
     for _ in 0..600 {
@@ -199,6 +201,7 @@ fn attack_do_sends_the_requested_count_and_no_periodic_attack() {
         flags: 0,
         code: vec![12, 2, 37, 0, 14, 36],
         external: false,
+        base: 0,
     };
     let mut ai = CampaignAi::new(0, &wave);
     ai.update(&mut world, Some((1800, 1800)));
@@ -231,6 +234,7 @@ fn set_attacks_budgets_target_expansion_launches() {
         flags: 0,
         code: vec![79, 1, 77, 36], // set_attacks 1; target_expansion; stop
         external: false,
+        base: 0,
     };
     let mut ai = CampaignAi::new(0, &script);
     ai.update(&mut world, Some((40, 40)));
@@ -247,6 +251,7 @@ fn set_attacks_budgets_target_expansion_launches() {
             flags: 0,
             code: vec![77, 36], // no set_attacks budget
             external: false,
+            base: 0,
         },
     );
     ai.update(&mut world, Some((40, 40)));
@@ -273,6 +278,7 @@ fn move_dt_sends_dark_templar_to_the_trigger_location() {
         flags: 0,
         code: vec![38, 36], // move_dt; stop
         external: false,
+        base: 0,
     };
     let mut ai = CampaignAi::new(0, &script);
     ai.location = Some((768, 512));
@@ -299,6 +305,7 @@ fn if_dif_compares_the_active_thread_difficulty() {
         flags: 0,
         code: vec![3, 95, 1, 0, 9, 0, 2, 100, 0, 36],
         external: false,
+        base: 0,
     };
     let mut ai = CampaignAi::new(0, &script);
     ai.update(&mut world, None);
@@ -313,6 +320,7 @@ fn fake_nuke_resets_the_pending_nuke_state() {
         flags: 0,
         code: vec![102, 36],
         external: false,
+        base: 0,
     };
     let mut ai = CampaignAi::new(0, &script);
     ai.nukes = 5;
@@ -342,6 +350,7 @@ fn region_state_commands_mark_the_retail_region_graph() {
         flags: 0,
         code: vec![92, 36], // guard_all; stop
         external: false,
+        base: 0,
     };
     let mut ai = CampaignAi::new(0, &script);
     ai.update(&mut world, None);
@@ -369,6 +378,7 @@ fn region_state_commands_mark_the_retail_region_graph() {
             flags: 0,
             code: vec![91, 36], // implode; stop
             external: false,
+            base: 0,
         },
     );
     ai.update(&mut world, None);
@@ -388,6 +398,7 @@ fn region_state_commands_mark_the_retail_region_graph() {
             flags: 0,
             code: vec![42, 36], // value_area; stop
             external: false,
+            base: 0,
         },
     );
     ai.location = Some((20 * 32, 20 * 32));
@@ -452,6 +463,7 @@ fn help_iftrouble_marks_allied_regions() {
             flags: 0,
             code: vec![110, 36], // help_iftrouble; stop
             external: false,
+            base: 0,
         },
     );
     ai.update(&mut world, None);
@@ -479,6 +491,7 @@ fn wait_finishattack_waits_for_the_attack_deadline() {
             flags: 0,
             code: vec![99, 36], // wait_finishattack; stop
             external: false,
+            base: 0,
         },
     );
     ai.attack_finish = world.tick + 32;
@@ -517,6 +530,7 @@ fn quick_attack_sets_a_five_second_deadline() {
             flags: 0,
             code: vec![100, 14, 36], // quick_attack; attack_do; stop
             external: false,
+            base: 0,
         },
     );
     ai.update(&mut world, Some((40, 40)));
@@ -544,6 +558,7 @@ fn the_town_manager_sends_idle_workers_to_the_nearest_field() {
         flags: 0,
         code: Vec::new(),
         external: false,
+        base: 0,
     };
     let ai = CampaignAi::new(0, &script);
     ai.keep_workers_mining(&mut world);

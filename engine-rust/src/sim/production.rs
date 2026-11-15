@@ -246,7 +246,7 @@ impl World {
         let left = ((cursor.0 - pw / 2) as f32 / 32.0).round() as i32 * 32;
         let top = ((cursor.1 - ph / 2) as f32 / 32.0).round() as i32 * 32;
         let centre = (left + pw / 2, top + ph / 2);
-        self.build_spot_search(type_id, centre, 1)
+        self.build_spot_search(None, type_id, centre, 1)
     }
 
     /// Placement preview at `cursor`: (snapped centre, placement box size
@@ -312,6 +312,18 @@ impl World {
 
     /// Find a buildable spot near `near` (pixel coordinates).
     pub fn find_build_spot(&mut self, type_id: u16, near: (i32, i32)) -> Option<(i32, i32)> {
+        self.find_build_spot_for(None, type_id, near)
+    }
+
+    /// [`World::find_build_spot`] for one player: a Protoss structure needs
+    /// a spot inside that player's psi field (the test `order_build` makes on
+    /// arrival); `None` accepts any player's field.
+    pub fn find_build_spot_for(
+        &mut self,
+        owner: Option<u8>,
+        type_id: u16,
+        near: (i32, i32),
+    ) -> Option<(i32, i32)> {
         self.rebuild_creep();
         // Gas buildings are not free-standing: they are placed on a geyser
         // and occupy the geyser tile.
@@ -343,7 +355,7 @@ impl World {
             }
             return None;
         }
-        self.build_spot_search(type_id, near, 20)
+        self.build_spot_search(owner, type_id, near, 20)
     }
 
     /// `0x00750b20`: search the candidate rectangle around `near` in 8 px
@@ -351,6 +363,7 @@ impl World {
     /// `rings` is the Rust search radius in 32 px tiles.
     pub(super) fn build_spot_search(
         &mut self,
+        owner: Option<u8>,
         type_id: u16,
         near: (i32, i32),
         rings: i32,
@@ -360,14 +373,20 @@ impl World {
         let half_w = ty.dimensions.right.max(0).max(ty.dimensions.left.max(0)) as i32;
         let half_h = ty.dimensions.bottom.max(0).max(ty.dimensions.top.max(0)) as i32;
         let need_creep = is_zerg_building(type_id) && type_id != uid::HATCHERY;
-        let need_power =
-            is_protoss_building(type_id) && !matches!(type_id, uid::NEXUS | uid::PYLON);
+        let takes_addon = owner.is_some()
+            && matches!(
+                type_id,
+                uid::COMMAND_CENTER | uid::FACTORY | uid::STARPORT | uid::SCIENCE_FACILITY
+            );
+        let need_power = is_protoss_building(type_id)
+            && !matches!(type_id, uid::NEXUS | uid::PYLON | uid::ASSIMILATOR);
         // Cache the Pylon field and the blocking footprint list once instead
         // of rescanning every unit for each candidate position.
         let pylons: Vec<(i32, i32)> = if need_power {
             self.units
                 .iter()
                 .filter(|u| u.alive && u.completed && is_pylon_type(u.type_id))
+                .filter(|u| owner.is_none_or(|o| u.owner == o))
                 .map(|u| (u.x / fp(1), u.y / fp(1)))
                 .collect()
         } else {
@@ -399,7 +418,10 @@ impl World {
                     let y = near.1 + dy * step * 2;
                     let left = x - half_w;
                     let top = y - half_h;
-                    let right = x + half_w;
+                    // Room for the add-on (64 px to the right) of a Terran
+                    // building that takes one.  INFERENCE: the retail AI
+                    // leaves it; an add-on needs a buildable box there.
+                    let right = x + half_w + if takes_addon { 64 } else { 0 };
                     let bottom = y + half_h;
                     if left < 0 || top < 0 {
                         continue;
@@ -417,7 +439,7 @@ impl World {
                     if need_power
                         && !pylons
                             .iter()
-                            .any(|&(px, py)| (px - x).abs() <= 6 * 32 && (py - y).abs() <= 6 * 32)
+                            .any(|&(px, py)| psi_field_covers(x - px, y - py))
                     {
                         continue;
                     }

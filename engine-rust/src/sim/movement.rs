@@ -394,6 +394,21 @@ impl World {
             self.ensure_walking_animation(i);
         }
         let goal_fp = (goal.0.saturating_mul(fp(1)), goal.1.saturating_mul(fp(1)));
+        // A goal that moved less than a tile (a chased unit) keeps the route
+        // and only moves its last point; a new search every frame made big
+        // battles cost ~60 ms a tick.  INFERENCE: retail repaths a chase
+        // only now and then, not every frame.
+        if let Some(old) = self.units[i].path_goal
+            && old != goal_fp
+            && self.units[i].path.len() > 1
+            && (old.0 - goal_fp.0).abs() < fp(32)
+            && (old.1 - goal_fp.1).abs() < fp(32)
+        {
+            if let Some(last) = self.units[i].path.back_mut() {
+                *last = goal_fp;
+            }
+            self.units[i].path_goal = Some(goal_fp);
+        }
         if self.units[i].path_goal != Some(goal_fp) {
             self.build_obstacles();
             let speed = self.speed_of(i);

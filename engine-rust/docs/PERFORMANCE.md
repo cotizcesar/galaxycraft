@@ -124,3 +124,23 @@ for a free-for-all:
 Homeworld with eight players now ends in the client with one winner (Zerg,
 slot 5) at tick 30 556 (~21 minutes at Fastest) in 69 s; the headless
 `sc_match --ticks 60000` game ends with a winner at tick 33 129.
+
+### Retail melee scripts (2026-11-15)
+
+With the skirmish computers on their retail melee scripts the eight-player
+Homeworld game has more units (~850 at tick 19 800 headless) and it cost
+5.6 ms a tick (`sc_match --verbose`, 20 000 ticks in 111 s, 83 ticks over
+30 ms, worst 68 ms).  Three fixes:
+
+- target acquisition skips units beyond the longest reach plus 256 px
+  before any other test (same result);
+- a waiting worker collects the busy mineral fields in one pass instead of
+  rescanning every unit per field (same result);
+- a move goal that shifted less than a tile (a chased unit) keeps its route
+  and only moves the last point, instead of a new search every frame
+  (INFERENCE: retail repaths a chase now and then).
+
+Now 22 000 ticks in 58 s (the time per tick includes the AI): 6 ticks over
+30 ms, worst 51 ms (the first tick).  Client bench (`GC_BENCH=2000
+GC_BENCH_TICKS=10`): 21 660 ticks, 28 ms of update per frame of ten ticks,
+7 ms of drawing, worst frame 165 ms (ten ticks).

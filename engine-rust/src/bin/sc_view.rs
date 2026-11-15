@@ -7781,6 +7781,7 @@ fn main() {
         .filter(|s| s.computer && skirmish_ai(&app.world, s.slot))
         .map(|s| SimpleAi::new(s.slot as u8))
         .collect();
+    app.campaign_ais = melee_ais(&app.world, &app.ais);
     app.center_on_base();
     app.refresh_commands();
     if app.intro || app.menu {
@@ -8790,6 +8791,13 @@ const COLLECTIONS_PLATE_ALPHA: u8 = 128;
 /// Passive" slot never has an AI (its units wait to be rescued).
 fn skirmish_ai(world: &World, slot: usize) -> bool {
     !world.trigger_victory && !world.players.get(slot).is_some_and(|p| p.rescuable)
+}
+
+/// Retail skirmish: each skirmish computer runs its race's melee script.
+fn melee_ais(world: &World, ais: &[SimpleAi]) -> Vec<CampaignAi> {
+    ais.iter()
+        .filter_map(|a| galaxycraft::aiscript::melee_ai(world, a.player))
+        .collect()
 }
 
 /// Bank cue of the rescue sound for a race.

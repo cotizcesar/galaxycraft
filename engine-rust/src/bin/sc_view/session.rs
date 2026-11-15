@@ -76,7 +76,7 @@ impl App {
             .filter(|s| s.computer && s.slot != local && skirmish_ai(&world, s.slot))
             .map(|s| SimpleAi::new(s.slot as u8))
             .collect();
-        self.campaign_ais.clear();
+        self.campaign_ais = melee_ais(&world, &self.ais);
         // Campaign missions carry a retail `est*.txt` briefing script and a
         // retail backdrop; use them when present and only fall back to the
         // map-authored STR copy for missions without one.
@@ -410,7 +410,7 @@ impl App {
                 .filter(|(_, s)| s.occupant == galaxycraft::multiplayer::SetupOccupant::Computer)
                 .map(|(i, _)| SimpleAi::new(i as u8))
                 .collect();
-            self.campaign_ais.clear();
+            self.campaign_ais = melee_ais(&world, &self.ais);
         }
         world.enable_fog();
         world.rng = save.rec.seed;

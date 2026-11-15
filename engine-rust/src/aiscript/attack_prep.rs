@@ -129,6 +129,7 @@ mod tests {
             flags: 0,
             code: vec![12, 2, 37, 0, 13, 3, 0xF4, 0x01, 36],
             external: false,
+            base: 0,
         };
         let mut ai = CampaignAi::new(0, &script);
         for _ in 0..300 {
