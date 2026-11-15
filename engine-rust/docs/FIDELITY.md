@@ -466,7 +466,15 @@ Follow-up (0.1.71):
   to the target (INFERENCE).  At three quarters every new Marine walked alone
   into the enemy's defence, `train 16 Marine` never completed and the Terran
   script stalled from tick 9 600 to the end of the game.
-- Still open: no AI-only game on Homeworld ends within 60 000 ticks (1v1 and
+- Measured in the original (2026-11-15): Brood War, Homeworld, Free For All,
+  one human (invulnerable, map revealed) and 7 computers of random race.  At
+  53 minutes (~75 000 frames) all 7 computers were still alive; none had
+  eliminated another.  From ~20 minutes they sent waves of 15-20 Marines,
+  Firebats and other units, and from ~30 minutes they spread to the corner and
+  middle expansions.  Bias: part of their waves went to the invulnerable
+  human base.  So an 8-player AI-only game on Homeworld that has no winner at
+  60 000 ticks **matches the original**; it is not an engine defect.
+- Older note (before the measurement above): no AI-only game on Homeworld ends within 60 000 ticks (1v1 and
   8 players).  The nearest free expansions there have no geyser, so every
   computer lives on one geyser and stalls on gas units (Siege Tank, Dark
   Templar, Lurker) with thousands of minerals banked.  Retail behaviour here
