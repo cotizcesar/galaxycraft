@@ -474,6 +474,12 @@ Follow-up (0.1.71):
   middle expansions.  Bias: part of their waves went to the invulnerable
   human base.  So an 8-player AI-only game on Homeworld that has no winner at
   60 000 ticks **matches the original**; it is not an engine defect.
+- Same original game left running (2026-11-15): at **4 hours** (~340 000
+  frames) all 7 computers were still alive, minimap captured every 10 minutes.
+  Orange and purple held most of the map, teal shrank to a few buildings, but
+  nobody was eliminated.  Engine, 8 players on Homeworld: no winner at 120 000
+  and 300 000 ticks either (most computers alive, one or two reduced to a
+  handful of units).  Both agree: an AI-only 8-player FFA does not finish.
 - Engine, same check on four more 8-player maps (The Hunters, Bridge to
   Bridge '98, Killing Fields, Orbital Death; T/P/Z x 2 + T/P, 60 000 ticks):
   no winner on any, as on Homeworld.  The end of a game itself is tested with
