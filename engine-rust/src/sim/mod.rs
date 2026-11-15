@@ -1896,12 +1896,12 @@ pub struct World {
     pub rescues: Vec<(u32, u8)>,
     /// Defensive Matrix hit/break cues produced during the current tick.
     pub matrix_cues: Vec<MatrixCue>,
-    /// The last [`SPELL_CUE_KEEP`] spell cues (Stim, Lockdown hit,
-    /// Restoration, Optical Flare) for the renderer's effects and sounds;
-    /// `spell_cue_seq` counts every cue ever pushed, so a consumer knows
-    /// which ones it has not seen yet.  Presentation only.
+    /// Last [`SPELL_CUE_KEEP`] spell cues for the renderer; seq counts all.
     pub spell_cues: std::collections::VecDeque<SpellCue>,
     pub spell_cue_seq: u64,
+    /// Last build orders refused on arrival `(player, error)`; seq counts all.
+    pub order_errors: std::collections::VecDeque<(u8, SimError)>,
+    pub order_error_seq: u64,
     /// Instant-weapon hits waiting for `domissiledmg` ([`World::instant_hit`]).
     pub pending_hits: Vec<PendingHit>,
     /// Staged nuclear launches.

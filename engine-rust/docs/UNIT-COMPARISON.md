@@ -19,7 +19,7 @@ checked in `tests/effects_openbw.rs`; training, research and upgrade times in
 |---|---|
 | unit + weapon data vs executable | 228 / 228 |
 | measured rate of fire vs cooldown | 69 / 69 |
-| measured damage per hit vs matrix | 59 / 59 |
+| measured damage per hit vs matrix | 65 / 65 |
 | buildings | 39 / 39 |
 | add-ons and morphs | 11 / 11 |
 | special attackers | 7 / 7 |
@@ -94,11 +94,11 @@ those are covered per case in the tests above).
 | 55 | Kukulza | 300 | - | 3 small | 200/200 | 1200 | 0 | 7 | 18+1 cd30 r96 | 18+1 cd30 r96 | 30.7/30.5 ok | 4352/4352 ok | hero | ok |
 | 56 | Kukulza | 400 | - | 4 large | 100/200 | 1200 | 0 | 11 | 40+2 cd30 r256 | - | 30.5/30.5 ok | 9984/9984 ok | hero | ok |
 | 57 | Yggdrasill | 1000 | - | 4 large | 200/0 | 1200 | +30 | 11 | - | - | - (unarmed) | - (unarmed) | detector hero | ok |
-| 58 | Terran Valkyrie | 200 | - | 2 large | 250/125 | 750 | 3 | 8 | - | 6+1 cd64 r192 x2 | 64.0/64.5 (air) ok | - (air-only: no ground hit) |  | ok |
+| 58 | Terran Valkyrie | 200 | - | 2 large | 250/125 | 750 | 3 | 8 | - | 6+1 cd64 r192 x2 | 64.0/64.5 (air) ok | 1536/1536 (air) ok |  | ok |
 | 59 | Cocoon | 200 | - | 0 large | 1/1 | 1 | 0 | 4 | - | - | - (unarmed) | - (unarmed) |  | ok |
-| 60 | Protoss Corsair | 100 | 80 | 1 medium | 150/100 | 600 | 2 | 9 | - | 5+1 cd8 r160 | 8.7/8.5 (air) ok | - (air-only: no ground hit) |  | ok |
+| 60 | Protoss Corsair | 100 | 80 | 1 medium | 150/100 | 600 | 2 | 9 | - | 5+1 cd8 r160 | 8.7/8.5 (air) ok | 1280/1280 (air) ok |  | ok |
 | 61 | Protoss Dark Templar | 80 | 40 | 1 small | 125/100 | 750 | 2 | 7 | 40+3 cd30 r15 | - | 30.6/30.5 ok | 9984/9984 ok |  | ok |
-| 62 | Zerg Devourer | 250 | - | 2 large | 150/50 | 600 | 2 | 10 | - | 25+2 cd100 r192 | 100.7/100.5 (air) ok | - (air-only: no ground hit) |  | ok |
+| 62 | Zerg Devourer | 250 | - | 2 large | 150/50 | 600 | 2 | 10 | - | 25+2 cd100 r192 | 100.7/100.5 (air) ok | 6400/6400 (air) ok |  | ok |
 | 63 | Protoss Dark Archon | 25 | 200 | 1 large | 0/0 | 300 | 4 | 10 | - | - | - (unarmed) | - (unarmed) |  | ok |
 | 64 | Protoss Probe | 20 | 20 | 0 small | 50/0 | 300 | 1 | 8 | 5+0 cd22 r32 | - | 22.4/22.5 ok | 1024/1024 ok |  | ok |
 | 65 | Protoss Zealot | 100 | 60 | 1 small | 100/0 | 600 | 2 | 7 | 8+1 cd22 r15 | - | 22.4/22.5 ok | 1792/1792 ok |  | ok |
@@ -134,7 +134,7 @@ those are covered per case in the tests above).
 | 95 | Ragnasaur | 60 | - | 0 small | 1/1 | 1 | 0 | 7 | - | - | - (unarmed) | - (unarmed) |  | ok |
 | 96 | Ursadon | 60 | - | 0 small | 1/1 | 1 | 0 | 7 | - | - | - (unarmed) | - (unarmed) |  | ok |
 | 97 | Zerg Lurker Egg | 200 | - | 10 medium | 1/1 | 1 | 0 | 4 | - | - | - (unarmed) | - (unarmed) |  | ok |
-| 98 | Raszagal | 100 | 60 | 0 medium | 150/100 | 750 | 0 | 9 | - | 5+1 cd8 r160 | 8.7/8.5 (air) ok | - (air-only: no ground hit) | hero | ok |
+| 98 | Raszagal | 100 | 60 | 0 medium | 150/100 | 750 | 0 | 9 | - | 5+1 cd8 r160 | 8.7/8.5 (air) ok | 1280/1280 (air) ok | hero | ok |
 | 99 | Samir Duran | 200 | - | 2 small | 200/75 | 1500 | 0 | 10 | 25+1 cd22 r192 | 25+1 cd22 r192 | 22.7/22.5 ok | 1536/1536 ok | hero | ok |
 | 100 | Alexei Stukov | 250 | - | 3 small | 200/75 | 1500 | 0 | 11 | 30+1 cd22 r192 | 30+1 cd22 r192 | 22.7/22.5 ok | 1856/1856 ok | hero | ok |
 | 101 | Map Revealer | 1 | - | 0 - | 0/0 | 1 | 0 | 10 | - | - | - (unarmed) | - (unarmed) |  | ok |
@@ -160,7 +160,7 @@ those are covered per case in the tests above).
 | 121 | Unused Terran Bldg | 0 | - | 1 large | 1/1 | 1 | 0 | 8 | - | - | - (unarmed) | - (unarmed) | building | ok |
 | 122 | Terran Engineering Bay | 850 | - | 1 large | 125/0 | 900 | 0 | 8 | - | - | - (unarmed) | - (unarmed) | building | ok |
 | 123 | Terran Armory | 750 | - | 1 large | 100/50 | 1200 | 0 | 8 | - | - | - (unarmed) | - (unarmed) | building | ok |
-| 124 | Terran Missile Turret | 200 | - | 0 large | 75/0 | 450 | 0 | 11 | - | 20+0 cd15 r224 | 15.4/15.5 (air) ok | - (air-only: no ground hit) | building detector | ok |
+| 124 | Terran Missile Turret | 200 | - | 0 large | 75/0 | 450 | 0 | 11 | - | 20+0 cd15 r224 | 15.4/15.5 (air) ok | 5120/5120 (air) ok | building detector | ok |
 | 125 | Terran Bunker | 350 | - | 1 large | 100/0 | 450 | 0 | 10 | - | - | - (unarmed) | - (unarmed) | building | ok |
 | 126 | Norad II | 700 | - | 1 large | 800/600 | 4800 | 0 | 10 | - | - | - (unarmed) | - (unarmed) | building | ok |
 | 127 | Ion Cannon | 2000 | - | 1 large | 200/0 | 900 | 0 | 8 | - | - | - (unarmed) | - (unarmed) | building | ok |
@@ -180,7 +180,7 @@ those are covered per case in the tests above).
 | 141 | Zerg Spire | 600 | - | 1 large | 200/150 | 1800 | 0 | 8 | - | - | - (unarmed) | - (unarmed) | building | ok |
 | 142 | Zerg Spawning Pool | 750 | - | 1 large | 200/0 | 1200 | 0 | 8 | - | - | - (unarmed) | - (unarmed) | building | ok |
 | 143 | Zerg Creep Colony | 400 | - | 0 large | 75/0 | 300 | 0 | 10 | - | - | - (unarmed) | - (unarmed) | building | ok |
-| 144 | Zerg Spore Colony | 400 | - | 0 large | 50/0 | 300 | 0 | 10 | - | 15+0 cd15 r224 | 15.4/15.5 (air) ok | - (air-only: no ground hit) | building detector | ok |
+| 144 | Zerg Spore Colony | 400 | - | 0 large | 50/0 | 300 | 0 | 10 | - | 15+0 cd15 r224 | 15.4/15.5 (air) ok | 3840/3840 (air) ok | building detector | ok |
 | 145 | Unused Zerg Bldg | 0 | - | 1 - | 1/1 | 1 | 0 | 7 | - | - | - (unarmed) | - (unarmed) | building resource | ok |
 | 146 | Zerg Sunken Colony | 300 | - | 2 large | 50/0 | 300 | 0 | 10 | 40+0 cd32 r224 | - | 32.5/32.5 ok | 9984/9984 ok | building | ok |
 | 147 | Zerg Overmind | 5000 | - | 1 large | 1/1 | 1 | 0 | 8 | - | - | - (unarmed) | - (unarmed) | building detector | ok |

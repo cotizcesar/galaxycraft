@@ -172,6 +172,25 @@ impl App {
         }
     }
 
+    /// Retail error line when one of the local player's workers arrives to
+    /// build and the order is refused (OpenBW `order_PlaceBuilding`).
+    pub(super) fn follow_order_errors(&mut self) {
+        let w = &self.world;
+        let fresh = (w.order_error_seq.saturating_sub(self.order_errors_seen) as usize)
+            .min(w.order_errors.len());
+        let mine = w
+            .order_errors
+            .iter()
+            .skip(w.order_errors.len() - fresh)
+            .rev()
+            .find(|&&(p, _)| p as usize == self.local_player)
+            .map(|&(_, e)| e);
+        self.order_errors_seen = w.order_error_seq;
+        if let Some(e) = mine {
+            self.show_sim_error(e);
+        }
+    }
+
     pub(super) fn status(&mut self, text: impl Into<String>) {
         self.status = text.into();
         self.status_until = Instant::now() + Duration::from_secs(4);
@@ -310,6 +329,7 @@ impl App {
         self.follow_trigger_portraits();
         let _ = self.follow_trigger_cues();
         self.follow_rescues();
+        self.follow_order_errors();
         // Drop dead selections.
         self.selected
             .retain(|id| self.world.unit(*id).is_some_and(|u| u.alive));

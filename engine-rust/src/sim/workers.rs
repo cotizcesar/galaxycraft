@@ -360,6 +360,16 @@ impl World {
             .map(|(idx, _)| idx)
     }
 
+    /// Record a build order refused on arrival for the client's error line
+    /// (OpenBW `order_PlaceBuilding` shows it, then `order_done`).
+    pub(super) fn push_order_error(&mut self, owner: u8, e: SimError) {
+        if self.order_errors.len() >= 8 {
+            self.order_errors.pop_front();
+        }
+        self.order_errors.push_back((owner, e));
+        self.order_error_seq += 1;
+    }
+
     pub(super) fn order_build(&mut self, i: usize, unit_type: u16, pos: (i32, i32)) {
         // Add-ons are parent-built, never worker-built; building morphs keep
         // the source building and never create a second structure.
@@ -380,6 +390,7 @@ impl World {
             && !matches!(unit_type, uid::NEXUS | uid::PYLON)
             && !self.has_power_px(self.units[i].owner, pos.0, pos.1)
         {
+            self.push_order_error(self.units[i].owner, SimError::Unpowered);
             self.order_done(i);
             return;
         }
@@ -391,10 +402,17 @@ impl World {
         }
         let owner = self.units[i].owner as usize;
         if !self.has_requirements(owner as u8, unit_type) {
+            self.push_order_error(owner as u8, SimError::MissingRequirements);
             self.order_done(i);
             return;
         }
         if !self.can_afford(owner as u8, unit_type) {
+            let e = if self.players[owner].minerals < ty.mineral_cost as i32 {
+                SimError::NotEnoughMinerals
+            } else {
+                SimError::NotEnoughGas
+            };
+            self.push_order_error(owner as u8, e);
             self.order_done(i);
             return;
         }
