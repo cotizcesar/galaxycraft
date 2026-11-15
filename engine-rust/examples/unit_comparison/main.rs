@@ -141,6 +141,27 @@ fn main() {
     let mut out = String::new();
     let (mut n, mut data_ok, mut rof_ok, mut rof_n, mut hit_ok, mut hit_n) = (0, 0, 0, 0, 0, 0);
     let mut rows = String::new();
+    // Retail panel result per id (docs/RETAIL-PANELS.md: hp, shields, armor
+    // and weapon damage read in the original client).
+    let panels: std::collections::HashMap<u16, String> =
+        std::fs::read_to_string(format!("{ROOT}/docs/RETAIL-PANELS.md"))
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| {
+                let c: Vec<&str> = l.split('|').map(str::trim).collect();
+                let id = c.get(1)?.parse().ok()?;
+                let r = c.get(7)?;
+                Some((
+                    id,
+                    if r.starts_with("match") {
+                        "match".into()
+                    } else {
+                        r.to_string()
+                    },
+                ))
+            })
+            .collect();
+    let (mut panel_ok, mut panel_n) = (0, 0);
     for ty in 0..228u16 {
         let u = data.unit(ty);
         let name = data.unit_name(ty).replace('|', "/");
@@ -282,9 +303,17 @@ fn main() {
         if u.is_hero() {
             tags.push("hero");
         }
+        let panel = match panels.get(&ty) {
+            Some(r) => {
+                panel_n += 1;
+                panel_ok += (r == "match") as u32;
+                r.clone()
+            }
+            None => "- (not placeable)".into(),
+        };
         let _ = writeln!(
             rows,
-            "| {ty} | {name} | {} | {shields} | {} {} | {}/{} | {} | {supply} | {} | {} | {} | {rof} | {hit} | {} | {} |",
+            "| {ty} | {name} | {} | {shields} | {} {} | {}/{} | {} | {supply} | {} | {} | {} | {rof} | {hit} | {} | {} | {panel} |",
             u.hit_points_raw / 256,
             u.armor,
             size_name(u),
@@ -321,14 +350,15 @@ checked in `tests/effects_openbw.rs`; training, research and upgrade times in\n\
 | unit + weapon data vs executable | {data_ok} / {n} |\n\
 | measured rate of fire vs cooldown | {rof_ok} / {rof_n} |\n\
 | measured damage per hit vs matrix | {hit_ok} / {hit_n} |\n\
+| retail panel (hp, shields, armor, damage) | {panel_ok} / {panel_n} placeable (the rest cannot be selected in retail) |\n\
 @SECTIONS@\n\
 Weapons read `damage+bonus cd<cooldown> r<range px> xN bullets`; rate of fire\n\
 `measured/expected frames`; hit `measured/expected hp (x256)`; `-` means not\n\
 measured (unarmed, turret subunit, hangar, suicide or splash-flame weapon:\n\
 those are covered per case in the tests above).\n\n\
 ## Units\n\n\
-| id | name | hp | shields | armor size | cost | time | supply | sight | ground | air | rate of fire | hit | tags | data |\n\
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"
+| id | name | hp | shields | armor size | cost | time | supply | sight | ground | air | rate of fire | hit | tags | data | retail panel |\n\
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"
     );
     out.push_str(&rows);
     out.push('\n');
